@@ -2834,7 +2834,7 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     trigger_queue = TriggerEventQueue(stores["event_queue_store_path"])
@@ -2956,7 +2956,7 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     trigger_queue = SqliteTriggerEventQueue(stores["orchestration_store_path"])

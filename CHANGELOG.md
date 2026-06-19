@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Workflow Pack Selection
+
+- Made Admin Web workflow editing pack-scoped when multiple workflow packs are
+  configured, with pack metadata returned by the document API and selected-pack
+  saves updating only that pack and its layout.
+- Kept runtime workflow run/report permission lookups on composed workflow
+  metadata so authoring pack selection does not narrow operational views.
+- Added a workflow-pack selector to the workflow editor save panels and sent the
+  selected pack on validate/save requests.
+- Used the selected workflow pack reference when generating read-only workflow
+  node IDs so multi-pack configs do not fall back to colliding generic IDs.
+
 ## 2026-06-19 - ADO Activity Pagination
 
 - Fixed ADO PR activity reporting pagination so closed/multi-status PR lists page after status

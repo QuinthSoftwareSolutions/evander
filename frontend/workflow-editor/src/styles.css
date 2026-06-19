@@ -2450,6 +2450,37 @@ select {
   line-height: 1.45;
 }
 
+.workflow-pack-identity {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+}
+
+.workflow-pack-selector,
+.workflow-pack-selected {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.workflow-pack-selector span,
+.workflow-pack-selected span {
+  color: #7a684f;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.workflow-pack-selected strong {
+  color: #3f3325;
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.workflow-pack-paths {
+  overflow-wrap: anywhere;
+}
+
 .save-status {
   display: grid;
   gap: 0.25rem;
@@ -8827,6 +8858,15 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .runtime-run-meta,
 :root[data-theme="dark"] .sidebar p {
   color: #a7bac8;
+}
+
+:root[data-theme="dark"] .workflow-pack-selector span,
+:root[data-theme="dark"] .workflow-pack-selected span {
+  color: #9db1bf;
+}
+
+:root[data-theme="dark"] .workflow-pack-selected strong {
+  color: #f1f6fa;
 }
 
 :root[data-theme="dark"] .save-status {

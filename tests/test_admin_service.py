@@ -6970,6 +6970,207 @@ def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wr
     assert reread.layout["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
 
 
+def test_workflow_editor_reads_selected_pack_from_multi_pack_config(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-a",
+                        "name": "Graph A",
+                        "directory_path": "root",
+                        "node_ids": ["trigger-a"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-a",
+                            "display_name": "Every minute",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-b.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-b",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-b",
+                        "name": "Graph B",
+                        "directory_path": "root/team-a",
+                        "node_ids": ["effect-b"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "effect-b",
+                            "display_name": "Emit event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "pack-b"},
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-b.v1.layout.json").write_text(
+        json.dumps({"nodes": {"effect-b": {"x": 220, "y": 160}}}),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+
+    default_document = service.read_workflow_editor_document()
+    pack_b_document = service.read_workflow_editor_document(workflow_pack="pack-b.v1")
+    composed_document = service.read_composed_workflow_editor_document()
+
+    assert default_document.document_scope == "pack"
+    assert default_document.selected_workflow_pack is not None
+    assert default_document.selected_workflow_pack.reference == "pack-a.v1.json"
+    assert [descriptor.reference for descriptor in default_document.workflow_packs] == [
+        "pack-a.v1.json",
+        "pack-b.v1.json",
+    ]
+    assert [trigger["id"] for trigger in default_document.config["triggers"]] == ["trigger-a"]
+    assert default_document.config["effects"] == []
+    assert [graph.id for graph in default_document.graphs] == ["graph-a"]
+
+    assert pack_b_document.selected_workflow_pack is not None
+    assert pack_b_document.selected_workflow_pack.reference == "pack-b.v1.json"
+    assert pack_b_document.config["triggers"] == []
+    assert [effect["id"] for effect in pack_b_document.config["effects"]] == ["effect-b"]
+    assert [graph.id for graph in pack_b_document.graphs] == ["graph-b"]
+    assert pack_b_document.layout_path == str(packs_dir / "pack-b.v1.layout.json")
+    assert pack_b_document.layout == {"nodes": {"effect-b": {"x": 220.0, "y": 160.0}}}
+
+    assert composed_document.document_scope == "composed"
+    assert [trigger["id"] for trigger in composed_document.config["triggers"]] == ["trigger-a"]
+    assert [effect["id"] for effect in composed_document.config["effects"]] == ["effect-b"]
+    assert [graph.id for graph in composed_document.graphs] == ["graph-a", "graph-b"]
+
+
+def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_a_path = packs_dir / "pack-a.v1.json"
+    pack_b_path = packs_dir / "pack-b.v1.json"
+    pack_a_payload = {
+        "pack_id": "pack-a",
+        "pack_version": "v1",
+        "ir": {
+            "version": "v1",
+            "nodes": [
+                {
+                    "id": "trigger-a",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    pack_a_path.write_text(json.dumps(pack_a_payload), encoding="utf-8")
+    pack_b_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-b",
+                "pack_version": "v1",
+                "description": "Second pack",
+                "graphs": [
+                    {
+                        "id": "graph-b",
+                        "name": "Graph B",
+                        "directory_path": "root/team-a",
+                        "node_ids": ["effect-b"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "effect-b",
+                            "display_name": "Emit event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "pack-b"},
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    wrapper_payload = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "poll_interval_seconds": 9,
+        "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+    }
+    config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
+    service = AdminService(write_config(tmp_path))
+    document = service.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    edited_config = dict(document.config)
+    edited_effects = [dict(effect) for effect in edited_config["effects"]]
+    edited_effects[0]["display_name"] = "Emit updated event"
+    edited_config["effects"] = edited_effects
+    edited_graphs = [graph.model_dump(mode="json") for graph in document.graphs]
+    edited_graphs[0]["name"] = "Updated Graph B"
+
+    save_result = service.save_workflow_editor_document(
+        config=edited_config,
+        layout={"nodes": {"effect-b": {"x": 320, "y": 180}}},
+        graphs=edited_graphs,
+        workflow_pack="pack-b.v1",
+        expected_revision=document.revision,
+    )
+
+    assert save_result.document_scope == "pack"
+    assert save_result.selected_workflow_pack is not None
+    assert save_result.selected_workflow_pack.reference == "pack-b.v1.json"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == wrapper_payload
+    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == pack_a_payload
+    pack_b_payload = json.loads(pack_b_path.read_text(encoding="utf-8"))
+    assert pack_b_payload["description"] == "Second pack"
+    assert pack_b_payload["graphs"][0]["name"] == "Updated Graph B"
+    assert pack_b_payload["ir"]["nodes"][0]["display_name"] == "Emit updated event"
+    assert json.loads((packs_dir / "pack-b.v1.layout.json").read_text(encoding="utf-8")) == {
+        "nodes": {"effect-b": {"x": 320.0, "y": 180.0}}
+    }
+
+
 def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     tmp_path: Path,
 ) -> None:
@@ -8133,7 +8334,7 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
     workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     started_at = datetime(2026, 5, 20, 11, 0, tzinfo=UTC)
@@ -8244,7 +8445,7 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -8375,7 +8576,7 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -8481,7 +8682,7 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     queue_store = TriggerEventQueue(stores["event_queue_store_path"])
@@ -8605,7 +8806,7 @@ def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store
         lambda _: pytest.fail("JSON snapshot read constructed workflow stores"),
     )
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     snapshot = service.read_workflow_run_snapshot()
@@ -8643,7 +8844,7 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
     )
 
     queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -11222,7 +11423,8 @@ def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_r
                 "payload": payload,
                 **kwargs,
             },
-            read_workflow_editor_document=lambda: {"kind": "document"},
+            read_workflow_editor_document=lambda **kwargs: {"kind": "document", **kwargs},
+            read_composed_workflow_editor_document=lambda: {"kind": "composed-document"},
             read_workflow_editor_catalog=lambda: {"kind": "catalog"},
             validate_workflow_editor_document=lambda **kwargs: {"kind": "validation", **kwargs},
             save_workflow_editor_document=lambda **kwargs: {"kind": "save", **kwargs},
@@ -11241,7 +11443,8 @@ def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_r
         )
     )
 
-    assert facade.read_workflow_editor_document() == {"kind": "document"}
+    assert facade.read_workflow_editor_document() == {"kind": "document", "workflow_pack": None}
+    assert facade.read_composed_workflow_editor_document() == {"kind": "composed-document"}
     with pytest.raises(NotImplementedError, match="clear_workflow_run is not configured"):
         facade.clear_workflow_run("evt-1")
 

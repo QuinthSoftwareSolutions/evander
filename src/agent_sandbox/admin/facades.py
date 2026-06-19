@@ -66,6 +66,7 @@ class WorkerAdminDependencies:
     read_worker_global_config: Any
     write_worker_global_config: Any
     read_workflow_editor_document: Any
+    read_composed_workflow_editor_document: Any
     read_workflow_editor_catalog: Any
     validate_workflow_editor_document: Any
     save_workflow_editor_document: Any
@@ -969,8 +970,13 @@ class WorkerAdminFacade:
             worker_id, payload, expected_revision=expected_revision
         )
 
-    def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        return self._deps.read_workflow_editor_document()
+    def read_workflow_editor_document(
+        self, workflow_pack: str | None = None
+    ) -> WorkflowEditorDocumentPayload:
+        return self._deps.read_workflow_editor_document(workflow_pack=workflow_pack)
+
+    def read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
+        return self._deps.read_composed_workflow_editor_document()
 
     def read_workflow_editor_catalog(
         self, directory_path: str | None = None
@@ -995,9 +1001,14 @@ class WorkerAdminFacade:
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         expected_revision: str | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
         return self._deps.save_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs, expected_revision=expected_revision
+            config=config,
+            layout=layout,
+            graphs=graphs,
+            expected_revision=expected_revision,
+            workflow_pack=workflow_pack,
         )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:

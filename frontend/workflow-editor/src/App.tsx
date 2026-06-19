@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ChangeEvent as ReactChangeEvent,
   type DragEvent as ReactDragEvent,
   type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1413,6 +1414,9 @@ function blankWorkflowGeneratorDocument(
       layout_path: baseDocument?.layout_path ?? "",
       config_exists: Boolean(baseDocument?.config_exists),
       layout_exists: Boolean(baseDocument?.layout_exists),
+      document_scope: baseDocument?.document_scope ?? "inline",
+      workflow_packs: baseDocument?.workflow_packs ?? [],
+      selected_workflow_pack: baseDocument?.selected_workflow_pack ?? null,
       config: emptyConfig(),
       layout: { nodes: {} },
       graphs: [],
@@ -2222,15 +2226,32 @@ function slugifyNodeType(type: string): string {
   return type.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "node";
 }
 
-function selectedWorkflowPackSlug(config: WorkflowConfig): string | null {
-  const workflowPacks = config.workflow_packs;
-  if (!Array.isArray(workflowPacks) || workflowPacks.length !== 1) return null;
-  const packReference = String(workflowPacks[0] ?? "").trim();
-  if (!packReference) return null;
-  const packFileName = packReference.split(/[\\/]/).pop() ?? packReference;
+function workflowPackReferenceValue(packReference: unknown): string {
+  if (typeof packReference === "string") return packReference;
+  if (packReference && typeof packReference === "object" && "reference" in packReference) {
+    return String((packReference as { reference?: unknown }).reference ?? "");
+  }
+  return String(packReference ?? "");
+}
+
+function workflowPackSlugFromReference(packReference: unknown): string | null {
+  const reference = workflowPackReferenceValue(packReference).trim();
+  if (!reference) return null;
+  const packFileName = reference.split(/[\\/]/).pop() ?? reference;
   const withoutJson = packFileName.replace(/\.json$/i, "");
   const withoutVersion = withoutJson.replace(/\.v[0-9]+(?:-example)?$/i, "");
   return slugifyGraphId(withoutVersion || withoutJson);
+}
+
+function selectedWorkflowPackSlug(
+  config: WorkflowConfig,
+  selectedWorkflowPackReference?: string | null,
+): string | null {
+  const selectedPackSlug = workflowPackSlugFromReference(selectedWorkflowPackReference);
+  if (selectedPackSlug) return selectedPackSlug;
+  const workflowPacks = config.workflow_packs;
+  if (!Array.isArray(workflowPacks) || workflowPacks.length !== 1) return null;
+  return workflowPackSlugFromReference(workflowPacks[0]);
 }
 
 function generateNodeId(
@@ -2238,6 +2259,7 @@ function generateNodeId(
   kind: WorkflowNodeKind,
   type: string,
   label?: string | null,
+  selectedWorkflowPackReference?: string | null,
 ): string {
   const collections = nodeCollections(config);
   const existingIds = new Set(
@@ -2246,7 +2268,7 @@ function generateNodeId(
     ),
   );
   const labelPart = slugifyGraphId(label?.trim() || slugifyNodeType(type).replace(`${kind}-`, ""));
-  const packSlug = selectedWorkflowPackSlug(config);
+  const packSlug = selectedWorkflowPackSlug(config, selectedWorkflowPackReference);
   const base = [packSlug, kind, labelPart].filter(Boolean).join("-");
   let index = 2;
   let candidate = base;
@@ -2329,6 +2351,14 @@ function workflowCatalogPath(directoryPath: string): string {
   if (trimmedDirectoryPath) params.set("directory_path", trimmedDirectoryPath);
   const query = params.toString();
   return query ? `/api/workflow-editor/catalog?${query}` : "/api/workflow-editor/catalog";
+}
+
+function workflowEditorDocumentPath(workflowPack?: string | null): string {
+  const params = new URLSearchParams();
+  const trimmedWorkflowPack = (workflowPack ?? "").trim();
+  if (trimmedWorkflowPack) params.set("workflow_pack", trimmedWorkflowPack);
+  const query = params.toString();
+  return query ? `/api/workflow-editor/document?${query}` : "/api/workflow-editor/document";
 }
 
 function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string, { x: number; y: number }> {
@@ -4031,6 +4061,9 @@ export default function App() {
   const activeWorkflowCatalog = activeWorkflowTutorialDefinition?.catalog ?? catalog;
   const config = document?.config ?? emptyConfig();
   const workflowGraphs = document?.graphs ?? [];
+  const workflowPackOptions = document?.workflow_packs ?? [];
+  const selectedWorkflowPack = document?.selected_workflow_pack ?? workflowPackOptions.find((pack) => pack.selected) ?? null;
+  const selectedWorkflowPackReference = selectedWorkflowPack?.reference ?? "";
   const workflowReadLocked = !canReadWorkflows;
   const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
     graphVisibleInDirectory(graph, selectedDirectoryPath),
@@ -4458,45 +4491,63 @@ export default function App() {
     };
   }, [isResizingSidebar]);
 
+  function applyLoadedWorkflowDocument(
+    payload: WorkflowEditorDocument,
+    defaultDirectoryPath: string,
+  ) {
+    const backendOutputSchemas = payload.output_schemas ?? {};
+    const normalizedConfig = normalizeDerivedNodeFields(
+      normalizeWorkflowConfigShape(payload.config),
+      backendOutputSchemas,
+    );
+    const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
+    const normalizedGraphs = normalizeWorkflowGraphs(
+      normalizedConfig,
+      payload.graphs ?? [],
+      defaultDirectoryPath,
+    );
+    const normalizedDocument = {
+      ...payload,
+      config: normalizedConfig,
+      graphs: normalizedGraphs,
+      output_schemas: outputSchemas,
+    };
+    const savedNormalizedDocument = normalizeWorkflowEditorDocument(
+      normalizedDocument,
+      defaultDirectoryPath,
+    );
+    validationCacheRef.current.clear();
+    const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
+      graphVisibleInDirectory(graph, defaultDirectoryPath),
+    );
+    const nextBackendDiagnostics = workflowDiagnosticsForGraphs(
+      payload.validation_diagnostics ?? [],
+      visibleGraphsForDocument,
+    );
+    setBackendValidationDiagnostics(payload.validation_diagnostics ?? []);
+    setValidationDiagnostics(nextBackendDiagnostics);
+    setDocument(savedNormalizedDocument);
+    setSavedDocument(savedNormalizedDocument);
+    setNodeEditOrigins({});
+    setProgrammaticSelection([]);
+    setSelectedEdgeId(null);
+    setSaveState("idle");
+    setError(null);
+  }
+
+  async function loadWorkflowDocument(workflowPack?: string | null) {
+    const payload = await fetchJson<WorkflowEditorDocument>(
+      workflowEditorDocumentPath(workflowPack),
+    );
+    applyLoadedWorkflowDocument(payload, selectedDirectoryPath);
+  }
+
   useEffect(() => {
     let cancelled = false;
-    fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document")
+    fetchJson<WorkflowEditorDocument>(workflowEditorDocumentPath())
       .then((payload) => {
         if (cancelled) return;
-        const backendOutputSchemas = payload.output_schemas ?? {};
-        const normalizedConfig = normalizeDerivedNodeFields(
-          normalizeWorkflowConfigShape(payload.config),
-          backendOutputSchemas,
-        );
-        const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
-        const normalizedGraphs = normalizeWorkflowGraphs(
-          normalizedConfig,
-          payload.graphs ?? [],
-          initialGraphDirectoryPathRef.current,
-        );
-        const normalizedDocument = {
-          ...payload,
-          config: normalizedConfig,
-          graphs: normalizedGraphs,
-          output_schemas: outputSchemas,
-        };
-        const savedNormalizedDocument = normalizeWorkflowEditorDocument(
-          normalizedDocument,
-          initialGraphDirectoryPathRef.current,
-        );
-        validationCacheRef.current.clear();
-        const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
-          graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
-        );
-        const nextBackendDiagnostics = workflowDiagnosticsForGraphs(
-          payload.validation_diagnostics ?? [],
-          visibleGraphsForDocument,
-        );
-        setBackendValidationDiagnostics(payload.validation_diagnostics ?? []);
-        setValidationDiagnostics(nextBackendDiagnostics);
-        setDocument(savedNormalizedDocument);
-        setSavedDocument(savedNormalizedDocument);
-        setError(null);
+        applyLoadedWorkflowDocument(payload, initialGraphDirectoryPathRef.current);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
@@ -6639,6 +6690,7 @@ export default function App() {
         templateKind,
         templateNode.type,
         templateNode.display_name,
+        selectedWorkflowPackReference,
       );
       const duplicatedNode = cloneNodeConfig(templateNode);
       duplicatedNode.id = nextId;
@@ -6782,7 +6834,7 @@ export default function App() {
     const catalogEntry = getCatalogEntry(activeWorkflowCatalog, type);
     const nodeId = tutorialAddNodeAction
       ? tutorialAddNodeAction.nodeId
-      : generateNodeId(nextConfig, kind, type, catalogEntry?.label);
+      : generateNodeId(nextConfig, kind, type, catalogEntry?.label, selectedWorkflowPackReference);
     const node = createDefaultNode(kind, type, nodeId);
     nextConfig[kindCollectionKey(kind)].push(node);
     const nextLayout = cloneLayout(workflowDocument.layout);
@@ -7202,6 +7254,21 @@ export default function App() {
     deleteNodes(deletedNodes.map((node) => node.id));
   }
 
+  async function handleWorkflowPackChange(event: ReactChangeEvent<HTMLSelectElement>) {
+    const nextWorkflowPack = event.target.value;
+    if (!nextWorkflowPack || nextWorkflowPack === selectedWorkflowPackReference) return;
+    if (hasUnsavedWorkflowChanges) {
+      const confirmed = window.confirm("Discard unsaved workflow changes and switch workflow packs?");
+      if (!confirmed) return;
+    }
+    setError(null);
+    try {
+      await loadWorkflowDocument(nextWorkflowPack);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   async function validateDocument() {
     if (!document || workflowReadLocked) return;
     const validation = await fetchJson<WorkflowEditorValidation>(
@@ -7209,6 +7276,7 @@ export default function App() {
       {
         method: "POST",
         body: JSON.stringify({
+          workflow_pack: selectedWorkflowPackReference || undefined,
           config: document.config,
           layout: document.layout,
           graphs: document.graphs,
@@ -7236,6 +7304,7 @@ export default function App() {
         {
           method: "PUT",
           body: JSON.stringify({
+            workflow_pack: selectedWorkflowPackReference || undefined,
             config: document.config,
             layout: document.layout,
             graphs: document.graphs,
@@ -10051,10 +10120,56 @@ export default function App() {
     );
   }
 
+  function renderWorkflowPackIdentity() {
+    if (!document) return null;
+    if (workflowPackOptions.length === 0) {
+      return (
+        <div className="workflow-pack-identity">
+          <div className="workflow-pack-selected">
+            <span>Workflow source</span>
+            <strong>Inline config</strong>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="workflow-pack-identity">
+        {workflowPackOptions.length > 1 ? (
+          <label className="workflow-pack-selector">
+            <span>Workflow pack</span>
+            <select
+              value={selectedWorkflowPackReference}
+              onChange={(event) => void handleWorkflowPackChange(event)}
+              disabled={workflowReadLocked || isTutorialMode}
+            >
+              {workflowPackOptions.map((pack) => (
+                <option key={pack.reference} value={pack.reference}>
+                  {pack.display_name || pack.reference}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="workflow-pack-selected">
+            <span>Workflow pack</span>
+            <strong>{selectedWorkflowPack?.display_name || selectedWorkflowPackReference}</strong>
+          </div>
+        )}
+        {selectedWorkflowPack ? (
+          <div className="path-note workflow-pack-paths">
+            <div>{selectedWorkflowPack.path}</div>
+            <div>{selectedWorkflowPack.layout_path}</div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderSavePanelContent() {
     return (
       <div className="sidebar-section compact-panel-section save-panel-section">
         <div className="section-label">Save</div>
+        {renderWorkflowPackIdentity()}
         <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
           Validate
         </button>
@@ -10991,6 +11106,7 @@ export default function App() {
 
             <div className="sidebar-section">
               <div className="section-label">Save</div>
+              {renderWorkflowPackIdentity()}
               <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
                 Validate
               </button>
