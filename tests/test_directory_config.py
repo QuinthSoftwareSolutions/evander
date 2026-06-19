@@ -553,6 +553,34 @@ def test_directory_config_store_allows_local_openai_provider_overlays(
     assert resolution.validation_errors == []
 
 
+def test_directory_config_effective_local_openai_rejects_default_relay_loopback(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"model_provider_mode": "local_openai"},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert any(
+        "local_openai_api_base_url" in error for error in resolution.validation_errors
+    )
+
+
 def test_provider_config_resolver_uses_claude_agent_provider_as_session_override(
     tmp_path: Path,
 ) -> None:

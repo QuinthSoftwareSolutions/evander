@@ -1190,7 +1190,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
-| `local_openai_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`. |
+| `local_openai_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`; effective `local_openai` config is rejected when that URL targets the relay listener, such as the default `0.0.0.0:11434` relay bind. |
 | `local_openai_api_key` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` placeholder bearer token sent to the local OpenAI-compatible upstream in `local_openai` mode. Defaults to `ollama`. |
 | `local_openai_provider_name` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` provider name stored in model-usage rows for local OpenAI-compatible traffic. Defaults to `local_openai`. |
 | `anthropic_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` Anthropic upstream URL base. |

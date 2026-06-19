@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 import unicodedata
 
 import yaml
@@ -52,6 +53,49 @@ from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
 from agent_sandbox.workflow.validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+
+
+def _host_is_loopback(host: str) -> bool:
+    normalized = host.strip().casefold()
+    if normalized == "localhost":
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_is_unspecified(host: str) -> bool:
+    normalized = host.strip().casefold()
+    try:
+        return ip_address(normalized).is_unspecified
+    except ValueError:
+        return normalized == ""
+
+
+def _http_url_host_and_port(value: str) -> tuple[str, int]:
+    parsed = urlsplit(value)
+    if parsed.hostname is None:
+        return "", 443 if parsed.scheme == "https" else 80
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.hostname.casefold(), port
+
+
+def _local_openai_upstream_conflicts_with_relay_listener(
+    *, upstream_url: str, relay_host: str, relay_port: int
+) -> bool:
+    upstream_host, upstream_port = _http_url_host_and_port(upstream_url)
+    if upstream_port != relay_port:
+        return False
+
+    relay_bind_host = relay_host.strip().casefold()
+    if upstream_host == relay_bind_host:
+        return True
+    if _host_is_unspecified(relay_bind_host):
+        return _host_is_loopback(upstream_host) or _host_is_unspecified(upstream_host)
+    if _host_is_loopback(relay_bind_host):
+        return _host_is_loopback(upstream_host) or _host_is_unspecified(upstream_host)
+    return False
 
 
 def _contains_url_control_character(value: str) -> bool:
@@ -882,6 +926,28 @@ class GatewayConfig(BaseModel):
                 "model_provider_mode='azure_openai' requires "
                 + ", ".join(missing_fields)
                 + " to be configured"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_local_openai_provider_config(self, info) -> GatewayConfig:
+        context = getattr(info, "context", None) or {}
+        if context.get("directory_config_domain") == "providers" and context.get(
+            "validation_scope"
+        ) == "overlay":
+            return self
+        if self.model_provider_mode != "local_openai":
+            return self
+        if _local_openai_upstream_conflicts_with_relay_listener(
+            upstream_url=self.local_openai_api_base_url,
+            relay_host=self.openai_relay_host,
+            relay_port=self.openai_relay_port,
+        ):
+            raise ValueError(
+                "model_provider_mode='local_openai' requires local_openai_api_base_url "
+                "to point at an endpoint other than the OpenAI relay listener; set "
+                "openai_relay_host to a guest-facing address or set "
+                "local_openai_api_base_url to a non-conflicting host/port"
             )
         return self
 

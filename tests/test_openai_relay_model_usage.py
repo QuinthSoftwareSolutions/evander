@@ -264,7 +264,7 @@ def test_local_openai_relay_stream_records_usage_with_local_provider(
         config,
         {
             "model_provider_mode": "local_openai",
-            "local_openai_api_base_url": "http://127.0.0.1:11434/v1",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
             "local_openai_api_key": "ollama",
             "local_openai_provider_name": "local_openai",
         },
@@ -307,7 +307,7 @@ def test_local_openai_relay_stream_records_usage_with_local_provider(
     assert response.status_code == 200
     assert b"resp-local-stream" in body
     assert captured["authorization"] == "Bearer ollama"
-    assert captured["url"] == "http://127.0.0.1:11434/v1/responses"
+    assert captured["url"] == "http://127.0.0.1:11435/v1/responses"
     assert captured["payload"] == {"model": "qwen3-coder:30b", "input": "hello"}
 
     store = ModelUsageStore(runtime_dir / "model-usage.db")
@@ -522,7 +522,7 @@ def test_local_openai_relay_delivers_operator_steering_to_responses_and_chat(
         config,
         {
             "model_provider_mode": "local_openai",
-            "local_openai_api_base_url": "http://127.0.0.1:11434/v1",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
             "local_openai_api_key": "ollama",
             "local_openai_provider_name": "local_openai",
         },

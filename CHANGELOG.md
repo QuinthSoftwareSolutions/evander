@@ -34,6 +34,9 @@ material. Newer entries are added incrementally as changes land.
 - Kept Codex sessions on the existing session-scoped OpenAI relay while allowing
   local traffic to avoid host API key env-var requirements and record usage as
   `local_openai`.
+- Rejected `local_openai` effective configs whose upstream URL points back at
+  the relay listener, including the default `0.0.0.0:11434` relay bind with the
+  default Ollama URL.
 - Documented the Ollama `qwen3-coder:30b` setup path and local-provider
   directory config fields.
 

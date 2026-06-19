@@ -724,6 +724,7 @@ def test_local_openai_provider_config_validates_and_normalizes_full_configuratio
     config = GatewayConfig.model_validate(
         {
             "model_provider_mode": " local_openai ",
+            "openai_relay_host": "192.168.250.1",
             "local_openai_api_base_url": " http://127.0.0.1:11434/v1/ ",
             "local_openai_api_key": " ollama-local ",
             "local_openai_provider_name": " local_truman ",
@@ -735,6 +736,22 @@ def test_local_openai_provider_config_validates_and_normalizes_full_configuratio
     assert config.local_openai_api_base_url == "http://127.0.0.1:11434/v1"
     assert config.local_openai_api_key == "ollama-local"
     assert config.local_openai_provider_name == "local_truman"
+
+
+def test_local_openai_provider_config_rejects_default_upstream_when_relay_binds_wildcard() -> None:
+    with pytest.raises(ValueError, match="local_openai_api_base_url"):
+        GatewayConfig.model_validate({"model_provider_mode": "local_openai"})
+
+
+def test_local_openai_provider_config_allows_non_conflicting_local_upstream() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+        }
+    )
+
+    assert config.local_openai_api_base_url == "http://127.0.0.1:11435/v1"
 
 
 @pytest.mark.parametrize(

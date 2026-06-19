@@ -328,7 +328,7 @@ def test_relay_routes_local_openai_requests_without_host_api_key_env(
         config,
         {
             "model_provider_mode": "local_openai",
-            "local_openai_api_base_url": "http://127.0.0.1:11434/v1",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
             "local_openai_api_key": "ollama-placeholder",
             "local_openai_provider_name": "local_openai",
         },
@@ -345,7 +345,7 @@ def test_relay_routes_local_openai_requests_without_host_api_key_env(
     assert response.status_code == 200
     assert captured["authorization"] == "Bearer ollama-placeholder"
     assert captured["accept-encoding"] == "identity"
-    assert captured["url"] == "http://127.0.0.1:11434/v1/responses?foo=bar"
+    assert captured["url"] == "http://127.0.0.1:11435/v1/responses?foo=bar"
     assert captured["payload"] == {
         "model": "qwen3-coder:30b",
         "input": "hello",

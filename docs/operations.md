@@ -655,13 +655,13 @@ Storage layout for directory config:
   ollama pull qwen3-coder:30b
   ```
 
-  Keep Ollama host-local or on a private control-plane address; guests and worker containers should still reach only Truman's session-scoped relay URL. Because the relay itself defaults to port `11434`, avoid binding both the relay and Ollama to the same host address. Either bind the relay only on the guest-facing control-plane address or move Ollama to another private port and set `local_openai_api_base_url` accordingly.
-- Example local Ollama directory-scoped `providers.json` overlay:
+  Keep Ollama host-local or on a private control-plane address; guests and worker containers should still reach only Truman's session-scoped relay URL. Because the relay itself defaults to `0.0.0.0:11434`, `local_openai` rejects the default `http://127.0.0.1:11434/v1` upstream unless the relay is moved off wildcard/loopback on that port. Either bind the relay only on the guest-facing control-plane address while Ollama keeps `127.0.0.1:11434`, or move Ollama to another private port and set `local_openai_api_base_url` accordingly.
+- Example local Ollama directory-scoped `providers.json` overlay when the relay keeps its default listener and Ollama is moved to `127.0.0.1:11435`:
 
   ```json
   {
     "model_provider_mode": "local_openai",
-    "local_openai_api_base_url": "http://127.0.0.1:11434/v1",
+    "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
     "local_openai_api_key": "ollama",
     "local_openai_provider_name": "local_openai"
   }
