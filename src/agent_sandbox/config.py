@@ -323,12 +323,17 @@ class GatewayConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
-    model_provider_mode: Literal["openai_public", "azure_openai", "anthropic"] = Field(
-        default="openai_public",
-        validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
+    model_provider_mode: Literal["openai_public", "azure_openai", "anthropic", "local_openai"] = (
+        Field(
+            default="openai_public",
+            validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
+        )
     )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
+    local_openai_api_key: str = "ollama"
+    local_openai_provider_name: str = "local_openai"
     azure_openai_endpoint: str | None = None
     azure_openai_auth_mode: Literal["api_key"] = "api_key"
     azure_openai_api_key_env: str | None = None
@@ -494,6 +499,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "local_openai_api_base_url",
         "anthropic_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
@@ -557,6 +563,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "local_openai_api_base_url",
         "anthropic_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
@@ -609,6 +616,16 @@ class GatewayConfig(BaseModel):
             return value
         text = str(value).strip()
         return text or None
+
+    @field_validator("local_openai_api_key", "local_openai_provider_name", mode="before")
+    @classmethod
+    def normalize_local_openai_required_strings(cls, value: object, info) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"{info.field_name} cannot be empty")
+        return text
 
     @field_validator("azure_openai_auth_mode", mode="before")
     @classmethod
@@ -884,7 +901,9 @@ class GatewayConfig(BaseModel):
         return self.scheduled_wake_prefix_text
 
     @property
-    def openai_provider_mode(self) -> Literal["openai_public", "azure_openai", "anthropic"]:
+    def openai_provider_mode(
+        self,
+    ) -> Literal["openai_public", "azure_openai", "anthropic", "local_openai"]:
         return self.model_provider_mode
 
 

@@ -75,6 +75,14 @@ class OperatorSteeringInjection:
     note: OperatorSteeringNote | None = None
 
 
+@dataclass(frozen=True)
+class OpenAICompatibleUpstream:
+    base_url: str
+    api_key: str | None
+    api_key_source: str
+    provider_name: str
+
+
 class OpenAIRelay:
     def __init__(
         self,
@@ -97,12 +105,14 @@ class OpenAIRelay:
 
         async def health(_: Request) -> JSONResponse:
             api_key_env = relay._resolved_api_key_env(relay.config)
-            has_api_key = bool(os.environ.get(api_key_env))
+            has_api_key = relay._resolved_api_key_loaded(relay.config)
             return JSONResponse(
                 {
                     "status": "ok",
                     "provider_mode": relay.config.model_provider_mode,
-                    "upstream": relay.config.openai_api_base_url,
+                    "upstream": relay._resolved_upstream_base_url(relay.config),
+                    "openai_upstream": relay.config.openai_api_base_url,
+                    "local_openai_upstream": relay.config.local_openai_api_base_url,
                     "anthropic_upstream": relay.config.anthropic_api_base_url,
                     "api_key_env": api_key_env,
                     "api_key_loaded": has_api_key,
@@ -259,17 +269,20 @@ class OpenAIRelay:
                         media_type=upstream_response.headers.get("content-type"),
                     )
 
-            api_key = os.environ.get(request_context.config.openai_api_key_env)
-            if not api_key:
+            openai_compatible_upstream = relay._openai_compatible_upstream(request_context.config)
+            if not openai_compatible_upstream.api_key:
                 return JSONResponse(
                     {
-                        "error": f"Host environment variable {request_context.config.openai_api_key_env} is not set."
+                        "error": (
+                            "Host environment variable "
+                            f"{openai_compatible_upstream.api_key_source} is not set."
+                        )
                     },
                     status_code=503,
                 )
 
             upstream_url = relay._upstream_http_url(
-                base_url=request_context.config.openai_api_base_url,
+                base_url=openai_compatible_upstream.base_url,
                 upstream_path=upstream_path,
                 query_items=request.query_params.multi_items(),
             )
@@ -279,11 +292,11 @@ class OpenAIRelay:
                 if key.lower() not in HOP_BY_HOP_HEADERS
             }
             headers["accept-encoding"] = "identity"
-            headers["authorization"] = f"Bearer {api_key}"
+            headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
             steering_injection = relay._operator_steering_injection(
                 session_id=request_context.session_id,
                 method=request.method,
-                provider_name="openai",
+                provider_name=openai_compatible_upstream.provider_name,
                 upstream_path=upstream_path,
                 request_body=request_body,
             )
@@ -298,7 +311,7 @@ class OpenAIRelay:
                     headers=headers,
                     request_body=request_body,
                     timeout_seconds=request_context.config.openai_relay_timeout_seconds,
-                    provider_name="openai",
+                    provider_name=openai_compatible_upstream.provider_name,
                     operator_steering_note=steering_injection.note,
                 )
 
@@ -322,7 +335,7 @@ class OpenAIRelay:
                     raise
                 relay._mark_operator_steering_delivered(
                     steering_injection.note,
-                    provider_name="openai",
+                    provider_name=openai_compatible_upstream.provider_name,
                     provider_endpoint=upstream_path,
                 )
                 try:
@@ -332,7 +345,7 @@ class OpenAIRelay:
                         request_body=request_body,
                         upstream_response=upstream_response,
                         duration_ms=relay._duration_ms_since(started_at),
-                        provider_name="openai",
+                        provider_name=openai_compatible_upstream.provider_name,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -382,14 +395,14 @@ class OpenAIRelay:
                 await websocket.close(code=1008, reason=reason)
                 return
 
-            api_key = os.environ.get(request_context.config.openai_api_key_env)
-            if not api_key:
+            openai_compatible_upstream = relay._openai_compatible_upstream(request_context.config)
+            if not openai_compatible_upstream.api_key:
                 await websocket.close(code=1011, reason="missing upstream API key")
                 return
 
             upstream_path = websocket.path_params["path"]
             upstream_url = relay._upstream_websocket_url(
-                base_url=request_context.config.openai_api_base_url,
+                base_url=openai_compatible_upstream.base_url,
                 upstream_path=upstream_path,
                 query_items=websocket.query_params.multi_items(),
             )
@@ -399,7 +412,7 @@ class OpenAIRelay:
                 if key.lower() not in HOP_BY_HOP_HEADERS
                 and not key.lower().startswith("sec-websocket-")
             }
-            headers["authorization"] = f"Bearer {api_key}"
+            headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
 
             async with relay._connect_upstream_websocket(
                 upstream_url,
@@ -414,6 +427,7 @@ class OpenAIRelay:
                     upstream_path=upstream_path,
                     path=websocket.url.path,
                     web_search_enabled=request_context.web_search_enabled,
+                    provider_name=openai_compatible_upstream.provider_name,
                 )
 
         return Starlette(
@@ -1012,6 +1026,7 @@ class OpenAIRelay:
         response_payload: dict[str, Any],
         event_type: str | None,
         duration_ms: int | None,
+        provider_name: str = "openai",
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -1042,6 +1057,7 @@ class OpenAIRelay:
                 provider_request_id=self._provider_request_id_from_payload(response_payload),
             ),
             duration_ms=duration_ms,
+            provider_name=provider_name,
         )
 
     def _record_model_usage_payload(
@@ -1381,7 +1397,42 @@ class OpenAIRelay:
             return config.azure_openai_api_key_env or config.openai_api_key_env
         if config.model_provider_mode == "anthropic":
             return config.anthropic_api_key_env
+        if config.model_provider_mode == "local_openai":
+            return "local_openai_api_key"
         return config.openai_api_key_env
+
+    @classmethod
+    def _resolved_api_key_loaded(cls, config: GatewayConfig) -> bool:
+        if config.model_provider_mode == "local_openai":
+            return bool(config.local_openai_api_key)
+        return bool(os.environ.get(cls._resolved_api_key_env(config)))
+
+    @staticmethod
+    def _resolved_upstream_base_url(config: GatewayConfig) -> str:
+        if config.model_provider_mode == "anthropic":
+            return config.anthropic_api_base_url
+        if config.model_provider_mode == "azure_openai":
+            return config.azure_openai_endpoint or ""
+        if config.model_provider_mode == "local_openai":
+            return config.local_openai_api_base_url
+        return config.openai_api_base_url
+
+    @staticmethod
+    def _openai_compatible_upstream(config: GatewayConfig) -> OpenAICompatibleUpstream:
+        if config.model_provider_mode == "local_openai":
+            return OpenAICompatibleUpstream(
+                base_url=config.local_openai_api_base_url,
+                api_key=config.local_openai_api_key,
+                api_key_source="local_openai_api_key",
+                provider_name=config.local_openai_provider_name,
+            )
+        api_key_source = config.openai_api_key_env
+        return OpenAICompatibleUpstream(
+            base_url=config.openai_api_base_url,
+            api_key=os.environ.get(api_key_source),
+            api_key_source=api_key_source,
+            provider_name="openai",
+        )
 
     @staticmethod
     def _log_hosted_web_search_denied(*, session_id: str, request_kind: str, path: str) -> None:
@@ -1522,6 +1573,7 @@ class OpenAIRelay:
         upstream_path: str = "",
         path: str = "",
         web_search_enabled: bool = True,
+        provider_name: str = "openai",
     ) -> None:
         try:
             from websockets.exceptions import ConnectionClosedOK
@@ -1609,6 +1661,7 @@ class OpenAIRelay:
                             response_payload=response_payload,
                             event_type=event_type,
                             duration_ms=self._duration_ms_since(started_at),
+                            provider_name=provider_name,
                         )
                     except Exception as exc:
                         logger.warning(

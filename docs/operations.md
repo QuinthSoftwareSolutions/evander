@@ -633,7 +633,7 @@ Storage layout for directory config:
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL`, `OPENAI_BASE_URL`, `AGENT_SANDBOX_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
-- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, Azure OpenAI, or Anthropic.
+- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, a host-local OpenAI-compatible endpoint, Azure OpenAI, or Anthropic.
 - For Azure OpenAI Codex routing, set `model_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
 
@@ -647,7 +647,27 @@ Storage layout for directory config:
       "gpt-5.4": "codex-gpt-5-4"
     }
   }
-```
+  ```
+- For local OpenAI-compatible Codex routing, keep `agent_provider` as `codex` and set `model_provider_mode: "local_openai"`. The relay forwards normal OpenAI-compatible HTTP requests to `local_openai_api_base_url`, sends `local_openai_api_key` as a placeholder bearer token, and records usage rows under `local_openai_provider_name`.
+- Ollama is the v1 local runtime target. Pull the recommended initial model on an RTX 5090-class host:
+
+  ```bash
+  ollama pull qwen3-coder:30b
+  ```
+
+  Keep Ollama host-local or on a private control-plane address; guests and worker containers should still reach only Truman's session-scoped relay URL. Because the relay itself defaults to port `11434`, avoid binding both the relay and Ollama to the same host address. Either bind the relay only on the guest-facing control-plane address or move Ollama to another private port and set `local_openai_api_base_url` accordingly.
+- Example local Ollama directory-scoped `providers.json` overlay:
+
+  ```json
+  {
+    "model_provider_mode": "local_openai",
+    "local_openai_api_base_url": "http://127.0.0.1:11434/v1",
+    "local_openai_api_key": "ollama",
+    "local_openai_provider_name": "local_openai"
+  }
+  ```
+
+- Restart `agent-sandbox-openai-relay.service` after changing provider config that the relay process has already loaded.
 - Public OpenAI remains the default when `model_provider_mode` is omitted.
 - For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and

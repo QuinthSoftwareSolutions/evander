@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Add-on Workflow Catalog Entries
+
+- Allowed workflow provider registrations, including add-on-owned providers, to
+  contribute Admin Web workflow-editor node catalog entries.
+- Added Team Add-on catalog entries for its `effect:team:*` and `query:team:*`
+  nodes so they appear in the workflow editor only when the add-on is enabled.
+
 ## 2026-06-19 - Buffer Workflow Gate
 
 - Added `gate:buffer`, a stateful workflow gate that batches activations by
@@ -12,6 +19,17 @@ material. Newer entries are added incrementally as changes land.
   optional timeout.
 - Exposed Buffer in the Admin Web workflow catalog and editor Timing group with
   fixed downstream binding outputs.
+
+## 2026-06-19 - Local OpenAI Model Backend
+
+- Added `local_openai` as a relay model provider mode for host-local
+  OpenAI-compatible endpoints such as Ollama, with configurable upstream URL,
+  placeholder API key, and usage provider name.
+- Kept Codex sessions on the existing session-scoped OpenAI relay while allowing
+  local traffic to avoid host API key env-var requirements and record usage as
+  `local_openai`.
+- Documented the Ollama `qwen3-coder:30b` setup path and local-provider
+  directory config fields.
 
 ## 2026-06-19 - Workflow Pack Selection
 

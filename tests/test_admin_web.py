@@ -9604,6 +9604,9 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "openai_api_base_url",
         "openai_api_key_env",
         "openai_relay_timeout_seconds",
+        "local_openai_api_base_url",
+        "local_openai_api_key",
+        "local_openai_provider_name",
         "azure_openai_endpoint",
         "azure_openai_auth_mode",
         "azure_openai_api_key_env",
@@ -9614,6 +9617,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "anthropic_api_version",
         "anthropic_relay_timeout_seconds",
     }.issubset(openai_fields)
+    assert "local_openai" in openai_fields["model_provider_mode"]["tooltip"]
     assert "azure_openai" in openai_fields["model_provider_mode"]["tooltip"]
     assert "anthropic" in openai_fields["model_provider_mode"]["tooltip"]
     assert openai_fields["model_provider_mode"]["label"] == "Default model provider mode"
@@ -9623,7 +9627,9 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert openai_fields["openai_relay_timeout_seconds"]["label"] == (
         "OpenAI relay timeout seconds"
     )
+    assert openai_fields["local_openai_api_base_url"]["label"] == ("Local OpenAI API base URL")
     assert "OpenAI API base URL" in openai_fields["openai_api_base_url"]["tooltip"]
+    assert "local_openai mode" in openai_fields["local_openai_api_base_url"]["tooltip"]
     assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
     assert "Anthropic" in openai_fields["anthropic_api_base_url"]["tooltip"]
     assistant = next(
