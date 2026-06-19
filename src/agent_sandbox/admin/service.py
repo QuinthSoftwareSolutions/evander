@@ -14981,6 +14981,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
         return self._read_worker_global_config_unlocked(worker_id)
 
+    def _read_worker_provider_loader_config(self, worker_id: str) -> dict[str, object]:
+        path = self._worker_global_config_path(worker_id)
+        if path is None:
+            raise ValueError(f"Unknown worker: {worker_id}")
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError(f"worker config file {path} must contain a JSON object")
+        else:
+            raw = self.config.model_dump(mode="json", exclude_none=True)
+        return {
+            key: raw[key]
+            for key in ("provider_loader", "addon_loader")
+            if key in raw
+        }
+
     def _write_worker_global_config_unlocked(
         self, worker_id: str, payload: dict[str, object]
     ) -> WorkerGlobalConfigWritePayload:
@@ -16723,7 +16739,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             seen_node_types.add(node.type)
             nodes.append(node)
         provider_catalog = self._load_workflow_provider_catalog(
-            self._read_worker_global_config("trigger-orchestrator").config
+            self._read_worker_provider_loader_config("trigger-orchestrator")
         )
         for entry in provider_catalog.workflow_editor_catalog_entries:
             node = entry.model_copy(deep=True)

@@ -45,6 +45,34 @@ def _write_trigger_config(tmp_path: Path, *, enable_team_addon: bool) -> None:
     config_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_invalid_trigger_config_with_team_addon(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "provider_loader": {
+                    "provider_entry_points_enabled": False,
+                },
+                "addon_loader": {
+                    "modules": ["truman_team_addon"],
+                    "enabled_entry_points": False,
+                    "enabled_addon_ids": ["team-addon"],
+                },
+                "triggers": [
+                    {
+                        "id": "broken-cron",
+                        "type": "trigger:cron",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _catalog_payload(tmp_path: Path, *, enable_team_addon: bool) -> dict[str, object]:
     _write_trigger_config(tmp_path, enable_team_addon=enable_team_addon)
     client = TestClient(create_app(AdminService(_write_gateway_config(tmp_path))))
@@ -98,3 +126,17 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     state_fields = {field["key"]: field for field in read_state["fields"]}
     assert state_fields["include_records"]["kind"] == "boolean"
     assert state_fields["include_records"]["default_value"] is True
+
+
+def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_invalid(
+    tmp_path: Path,
+) -> None:
+    _write_invalid_trigger_config_with_team_addon(tmp_path)
+    client = TestClient(create_app(AdminService(_write_gateway_config(tmp_path))))
+
+    response = client.get("/api/workflow-editor/catalog?directory_path=root")
+
+    assert response.status_code == 200
+    nodes = {node["type"]: node for node in response.json()["nodes"]}
+    assert "trigger:cron" in nodes
+    assert "effect:team:wake-due-agents" in nodes

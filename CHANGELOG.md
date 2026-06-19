@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Workflow Catalog Loader Resilience
+
+- Kept the Admin Web workflow node catalog available when the saved
+  trigger-orchestrator workflow contains invalid nodes by reading only provider
+  and add-on loader settings for catalog discovery.
+
 ## 2026-06-19 - Add-on Workflow Catalog Entries
 
 - Allowed workflow provider registrations, including add-on-owned providers, to
