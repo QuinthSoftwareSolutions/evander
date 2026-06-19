@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Buffer Workflow Gate
+
+- Added `gate:buffer`, a stateful workflow gate that batches activations by
+  bindable key and releases `items`, `count`, and `release_reason` by count or
+  optional timeout.
+- Exposed Buffer in the Admin Web workflow catalog and editor Timing group with
+  fixed downstream binding outputs.
+
 ## 2026-06-19 - Workflow Pack Selection
 
 - Made Admin Web workflow editing pack-scoped when multiple workflow packs are

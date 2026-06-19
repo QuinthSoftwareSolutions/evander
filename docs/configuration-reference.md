@@ -387,7 +387,7 @@ Each gate entry requires the shared envelope keys:
 - `id` (string, required, unique across all gates)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `dedupe`, `switch`)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `buffer`, `dedupe`, `switch`)
 
 Type-specific keys:
 
@@ -403,6 +403,7 @@ Type-specific keys:
 | `gate:serialize` | `value` | `format`, `outputs` |
 | `gate:merge` | _none beyond envelope_ | `outputs` |
 | `gate:debounce` | `key`, `quiet_period`, `max_delay` | `outputs` |
+| `gate:buffer` | `key`, `count` | `timeout`, `outputs` |
 | `gate:dedupe` | `key`, `ttl` | `outputs` |
 
 `gate:dedupe` resolves `key` with the same `${{node.output}}` binding syntax used by other
@@ -453,6 +454,12 @@ activation for that key has arrived for the ISO-8601 `quiet_period`, and caps ea
 ISO-8601 `max_delay`. It forwards the latest payload in the burst and records debounce
 diagnostics including key, first/last seen times, scheduled release time, and release reason.
 Delayed debounce releases preserve the inherited workflow binding context.
+
+`gate:buffer` groups inbound activations by its bindable `key` and stores forwardable upstream
+payloads in arrival order. It releases one batch when `count` activations have accumulated, or
+when optional ISO-8601 `timeout` has elapsed since the first buffered activation. Each release
+emits `items`, `count`, and `release_reason`; delayed timeout releases preserve inherited workflow
+binding context.
 
 Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
 `upstream_id` field.

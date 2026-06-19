@@ -1215,6 +1215,29 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "total": {"operation": "sum", "path": "value"}
     }
     assert aggregate_fields["outputs"]["read_only"]
+    buffer_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:buffer")
+    buffer_fields = {field["key"]: field for field in buffer_gate["fields"]}
+    assert buffer_gate["label"] == "Buffer"
+    assert [field["key"] for field in buffer_gate["fields"]] == [
+        "key",
+        "count",
+        "timeout",
+        "outputs",
+    ]
+    assert buffer_fields["key"]["required"]
+    assert buffer_fields["key"]["bindable"]
+    assert buffer_fields["count"]["required"]
+    assert buffer_fields["count"]["bindable"]
+    assert buffer_fields["count"]["default_value"] == 10
+    assert not buffer_fields["timeout"]["required"]
+    assert buffer_fields["timeout"]["bindable"]
+    assert buffer_fields["timeout"]["default_value"] == "PT10M"
+    assert buffer_fields["outputs"]["read_only"]
+    assert buffer_fields["outputs"]["default_value"] == {
+        "items": {"type": "array"},
+        "count": {"type": "integer"},
+        "release_reason": {"type": "string"},
+    }
     await_agent = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent"
     )

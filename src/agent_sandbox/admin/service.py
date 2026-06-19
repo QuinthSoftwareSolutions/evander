@@ -1958,6 +1958,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:filter": "Allow only matching events to continue downstream.",
     "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
+    "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
     "gate:map": "Project upstream outputs into a new payload shape.",
     "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
     "gate:deserialize": (
@@ -2692,6 +2693,56 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 read_only=True,
                 description="Derived from the single upstream node and emitted from the latest activation in a burst.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:buffer",
+        label="Buffer",
+        fields=[
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Groups independent buffers. Supports workflow bindings.",
+                placeholder="buffer:${{system.execution.trace_id}}",
+            ),
+            _field(
+                "count",
+                "Count",
+                "number",
+                required=True,
+                bindable=True,
+                description="Release when this many activations have accumulated.",
+                default_value=10,
+                placeholder="10",
+            ),
+            _field(
+                "timeout",
+                "Timeout",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional ISO-8601 duration from the first buffered activation, "
+                    "for example PT10M. Omit for count-only buffering."
+                ),
+                default_value="PT10M",
+                placeholder="PT10M",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                default_value={
+                    "items": {"type": "array"},
+                    "count": {"type": "integer"},
+                    "release_reason": {"type": "string"},
+                },
+                description="Emits buffered items, released count, and release reason.",
             ),
         ],
     ),
@@ -21386,6 +21437,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if gate_type in {
                 "gate:filter",
                 "gate:debounce",
+                "gate:buffer",
                 "gate:deserialize",
                 "gate:serialize",
                 "gate:map",

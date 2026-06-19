@@ -452,6 +452,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
   "gate:switch": "Route activations to one of several downstream branches.",
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
+  "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
   "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
@@ -1799,6 +1800,21 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       quiet_period: "PT2M",
       max_delay: "PT10M",
       outputs: {},
+    };
+  }
+  if (kind === "gate" && type === "gate:buffer") {
+    return {
+      id,
+      display_name: "Buffer",
+      type,
+      key: "buffer:${{system.execution.trace_id}}",
+      count: 10,
+      timeout: "PT10M",
+      outputs: {
+        items: { type: "array" },
+        count: { type: "integer" },
+        release_reason: { type: "string" },
+      },
     };
   }
   if (kind === "gate" && type === "gate:dedupe") {
@@ -3226,6 +3242,8 @@ function normalizeDerivedNodeFields(
     } else if (gate.type === "gate:map") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:aggregate") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:buffer") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:deserialize") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);

@@ -306,6 +306,54 @@ class GateDebounceDefinition(GateDefinition):
         return self
 
 
+class GateBufferDefinition(GateDefinition):
+    type: Literal["gate:buffer"]
+    key: ConfigValue
+    count: ConfigValue
+    timeout: ConfigValue | None = None
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("gate:buffer key must be a non-empty string or binding template")
+        return value
+
+    @field_validator("count")
+    @classmethod
+    def validate_count(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, bool):
+            raise ValueError("gate:buffer count must be a positive integer or binding")
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError("gate:buffer count must be a positive integer or binding")
+            return value
+        if isinstance(value, str) and value.strip():
+            return value
+        raise ValueError("gate:buffer count must be a positive integer or binding")
+
+    @field_validator("timeout")
+    @classmethod
+    def validate_timeout(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("gate:buffer timeout must be an ISO-8601 duration string or binding")
+        if "${{" in value:
+            return value
+        try:
+            parse_iso8601_duration(value, field_name="timeout", gate_type="gate:buffer")
+        except GateRuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
+
+    @model_validator(mode="after")
+    def validate_default_outputs(self) -> "GateBufferDefinition":
+        if self.outputs is None:
+            self.outputs = effective_node_output_schema(self)
+        return self
+
+
 class GateDedupeDefinition(GateDefinition):
     type: Literal["gate:dedupe"]
     key: ConfigValue
@@ -447,6 +495,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:serialize": GateSerializeDefinition,
         "gate:merge": GateMergeDefinition,
         "gate:debounce": GateDebounceDefinition,
+        "gate:buffer": GateBufferDefinition,
         "gate:dedupe": GateDedupeDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
