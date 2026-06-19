@@ -4397,6 +4397,89 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     assert save_response.json()["validation_diagnostics"] == diagnostics
 
 
+def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "shared-id",
+                            "display_name": "Every minute",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-b.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-b",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "effect-b",
+                            "display_name": "Emit event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "pack-b"},
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = service.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    config = dict(document.config)
+    effects = [dict(effect) for effect in config["effects"]]
+    effects[0]["id"] = "shared-id"
+    config["effects"] = effects
+    graphs = [graph.model_dump(mode="json") for graph in document.graphs]
+    graphs[0]["node_ids"] = ["shared-id"]
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/validate",
+        json={
+            "workflow_pack": "pack-b.v1.json",
+            "config": config,
+            "layout": document.layout,
+            "graphs": graphs,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Node IDs must be globally unique" in response.json()["error"]
+
+
 def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"

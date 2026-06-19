@@ -7050,19 +7050,25 @@ def test_workflow_editor_reads_selected_pack_from_multi_pack_config(tmp_path: Pa
     service = AdminService(write_config(tmp_path))
 
     default_document = service.read_workflow_editor_document()
+    pack_a_document = service.read_workflow_editor_document(workflow_pack="pack-a.v1")
     pack_b_document = service.read_workflow_editor_document(workflow_pack="pack-b.v1")
     composed_document = service.read_composed_workflow_editor_document()
 
-    assert default_document.document_scope == "pack"
-    assert default_document.selected_workflow_pack is not None
-    assert default_document.selected_workflow_pack.reference == "pack-a.v1.json"
+    assert default_document.document_scope == "composed"
+    assert default_document.selected_workflow_pack is None
     assert [descriptor.reference for descriptor in default_document.workflow_packs] == [
         "pack-a.v1.json",
         "pack-b.v1.json",
     ]
     assert [trigger["id"] for trigger in default_document.config["triggers"]] == ["trigger-a"]
-    assert default_document.config["effects"] == []
-    assert [graph.id for graph in default_document.graphs] == ["graph-a"]
+    assert [effect["id"] for effect in default_document.config["effects"]] == ["effect-b"]
+    assert [graph.id for graph in default_document.graphs] == ["graph-a", "graph-b"]
+
+    assert pack_a_document.selected_workflow_pack is not None
+    assert pack_a_document.selected_workflow_pack.reference == "pack-a.v1.json"
+    assert [trigger["id"] for trigger in pack_a_document.config["triggers"]] == ["trigger-a"]
+    assert pack_a_document.config["effects"] == []
+    assert [graph.id for graph in pack_a_document.graphs] == ["graph-a"]
 
     assert pack_b_document.selected_workflow_pack is not None
     assert pack_b_document.selected_workflow_pack.reference == "pack-b.v1.json"
@@ -7169,6 +7175,134 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     assert json.loads((packs_dir / "pack-b.v1.layout.json").read_text(encoding="utf-8")) == {
         "nodes": {"effect-b": {"x": 320.0, "y": 180.0}}
     }
+
+
+def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    for pack_name, node_id, node_type in (
+        ("pack-a.v1.json", "trigger-a", "trigger:cron"),
+        ("pack-b.v1.json", "effect-b", "effect:event:emit"),
+    ):
+        node: dict[str, object] = {
+            "id": node_id,
+            "display_name": node_id,
+            "type": node_type,
+        }
+        if node_type == "trigger:cron":
+            node["expression"] = "* * * * *"
+        else:
+            node["event_type"] = "workflow.synthetic"
+            node["payload"] = {"message": node_id}
+        (packs_dir / pack_name).write_text(
+            json.dumps(
+                {
+                    "pack_id": pack_name.removesuffix(".json"),
+                    "pack_version": "v1",
+                    "ir": {"version": "v1", "nodes": [node], "edges": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+    document = service.read_workflow_editor_document()
+
+    with pytest.raises(ValueError, match="requires workflow_pack"):
+        service.save_workflow_editor_document(
+            config=document.config,
+            layout=document.layout,
+            graphs=[graph.model_dump(mode="json") for graph in document.graphs],
+        )
+
+
+def test_workflow_editor_validate_selected_pack_checks_sibling_pack_ids(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "shared-id",
+                            "display_name": "Every minute",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-b.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-b",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "effect-b",
+                            "display_name": "Emit event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "pack-b"},
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+    document = service.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    edited_config = dict(document.config)
+    edited_effects = [dict(effect) for effect in edited_config["effects"]]
+    edited_effects[0]["id"] = "shared-id"
+    edited_config["effects"] = edited_effects
+    edited_graphs = [graph.model_dump(mode="json") for graph in document.graphs]
+    edited_graphs[0]["node_ids"] = ["shared-id"]
+
+    with pytest.raises(ValueError, match="Node IDs must be globally unique"):
+        service.validate_workflow_editor_document(
+            config=edited_config,
+            layout=document.layout,
+            graphs=edited_graphs,
+            workflow_pack="pack-b.v1.json",
+        )
 
 
 def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
@@ -11443,7 +11577,11 @@ def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_r
         )
     )
 
-    assert facade.read_workflow_editor_document() == {"kind": "document", "workflow_pack": None}
+    assert facade.read_workflow_editor_document() == {"kind": "document"}
+    assert facade.read_workflow_editor_document(workflow_pack="pack-a.v1.json") == {
+        "kind": "document",
+        "workflow_pack": "pack-a.v1.json",
+    }
     assert facade.read_composed_workflow_editor_document() == {"kind": "composed-document"}
     with pytest.raises(NotImplementedError, match="clear_workflow_run is not configured"):
         facade.clear_workflow_run("evt-1")

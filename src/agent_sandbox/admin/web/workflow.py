@@ -515,26 +515,15 @@ def workflow_routes(
     async def get_document(request: Request) -> JSONResponse:
         try:
             requested_workflow_pack = request.query_params.get("workflow_pack")
-            document = service.read_workflow_editor_document(workflow_pack=requested_workflow_pack)
-            readable_graphs = _readable_graphs_for_document(
-                auth=auth,
-                request=request,
-                graphs=document.graphs,
-            )
-            if (
-                requested_workflow_pack is None
-                and document.workflow_packs
-                and (
-                    (document.graphs and not readable_graphs)
-                    or (
-                        not document.graphs
-                        and not auth.can(
-                            request, WORKFLOWS_READ_PERMISSION, directory_path="root"
-                        )
-                    )
+            if requested_workflow_pack is None:
+                composed_document = service.read_composed_workflow_editor_document()
+                document = composed_document
+                readable_graphs = _readable_graphs_for_document(
+                    auth=auth,
+                    request=request,
+                    graphs=document.graphs,
                 )
-            ):
-                for pack in document.workflow_packs[1:]:
+                for pack in composed_document.workflow_packs:
                     candidate = service.read_workflow_editor_document(
                         workflow_pack=pack.reference
                     )
@@ -553,6 +542,15 @@ def workflow_routes(
                     document = candidate
                     readable_graphs = candidate_readable_graphs
                     break
+            else:
+                document = service.read_workflow_editor_document(
+                    workflow_pack=requested_workflow_pack
+                )
+                readable_graphs = _readable_graphs_for_document(
+                    auth=auth,
+                    request=request,
+                    graphs=document.graphs,
+                )
             if document.graphs and not readable_graphs:
                 raise PermissionError("Permission required: workflows.read")
             if not document.graphs and not auth.can(
@@ -791,6 +789,11 @@ def workflow_routes(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
                 graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,
+                workflow_pack=(
+                    str(payload.get("workflow_pack"))
+                    if payload.get("workflow_pack") is not None
+                    else None
+                ),
             )
         except ValueError as exc:
             return json_error(str(exc))

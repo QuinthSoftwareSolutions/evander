@@ -973,6 +973,8 @@ class WorkerAdminFacade:
     def read_workflow_editor_document(
         self, workflow_pack: str | None = None
     ) -> WorkflowEditorDocumentPayload:
+        if workflow_pack is None:
+            return self._deps.read_workflow_editor_document()
         return self._deps.read_workflow_editor_document(workflow_pack=workflow_pack)
 
     def read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
@@ -989,9 +991,14 @@ class WorkerAdminFacade:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
+        if workflow_pack is None:
+            return self._deps.validate_workflow_editor_document(
+                config=config, layout=layout, graphs=graphs
+            )
         return self._deps.validate_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config, layout=layout, graphs=graphs, workflow_pack=workflow_pack
         )
 
     def save_workflow_editor_document(
@@ -1003,6 +1010,13 @@ class WorkerAdminFacade:
         expected_revision: str | None = None,
         workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
+        if workflow_pack is None:
+            return self._deps.save_workflow_editor_document(
+                config=config,
+                layout=layout,
+                graphs=graphs,
+                expected_revision=expected_revision,
+            )
         return self._deps.save_workflow_editor_document(
             config=config,
             layout=layout,

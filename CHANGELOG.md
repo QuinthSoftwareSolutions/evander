@@ -16,6 +16,9 @@ material. Newer entries are added incrementally as changes land.
   selected pack on validate/save requests.
 - Used the selected workflow pack reference when generating read-only workflow
   node IDs so multi-pack configs do not fall back to colliding generic IDs.
+- Preserved composed workflow reads for omitted-pack service callers, required
+  explicit pack saves for multi-pack configs, and validated selected-pack edits
+  against sibling packs.
 
 ## 2026-06-19 - ADO Activity Pagination
 

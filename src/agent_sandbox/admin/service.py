@@ -14753,9 +14753,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
         return self.workflow_config_admin.validate_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config,
+            layout=layout,
+            graphs=graphs,
+            workflow_pack=workflow_pack,
         )
 
     async def generate_workflow_editor_draft(
@@ -15222,7 +15226,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 raise ValueError("Workflow pack selection requires workflow_packs in the worker config.")
             return None
         if workflow_pack is None or not str(workflow_pack).strip():
-            return pack_references[0]
+            return None
         selected = self._workflow_editor_pack_reference(workflow_pack)
         if selected not in pack_references:
             raise ValueError(f"Workflow pack is not configured: {selected}")
@@ -15638,10 +15642,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "Workflow editor cannot save configs that combine workflow_packs with inline workflow_ir; "
                 "edit the pack files directly."
             )
-        selected_reference = self._workflow_editor_selected_pack_reference(
-            raw_config,
-            workflow_pack,
-        )
+        if workflow_pack is None or not str(workflow_pack).strip():
+            if len(workflow_packs) != 1:
+                raise ValueError(
+                    "Workflow editor save requires workflow_pack when multiple workflow packs are configured."
+                )
+            selected_reference = self._workflow_editor_pack_reference(workflow_packs[0])
+        else:
+            selected_reference = self._workflow_editor_selected_pack_reference(
+                raw_config,
+                workflow_pack,
+            )
         if selected_reference is None:
             return None
         return self._workflow_editor_pack_path(selected_reference), workflow_packs
@@ -16705,6 +16716,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         base_config: dict[str, object] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
         merged_config = self._merge_system_managed_workflows(
             editable_config=config,
@@ -16746,7 +16758,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         agent_create_diagnostics = _workflow_agent_create_diagnostics(
             editable_normalized_config,
         )
-        return WorkflowEditorValidationPayload(
+        validation = WorkflowEditorValidationPayload(
             config=editable_normalized_config,
             layout=normalized_layout,
             graphs=normalized_graphs,
@@ -16763,6 +16775,31 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 for diagnostic in agent_create_diagnostics
             ],
         )
+        if workflow_pack is not None and str(workflow_pack).strip():
+            config_path = self._worker_global_config_path("trigger-orchestrator")
+            if config_path is None:
+                raise ValueError("Unknown worker: trigger-orchestrator")
+            raw_config: dict[str, object] = {}
+            if config_path.exists():
+                loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded_config, dict):
+                    raise ValueError(
+                        f"worker config file {config_path} must contain a JSON object"
+                    )
+                raw_config = loaded_config
+            selected_reference = self._workflow_editor_selected_pack_reference(
+                raw_config,
+                workflow_pack,
+            )
+            workflow_packs = raw_config.get("workflow_packs")
+            if selected_reference is not None and isinstance(workflow_packs, list):
+                self._validate_selected_workflow_pack_runtime_config(
+                    raw_config=raw_config,
+                    workflow_packs=workflow_packs,
+                    selected_reference=selected_reference,
+                    selected_validation=validation,
+                )
+        return validation
 
     def _save_workflow_editor_document_unlocked(
         self,
@@ -16786,6 +16823,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_config,
             workflow_pack,
         )
+        pack_save = self._workflow_editor_pack_backed_save_paths(raw_config, workflow_pack)
+        if selected_reference is None and pack_save is not None:
+            _, configured_workflow_packs = pack_save
+            if configured_workflow_packs:
+                selected_reference = self._workflow_editor_pack_reference(
+                    configured_workflow_packs[0]
+                )
         workflow_packs = self._workflow_editor_pack_descriptors(
             raw_config,
             selected_reference=selected_reference,
@@ -16847,7 +16891,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if graphs_to_persist is not None
             else None
         )
-        pack_save = self._workflow_editor_pack_backed_save_paths(raw_config, workflow_pack)
         if pack_save is None:
             if graph_payloads_to_persist is not None:
                 merged_config["workflow_graphs"] = graph_payloads_to_persist
@@ -16857,9 +16900,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         else:
             pack_path, workflow_packs = pack_save
             pack_path.parent.mkdir(parents=True, exist_ok=True)
-            selected_reference = self._workflow_editor_pack_reference(
-                workflow_pack or workflow_packs[0]
-            )
+            if selected_reference is None:
+                selected_reference = self._workflow_editor_pack_reference(workflow_packs[0])
             self._validate_selected_workflow_pack_runtime_config(
                 raw_config=raw_config,
                 workflow_packs=workflow_packs,

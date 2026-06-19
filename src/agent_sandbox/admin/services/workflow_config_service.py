@@ -28,6 +28,8 @@ class WorkflowConfigAdminService:
         )
 
     def read_workflow_editor_document(self, workflow_pack: str | None = None):
+        if workflow_pack is None:
+            return self._worker_admin.read_workflow_editor_document()
         return self._worker_admin.read_workflow_editor_document(
             workflow_pack=workflow_pack
         )
@@ -46,9 +48,14 @@ class WorkflowConfigAdminService:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        workflow_pack: str | None = None,
     ):
+        if workflow_pack is None:
+            return self._worker_admin.validate_workflow_editor_document(
+                config=config, layout=layout, graphs=graphs
+            )
         return self._worker_admin.validate_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config, layout=layout, graphs=graphs, workflow_pack=workflow_pack
         )
 
     def save_workflow_editor_document(
@@ -60,6 +67,13 @@ class WorkflowConfigAdminService:
         expected_revision: str | None = None,
         workflow_pack: str | None = None,
     ):
+        if workflow_pack is None:
+            return self._worker_admin.save_workflow_editor_document(
+                config=config,
+                layout=layout,
+                graphs=graphs,
+                expected_revision=expected_revision,
+            )
         return self._worker_admin.save_workflow_editor_document(
             config=config,
             layout=layout,
