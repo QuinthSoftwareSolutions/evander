@@ -29,6 +29,8 @@ material. Newer entries are added incrementally as changes land.
   the detail heading.
 - Stopped showing the successful-load revision status card because the header
   revision badge already carries that state.
+- Let People-list inbox popovers overflow their agent row instead of being
+  clipped by the compact card.
 
 ## 2026-06-20 - ADO Activity And Buffer Gate Fixes
 

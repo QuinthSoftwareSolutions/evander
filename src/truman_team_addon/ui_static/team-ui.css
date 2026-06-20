@@ -1775,11 +1775,17 @@ button.record-action:hover {
 }
 
 .people-agent-card {
-  overflow: hidden;
+  position: relative;
+  overflow: visible;
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease,
     background 0.16s ease;
+}
+
+.people-agent-card:hover,
+.people-agent-card:focus-within {
+  z-index: 5;
 }
 
 .people-agent-card.is-selected {

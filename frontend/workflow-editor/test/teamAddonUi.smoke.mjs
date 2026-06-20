@@ -3039,6 +3039,34 @@ test("team add-on People inbox popover stays reachable and scrollable", async (t
   await page.getByRole("tab", { name: "People" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  const listStatusIndicator = alphaLeadCard.locator(".agent-inbox-indicator--status_request");
+  await listStatusIndicator.hover();
+  const listStatusPopover = listStatusIndicator.locator(".agent-inbox-popover");
+  await listStatusPopover.waitFor({ state: "visible" });
+  const listCardBox = await alphaLeadCard.boundingBox();
+  const listPopoverBox = await listStatusPopover.boundingBox();
+  assert.ok(listCardBox, "expected People list card to have a bounding box");
+  assert.ok(listPopoverBox, "expected People list popover to have a bounding box");
+  assert.ok(
+    listPopoverBox.y + listPopoverBox.height > listCardBox.y + listCardBox.height,
+    "expected People list popover to extend beyond its card",
+  );
+  assert.equal(
+    await page.evaluate(
+      ({ x, y, selector }) => {
+        const popover = document.querySelector(selector);
+        const hit = document.elementFromPoint(x, y);
+        return Boolean(popover && hit && popover.contains(hit));
+      },
+      {
+        x: listPopoverBox.x + 24,
+        y: Math.min(listPopoverBox.y + listPopoverBox.height - 8, listCardBox.y + listCardBox.height + 12),
+        selector:
+          '#team-people-page [data-agent-id="alpha-lead"] .agent-inbox-indicator--status_request .agent-inbox-popover',
+      },
+    ),
+    true,
+  );
   await alphaLeadCard.getByRole("button").click();
   await page.locator("#people-agent-detail-view").getByRole("heading", { name: "alpha-lead" }).waitFor({
     state: "visible",
