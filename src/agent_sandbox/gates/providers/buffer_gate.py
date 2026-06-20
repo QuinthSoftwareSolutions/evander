@@ -137,7 +137,8 @@ class BufferGateProvider(GateProviderBase):
         count = _coerce_positive_int(resolved_config.get("count"))
         timeout_seconds = _coerce_timeout_seconds(resolved_config.get("timeout"))
 
-        now = _coerce_utc(queue_record.occurred_at)
+        event_occurred_at = _coerce_utc(queue_record.occurred_at)
+        buffered_at = _coerce_utc(started_at)
         state_key = _buffer_state_key(gate_id=gate.id, buffer_key=buffer_key)
         adapter = self.load_state()
         state = adapter.get(state_key)
@@ -156,7 +157,7 @@ class BufferGateProvider(GateProviderBase):
             )
             return True
 
-        if _state_is_due_for_timeout_release(state=state, now=now):
+        if _state_is_due_for_timeout_release(state=state, now=buffered_at):
             self._release_buffer_state(
                 worker=worker,
                 gate=gate,
@@ -170,12 +171,12 @@ class BufferGateProvider(GateProviderBase):
 
         item = BufferGateItem(
             event_id=queue_record.event_id,
-            occurred_at=now,
+            occurred_at=event_occurred_at,
             payload=_forwardable_payload(queue_record.payload),
         )
         binding_trace = binding_trace_to_payload(resolved.trace)
         scheduled_release_at = (
-            now + _seconds_to_timedelta(timeout_seconds)
+            buffered_at + _seconds_to_timedelta(timeout_seconds)
             if timeout_seconds is not None
             else None
         )
@@ -189,8 +190,8 @@ class BufferGateProvider(GateProviderBase):
                 source_trigger_type=queue_record.trigger_type,
                 first_event_id=queue_record.event_id,
                 latest_event_id=queue_record.event_id,
-                first_seen_at=now,
-                last_seen_at=now,
+                first_seen_at=buffered_at,
+                last_seen_at=buffered_at,
                 scheduled_release_at=scheduled_release_at,
                 count=count,
                 timeout_seconds=timeout_seconds,
@@ -206,7 +207,7 @@ class BufferGateProvider(GateProviderBase):
             )
         else:
             state.latest_event_id = queue_record.event_id
-            state.last_seen_at = max(_coerce_utc(state.last_seen_at), now)
+            state.last_seen_at = max(_coerce_utc(state.last_seen_at), buffered_at)
             state.count = count
             state.timeout_seconds = timeout_seconds
             state.scheduled_release_at = (

@@ -1551,55 +1551,95 @@ class AzureDevOpsIssueAdapter:
             types=types or [],
             tags_any=tags_any or [],
         )
+        normalized_top = max(1, min(int(top), 200))
+        normalized_skip = max(0, int(skip))
+        candidate_page_size = 200
+        candidate_skip = 0
+        candidate_total_matches: int | None = None
+        candidate_scanned_count = 0
+        matched_items: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            candidates = self._query_backlog_items_core(
-                client,
-                organization_url=organization_url,
-                project=normalized_project,
-                auth_header=auth_header,
-                wiql=wiql,
-                top=top,
-                skip=skip,
-                include_relations=False,
-            )
-            items: list[dict[str, Any]] = []
-            for candidate in candidates.get("items") or []:
-                item_id = str(candidate.get("id") or "").strip()
-                if not item_id:
-                    continue
-                detail = self.get_backlog_item_by_id(
-                    directory_path=directory_path,
-                    backlog_item_id=item_id,
+            while True:
+                candidates = self._query_backlog_items_core(
+                    client,
+                    organization_url=organization_url,
                     project=normalized_project,
-                    include_comments="commented" in normalized_types,
+                    auth_header=auth_header,
+                    wiql=wiql,
+                    top=candidate_page_size,
+                    skip=candidate_skip,
                     include_relations=False,
-                    include_updates="changed" in normalized_types,
                 )
-                activities = self._work_item_activity_records(
-                    detail,
-                    actor=actor,
-                    since=since,
-                    until=until,
-                    activity_types=normalized_types,
+                candidate_paging = (
+                    candidates.get("paging") if isinstance(candidates.get("paging"), dict) else {}
                 )
-                if not activities:
+                raw_candidate_total = candidate_paging.get("total_matches")
+                if isinstance(raw_candidate_total, int):
+                    candidate_total_matches = raw_candidate_total
+                candidate_items = candidates.get("items") or []
+                candidate_scanned_count += len(candidate_items)
+                for candidate in candidate_items:
+                    item_id = str(candidate.get("id") or "").strip()
+                    if not item_id:
+                        continue
+                    detail = self.get_backlog_item_by_id(
+                        directory_path=directory_path,
+                        backlog_item_id=item_id,
+                        project=normalized_project,
+                        include_comments="commented" in normalized_types,
+                        include_relations=False,
+                        include_updates="changed" in normalized_types,
+                    )
+                    activities = self._work_item_activity_records(
+                        detail,
+                        actor=actor,
+                        since=since,
+                        until=until,
+                        activity_types=normalized_types,
+                    )
+                    if not activities:
+                        continue
+                    matched_items.append(
+                        {
+                            "provider": self.provider_name,
+                            "id": detail.get("id"),
+                            "project": detail.get("project") or normalized_project,
+                            "title": detail.get("title"),
+                            "state": detail.get("state"),
+                            "type": detail.get("type"),
+                            "url": detail.get("url"),
+                            "web_url": detail.get("web_url"),
+                            "activities": activities,
+                            "fields": detail.get("fields") or {},
+                        }
+                    )
+                raw_next_skip = candidate_paging.get("next_skip")
+                next_candidate_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
+                if next_candidate_skip is not None and next_candidate_skip > candidate_skip:
+                    candidate_skip = next_candidate_skip
                     continue
-                items.append(
-                    {
-                        "provider": self.provider_name,
-                        "id": detail.get("id"),
-                        "project": detail.get("project") or normalized_project,
-                        "title": detail.get("title"),
-                        "state": detail.get("state"),
-                        "type": detail.get("type"),
-                        "url": detail.get("url"),
-                        "web_url": detail.get("web_url"),
-                        "activities": activities,
-                        "fields": detail.get("fields") or {},
-                    }
-                )
-        paging = dict(candidates.get("paging") or {})
-        paging.update({"returned_count": len(items), "activity_types": sorted(normalized_types)})
+                if not candidate_paging.get("has_more") or not candidate_items:
+                    break
+                candidate_skip += len(candidate_items)
+        total_activity_matches = len(matched_items)
+        items = matched_items[normalized_skip : normalized_skip + normalized_top]
+        next_skip = (
+            normalized_skip + len(items)
+            if normalized_skip + len(items) < total_activity_matches
+            else None
+        )
+        paging = {
+            "skip": normalized_skip,
+            "top": normalized_top,
+            "returned_count": len(items),
+            "total_matches": total_activity_matches,
+            "total_activity_matches": total_activity_matches,
+            "candidate_total_matches": candidate_total_matches,
+            "candidate_scanned_count": candidate_scanned_count,
+            "has_more": next_skip is not None,
+            "next_skip": next_skip,
+            "activity_types": sorted(normalized_types),
+        }
         return {
             "provider": self.provider_name,
             "project": normalized_project,

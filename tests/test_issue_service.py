@@ -1403,6 +1403,115 @@ def test_query_work_item_activity_filters_created_comments_and_updates(
     }
 
 
+@pytest.mark.parametrize(
+    ("skip", "expected_ids", "expected_next_skip"),
+    [
+        (0, ["101"], 1),
+        (1, ["102"], None),
+    ],
+)
+def test_query_work_item_activity_paginates_after_activity_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+    skip: int,
+    expected_ids: list[str],
+    expected_next_skip: int | None,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 202}, {"id": 101}, {"id": 102}]}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {"id": 202, "fields": {"System.Title": "Other user created"}},
+                    {"id": 101, "fields": {"System.Title": "Alex created newest"}},
+                    {"id": 102, "fields": {"System.Title": "Alex created older"}},
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 202,
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "Other user created",
+                    "System.State": "Active",
+                    "System.WorkItemType": "Task",
+                    "System.CreatedDate": "2026-06-04T12:00:00Z",
+                    "System.CreatedBy": {
+                        "displayName": "Other User",
+                        "uniqueName": "other@example.com",
+                    },
+                },
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 101,
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "Alex created newest",
+                    "System.State": "Active",
+                    "System.WorkItemType": "Task",
+                    "System.CreatedDate": "2026-06-03T12:00:00Z",
+                    "System.CreatedBy": {
+                        "displayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                },
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 102,
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "Alex created older",
+                    "System.State": "Active",
+                    "System.WorkItemType": "Task",
+                    "System.CreatedDate": "2026-06-02T12:00:00Z",
+                    "System.CreatedBy": {
+                        "displayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                },
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses),
+    )
+
+    result = adapter.query_work_item_activity(
+        directory_path="root",
+        actor="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        until=datetime(2026, 6, 5, tzinfo=UTC),
+        activity_types=["created"],
+        top=1,
+        skip=skip,
+    )
+
+    assert [item["id"] for item in result["items"]] == expected_ids
+    assert result["paging"]["skip"] == skip
+    assert result["paging"]["top"] == 1
+    assert result["paging"]["total_matches"] == 2
+    assert result["paging"]["next_skip"] == expected_next_skip
+    batch_body = calls[1]["json"]
+    assert isinstance(batch_body, dict)
+    assert batch_body["ids"] == [202, 101, 102]
+
+
 def test_delete_issue_soft_delete_uses_destroy_false_and_returns_payload_project(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

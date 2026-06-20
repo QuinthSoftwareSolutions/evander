@@ -227,7 +227,7 @@ def test_buffer_releases_overdue_timeout_batch_before_appending_late_activation(
     provider = _buffer_provider(worker)
     adapter = provider.load_state()
     state_key, state = next(iter(adapter.read_all().items()))
-    state.scheduled_release_at = now + timedelta(minutes=1)
+    state.scheduled_release_at = datetime.now(UTC) - timedelta(seconds=1)
     adapter.put(state_key, state)
 
     _publish(worker, "event-2", "a", 2, occurred_at=now + timedelta(minutes=2))
@@ -246,6 +246,26 @@ def test_buffer_releases_overdue_timeout_batch_before_appending_late_activation(
     assert len(remaining_states) == 1
     assert [item.payload["value"] for item in remaining_states[0].items] == [2]
     assert remaining_states[0].first_event_id == "event-2"
+
+
+def test_buffer_delayed_activation_waits_timeout_from_buffered_time(tmp_path: Path) -> None:
+    worker = _worker(tmp_path, count=5, timeout="PT10M")
+    occurred_at = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=1)
+    _publish(worker, "event-1", "a", 1, occurred_at=occurred_at)
+
+    worker.run_once()
+
+    states = list(_buffer_provider(worker).load_state().read_all().values())
+    assert len(states) == 1
+    state = states[0]
+    assert state.items[0].occurred_at == occurred_at
+    assert state.first_seen_at > occurred_at + timedelta(minutes=10)
+    assert state.scheduled_release_at == state.first_seen_at + timedelta(minutes=10)
+
+    worker.run_once()
+
+    assert _succeeded_buffer_records(worker) == []
+    assert len(_buffer_provider(worker).load_state().read_all()) == 1
 
 
 def test_buffer_duplicate_event_id_does_not_double_count(tmp_path: Path) -> None:

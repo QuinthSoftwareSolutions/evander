@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - ADO Activity And Buffer Gate Fixes
+
+- Applied ADO work-item activity pagination after actor/activity filtering so
+  early non-matching WIQL candidates no longer create empty or shifted pages.
+- Based buffer-gate timeout windows on when an activation is buffered while
+  preserving each item's original upstream occurrence timestamp.
+
 ## 2026-06-20 - Team Wake Guidance Seeding
 
 - Seeded static Team Add-on operating rules into a managed
