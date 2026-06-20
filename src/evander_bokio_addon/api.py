@@ -9,7 +9,7 @@ from starlette.routing import Route
 from agent_sandbox.addons import AddonContext
 
 from .client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
-from .state import PreparedActionStore
+from .state import PreparedActionStore, upload_staging_dir
 
 
 def admin_api_routes(context: AddonContext) -> list[Route]:
@@ -54,9 +54,12 @@ def admin_api_routes(context: AddonContext) -> list[Route]:
         if request.method == "GET":
             return _json(lambda: _client(context).list_uploads(**_page_args(request)))
         payload = await _json_body(request)
+        upload_root = upload_staging_dir(context.runtime_dir, scope="admin")
+        upload_root.mkdir(parents=True, exist_ok=True)
         return _json(
             lambda: _client(context).upload_document(
                 file_path=_required(payload.get("file_path"), "file_path"),
+                allowed_roots=[upload_root],
                 description=_optional(payload.get("description")),
                 journal_entry_id=_optional(
                     payload.get("journalEntryId") or payload.get("journal_entry_id")

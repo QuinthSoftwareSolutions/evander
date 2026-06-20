@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,12 @@ import httpx
 
 
 DEFAULT_BOKIO_API_BASE_URL = "https://api.bokio.se/v1"
+_UPLOAD_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
 
 
 class BokioConfigError(RuntimeError):
@@ -145,13 +152,12 @@ class BokioClient:
         self,
         *,
         file_path: str | Path,
+        allowed_roots: Sequence[str | Path] | None,
         description: str | None = None,
         journal_entry_id: str | None = None,
     ) -> dict[str, Any]:
-        path = Path(file_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"Bokio upload file not found: {path}")
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        path = _resolve_upload_path(file_path, allowed_roots=allowed_roots)
+        content_type = _validated_upload_content_type(path)
         data: dict[str, str] = {}
         if description:
             data["description"] = description
@@ -244,6 +250,73 @@ def _required(value: str, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} is required")
     return normalized
+
+
+def _resolve_upload_path(
+    file_path: str | Path,
+    *,
+    allowed_roots: Sequence[str | Path] | None,
+) -> Path:
+    if not allowed_roots:
+        raise BokioConfigError("Bokio uploads require an explicit allowed upload directory")
+    raw = str(file_path or "").strip()
+    if not raw or "\x00" in raw:
+        raise ValueError("file_path is required and must not contain NUL")
+    input_path = Path(raw)
+    checked_roots: list[str] = []
+    for raw_root in allowed_roots:
+        root = Path(raw_root).resolve(strict=True)
+        checked_roots.append(str(root))
+        if not root.is_dir():
+            continue
+        candidate = input_path if input_path.is_absolute() else root / input_path
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError:
+            continue
+        if any(part in {"", ".", ".."} for part in relative.parts):
+            raise ValueError("file_path must stay inside the Bokio upload staging directory")
+        if _contains_symlink(root, relative):
+            raise PermissionError("Bokio uploads refuse symlinks in the upload path")
+        resolved = candidate.resolve(strict=True)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if not resolved.is_file():
+            raise FileNotFoundError(f"Bokio upload file not found: {input_path}")
+        return resolved
+    raise PermissionError(
+        "Bokio upload file must be under an allowed upload staging directory: "
+        + ", ".join(checked_roots)
+    )
+
+
+def _contains_symlink(root: Path, relative: Path) -> bool:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _validated_upload_content_type(path: Path) -> str:
+    expected = _UPLOAD_CONTENT_TYPES.get(path.suffix.lower())
+    if expected is None:
+        raise ValueError("Bokio uploads support only PDF, JPEG, or PNG files")
+    with path.open("rb") as handle:
+        header = handle.read(16)
+    if expected == "application/pdf" and not header.startswith(b"%PDF-"):
+        raise ValueError("Bokio PDF upload content does not match the .pdf extension")
+    if expected == "image/jpeg" and not header.startswith(b"\xff\xd8\xff"):
+        raise ValueError("Bokio JPEG upload content does not match the .jpg/.jpeg extension")
+    if expected == "image/png" and not header.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Bokio PNG upload content does not match the .png extension")
+    guessed = mimetypes.guess_type(path.name)[0] or expected
+    if guessed != expected:
+        raise ValueError("Bokio upload content type is not allowed")
+    return expected
 
 
 def _query_params(*, query: str | None = None) -> dict[str, Any]:

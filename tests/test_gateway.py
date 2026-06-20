@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import importlib
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +13,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
+from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService
@@ -816,6 +819,75 @@ def test_tool_approval_lease_from_request_context_rejects_revoked_lease(
                 mcp_tool_approval_lease_id=lease.lease_id,
             ),
         )
+
+
+def test_registered_addon_tool_call_requires_session_permission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "policy_addon.py").write_text(
+        """
+CALLS = []
+
+def register_addon():
+    def register_mcp_tools(server, context):
+        @server.tool(name="custom_addon_tool")
+        def custom_addon_tool(session_id: str | None = None):
+            CALLS.append(session_id)
+            return {"ok": True, "session_id": session_id}
+        return ("custom_addon_tool",)
+
+    return {
+        "addon_id": "policy-addon",
+        "display_name": "Policy Add-on",
+        "mcp_tools": register_mcp_tools,
+    }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("policy_addon", None)
+    addon_module = importlib.import_module("policy_addon")
+
+    runtime_dir = tmp_path / "runtime"
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=runtime_dir,
+            audit_log_path=runtime_dir / "audit.jsonl",
+            session_store_path=runtime_dir / "sessions.json",
+            approval_store_path=runtime_dir / "approvals.json",
+            draft_store_path=runtime_dir / "drafts.json",
+            email_store_path=runtime_dir / "emails.json",
+            discord_command_store_path=runtime_dir / "discord.json",
+            addon_loader=AddonLoaderConfig(
+                modules=["policy_addon"],
+                enabled_entry_points=False,
+                enabled_addon_ids=["policy-addon"],
+            ),
+        )
+    )
+    manifest = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        directory_path="root",
+    )
+    context.session_repository.upsert_session(manifest)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        _call_tool(server, "custom_addon_tool", {"session_id": "session-1"})
+
+    assert addon_module.CALLS == []
+
+    manifest.allowed_tools = ["custom_addon_tool"]
+    context.session_repository.upsert_session(manifest)
+    _call_tool(server, "custom_addon_tool", {"session_id": "session-1"})
+
+    assert addon_module.CALLS == ["session-1"]
 
 
 def test_approval_required_tool_creates_pending_request_without_execution(

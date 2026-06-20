@@ -10163,7 +10163,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if not session_id:
             return
         try:
-            session = context.policy.require_tool(session_id, tool_name)
+            session = context.policy.require_tool(
+                session_id,
+                tool_name,
+                workflow_run_id=call_context.workflow_run_id,
+                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+            )
         except PolicyError:
             return
         try:
@@ -10196,7 +10201,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if not session_id:
             return None
         try:
-            session = context.policy.require_tool(session_id, tool_name)
+            session = context.policy.require_tool(
+                session_id,
+                tool_name,
+                workflow_run_id=call_context.workflow_run_id,
+                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+            )
         except PolicyError:
             return None
         if not context.policy.approval_required_for_tool(session, tool_name):
@@ -10302,6 +10312,33 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise ToolError(f"approval_blocked: {exc}") from exc
         return approval
 
+    def maybe_require_registered_addon_tool(
+        *,
+        raw_tool_name: str,
+        sanitized_arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+    ) -> None:
+        tool_value = str(raw_tool_name or "").strip()
+        if not tool_value or tool_value in ToolName._value2member_map_:
+            return
+        registered_addon_tools = getattr(context.policy, "extra_mcp_tool_names", set())
+        if tool_value not in registered_addon_tools:
+            return
+        if not call_context.session_id:
+            message = "session_id is required"
+            audit_failure(None, tool_value, sanitized_arguments, message)
+            raise ToolError(message)
+        try:
+            context.policy.require_tool(
+                call_context.session_id,
+                tool_value,
+                workflow_run_id=call_context.workflow_run_id,
+                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+            )
+        except PolicyError as exc:
+            audit_failure(call_context.session_id, tool_value, sanitized_arguments, str(exc))
+            raise ToolError(str(exc)) from exc
+
     original_call_tool = server._tool_manager.call_tool
 
     async def audited_call_tool(*call_args: Any, **call_kwargs: Any) -> Any:
@@ -10359,6 +10396,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 lease_id=call_context.mcp_tool_approval_lease_id,
             )
             try:
+                maybe_require_registered_addon_tool(
+                    raw_tool_name=raw_tool_name,
+                    sanitized_arguments=sanitized_arguments,
+                    call_context=call_context,
+                )
                 enforce_tool_argument_policy(
                     raw_tool_name=raw_tool_name,
                     raw_arguments=raw_arguments,

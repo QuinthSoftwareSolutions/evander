@@ -6,7 +6,7 @@ from agent_sandbox.addons import AddonContext
 
 from .api import _execute_prepared_action
 from .client import BokioClient
-from .state import PreparedActionStore
+from .state import PreparedActionStore, upload_staging_dir
 
 
 READ_TOOLS = (
@@ -88,10 +88,15 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         journal_entry_id: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        del session_id
+        upload_root = upload_staging_dir(
+            context.runtime_dir,
+            session_id=_required_session_id(session_id),
+        )
+        upload_root.mkdir(parents=True, exist_ok=True)
         return {
             "result": _client(context).upload_document(
                 file_path=file_path,
+                allowed_roots=[upload_root],
                 description=description,
                 journal_entry_id=journal_entry_id,
             )
@@ -189,6 +194,13 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
 
 def _client(context: AddonContext) -> BokioClient:
     return BokioClient.from_context(context)
+
+
+def _required_session_id(session_id: str | None) -> str:
+    normalized = str(session_id or "").strip()
+    if not normalized:
+        raise ValueError("session_id is required for Bokio uploads")
+    return normalized
 
 
 def _prepare_action(

@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.addons import addon_json_object_store
+from agent_sandbox.addons import addon_json_object_store, addon_storage_path
 
 
 ADDON_ID = "bokio-addon"
 STATE_FILE = "prepared-actions.json"
+UPLOADS_DIR = "uploads"
+_SAFE_UPLOAD_SCOPE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+def upload_staging_dir(
+    runtime_dir: str | Path,
+    *,
+    session_id: str | None = None,
+    scope: str = "admin",
+) -> Path:
+    owner = _safe_upload_scope(session_id or scope)
+    return addon_storage_path(runtime_dir, ADDON_ID, UPLOADS_DIR, owner)
 
 
 class PreparedActionStore:
@@ -138,6 +152,15 @@ def _required(value: str, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} is required")
     return normalized
+
+
+def _safe_upload_scope(value: str) -> str:
+    normalized = str(value or "").strip()
+    if _SAFE_UPLOAD_SCOPE_PATTERN.fullmatch(normalized):
+        return normalized
+    if not normalized:
+        normalized = "default"
+    return f"sha256-{sha256(normalized.encode('utf-8')).hexdigest()[:24]}"
 
 
 def _now() -> str:

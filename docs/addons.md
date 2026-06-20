@@ -167,6 +167,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   supplier invoices, uploads, and prepared actions.
 - Agents can prepare journal entries, supplier invoices, and bank payments as
   local add-on actions for operator approval.
+- Document uploads read only from add-on-owned staging directories under
+  `runtime/addons/bokio-addon/uploads/<scope>/`; MCP uploads use the caller's
+  session id as the scope, workflow uploads use `workflows` unless a
+  `session_id` is supplied, and Admin API uploads use `admin`.
 - Creation tools execute only approved prepared actions and should also be
   policy-gated with MCP invocation approval for production sessions.
 - Bank payments created through Bokio still require a signatory to log in to

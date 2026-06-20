@@ -13,7 +13,7 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .api import _execute_prepared_action
 from .client import BokioClient
-from .state import PreparedActionStore
+from .state import PreparedActionStore, upload_staging_dir
 
 
 def register_providers() -> ProviderPluginRegistration:
@@ -43,18 +43,34 @@ class _BokioProviderMixin:
         runtime_context = getattr(self, "runtime_context", None)
         if runtime_context is None:
             raise RuntimeError("Bokio provider requires runtime context")
-        config = getattr(runtime_context, "resolved_config", None)
-        if config is None:
-            provider_config = getattr(runtime_context, "provider_config_resolver", None)
-            config = getattr(provider_config, "config", None)
+        config = self._full_gateway_config(runtime_context)
+        runtime_dir = getattr(config, "runtime_dir", None)
+        if runtime_dir is None:
+            provider_config = getattr(runtime_context, "provider_config", {})
+            if isinstance(provider_config, Mapping):
+                runtime_dir = provider_config.get("runtime_dir")
         return type(
             "BokioProviderContext",
             (),
             {
                 "config": config,
-                "runtime_dir": getattr(config, "runtime_dir", None),
+                "runtime_dir": runtime_dir,
             },
         )()
+
+    def _full_gateway_config(self, runtime_context: Any) -> Any:
+        resolver = getattr(runtime_context, "provider_config_resolver", None)
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            metadata = getattr(runtime_context, "metadata", {})
+            directory_path = "root"
+            if isinstance(metadata, Mapping):
+                directory_path = str(metadata.get("directory_path") or "root")
+            return resolve_for_directory(directory_path)
+        config = getattr(runtime_context, "resolved_config", None)
+        if config is None:
+            config = getattr(resolver, "config", None)
+        return config
 
     def _client(self) -> BokioClient:
         return BokioClient.from_context(self._context())
@@ -76,6 +92,20 @@ class _BokioProviderMixin:
         if runtime_dir is None:
             raise RuntimeError("Bokio provider requires runtime_dir")
         return PreparedActionStore(runtime_dir)
+
+    def _upload_staging_dir(self, payload: Mapping[str, Any]) -> Any:
+        context = self._context()
+        runtime_dir = getattr(context, "runtime_dir", None)
+        if runtime_dir is None:
+            raise RuntimeError("Bokio provider requires runtime_dir")
+        session_id = _optional(payload.get("session_id"))
+        upload_root = upload_staging_dir(
+            runtime_dir,
+            session_id=session_id,
+            scope="workflows",
+        )
+        upload_root.mkdir(parents=True, exist_ok=True)
+        return upload_root
 
 
 class BokioCompanyQueryProvider(_BokioProviderMixin, QueryProviderBase):
@@ -114,6 +144,7 @@ class BokioUploadDocumentEffectProvider(_BokioProviderMixin, EffectProviderBase)
         return {
             "result": self._client().upload_document(
                 file_path=_required(payload.get("file_path"), "file_path"),
+                allowed_roots=[self._upload_staging_dir(payload)],
                 description=_optional(payload.get("description")),
                 journal_entry_id=_optional(
                     payload.get("journalEntryId") or payload.get("journal_entry_id")

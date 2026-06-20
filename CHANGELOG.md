@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Bokio Add-on Safety Fixes
+
+- Made registered add-on MCP tools fail closed in the gateway before dispatch
+  when the caller lacks a session, session allowlist entry, or valid workflow
+  tool-approval lease.
+- Restricted Bokio document uploads to add-on-owned staging directories and
+  enforced PDF, JPEG, and PNG content checks before the control plane opens a
+  file for upload.
+- Fixed Bokio workflow providers to resolve the full directory provider config
+  so `provider_state.bokio.*` environment overrides take effect.
+
 ## 2026-06-19 - Bokio Add-on
 
 - Added the bundled `evander_bokio_addon` package with Admin API/UI routes,
