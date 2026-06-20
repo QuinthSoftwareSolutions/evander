@@ -691,9 +691,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "sync_proxy_cache",
     ]
     ado_add_tag = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "effect:ado:add-work-item-tag"
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:ado:add-work-item-tag"
     )
     assert [field["key"] for field in ado_add_tag["fields"]] == [
         "directory_path",
@@ -1266,7 +1264,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert while_gate_fields["max_iterations"]["bindable"]
     assert while_gate_fields["max_iterations"]["default_value"] == 3
     assert while_gate["output_ports"] == [
-        {"key": "body", "label": "Body", "description": "Loop body path while the predicate is true."},
+        {
+            "key": "body",
+            "label": "Body",
+            "description": "Loop body path while the predicate is true.",
+        },
         {"key": "done", "label": "Done", "description": "Exit path when the predicate is false."},
         {
             "key": "exhausted",
@@ -1452,20 +1454,29 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert "all effects" in model_usage_list_fields["effect_id"]["description"]
     assert "all dispatches" in model_usage_list_fields["dispatch_id"]["description"]
     assert model_usage_list_fields["directory_path"]["description"]
-    assert "Leave blank to include all directories" in model_usage_list_fields["directory_path"]["description"]
+    assert (
+        "Leave blank to include all directories"
+        in model_usage_list_fields["directory_path"]["description"]
+    )
     assert "descendants" in model_usage_list_fields["directory_path"]["description"]
     assert model_usage_list_fields["include_directory_descendants"]["kind"] == "boolean"
     assert model_usage_list_fields["include_directory_descendants"]["default_value"] is False
-    assert [option["value"] for option in model_usage_list_fields["provider"]["options"]] == ["openai"]
+    assert [option["value"] for option in model_usage_list_fields["provider"]["options"]] == [
+        "openai"
+    ]
     assert [option["value"] for option in model_usage_list_fields["agent_harness"]["options"]] == [
         "codex"
     ]
-    assert [option["value"] for option in model_usage_list_fields["execution_backend"]["options"]] == [
+    assert [
+        option["value"] for option in model_usage_list_fields["execution_backend"]["options"]
+    ] == [
         "libvirt_vm",
         "container_worker_vm",
     ]
     assert model_usage_list_fields["normalized_usage_status"]["kind"] == "enum"
-    assert [option["value"] for option in model_usage_list_fields["normalized_usage_status"]["options"]] == [
+    assert [
+        option["value"] for option in model_usage_list_fields["normalized_usage_status"]["options"]
+    ] == [
         "available",
         "usage_unavailable",
     ]
@@ -1586,18 +1597,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         },
     ]
     assert agent_create_fields["provider"]["label"] == "VM provider"
-    assert agent_create_fields["provider"]["metadata"] == {
-        "execution_backends": ["libvirt_vm"]
-    }
-    assert agent_create_fields["vm_name"]["metadata"] == {
-        "execution_backends": ["libvirt_vm"]
-    }
-    assert agent_create_fields["vm_user"]["metadata"] == {
-        "execution_backends": ["libvirt_vm"]
-    }
-    assert agent_create_fields["mssql"]["metadata"] == {
-        "execution_backends": ["libvirt_vm"]
-    }
+    assert agent_create_fields["provider"]["metadata"] == {"execution_backends": ["libvirt_vm"]}
+    assert agent_create_fields["vm_name"]["metadata"] == {"execution_backends": ["libvirt_vm"]}
+    assert agent_create_fields["vm_user"]["metadata"] == {"execution_backends": ["libvirt_vm"]}
+    assert agent_create_fields["mssql"]["metadata"] == {"execution_backends": ["libvirt_vm"]}
     assert agent_create_fields["mssql_init_root"]["metadata"] == {
         "execution_backends": ["libvirt_vm"]
     }
@@ -1611,9 +1614,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert agent_create_fields["labels"]["description"]
     assert agent_create_fields["communication_target_ids"]["kind"] == "string_list"
     assert "communication target" in agent_create_fields["communication_target_ids"]["description"]
-    assert agent_create_fields["communication_target_ids"]["metadata"] == {
-        "selection_only": True
-    }
+    assert agent_create_fields["communication_target_ids"]["metadata"] == {"selection_only": True}
     assert agent_create_fields["metadata"]["kind"] == "json"
     assert agent_create_fields["metadata"]["json_value_type"] == "object"
     assert agent_create_fields["metadata"]["description"]
@@ -2117,10 +2118,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         "communication_target_ids",
     )
     assert agent_create_targets_field["kind"] == "string_list"
-    assert (
-        "directory communication target catalogue"
-        in agent_create_targets_field["description"]
-    )
+    assert "directory communication target catalogue" in agent_create_targets_field["description"]
 
     root_chat = send_root["root-chat"]
     assert root_chat["metadata"]["provider"] == "teams"
@@ -2854,12 +2852,18 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
         "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
         "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
         "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     trigger_queue = TriggerEventQueue(stores["event_queue_store_path"])
@@ -2976,12 +2980,18 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
         "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
         "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
         "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     trigger_queue = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -2995,9 +3005,7 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
             trace_id="trace-trigger-sqlite",
         )
     )
-    trigger_queue.mark_delivered(
-        "evt-trigger-sqlite", delivered_at=now - timedelta(seconds=3)
-    )
+    trigger_queue.mark_delivered("evt-trigger-sqlite", delivered_at=now - timedelta(seconds=3))
 
     effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
     gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
@@ -3096,7 +3104,9 @@ def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_ke
         def cursor(self) -> object:
             return object()
 
-        async def wait_after(self, cursor: object, timeout_seconds: float) -> tuple[list[str], object]:
+        async def wait_after(
+            self, cursor: object, timeout_seconds: float
+        ) -> tuple[list[str], object]:
             return (["workflow.run.snapshot"], object())
 
     class RequestStub:
@@ -3394,9 +3404,7 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
     app = create_app(service)
     client = TestClient(app)
 
-    callback = _complete_azure_login(
-        app, client, login="viewer@example.com", display_name="Viewer"
-    )
+    callback = _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
     response = client.get("/api/workflow-editor/document")
     payload = response.json()
     full_revision = service.read_workflow_editor_document().revision
@@ -3549,12 +3557,12 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
                     }
                 ],
                 "gates": [
-                {
-                    "id": "ops-filter",
-                    "display_name": "Ops filter",
-                    "type": "gate:filter",
-                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
-                }
+                    {
+                        "id": "ops-filter",
+                        "display_name": "Ops filter",
+                        "type": "gate:filter",
+                        "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                    }
                 ],
                 "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
             },
@@ -3595,12 +3603,12 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
                     }
                 ],
                 "gates": [
-                {
-                    "id": "ops-filter",
-                    "display_name": "Ops filter",
-                    "type": "gate:filter",
-                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
-                }
+                    {
+                        "id": "ops-filter",
+                        "display_name": "Ops filter",
+                        "type": "gate:filter",
+                        "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                    }
                 ],
                 "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
             },
@@ -3809,25 +3817,18 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     node_allowed = client.get(
         "/api/workflow-editor/run-search", params={"node_id": "ops-effect", "limit": "5"}
     )
-    detail_allowed = client.get(
-        "/api/workflow-editor/run-detail", params={"event_id": "evt-ops"}
-    )
+    detail_allowed = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-ops"})
     graph_denied = client.get(
         "/api/workflow-editor/run-search", params={"graph_id": "graph-root", "limit": "5"}
     )
-    detail_denied = client.get(
-        "/api/workflow-editor/run-detail", params={"event_id": "evt-root"}
-    )
+    detail_denied = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-root"})
 
     assert definition_allowed.status_code == 200
     assert [graph["id"] for graph in definition_allowed.json()["graphs"]] == ["graph-ops"]
     assert runs_without_run_read.status_code == 403
     assert runs_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
     assert detail_without_run_read.status_code == 403
-    assert (
-        detail_without_run_read.json()["error"]
-        == "Permission required: workflow_runs.read"
-    )
+    assert detail_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
     assert runs_response.status_code == 200
     runs_payload = runs_response.json()
     assert [run["event_id"] for run in runs_payload["runs"]] == ["evt-ops"]
@@ -4047,15 +4048,17 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
     monkeypatch.setattr(
         service,
         "read_workflow_failure_clusters_report",
-        lambda **kwargs: captured_kwargs.update(kwargs)
-        or _workflow_failure_cluster_report(
-            [visible_cluster, hidden_cluster],
-            generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
-            period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
-            period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
-            recent_threshold_seconds=7200,
-            limit=7,
-            has_more=True,
+        lambda **kwargs: (
+            captured_kwargs.update(kwargs)
+            or _workflow_failure_cluster_report(
+                [visible_cluster, hidden_cluster],
+                generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+                period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+                period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+                recent_threshold_seconds=7200,
+                limit=7,
+                has_more=True,
+            )
         ),
     )
 
@@ -4176,9 +4179,7 @@ def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_r
 
     assert response.status_code == 200
     payload = response.json()
-    assert [cluster["cluster_id"] for cluster in payload["clusters"]] == [
-        "cluster-unassigned"
-    ]
+    assert [cluster["cluster_id"] for cluster in payload["clusters"]] == ["cluster-unassigned"]
     cluster = payload["clusters"][0]
     assert cluster["graph_id"] == "root"
     assert cluster["graph_name"] == "Unassigned"
@@ -4773,8 +4774,7 @@ def test_admin_web_validate_requires_while_body_loopback(
     assert {
         "code": "node_capability",
         "message": (
-            "gate:while gate-while-1 body branch must have an allow_cycle path back "
-            "to gate-while-1"
+            "gate:while gate-while-1 body branch must have an allow_cycle path back to gate-while-1"
         ),
         "node_id": "gate-while-1",
         "node_type": "gate:while",
@@ -5491,7 +5491,9 @@ def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
     runs_response = client.get("/api/workflow-editor/runs")
-    detail_response = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-routed"})
+    detail_response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-routed"}
+    )
 
     assert runs_response.status_code == 200
     runs_payload = runs_response.json()
@@ -5511,7 +5513,9 @@ def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
     assert detail_payload["failed_node_status"] is None
     assert detail_payload["error"] == "prompt dispatch failed"
     assert detail_payload["resumable"] is False
-    routed_node = next(node for node in detail_payload["nodes"] if node["node_id"] == "effect-prompt")
+    routed_node = next(
+        node for node in detail_payload["nodes"] if node["node_id"] == "effect-prompt"
+    )
     assert routed_node["status"] == "error_routed"
     assert routed_node["outputs"]["error_message"] == "prompt dispatch failed"
     assert routed_node["outputs"]["error_class"] == "DispatchError"
@@ -5953,12 +5957,14 @@ def test_admin_web_dismisses_workflow_node_failures_with_sqlite_fast_path(
     assert after_response.json()["node_activity"]["gate-review"] == {
         "failed": 1,
     }
-    assert after_response.json()["node_activity"]["effect-unrelated-0"] == before_response.json()[
-        "node_activity"
-    ]["effect-unrelated-0"]
-    assert after_response.json()["node_activity"]["gate-unrelated-1"] == before_response.json()[
-        "node_activity"
-    ]["gate-unrelated-1"]
+    assert (
+        after_response.json()["node_activity"]["effect-unrelated-0"]
+        == before_response.json()["node_activity"]["effect-unrelated-0"]
+    )
+    assert (
+        after_response.json()["node_activity"]["gate-unrelated-1"]
+        == before_response.json()["node_activity"]["gate-unrelated-1"]
+    )
 
     effect_after_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
     gate_after_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
@@ -5971,18 +5977,24 @@ def test_admin_web_dismisses_workflow_node_failures_with_sqlite_fast_path(
         for execution_id in effect_unchanged_before
     } == effect_unchanged_before
     assert {
-        execution_id: gate_after_payloads[execution_id]
-        for execution_id in gate_unchanged_before
+        execution_id: gate_after_payloads[execution_id] for execution_id in gate_unchanged_before
     } == gate_unchanged_before
 
     assert effect_store.get_execution("exec-failed-1").dismissed_at is not None
-    assert effect_store.get_execution("exec-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    assert (
+        effect_store.get_execution("exec-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    )
     assert effect_store.get_execution("exec-running").dismissed_at is None
     assert effect_store.get_execution("exec-succeeded").dismissed_at is None
-    assert effect_store.get_execution("exec-dismissed").dismiss_reason == "manual_dismiss_errored_workflow_run"
+    assert (
+        effect_store.get_execution("exec-dismissed").dismiss_reason
+        == "manual_dismiss_errored_workflow_run"
+    )
     assert gate_store.get_execution("gate-failed").dismissed_at is None
     assert gate_store.get_execution("gate-failed").dismiss_reason is None
-    assert gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
+    assert (
+        gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
+    )
 
 
 def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Path) -> None:
@@ -6074,9 +6086,7 @@ def test_admin_web_public_communication_artifact_download_requires_signed_token(
     team_directory = DirectoryService(service.runtime.directories).create(
         parent="root", name="team"
     )
-    DirectoryConfigStore(
-        service.runtime.directories, runtime_dir=service.config.runtime_dir
-    ).write(
+    DirectoryConfigStore(service.runtime.directories, runtime_dir=service.config.runtime_dir).write(
         team_directory.path,
         domain="providers",
         payload={"communication_artifact_link_secret_env": "TEAM_LINK_SECRET"},
@@ -6106,9 +6116,7 @@ def test_admin_web_public_communication_artifact_download_requires_signed_token(
     client = TestClient(create_app(service))
 
     missing_token = client.get(f"/public/communication-artifacts/{record.artifact_id}")
-    bad_token = client.get(
-        f"/public/communication-artifacts/{record.artifact_id}?token=tampered"
-    )
+    bad_token = client.get(f"/public/communication-artifacts/{record.artifact_id}?token=tampered")
     downloaded = client.get(
         f"/public/communication-artifacts/{record.artifact_id}?token={link.token}"
     )
@@ -8671,9 +8679,7 @@ def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grant
             "login": "member@example.com",
             "role": "regular",
             "display_name": "Member",
-            "group_assignments": [
-                {"group_id": "ops-reviewers", "directory_path": "root/ops"}
-            ],
+            "group_assignments": [{"group_id": "ops-reviewers", "directory_path": "root/ops"}],
             "workflow_grants": [
                 {"permission": WORKFLOWS_WRITE_PERMISSION, "directory_path": "root/ops"}
             ],
@@ -8754,9 +8760,7 @@ def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
         json={
             "login": "other@example.com",
             "role": "regular",
-            "group_assignments": [
-                {"group_id": "owner", "directory_path": "root"}
-            ],
+            "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
         },
     )
     list_groups = client.get("/api/admin/groups")
@@ -8959,16 +8963,12 @@ def _assert_json_schema_requires_every_object_property(
     schema: dict[str, object], path: str = "$"
 ) -> None:
     schema_type = schema.get("type")
-    if schema_type == "object" or (
-        isinstance(schema_type, list) and "object" in schema_type
-    ):
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         properties = schema.get("properties")
         required = schema.get("required")
         assert isinstance(properties, dict), f"{path} must define object properties"
         assert isinstance(required, list), f"{path} must define required properties"
-        assert set(properties) <= set(required), (
-            f"{path} required must include every property"
-        )
+        assert set(properties) <= set(required), f"{path} required must include every property"
     else:
         properties = schema.get("properties")
 
@@ -9669,13 +9669,15 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     }
     assert agent_prompt_fields["agent_prompt_queue_max_retries"]["kind"] == "int"
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
-    assert "Fallback runner container image" in provider_fields["container_worker_default_image"][
-        "tooltip"
-    ]
+    assert (
+        "Fallback runner container image"
+        in provider_fields["container_worker_default_image"]["tooltip"]
+    )
     assert "catalog" in provider_fields["container_worker_images"]["tooltip"]
-    assert "runtime dispatch never pulls or builds images" in provider_fields[
-        "container_worker_images"
-    ]["tooltip"]
+    assert (
+        "runtime dispatch never pulls or builds images"
+        in provider_fields["container_worker_images"]["tooltip"]
+    )
     assert "Value: one of" in provider_fields["execution_backend"]["tooltip"]
     for tab in payload["tabs"]:
         for section in tab["sections"]:
@@ -9759,12 +9761,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert communication_artifact_fields["communication_artifact_public_base_url"]["kind"] == (
         "text"
     )
-    assert "Teams recipients" in communication_artifact_fields[
-        "communication_artifact_public_base_url"
-    ]["tooltip"]
-    assert "gateway and Admin Web" in communication_artifact_fields[
-        "communication_artifact_link_secret_env"
-    ]["tooltip"]
+    assert (
+        "Teams recipients"
+        in communication_artifact_fields["communication_artifact_public_base_url"]["tooltip"]
+    )
+    assert (
+        "gateway and Admin Web"
+        in communication_artifact_fields["communication_artifact_link_secret_env"]["tooltip"]
+    )
     assert communication_artifact_fields["communication_artifact_link_ttl_seconds"]["kind"] == (
         "int"
     )
@@ -9916,9 +9920,7 @@ def test_admin_web_model_pricing_catalog_write_requires_unlock_and_revision(
     initial_response = client.get("/api/configuration/model-pricing")
     assert initial_response.status_code == 200
     initial_revision = initial_response.json()["revision"]
-    updated_catalog = _pricing_catalog_payload(
-        version="updated-pricing", model="updated-model"
-    )
+    updated_catalog = _pricing_catalog_payload(version="updated-pricing", model="updated-model")
 
     locked = client.put(
         "/api/configuration/model-pricing",
@@ -9992,9 +9994,7 @@ def test_admin_web_model_pricing_catalog_write_creates_missing_env_catalog(
     response = client.put(
         "/api/configuration/model-pricing",
         json={
-            "catalog": _pricing_catalog_payload(
-                version="created-pricing", model="created-model"
-            ),
+            "catalog": _pricing_catalog_payload(version="created-pricing", model="created-model"),
             "expected_revision": missing_response.json()["revision"],
         },
     )
@@ -10028,9 +10028,7 @@ def test_admin_web_model_pricing_catalog_write_uses_default_catalog_path(
     response = client.put(
         "/api/configuration/model-pricing",
         json={
-            "catalog": _pricing_catalog_payload(
-                version="updated-pricing", model="updated-model"
-            ),
+            "catalog": _pricing_catalog_payload(version="updated-pricing", model="updated-model"),
             "expected_revision": initial_response.json()["revision"],
         },
     )
@@ -10060,9 +10058,7 @@ def test_admin_web_model_pricing_catalog_write_invalidates_cached_default_catalo
     response = client.put(
         "/api/configuration/model-pricing",
         json={
-            "catalog": _pricing_catalog_payload(
-                version="updated-pricing", model="updated-model"
-            ),
+            "catalog": _pricing_catalog_payload(version="updated-pricing", model="updated-model"),
             "expected_revision": initial_revision,
         },
     )
@@ -10305,10 +10301,9 @@ def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_ove
     effective_providers = service.compute_directory_effective_config("root/ops", "providers")
     assert effective_providers.ok is True
     assert effective_providers.data is not None
-    assert (
-        effective_providers.data.resolution.effective_config["teams_delegated_scopes"]
-        == ["Chat.ReadWrite"]
-    )
+    assert effective_providers.data.resolution.effective_config["teams_delegated_scopes"] == [
+        "Chat.ReadWrite"
+    ]
     targets = service.read_directory_domain_config("root/ops", COMMUNICATION_TARGETS_DOMAIN)
     assert targets.ok is True
     assert targets.data is not None
@@ -11562,7 +11557,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             "libvirt_vm_template": {
                 "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
                 "template_alias": "default",
-            }
+            },
         },
     }
 
@@ -11760,9 +11755,7 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
             "image_ref": "runner-dotnet-playwright:2026-06-05",
         },
     ]
-    communication_targets = {
-        target["value"]: target for target in body["communication_targets"]
-    }
+    communication_targets = {target["value"]: target for target in body["communication_targets"]}
     assert set(communication_targets) == {"ops-teams", "ops-discord", "ops-email"}
     assert communication_targets["ops-teams"]["metadata"]["provider"] == "teams"
     assert communication_targets["ops-discord"]["metadata"]["provider"] == "discord"

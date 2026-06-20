@@ -405,8 +405,7 @@ def test_relay_routes_azure_openai_responses_requests_through_session_directory_
 
     assert response.status_code == 200
     assert captured["url"] == (
-        "https://example-resource.openai.azure.com/openai/v1/responses"
-        "?foo=bar&api-version=preview"
+        "https://example-resource.openai.azure.com/openai/v1/responses?foo=bar&api-version=preview"
     )
     assert captured["api-key"] == "azure-key"
     assert captured["authorization"] == ""
@@ -568,8 +567,7 @@ def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
     assert b"data: first" in body
     assert b"data: second" in body
     assert captured["url"] == (
-        "https://example-resource.openai.azure.com/openai/v1/responses"
-        "?api-version=preview"
+        "https://example-resource.openai.azure.com/openai/v1/responses?api-version=preview"
     )
     assert captured["api-key"] == "azure-key"
     assert captured["payload"] == {

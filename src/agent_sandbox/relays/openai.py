@@ -1719,9 +1719,7 @@ class OpenAIRelay:
             "response.done",
         }
         is_response_payload_with_usage = has_response_id and has_usage
-        if not has_response_id or not (
-            is_final_response_event or is_response_payload_with_usage
-        ):
+        if not has_response_id or not (is_final_response_event or is_response_payload_with_usage):
             return None
 
         payload: dict[str, Any] = {}

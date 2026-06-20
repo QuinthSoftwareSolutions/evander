@@ -453,9 +453,7 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
         },
     )
 
-    assert written == {
-        "azure_openai_model_deployments": {"gpt-5.4": "deployment-team"}
-    }
+    assert written == {"azure_openai_model_deployments": {"gpt-5.4": "deployment-team"}}
 
     resolution = resolver.resolve_domain(
         team.path,

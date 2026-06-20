@@ -23,9 +23,7 @@ from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepo
 
 class _UsageStream(httpx.AsyncByteStream):
     async def __aiter__(self):
-        yield (
-            b'data: {"type":"response.output_text.delta","delta":"secret completion text"}\n\n'
-        )
+        yield (b'data: {"type":"response.output_text.delta","delta":"secret completion text"}\n\n')
         yield (
             b'data: {"type":"response.completed","response":{"id":"resp-stream",'
             b'"type":"response","model":"gpt-5.2-codex","output_text":"secret completion text",'
@@ -1401,9 +1399,7 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
     assert "secret completion text" not in event_json
 
 
-def test_openai_relay_records_websocket_usage_unavailable(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_openai_relay_records_websocket_usage_unavailable(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = make_config(runtime_dir)
     ensure_directory(config)
@@ -1445,9 +1441,7 @@ def test_openai_relay_records_websocket_usage_unavailable(
         asyncio.run(upstream.push(final_message))
         assert websocket.receive_text() == final_message
 
-    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event(
-        "resp-websocket-empty"
-    )
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("resp-websocket-empty")
     assert event is not None
     event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
     assert event.normalized_usage_status == "usage_unavailable"
@@ -1459,9 +1453,7 @@ def test_openai_relay_records_websocket_usage_unavailable(
     assert "secret completion text" not in event_json
 
 
-def test_openai_relay_websocket_duplicate_final_events_upsert(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_openai_relay_websocket_duplicate_final_events_upsert(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = make_config(runtime_dir)
     ensure_directory(config)
@@ -1505,9 +1497,7 @@ def test_openai_relay_websocket_duplicate_final_events_upsert(
         asyncio.run(upstream.push(final_message))
         assert websocket.receive_text() == final_message
 
-    events = ModelUsageStore(runtime_dir / "model-usage.db").list_events(
-        session_id="session-1"
-    )
+    events = ModelUsageStore(runtime_dir / "model-usage.db").list_events(session_id="session-1")
     assert [event.event_id for event in events] == ["resp-websocket-duplicate"]
 
 
