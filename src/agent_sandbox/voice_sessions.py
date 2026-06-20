@@ -35,7 +35,7 @@ from agent_sandbox.retell_phone import (
     sanitize_retell_metadata,
 )
 
-VoiceSessionChannel = Literal["phone", "teams_meeting"]
+VoiceSessionChannel = Literal["phone", "teams_meeting", "browser_agent_call"]
 VoiceSessionStatus = Literal["created", "connecting", "active", "ended", "failed"]
 VoiceSessionReconciliationStatus = Literal["not_requested", "scheduled", "failed"]
 VoiceQueryStatus = Literal["pending", "answered", "failed", "timeout"]
@@ -783,6 +783,162 @@ class VoiceProjectionService:
                 f"Current voice task:\n{normalized_prompt}"
             ),
         }
+
+
+def query_origin_agent_tool_definition() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": "query_origin_agent",
+        "description": (
+            "Ask the originating Truman agent a live-context question that requires its "
+            "files, tools, repository state, memory, or other live session state and is "
+            "not already answered by the projected voice context."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The concise origin-side question that cannot be answered from "
+                        "the projected voice context."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why projected voice context is insufficient.",
+                },
+            },
+            "required": ["question"],
+        },
+    }
+
+
+def realtime_browser_session_config(
+    config: Any,
+    *,
+    instructions: str,
+    include_query_origin_agent: bool = True,
+) -> dict[str, Any]:
+    normalized_instructions = str(instructions or "").strip()
+    if not normalized_instructions:
+        raise ValueError("instructions are required")
+    payload: dict[str, Any] = {
+        "type": "realtime",
+        "model": getattr(config, "openai_realtime_model", "gpt-realtime-2"),
+        "instructions": normalized_instructions,
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {
+                "turn_detection": {"type": "server_vad"},
+                "transcription": {
+                    "model": getattr(
+                        config,
+                        "openai_realtime_transcription_model",
+                        "gpt-4o-transcribe",
+                    )
+                },
+            },
+            "output": {
+                "voice": getattr(config, "openai_realtime_voice", "marin"),
+            },
+        },
+    }
+    if include_query_origin_agent:
+        payload["tools"] = [query_origin_agent_tool_definition()]
+        payload["tool_choice"] = "auto"
+    return payload
+
+
+class OpenAIRealtimeClientSecretService:
+    def __init__(
+        self,
+        *,
+        config: Any,
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        self.config = config
+        self._http_client = http_client
+
+    def create_client_secret(
+        self,
+        *,
+        instructions: str,
+        safety_identifier: str | None = None,
+        include_query_origin_agent: bool = True,
+    ) -> dict[str, Any]:
+        api_key_env = str(
+            getattr(self.config, "openai_realtime_api_key_env", "OPENAI_API_KEY") or ""
+        ).strip()
+        if not api_key_env:
+            raise RuntimeError("openai_realtime_api_key_env is not configured")
+        api_key = os.environ.get(api_key_env, "").strip()
+        if not api_key:
+            raise RuntimeError(f"OpenAI Realtime API key env var {api_key_env!r} is not set")
+        base_url = _normalize_base_url(
+            getattr(self.config, "openai_realtime_api_base_url", "https://api.openai.com/v1")
+        )
+        if base_url is None:
+            raise RuntimeError("openai_realtime_api_base_url is not configured")
+        payload = {
+            "session": realtime_browser_session_config(
+                self.config,
+                instructions=instructions,
+                include_query_origin_agent=include_query_origin_agent,
+            )
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        normalized_safety_identifier = str(safety_identifier or "").strip()
+        if normalized_safety_identifier:
+            headers["OpenAI-Safety-Identifier"] = normalized_safety_identifier
+        timeout = getattr(
+            self.config,
+            "voice_media_controller_request_timeout_seconds",
+            30.0,
+        )
+        try:
+            client = self._http_client
+            if client is not None:
+                response = client.post(
+                    f"{base_url}/realtime/client_secrets",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                return self._client_secret_payload(response)
+            with httpx.Client(timeout=timeout) as scoped_client:
+                response = scoped_client.post(
+                    f"{base_url}/realtime/client_secrets",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                return self._client_secret_payload(response)
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise ProviderRequestError(
+                f"openai_realtime.client_secret failed with status={status_code}",
+                status_code=status_code,
+            ) from exc
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise ProviderRequestError(
+                f"openai_realtime.client_secret failed with {type(exc).__name__}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _client_secret_payload(response: httpx.Response) -> dict[str, Any]:
+        try:
+            payload = _json_object_response(response)
+        except ValueError as exc:
+            raise ProviderRequestError(
+                "openai_realtime.client_secret response was not a JSON object"
+            ) from exc
+        if not str(payload.get("value") or "").strip():
+            raise ProviderRequestError("openai_realtime.client_secret response was missing value")
+        return sanitize_voice_metadata(payload)
 
 
 def _voice_task_looks_actionable(prompt: str) -> bool:

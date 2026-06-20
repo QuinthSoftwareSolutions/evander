@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Team Add-on Direct Agent Voice Calls
+
+- Added browser WebRTC voice calls from the Team Add-on People tab to selected
+  persistent agents, backed by OpenAI Realtime ephemeral client secrets instead
+  of DIDWW, Asterisk, or SIP.
+- Projected the selected agent's current team, role, task, inbox, review,
+  deliverable, runtime, and visible tool context into the voice session.
+- Persisted direct browser calls in the shared voice-session store, scheduled
+  reconciliation wakes when they end, and wired durable `query_origin_agent`
+  delegation back to the originating text agent.
+
 ## 2026-06-20 - Team Add-on Agent Avatars
 
 - Added optional Team Add-on agent avatars with add-on-private WebP storage,

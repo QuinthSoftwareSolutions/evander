@@ -45,6 +45,7 @@ let activeTeamView = "workspace";
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedPeopleAgentId = null;
+let activeAgentVoiceCall = null;
 
 const teamViewIds = new Set([
   "workspace",
@@ -519,6 +520,27 @@ function bindRecordEditing() {
     if (selectAgentButton) {
       event.preventDefault();
       selectPeopleAgent(selectAgentButton.dataset.selectAgentId);
+      return;
+    }
+
+    const agentCallButton = event.target.closest("[data-agent-call-agent-id]");
+    if (agentCallButton) {
+      event.preventDefault();
+      void startAgentVoiceCall(agentCallButton, agentCallButton.dataset.agentCallAgentId);
+      return;
+    }
+
+    const agentCallMuteButton = event.target.closest("[data-agent-call-mute]");
+    if (agentCallMuteButton) {
+      event.preventDefault();
+      toggleAgentVoiceMute(agentCallMuteButton);
+      return;
+    }
+
+    const agentCallEndButton = event.target.closest("[data-agent-call-end]");
+    if (agentCallEndButton) {
+      event.preventDefault();
+      void endAgentVoiceCall(agentCallEndButton);
       return;
     }
 
@@ -2075,6 +2097,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
         <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
         ${editButton("agent", details.id)}
       </div>
+      ${renderAgentVoiceCallPanel(details)}
       <div class="agent-detail-grid">
         ${renderAgentDetailField("Session", details.sessionId || "None")}
         ${renderAgentDetailField("Reports to", details.reportsToLabel)}
@@ -2107,6 +2130,80 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </section>
     </div>
   `;
+}
+
+function renderAgentVoiceCallPanel(details) {
+  const call = activeAgentVoiceCall?.agentId === details.id ? activeAgentVoiceCall : null;
+  const liveCallForOtherAgent =
+    activeAgentVoiceCall && !agentVoiceCallIsTerminal(activeAgentVoiceCall) && activeAgentVoiceCall.agentId !== details.id;
+  const callDisabled = details.status === "archived" || liveCallForOtherAgent;
+  const transcriptRows = (call?.transcript || [])
+    .slice(-4)
+    .map((entry) => {
+      const speaker = text(entry.speaker) || "voice";
+      return `<li><span>${escapeHtml(speaker)}</span>${escapeHtml(entry.text)}</li>`;
+    })
+    .join("");
+  if (!call || agentVoiceCallIsTerminal(call)) {
+    return `
+      <section class="agent-detail-section agent-voice-call-panel">
+        <div class="agent-voice-call-header">
+          <h3>Voice</h3>
+          <span class="state-pill neutral">idle</span>
+        </div>
+        <div class="record-actions agent-voice-call-controls">
+          <button class="record-action" type="button" data-agent-call-agent-id="${escapeAttr(details.id)}" ${callDisabled ? "disabled" : ""}>Call</button>
+        </div>
+        ${call?.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
+      </section>
+    `;
+  }
+  return `
+    <section class="agent-detail-section agent-voice-call-panel">
+      <div class="agent-voice-call-header">
+        <h3>Voice</h3>
+        <span class="state-pill ${escapeAttr(agentVoiceCallPillClass(call))}">${escapeHtml(agentVoiceCallStatusLabel(call))}</span>
+      </div>
+      <div class="record-actions agent-voice-call-controls">
+        <button class="record-action" type="button" data-agent-call-mute>${call.muted ? "Unmute" : "Mute"}</button>
+        <button class="record-action" type="button" data-agent-call-end>End</button>
+      </div>
+      ${call.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
+      ${transcriptRows ? `<ol class="agent-voice-transcript">${transcriptRows}</ol>` : ""}
+    </section>
+  `;
+}
+
+function agentVoiceCallIsTerminal(call) {
+  return !call || call.status === "ended" || call.status === "failed";
+}
+
+function agentVoiceCallStatusLabel(call) {
+  const status = text(call?.status) || "idle";
+  if (status === "active") {
+    return "live";
+  }
+  if (status === "querying") {
+    return "querying";
+  }
+  if (status === "ending") {
+    return "ending";
+  }
+  return status;
+}
+
+function agentVoiceCallPillClass(call) {
+  const status = text(call?.status);
+  if (status === "active" || status === "querying") {
+    return "accepted";
+  }
+  if (status === "failed") {
+    return "rejected";
+  }
+  if (status === "connecting" || status === "ending") {
+    return "blocked";
+  }
+  return "neutral";
 }
 
 function renderAgentDetailField(label, value) {
@@ -4949,6 +5046,482 @@ async function requestContextRotation(button, agentId) {
   }
 }
 
+async function startAgentVoiceCall(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId || !state.agents[normalizedAgentId]) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  if (activeAgentVoiceCall && !agentVoiceCallIsTerminal(activeAgentVoiceCall)) {
+    setStatus("A voice call is already active.", "warning");
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+    setStatus("Browser voice calls require microphone and WebRTC support.", "error");
+    return;
+  }
+  const call = {
+    agentId: normalizedAgentId,
+    voiceSessionId: "",
+    requestId: "",
+    status: "connecting",
+    muted: false,
+    transcript: [],
+    handledFunctionCalls: new Set(),
+    mediaStream: null,
+    peerConnection: null,
+    dataChannel: null,
+    remoteAudio: null,
+    callsUrl: "",
+    clientSecret: "",
+    error: "",
+  };
+  activeAgentVoiceCall = call;
+  button.disabled = true;
+  renderAgents();
+  setStatus("Connecting voice call.", "loading");
+  try {
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    call.mediaStream = mediaStream;
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/voice-sessions`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    call.voiceSessionId = text(payload.voice_session_id);
+    call.requestId = text(payload.request_id);
+    call.clientSecret = realtimeClientSecretValue(payload);
+    call.callsUrl = text(payload.realtime?.calls_url) || "https://api.openai.com/v1/realtime/calls";
+    if (!call.voiceSessionId || !call.clientSecret) {
+      throw new Error("Voice call response was missing a session or client secret.");
+    }
+    await connectBrowserRealtimeVoice(call);
+    call.status = "active";
+    call.error = "";
+    renderAgents();
+    await recordAgentVoiceEvent(call.voiceSessionId, {
+      status: "active",
+      event_type: "browser_call.active",
+    });
+    setStatus(`Voice call with ${agentLabel(state.agents[normalizedAgentId])} is live.`, "ok");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Voice call failed.";
+    call.status = "failed";
+    call.error = message;
+    renderAgents();
+    if (call.voiceSessionId) {
+      await endAgentVoiceSessionOnServer(call, "failed", message).catch(() => {});
+    }
+    cleanupAgentVoiceCall(call);
+    activeAgentVoiceCall = null;
+    renderAgents();
+    setStatus(message, "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function connectBrowserRealtimeVoice(call) {
+  const peerConnection = new RTCPeerConnection();
+  const dataChannel = peerConnection.createDataChannel("oai-events");
+  const remoteAudio = document.createElement("audio");
+  remoteAudio.autoplay = true;
+  remoteAudio.hidden = true;
+  remoteAudio.setAttribute("playsinline", "true");
+  document.body.appendChild(remoteAudio);
+  call.peerConnection = peerConnection;
+  call.dataChannel = dataChannel;
+  call.remoteAudio = remoteAudio;
+
+  peerConnection.addEventListener("track", (event) => {
+    const [stream] = event.streams;
+    if (stream) {
+      remoteAudio.srcObject = stream;
+      void remoteAudio.play().catch(() => {});
+    }
+  });
+  peerConnection.addEventListener("connectionstatechange", () => {
+    const status = peerConnection.connectionState;
+    if (status === "failed" && !agentVoiceCallIsTerminal(call) && call.status !== "ending") {
+      call.status = "failed";
+      call.error = `WebRTC connection ${status}.`;
+      renderAgents();
+      if (call.voiceSessionId) {
+        void endAgentVoiceSessionOnServer(call, "failed", call.error).catch(() => {});
+      }
+      cleanupAgentVoiceCall(call);
+      activeAgentVoiceCall = null;
+      renderAgents();
+      setStatus(call.error, "error");
+    }
+  });
+  dataChannel.addEventListener("message", (event) => {
+    void handleRealtimeAgentVoiceEvent(call, event.data);
+  });
+  call.mediaStream.getTracks().forEach((track) => {
+    peerConnection.addTrack(track, call.mediaStream);
+  });
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+  const response = await fetch(call.callsUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${call.clientSecret}`,
+      "Content-Type": "application/sdp",
+    },
+    body: offer.sdp,
+  });
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  await peerConnection.setRemoteDescription({
+    type: "answer",
+    sdp: await response.text(),
+  });
+}
+
+function realtimeClientSecretValue(payload) {
+  return (
+    text(payload?.client_secret?.value) ||
+    text(payload?.client_secret?.client_secret?.value) ||
+    text(payload?.client_secret)
+  );
+}
+
+async function recordAgentVoiceEvent(voiceSessionId, payload) {
+  const normalizedVoiceSessionId = text(voiceSessionId);
+  if (!normalizedVoiceSessionId) {
+    return null;
+  }
+  const response = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(normalizedVoiceSessionId)}/events`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload || {}),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  return response.json();
+}
+
+async function endAgentVoiceCall(button) {
+  const call = activeAgentVoiceCall;
+  if (!call) {
+    return;
+  }
+  button.disabled = true;
+  call.status = "ending";
+  renderAgents();
+  try {
+    await endAgentVoiceSessionOnServer(call, "ended", "");
+    setStatus("Voice call ended.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Voice call end failed.", "error");
+  } finally {
+    cleanupAgentVoiceCall(call);
+    call.status = "ended";
+    activeAgentVoiceCall = null;
+    renderAgents();
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function endAgentVoiceSessionOnServer(call, status, errorMessage) {
+  if (!call.voiceSessionId) {
+    return null;
+  }
+  const transcript = agentVoiceTranscriptExcerpt(call, { limit: 60 });
+  const response = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/end`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        status,
+        transcript: transcript || null,
+        error: errorMessage || null,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  return response.json();
+}
+
+function cleanupAgentVoiceCall(call) {
+  try {
+    call.dataChannel?.close();
+  } catch {
+    // Ignore close races from the browser WebRTC stack.
+  }
+  try {
+    call.peerConnection?.close();
+  } catch {
+    // Ignore close races from the browser WebRTC stack.
+  }
+  call.mediaStream?.getTracks?.().forEach((track) => {
+    track.stop();
+  });
+  if (call.remoteAudio) {
+    call.remoteAudio.pause();
+    call.remoteAudio.srcObject = null;
+    call.remoteAudio.remove();
+  }
+  call.dataChannel = null;
+  call.peerConnection = null;
+  call.mediaStream = null;
+  call.remoteAudio = null;
+}
+
+function toggleAgentVoiceMute() {
+  const call = activeAgentVoiceCall;
+  if (!call?.mediaStream) {
+    return;
+  }
+  call.muted = !call.muted;
+  call.mediaStream.getAudioTracks().forEach((track) => {
+    track.enabled = !call.muted;
+  });
+  renderAgents();
+}
+
+async function handleRealtimeAgentVoiceEvent(call, rawEvent) {
+  let event;
+  try {
+    event = JSON.parse(rawEvent);
+  } catch {
+    return;
+  }
+  if (event.type === "error") {
+    const message = text(event.error?.message) || "Realtime voice error.";
+    call.error = message;
+    renderAgents();
+    setStatus(message, "error");
+    return;
+  }
+  const transcript = realtimeTranscriptFromEvent(event);
+  if (transcript) {
+    call.transcript.push(transcript);
+    call.transcript = call.transcript.slice(-40);
+    renderAgents();
+    if (call.voiceSessionId) {
+      void recordAgentVoiceEvent(call.voiceSessionId, {
+        text: transcript.text,
+        speaker: transcript.speaker,
+        event_type: transcript.eventType,
+        metadata: { realtime_event_type: event.type },
+      }).catch(() => {});
+    }
+  }
+  const functionCall = realtimeFunctionCallFromEvent(event);
+  if (functionCall) {
+    await handleRealtimeFunctionCall(call, functionCall);
+  }
+}
+
+function realtimeTranscriptFromEvent(event) {
+  const eventType = text(event.type);
+  if (eventType === "conversation.item.input_audio_transcription.completed") {
+    const transcript = text(event.transcript);
+    return transcript ? { speaker: "operator", text: transcript, eventType } : null;
+  }
+  if (
+    eventType === "response.audio_transcript.done" ||
+    eventType === "response.output_audio_transcript.done"
+  ) {
+    const transcript = text(event.transcript);
+    return transcript ? { speaker: "agent", text: transcript, eventType } : null;
+  }
+  return null;
+}
+
+function realtimeFunctionCallFromEvent(event) {
+  if (event.type === "response.function_call_arguments.done") {
+    return {
+      callId: text(event.call_id),
+      name: text(event.name),
+      argumentsText: text(event.arguments),
+    };
+  }
+  if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
+    return {
+      callId: text(event.item.call_id),
+      name: text(event.item.name),
+      argumentsText: text(event.item.arguments),
+    };
+  }
+  return null;
+}
+
+async function handleRealtimeFunctionCall(call, functionCall) {
+  if (!functionCall.callId || call.handledFunctionCalls.has(functionCall.callId)) {
+    return;
+  }
+  call.handledFunctionCalls.add(functionCall.callId);
+  if (functionCall.name !== "query_origin_agent") {
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: "failed",
+      error: `Unsupported function ${functionCall.name || "<empty>"}.`,
+    });
+    return;
+  }
+  const args = parseRealtimeFunctionArguments(functionCall.argumentsText);
+  const question = text(args.question || args.query);
+  if (!question) {
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: "failed",
+      error: "question is required",
+    });
+    return;
+  }
+  const previousStatus = call.status;
+  call.status = "querying";
+  renderAgents();
+  try {
+    const query = await createAgentVoiceQuery(call, {
+      question,
+      reason: text(args.reason),
+      functionCallId: functionCall.callId,
+    });
+    const completed = await waitForAgentVoiceQuery(call.voiceSessionId, query.query_id);
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: completed.status,
+      answer: completed.answer,
+      error: completed.error,
+      citations: completed.citations || [],
+      confidence: completed.confidence || null,
+    });
+  } catch (error) {
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: "failed",
+      error: error instanceof Error ? error.message : "origin agent query failed",
+    });
+  } finally {
+    if (!agentVoiceCallIsTerminal(call)) {
+      call.status = previousStatus === "connecting" ? "active" : previousStatus;
+      renderAgents();
+    }
+  }
+}
+
+function parseRealtimeFunctionArguments(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function createAgentVoiceQuery(call, { question, reason, functionCallId }) {
+  const response = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/queries`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        question,
+        transcript_excerpt: agentVoiceTranscriptExcerpt(call),
+        deadline_seconds: 90,
+        metadata: {
+          reason: reason || null,
+          realtime_call_id: functionCallId,
+          source: "browser_realtime_function",
+        },
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  return response.json();
+}
+
+async function waitForAgentVoiceQuery(voiceSessionId, queryId) {
+  const startedAt = Date.now();
+  const timeoutMs = 90000;
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await fetch(
+      `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (["answered", "failed", "timeout"].includes(payload.status)) {
+      return payload;
+    }
+    await delay(1200);
+  }
+  const timeoutResponse = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}/timeout`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ error: "Browser voice query timed out." }),
+    },
+  );
+  if (!timeoutResponse.ok) {
+    throw new Error(await responseText(timeoutResponse));
+  }
+  return timeoutResponse.json();
+}
+
+function sendRealtimeFunctionOutput(call, callId, output) {
+  if (!call.dataChannel || call.dataChannel.readyState !== "open") {
+    return;
+  }
+  call.dataChannel.send(
+    JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(output),
+      },
+    }),
+  );
+  call.dataChannel.send(JSON.stringify({ type: "response.create" }));
+}
+
+function agentVoiceTranscriptExcerpt(call, { limit = 12 } = {}) {
+  return (call.transcript || [])
+    .slice(-limit)
+    .map((entry) => `${text(entry.speaker) || "voice"}: ${entry.text}`)
+    .join("\n");
+}
+
 async function requestAgentStandDown(button, agentId) {
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
@@ -5795,6 +6368,12 @@ async function responseText(response) {
   } catch {
     return textValue;
   }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
 }
 
 function orderedTasksForAgent(agentId) {

@@ -2032,6 +2032,54 @@ button.people-agent-select:focus-visible {
   margin-top: 0.15rem;
 }
 
+.agent-voice-call-panel {
+  gap: 0.5rem;
+}
+
+.agent-voice-call-header,
+.agent-voice-call-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.agent-voice-call-controls {
+  justify-content: flex-start;
+}
+
+.agent-voice-error {
+  color: var(--red);
+  font-weight: 800;
+}
+
+.agent-voice-transcript {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-voice-transcript li {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.agent-voice-transcript span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .runtime-severity-warning {
   box-shadow: inset 3px 0 0 rgba(154, 107, 19, 0.7);
 }

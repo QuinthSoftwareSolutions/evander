@@ -224,6 +224,16 @@ identity. Operators can upload PNG/JPEG/WebP images, which the add-on normalizes
 to square WebP assets, or generate an OpenAI-backed preview and explicitly
 accept it before it becomes the saved avatar.
 
+The People tab can start a direct browser voice call to the selected persistent
+agent. The add-on prepares an OpenAI Realtime browser session with the selected
+agent's current team, role, task, inbox, review, deliverable, runtime, and
+visible tool context; it does not use DIDWW, Asterisk, or SIP. Calls are
+recorded in `runtime/voice-sessions-store.json`, and terminal calls schedule the
+same voice-session reconciliation wake used by other projected voice sessions.
+When the voice projection needs details outside the projected context, it can
+delegate a durable `query_origin_agent` request back to the originating text
+agent.
+
 Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for

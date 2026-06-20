@@ -14,6 +14,7 @@ from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
+from agent_sandbox.models import SessionManifest
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -453,6 +454,101 @@ def test_agent_avatar_delete_clears_state_and_asset(tmp_path: Path) -> None:
     assert client.get(f"/api/addons/team-addon/avatars/{asset_id}").status_code == 404
 
 
+def test_agent_voice_session_create_query_and_end(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client_secret_calls: list[dict[str, object]] = []
+
+    class _FakeRealtimeClientSecretService:
+        def __init__(self, *, config) -> None:
+            self.config = config
+
+        def create_client_secret(self, **kwargs):
+            client_secret_calls.append(kwargs)
+            return {"value": "ek_test", "expires_at": 123}
+
+    monkeypatch.setattr(
+        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        _FakeRealtimeClientSecretService,
+    )
+    client = TestClient(create_app(service))
+
+    response = client.post("/api/addons/team-addon/agents/backend/voice-sessions", json={})
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["channel"] == "browser_agent_call"
+    assert payload["status"] == "connecting"
+    assert payload["client_secret"]["value"] == "ek_test"
+    assert payload["realtime"]["transport"] == "webrtc_browser"
+    assert payload["projection"]["metadata"]["agent_id"] == "backend"
+    assert payload["projection"]["context"]["open_tasks"][0]["title"] == "Blocked task"
+    prompt = client_secret_calls[0]["instructions"]
+    assert "Selected agent: backend (backend)" in prompt
+    assert "Blocked task" in prompt
+    assert "Status update?" in prompt
+    assert "Waiting task deliverable." in prompt
+    assert client_secret_calls[0]["safety_identifier"] == "team-addon:backend"
+    record = service.runtime.voice_session_store.get_by_voice_session_id(
+        payload["voice_session_id"]
+    )
+    assert record is not None
+    assert record.channel == "browser_agent_call"
+    assert record.origin_session_id == "session-backend"
+
+    event_response = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
+        json={
+            "status": "active",
+            "text": "What is blocked?",
+            "speaker": "operator",
+            "event_type": "browser_call.transcript",
+        },
+    )
+    assert event_response.status_code == 200
+    assert event_response.json()["transcript_events"][0]["text"] == "What is blocked?"
+
+    query_response = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/queries",
+        json={
+            "question": "Which files changed?",
+            "transcript_excerpt": "operator: Which files changed?",
+            "deadline_seconds": 60,
+        },
+    )
+    assert query_response.status_code == 201
+    query = query_response.json()
+    assert query["status"] == "pending"
+    assert service.runtime.wake_store.get_request(
+        f"voice-query:{query['query_id']}"
+    ) is not None
+
+    end_response = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
+        json={"status": "ended", "summary": "Operator asked about blockers."},
+    )
+    assert end_response.status_code == 200
+    ended = end_response.json()
+    assert ended["status"] == "ended"
+    assert ended["reconciliation_status"] == "scheduled"
+    assert service.runtime.wake_store.get_request(
+        f"voice-session-reconcile:{payload['voice_session_id']}"
+    ) is not None
+
+
 def _auto_dev_squad_materialization_payload(
     *,
     duplicate_reviewer_agent_id: str | None = None,
@@ -621,6 +717,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "renderProjectCostCounter" in script.text
     assert "renderAgentInboxHeaderIndicators" in script.text
     assert "renderAgentInboxIndicatorIcon" in script.text
+    assert "data-agent-call-agent-id" in script.text
+    assert "RTCPeerConnection" in script.text
+    assert "oai-events" in script.text
+    assert "query_origin_agent" in script.text
     assert "agent-inbox-indicator" in script.text
     assert 'direction: "down"' in script.text
     assert 'direction: "up"' in script.text
@@ -653,6 +753,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text
     assert ".agent-inbox-bubble" in stylesheet.text
+    assert ".agent-voice-call-panel" in stylesheet.text
+    assert ".agent-voice-transcript" in stylesheet.text
 
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200

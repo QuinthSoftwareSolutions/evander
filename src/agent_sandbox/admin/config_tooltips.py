@@ -307,10 +307,14 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "OpenAI Realtime model used for projected live voice sessions."
     ),
     "openai_realtime_api_key_env": (
-        "Legacy provider setting; Realtime voice bridges use bridge-local API key configuration."
+        "Host environment variable used to mint browser Realtime client secrets for Team "
+        "Add-on direct agent calls. SIP and meeting bridges still use bridge-local key "
+        "configuration."
     ),
     "openai_realtime_api_base_url": (
-        "Legacy provider setting; Realtime voice bridges use bridge-local upstream URL configuration."
+        "OpenAI-compatible Realtime API base URL used for Team Add-on browser direct "
+        "agent calls. SIP and meeting bridges still use bridge-local upstream URL "
+        "configuration."
     ),
     "voice_media_controller_url": (
         "Optional host-owned voice media controller URL passed to phone or meeting bridges."

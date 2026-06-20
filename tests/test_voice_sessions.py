@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.voice_sessions import (
+    OpenAIRealtimeClientSecretService,
     OpenAIRealtimePhoneCallService,
     VoiceMediaBridgeClient,
     VoiceProjectionService,
@@ -24,6 +26,7 @@ from agent_sandbox.voice_sessions import (
     VoiceSessionReconciler,
     VoiceSessionStore,
     disable_pending_voice_query_wake,
+    realtime_browser_session_config,
     voice_query_payload,
 )
 
@@ -111,6 +114,90 @@ def _contacts() -> ContactDirectoryConfig:
             }
         }
     )
+
+
+def test_realtime_browser_session_config_includes_origin_query_tool() -> None:
+    config = SimpleNamespace(
+        openai_realtime_model="gpt-realtime-2",
+        openai_realtime_voice="marin",
+        openai_realtime_transcription_model="gpt-4o-transcribe",
+    )
+
+    payload = realtime_browser_session_config(config, instructions="Answer as Backend.")
+
+    assert payload["type"] == "realtime"
+    assert payload["model"] == "gpt-realtime-2"
+    assert payload["instructions"] == "Answer as Backend."
+    assert payload["audio"]["output"]["voice"] == "marin"
+    assert payload["audio"]["input"]["transcription"]["model"] == "gpt-4o-transcribe"
+    assert payload["tools"][0]["name"] == "query_origin_agent"
+    assert payload["tool_choice"] == "auto"
+
+
+def test_openai_realtime_client_secret_service_posts_browser_session_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        assert body["session"]["instructions"] == "Answer as Backend."
+        assert body["session"]["tools"][0]["name"] == "query_origin_agent"
+        return httpx.Response(200, json={"value": "ek_test", "expires_at": 123})
+
+    monkeypatch.setenv("REALTIME_KEY", "sk-test")
+    config = SimpleNamespace(
+        openai_realtime_model="gpt-realtime-2",
+        openai_realtime_voice="marin",
+        openai_realtime_transcription_model="gpt-4o-transcribe",
+        openai_realtime_api_key_env="REALTIME_KEY",
+        openai_realtime_api_base_url="https://realtime.example.test/v1/",
+        voice_media_controller_request_timeout_seconds=1.0,
+    )
+    with httpx.Client(transport=httpx.MockTransport(_handler)) as client:
+        payload = OpenAIRealtimeClientSecretService(
+            config=config,
+            http_client=client,
+        ).create_client_secret(
+            instructions="Answer as Backend.",
+            safety_identifier="team-addon:backend",
+        )
+
+    assert payload == {"value": "ek_test", "expires_at": 123}
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://realtime.example.test/v1/realtime/client_secrets"
+    assert requests[0].headers["authorization"] == "Bearer sk-test"
+    assert requests[0].headers["openai-safety-identifier"] == "team-addon:backend"
+
+
+def test_voice_session_store_supports_browser_agent_call(tmp_path: Path) -> None:
+    store = VoiceSessionStore(tmp_path / "voice-sessions.json")
+
+    record, created = store.prepare_session(
+        origin_session_id="session-backend",
+        directory_path="root/team-a",
+        channel="browser_agent_call",
+        request_id="browser-call-1",
+        prompt_metadata={"agent_id": "backend"},
+        projection={"prompt": "Answer as Backend."},
+        caller_metadata={"call_surface": "team_people_tab"},
+        contact_id="backend",
+        contact_display_name="Backend",
+    )
+    assert created is True
+    assert record.channel == "browser_agent_call"
+
+    store.append_transcript_event(
+        record.voice_session_id,
+        text="What is blocked?",
+        speaker="operator",
+    )
+    ended = store.complete_session(record.voice_session_id, status="ended")
+
+    assert ended.status == "ended"
+    assert ended.transcript == "operator: What is blocked?"
+    assert ended.contact_id == "backend"
 
 
 def make_context(tmp_path: Path, **kwargs: object):
