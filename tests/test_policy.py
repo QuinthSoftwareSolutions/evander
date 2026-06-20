@@ -523,6 +523,29 @@ def test_tool_visibility_reports_approval_required_tools_as_available(
     )
 
 
+def test_tool_visibility_supports_registered_addon_tool_names(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.set_extra_mcp_tool_names(["bokio_get_company"])
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=["bokio_get_company"],
+        approval_required_tools=["bokio_get_company"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, "bokio_get_company")
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.requires_approval is True
+    assert "bokio_get_company" in {
+        item["tool_name"] for item in summary["available_tools"]
+    }
+    assert "bokio_get_company" in summary["approval_required_tools"]
+
+
 def test_delete_ado_backlog_item_always_requires_approval_when_allowed(
     tmp_path: Path,
 ) -> None:

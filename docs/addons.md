@@ -15,6 +15,9 @@ Add-ons may register generic integration points:
 - Workflow providers using the same trigger/gate/effect/query provider shape as
   `agent_sandbox.providers`
 - Workflow editor catalog metadata through those workflow provider registrations
+- Host-side MCP tools registered through the add-on MCP registrar and governed
+  by the same session, directory policy, approval, and audit machinery as core
+  tools
 - Private runtime state under `runtime/addons/<addon_id>/`
 
 Add-ons must not add domain-specific fields to core models such as
@@ -88,6 +91,53 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
+
+## Bokio Add-on Guidance
+
+The bundled `evander_bokio_addon` package provides an optional assisted
+bookkeeping surface for Bokio private integrations. Enable it with:
+
+```json
+{
+  "addon_loader": {
+    "modules": ["evander_bokio_addon"],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": ["bokio-addon"]
+  }
+}
+```
+
+When enabled, Admin Web shows a `Bokio` tab backed by
+`/api/addons/bokio-addon/...` and `/addons/bokio-addon/`. The add-on stores
+prepared bookkeeping actions under `runtime/addons/bokio-addon/` and exposes
+workflow nodes under `query:bokio:*` and `effect:bokio:*`, plus host-side MCP
+tools named `bokio_*`.
+
+Configure the private integration on the host:
+
+```bash
+export BOKIO_COMPANY_ID=<company-guid>
+export BOKIO_INTEGRATION_TOKEN=<private-integration-token>
+```
+
+Optional provider config can override the token and company-id environment
+variable names with `provider_state.bokio.integration_token_env` and
+`provider_state.bokio.company_id_env`; do not store the token value in config,
+runtime state, guest images, or session manifests.
+
+The Bokio add-on is intentionally an assisted-bookkeeping layer:
+
+- Agents can inspect company information, accounts, journal entries, invoices,
+  supplier invoices, uploads, and prepared actions.
+- Agents can prepare journal entries, supplier invoices, and bank payments as
+  local add-on actions for operator approval.
+- Creation tools execute only approved prepared actions and should also be
+  policy-gated with MCP invocation approval for production sessions.
+- Bank payments created through Bokio still require a signatory to log in to
+  Bokio and sign with BankID before submission to the bank.
+- Supplier invoice support uses Bokio's preview API surface and should be
+  treated as less stable than company, account, journal-entry, invoice, upload,
+  and SIE reads.
 
 ## Team Module Guidance
 

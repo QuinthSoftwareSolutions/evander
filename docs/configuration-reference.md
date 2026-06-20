@@ -168,6 +168,17 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
+For the bundled Bokio Add-on, use explicit module loading with
+`addon_loader.modules: ["evander_bokio_addon"]` and
+`addon_loader.enabled_addon_ids: ["bokio-addon"]`. Configure this in the host
+config to expose the Bokio Admin Web tab and MCP tools, and in
+`config/trigger-orchestrator/config.json` to make `query:bokio:*` and
+`effect:bokio:*` workflow providers available. Set `BOKIO_COMPANY_ID` and
+`BOKIO_INTEGRATION_TOKEN` in the host service environment; optional
+`provider_state.bokio.company_id_env` and
+`provider_state.bokio.integration_token_env` can point the add-on at different
+environment variable names without storing the token value in config.
+
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
 path derived from `effect_lock_path` with `.wake.sock`.

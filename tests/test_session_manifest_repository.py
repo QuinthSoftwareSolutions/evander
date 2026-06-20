@@ -25,6 +25,10 @@ def _session_payload(*, session_id: str = "session-1") -> dict[str, object]:
     }
 
 
+def _tool_value(tool: object) -> str:
+    return tool.value if hasattr(tool, "value") else str(tool)
+
+
 def _process_upsert_session(path: str, payload: dict[str, object], barrier, errors) -> None:
     try:
         barrier.wait(timeout=5)
@@ -115,7 +119,7 @@ def test_read_all_safe_ignores_invalid_entries(tmp_path) -> None:
     assert set(sessions) == {"session-1"}
 
 
-def test_read_all_safe_drops_unknown_session_tool_names(tmp_path) -> None:
+def test_read_all_safe_preserves_dynamic_addon_tool_names(tmp_path) -> None:
     path = tmp_path / "sessions.json"
     payload = {
         **_session_payload(session_id="session-1"),
@@ -137,10 +141,16 @@ def test_read_all_safe_drops_unknown_session_tool_names(tmp_path) -> None:
 
     assert set(sessions) == {"session-1"}
     session = sessions["session-1"]
-    assert [tool.value for tool in session.allowed_tools] == ["approval_submit"]
-    assert [tool.value for tool in session.approval_required_tools] == ["approval_submit"]
-    assert set(session.approval_tool_settings) == {"approval_submit"}
-    assert set(session.tool_argument_policies) == {"approval_submit"}
+    assert [_tool_value(tool) for tool in session.allowed_tools] == [
+        "approval_submit",
+        "retired_addon_tool",
+    ]
+    assert [_tool_value(tool) for tool in session.approval_required_tools] == [
+        "approval_submit",
+        "retired_addon_tool",
+    ]
+    assert set(session.approval_tool_settings) == {"approval_submit", "retired_addon_tool"}
+    assert set(session.tool_argument_policies) == {"approval_submit", "retired_addon_tool"}
 
 
 def test_session_repository_treats_non_dict_top_level_as_empty(tmp_path) -> None:

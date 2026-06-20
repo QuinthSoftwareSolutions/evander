@@ -28,6 +28,7 @@ from agent_sandbox.models import (
     SessionSummary,
     ToolName,
     normalize_mcp_tool_policies,
+    tool_name_value,
 )
 from agent_sandbox.policy import mandatory_approval_required_for_tool
 
@@ -517,9 +518,7 @@ def _approval_actor_from_request(
 
 def _session_payload(service: AdminService, summary: SessionSummary) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
-    payload["allowed_tools"] = [
-        tool.value if isinstance(tool, ToolName) else str(tool) for tool in summary.allowed_tools
-    ]
+    payload["allowed_tools"] = [tool_name_value(tool) for tool in summary.allowed_tools]
     payload["tool_summary"] = service.runtime.policy.allowed_tool_summary_for_session(summary)
     payload["approval_notification_target_options"] = [
         option.model_dump(mode="json")
@@ -875,22 +874,41 @@ def session_approval_routes(
         if not isinstance(raw_policies, dict):
             raw_policies = {}
         effective_policy = service.runtime.policy_config.resolve_for_directory(directory_path)
-        approval_required_tools = set(effective_policy.approval_required_tools)
+        approval_required_tools = {
+            tool_name_value(tool) for tool in effective_policy.approval_required_tools
+        }
         items: list[dict[str, Any]] = []
-        for tool in sorted(ToolName, key=lambda item: item.value):
-            effective_rule = effective_policy.mcp_tool_policies.get(tool.value)
+        extra_tool_names = set(raw_policies) | set(effective_policy.mcp_tool_policies)
+        extra_tool_names.update(approval_required_tools)
+        known_tools = list(ToolName) + sorted(
+            tool_name
+            for tool_name in extra_tool_names
+            if ToolName._value2member_map_.get(tool_name) is None
+        )
+        for tool in sorted(known_tools, key=tool_name_value):
+            tool_value = tool_name_value(tool)
+            effective_rule = effective_policy.mcp_tool_policies.get(tool_value)
             effective_settings = _rule_effective_settings(effective_rule)
+            option = (
+                _tool_option(tool)
+                if isinstance(tool, ToolName)
+                else {
+                    "value": tool_value,
+                    "label": tool_value.replace("_", " "),
+                    "description": "Add-on MCP tool.",
+                }
+            )
             items.append(
                 {
-                    **_tool_option(tool),
-                    "local_policy": raw_policies.get(tool.value),
+                    **option,
+                    "local_policy": raw_policies.get(tool_value),
                     "effective_policy": effective_rule.model_dump(mode="json")
                     if effective_rule is not None
                     else None,
                     "effective_settings": effective_settings.model_dump(mode="json"),
                     "approval_required": (
                         mandatory_approval_required_for_tool(tool)
-                        or tool in approval_required_tools
+                        or tool_value in approval_required_tools
                         or bool(effective_rule and effective_rule.require_approval)
                     ),
                     "denied": bool(effective_rule and effective_rule.denied),

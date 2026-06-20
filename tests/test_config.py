@@ -298,7 +298,7 @@ def test_tool_argument_policies_round_trip_through_config_models() -> None:
         (
             {
                 "tool_argument_policies": {
-                    "not_a_real_tool": [
+                    "not a real tool": [
                         {
                             "id": "rule",
                             "constraints": [
@@ -308,7 +308,7 @@ def test_tool_argument_policies_round_trip_through_config_models() -> None:
                     ]
                 }
             },
-            "unknown tool name",
+            "valid MCP tool name",
         ),
         (
             {

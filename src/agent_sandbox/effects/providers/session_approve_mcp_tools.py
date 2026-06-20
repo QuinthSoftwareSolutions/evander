@@ -7,7 +7,12 @@ from typing import Any
 from agent_sandbox.approval_notification_targets import (
     resolve_approval_notification_target_ids_for_directory,
 )
-from agent_sandbox.models import SessionToolApprovalLease, ToolName, normalize_tool_names
+from agent_sandbox.models import (
+    McpToolName,
+    SessionToolApprovalLease,
+    normalize_tool_names,
+    tool_name_value,
+)
 from agent_sandbox.policy import mandatory_approval_required_for_tool
 from agent_sandbox.policy_config import PolicyConfigResolver
 from agent_sandbox.repositories.session_tool_approval_leases import (
@@ -140,25 +145,28 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
         return requested
 
     def _approval_settings_for_tools(
-        self, *, session: Any, tools: list[ToolName]
+        self, *, session: Any, tools: list[McpToolName]
     ) -> dict[str, Any]:
         policy_resolver = self._policy_resolver()
         effective_policy = policy_resolver.resolve_for_session_manifest(session)
-        approval_required_tools = set(effective_policy.approval_required_tools)
+        approval_required_tools = {
+            tool_name_value(tool) for tool in effective_policy.approval_required_tools
+        }
         settings: dict[str, Any] = {}
         for tool in tools:
-            rule = effective_policy.mcp_tool_policies.get(tool.value)
+            tool_value = tool_name_value(tool)
+            rule = effective_policy.mcp_tool_policies.get(tool_value)
             if rule is not None and rule.denied:
                 raise ValueError(
-                    f"Tool {tool.value} is denied by directory policy for session {session.session_id}"
+                    f"Tool {tool_value} is denied by directory policy for session {session.session_id}"
                 )
             if (
                 mandatory_approval_required_for_tool(tool)
-                or tool in approval_required_tools
+                or tool_value in approval_required_tools
                 or (rule is not None and rule.require_approval)
             ):
                 raise ValueError(
-                    f"Tool {tool.value} requires per-invocation approval in this directory"
+                    f"Tool {tool_value} requires per-invocation approval in this directory"
                 )
             if rule is None:
                 continue
@@ -166,12 +174,12 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             max_uses = rule.max_uses
             if rule.require_exact_payload:
                 raise ValueError(
-                    f"Tool {tool.value} requires exact-payload approval in this directory"
+                    f"Tool {tool_value} requires exact-payload approval in this directory"
                 )
             if rule.max_ttl_seconds is not None or max_uses is not None:
                 from agent_sandbox.models import ApprovalGrantSettings
 
-                settings[tool.value] = ApprovalGrantSettings(
+                settings[tool_value] = ApprovalGrantSettings(
                     ttl_seconds=ttl_seconds,
                     max_uses=max_uses,
                     payload_mode="any",
@@ -294,7 +302,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             "mcp_tool_approval_lease_id": lease.lease_id,
             "session_id": lease.session_id,
             "workflow_run_id": lease.workflow_run_id,
-            "tools": [tool.value if isinstance(tool, ToolName) else str(tool) for tool in lease.tools],
+            "tools": [tool_name_value(tool) for tool in lease.tools],
             "approval_notification_target_ids": list(lease.approval_notification_target_ids),
             "expires_at": lease.expires_at.astimezone(UTC).isoformat(),
             "approval_settings": {

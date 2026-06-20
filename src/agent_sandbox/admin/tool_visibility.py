@@ -6,8 +6,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_sandbox.models import ApprovalGrantSettings, SessionManifest, ToolName
+from agent_sandbox.models import ApprovalGrantSettings, McpToolName, SessionManifest, ToolName
 from agent_sandbox.models import digest_payload
+from agent_sandbox.models import tool_name_value
 from agent_sandbox.policy import ToolVisibility
 
 
@@ -253,7 +254,11 @@ _UNAVAILABLE_TO_SESSION_SOURCES = {
 }
 
 
-def _tool_category(tool_name: ToolName) -> str:
+def _tool_category(tool_name: McpToolName) -> str:
+    builtin = ToolName._value2member_map_.get(tool_name_value(tool_name))
+    if builtin is None:
+        return "Add-ons"
+    tool_name = builtin
     if tool_name in _ISSUE_TOOLS:
         return "Issue intake"
     if tool_name in _AZURE_DEVOPS_TOOLS:
@@ -283,7 +288,11 @@ def _tool_category(tool_name: ToolName) -> str:
     return "Other"
 
 
-def _tool_provider(tool_name: ToolName, category: str) -> str | None:
+def _tool_provider(tool_name: McpToolName, category: str) -> str | None:
+    builtin = ToolName._value2member_map_.get(tool_name_value(tool_name))
+    if builtin is None:
+        return "add-on" if category == "Add-ons" else None
+    tool_name = builtin
     if tool_name in _AZURE_DEVOPS_TOOLS:
         return "azure_devops"
     if tool_name in _PULL_REQUEST_TOOLS:
@@ -313,8 +322,8 @@ def _tool_provider(tool_name: ToolName, category: str) -> str | None:
     return category.lower().replace(" ", "_") if category != "Other" else None
 
 
-def _tool_label(tool_name: ToolName) -> str:
-    return tool_name.value.replace("_", " ")
+def _tool_label(tool_name: McpToolName) -> str:
+    return tool_name_value(tool_name).replace("_", " ")
 
 
 def _policy_metadata(session: SessionManifest) -> dict[str, Any]:
@@ -369,7 +378,7 @@ def _tool_payload_for_visibility(
     category = _tool_category(tool_name)
     visibility_state = _visibility_state_for_tool(visibility, policy_error=policy_error)
     return ToolVisibilityToolPayload(
-        tool_name=tool_name.value,
+        tool_name=tool_name_value(tool_name),
         visibility_state=visibility_state,
         available=bool(visibility.available) and policy_error is None,
         visible=bool(visibility.visible) and policy_error is None,
@@ -388,10 +397,10 @@ def _tool_payload_for_visibility(
     )
 
 
-def _unknown_tool_payload(tool_name: ToolName, reason: str) -> ToolVisibilityToolPayload:
+def _unknown_tool_payload(tool_name: McpToolName, reason: str) -> ToolVisibilityToolPayload:
     category = _tool_category(tool_name)
     return ToolVisibilityToolPayload(
-        tool_name=tool_name.value,
+        tool_name=tool_name_value(tool_name),
         visibility_state=ToolVisibilityState.UNKNOWN,
         available=False,
         visible=False,
@@ -745,7 +754,8 @@ def build_tool_visibility_payload(
     session_context = _session_context_payload(session)
     notices = _tool_visibility_notices(session)
     tools: list[ToolVisibilityToolPayload] = []
-    counts = ToolVisibilityCountsPayload(total=len(ToolName))
+    known_tools = service.runtime.policy._iter_known_tool_names()
+    counts = ToolVisibilityCountsPayload(total=len(known_tools))
     policy_error: Exception | None = None
 
     try:
@@ -762,11 +772,11 @@ def build_tool_visibility_payload(
             )
         )
     if policy_error is not None:
-        for tool in ToolName:
+        for tool in known_tools:
             tools.append(_unknown_tool_payload(tool, str(policy_error)))
-        counts.unknown = len(ToolName)
+        counts.unknown = len(known_tools)
     else:
-        for tool in ToolName:
+        for tool in known_tools:
             try:
                 visibility = service.runtime.policy.tool_visibility_for_session(
                     session,

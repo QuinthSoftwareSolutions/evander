@@ -94,6 +94,7 @@ class AddonContext:
 
 
 AddonRouteFactory = Callable[[AddonContext], Sequence[Any]]
+AddonMcpToolFactory = Callable[[Any, AddonContext], Sequence[str] | None]
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ class AddonRegistration:
     admin_navigation: AddonAdminNavigation | None = None
     admin_api_routes: Sequence[Any] | AddonRouteFactory = field(default_factory=tuple)
     admin_ui_routes: Sequence[Any] | AddonRouteFactory = field(default_factory=tuple)
+    mcp_tools: AddonMcpToolFactory | None = None
     workflow_providers: Any | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -273,6 +275,31 @@ def resolve_addon_admin_ui_routes(
     )
 
 
+def register_addon_mcp_tools(
+    registration: AddonRegistration, server: Any, context: AddonContext
+) -> tuple[str, ...]:
+    if registration.mcp_tools is None:
+        return ()
+    registered = registration.mcp_tools(server, context)
+    if registered is None:
+        return ()
+    if isinstance(registered, (str, bytes)) or not isinstance(registered, Sequence):
+        raise TypeError(
+            f"add-on {registration.addon_id} MCP tool registrar must return a sequence of names"
+        )
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw_name in registered:
+        name = str(raw_name or "").strip()
+        if not name:
+            raise ValueError(f"add-on {registration.addon_id} registered an empty MCP tool name")
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return tuple(names)
+
+
 def _iter_addon_entry_points() -> tuple[EntryPoint, ...]:
     discovered = entry_points(group="agent_sandbox.addons")
     return tuple(sorted(discovered, key=lambda item: item.name))
@@ -309,6 +336,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             admin_navigation=_coerce_navigation(value.get("admin_navigation")),
             admin_api_routes=value.get("admin_api_routes") or (),
             admin_ui_routes=value.get("admin_ui_routes") or (),
+            mcp_tools=value.get("mcp_tools"),
             workflow_providers=value.get("workflow_providers"),
             metadata=_coerce_metadata(value.get("metadata"), source=source),
         )
@@ -320,6 +348,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         admin_navigation=_coerce_navigation(getattr(value, "admin_navigation", None)),
         admin_api_routes=getattr(value, "admin_api_routes", ()),
         admin_ui_routes=getattr(value, "admin_ui_routes", ()),
+        mcp_tools=getattr(value, "mcp_tools", None),
         workflow_providers=getattr(value, "workflow_providers", None),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),
     )

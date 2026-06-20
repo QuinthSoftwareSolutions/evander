@@ -27,8 +27,8 @@ from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.models import (
     DirectoryPath,
     McpToolPolicyRule,
+    McpToolName,
     ToolArgumentPolicyRule,
-    ToolName,
     normalize_mcp_tool_policies,
     normalize_tool_argument_policies,
     normalize_tool_names,
@@ -434,7 +434,7 @@ class GatewayConfig(BaseModel):
         ge=1,
     )
     pr_reply_require_approval: bool = False
-    approval_required_tools: list[ToolName] = Field(default_factory=list)
+    approval_required_tools: list[McpToolName] = Field(default_factory=list)
     mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
     tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     github_token_env: str = "GITHUB_TOKEN"
@@ -571,7 +571,7 @@ class GatewayConfig(BaseModel):
 
     @field_validator("approval_required_tools", mode="before")
     @classmethod
-    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+    def normalize_approval_required_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
 
     @field_validator("mcp_tool_policies", mode="before")

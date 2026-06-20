@@ -169,6 +169,7 @@ from agent_sandbox.models import (
     SessionActionResult,
     SessionManifest,
     SessionSummary,
+    McpToolName,
     ToolName,
     VmActionResult,
     VmSummary,
@@ -176,7 +177,9 @@ from agent_sandbox.models import (
     WakeScheduleDefinition,
     WorkerActionResult,
     WorkerSummary,
+    normalize_tool_name,
     normalize_approval_tool_settings,
+    tool_name_value,
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.storage import JsonStore
@@ -6689,7 +6692,7 @@ def _build_issue_session_manifest(
     communication_file_require_approval_for_send: bool | None = None,
     web_search_enabled: bool = False,
 ) -> SessionManifest:
-    resolved_allowed_tools: list[ToolName] = [
+    resolved_allowed_tools: list[McpToolName] = [
         ToolName.APPROVAL_SUBMIT,
         ToolName.APPROVAL_CHECK,
         ToolName.STAGE_ARTIFACT,
@@ -6734,18 +6737,19 @@ def _build_issue_session_manifest(
         metadata["agent_provider"] = "copilot"
 
     if extra_allowed_tools:
-        seen = set(resolved_allowed_tools)
+        seen = {tool_name_value(tool) for tool in resolved_allowed_tools}
         for tool in _normalize_allowed_tools(extra_allowed_tools):
-            if tool in seen:
+            tool_value = tool_name_value(tool)
+            if tool_value in seen:
                 continue
-            seen.add(tool)
+            seen.add(tool_value)
             resolved_allowed_tools.append(tool)
 
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
         directory_path=directory_path,
-        allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
+        allowed_tools=_normalize_allowed_tools([tool_name_value(tool) for tool in resolved_allowed_tools]),
         approval_required_tools=list(policy.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
@@ -6965,14 +6969,17 @@ def _admin_agent_communication_allowlists(
     }
 
 
-def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
-    normalized_tools: list[ToolName] = []
-    seen: set[ToolName] = set()
+def _normalize_allowed_tools(
+    value: list[str | ToolName], *, field_name: str = "allowed_tools"
+) -> list[McpToolName]:
+    normalized_tools: list[McpToolName] = []
+    seen: set[str] = set()
     for tool in value:
-        normalized_tool = tool if isinstance(tool, ToolName) else ToolName(str(tool).strip())
-        if normalized_tool in seen:
+        normalized_tool = normalize_tool_name(tool, field_name=field_name)
+        tool_value = tool_name_value(normalized_tool)
+        if tool_value in seen:
             continue
-        seen.add(normalized_tool)
+        seen.add(tool_value)
         normalized_tools.append(normalized_tool)
     return normalized_tools
 
@@ -7165,7 +7172,8 @@ def _session_policy_update_from_payload(
             _normalize_plain_string_list(
                 payload.get("approval_required_tools"),
                 field_name="approval_required_tools",
-            )
+            ),
+            field_name="approval_required_tools",
         )
     if "approval_tool_settings" in payload:
         normalized_settings = normalize_approval_tool_settings(
@@ -10806,13 +10814,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "session_id": session.session_id,
             "model": session.model,
             "expires_at": session.expires_at,
-            "allowed_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.allowed_tools
-            ],
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "approval_required_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.approval_required_tools
+                tool_name_value(tool) for tool in session.approval_required_tools
             ],
             "approval_tool_settings": {
                 tool_name: settings.model_dump(mode="json")
@@ -10884,14 +10888,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()
         for tool in effective_policy.approval_required_tools:
-            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            value = tool_name_value(tool)
             if value in seen_tools:
                 continue
             seen_tools.add(value)
             inherited_approval_required_tools.append(value)
             approval_required_tools.append(value)
         for tool in session.approval_required_tools:
-            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            value = tool_name_value(tool)
             if value in seen_tools:
                 continue
             seen_tools.add(value)
@@ -10904,12 +10908,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
 
         approval_tool_settings = {
-            tool.value: self.runtime.policy.approval_grant_settings_for_tool(
+            tool_name_value(tool): self.runtime.policy.approval_grant_settings_for_tool(
                 session,
                 tool,
                 effective_policy=effective_policy,
             ).model_dump(mode="json")
-            for tool in ToolName
+            for tool in self.runtime.policy._iter_known_tool_names()
         }
         mcp_tool_policies = {
             tool_name: rule.model_dump(mode="json")
@@ -10917,10 +10921,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
 
         return {
-            "allowed_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.allowed_tools
-            ],
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "tool_summary": tool_summary,
             "inherited_approval_required_tools": inherited_approval_required_tools,
             "approval_required_tools": approval_required_tools,

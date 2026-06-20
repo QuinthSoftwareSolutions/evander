@@ -9,10 +9,13 @@ from agent_sandbox.approval_notification_targets import (
 )
 from agent_sandbox.models import (
     ApprovalGrantSettings,
+    McpToolName,
     SessionToolApprovalLease,
     ToolName,
     digest_payload,
+    normalize_tool_name,
     normalize_tool_names,
+    tool_name_value,
 )
 from agent_sandbox.storage import JsonStore
 
@@ -41,7 +44,7 @@ class SessionToolApprovalLeaseRepository(Protocol):
         lease_id: str,
         session_id: str,
         workflow_run_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         now: datetime | None = None,
     ) -> bool: ...
 
@@ -53,7 +56,7 @@ class SessionToolApprovalLeaseRepository(Protocol):
         lease_id: str,
         session_id: str,
         workflow_run_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         now: datetime | None = None,
     ) -> bool: ...
 
@@ -125,7 +128,7 @@ class JsonSessionToolApprovalLeaseRepository:
         lease_id: str,
         session_id: str,
         workflow_run_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         now: datetime | None = None,
     ) -> bool:
         lease = self.get_lease(lease_id)
@@ -140,7 +143,7 @@ class JsonSessionToolApprovalLeaseRepository:
             return False
         if lease.workflow_run_id != str(workflow_run_id or "").strip():
             return False
-        return tool_name in set(lease.tools)
+        return tool_name_value(tool_name) in {tool_name_value(tool) for tool in lease.tools}
 
     def consume_tool_use(
         self,
@@ -148,7 +151,7 @@ class JsonSessionToolApprovalLeaseRepository:
         lease_id: str,
         session_id: str,
         workflow_run_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         now: datetime | None = None,
     ) -> bool:
         normalized_lease_id = str(lease_id or "").strip()
@@ -170,16 +173,17 @@ class JsonSessionToolApprovalLeaseRepository:
                 return False
             if lease.workflow_run_id != normalized_workflow_run_id:
                 return False
-            if tool_name not in set(lease.tools):
+            tool_value = tool_name_value(tool_name)
+            if tool_value not in {tool_name_value(tool) for tool in lease.tools}:
                 return False
-            settings = lease.approval_settings.get(tool_name.value)
+            settings = lease.approval_settings.get(tool_value)
             if settings is None or settings.max_uses is None:
                 return True
             used_counts = dict(lease.used_counts)
-            used_count = int(used_counts.get(tool_name.value, 0))
+            used_count = int(used_counts.get(tool_value, 0))
             if used_count >= settings.max_uses:
                 return False
-            used_counts[tool_name.value] = used_count + 1
+            used_counts[tool_value] = used_count + 1
             items[normalized_lease_id] = lease.model_copy(update={"used_counts": used_counts})
             return True
 
@@ -223,14 +227,14 @@ def _lease_id(
     *,
     session_id: str,
     workflow_run_id: str,
-    tools: list[ToolName],
+    tools: list[McpToolName],
     effect_execution_id: str | None,
 ) -> str:
     digest = digest_payload(
         {
             "session_id": session_id,
             "workflow_run_id": workflow_run_id,
-            "tools": sorted(tool.value for tool in tools),
+            "tools": sorted(tool_name_value(tool) for tool in tools),
             "effect_execution_id": str(effect_execution_id or "").strip() or None,
         }
     )
@@ -238,12 +242,14 @@ def _lease_id(
 
 
 def _normalize_approval_settings(
-    settings: dict[str, ApprovalGrantSettings], tools: list[ToolName]
+    settings: dict[str, ApprovalGrantSettings], tools: list[McpToolName]
 ) -> dict[str, ApprovalGrantSettings]:
-    allowed_tools = {tool.value for tool in tools}
+    allowed_tools = {tool_name_value(tool) for tool in tools}
     normalized: dict[str, ApprovalGrantSettings] = {}
     for tool_name, value in settings.items():
-        normalized_tool = ToolName(str(tool_name).strip()).value
+        normalized_tool = tool_name_value(
+            normalize_tool_name(tool_name, field_name="approval_settings tool name")
+        )
         if normalized_tool not in allowed_tools:
             continue
         normalized[normalized_tool] = ApprovalGrantSettings.model_validate(value)

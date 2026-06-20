@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Bokio Add-on
+
+- Added the bundled `evander_bokio_addon` package with Admin API/UI routes,
+  optional workflow providers, host-side MCP tools, and prepared-action state
+  under `runtime/addons/bokio-addon/`.
+- Added Bokio private-integration client support for company info, chart of
+  accounts, journal entries, invoices, supplier invoices, uploads, SIE download,
+  and bank payments while keeping integration tokens in host environment
+  variables.
+- Allowed session, directory policy, and workflow-run MCP approval leases to
+  carry add-on MCP tool names without adding Bokio-specific tool names to core.
+
 ## 2026-06-19 - Workflow Catalog Loader Resilience
 
 - Kept the Admin Web workflow node catalog available when the saved

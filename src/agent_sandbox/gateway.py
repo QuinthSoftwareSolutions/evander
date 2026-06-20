@@ -28,6 +28,12 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 import uvicorn
 
+from agent_sandbox.addons import (
+    AddonContext,
+    addon_runtime_dir,
+    load_addons,
+    register_addon_mcp_tools,
+)
 from agent_sandbox.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
@@ -171,8 +177,10 @@ from agent_sandbox.models import (
     SubmitVoiceQueryResponseResponse,
     WakeScheduleDefinition,
     TeamsMessageEnvelope,
+    McpToolName,
     ToolName,
     digest_payload,
+    tool_name_value,
 )
 from agent_sandbox.policy import (
     PolicyError,
@@ -722,7 +730,7 @@ def _tool_call_duration_ms(current: _ToolCallAuditContext | None) -> int | None:
 def _tool_call_audit_fields(
     *,
     session: Any | None,
-    tool_name: ToolName | None,
+    tool_name: McpToolName | None,
     args: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, Any]:
@@ -736,8 +744,8 @@ def _tool_call_audit_fields(
             current.raw_args,
             ("approval_request_id",),
         )
-    tool_name_value = tool_name.value if isinstance(tool_name, ToolName) else str(tool_name or "").strip()
-    if approval_request_id is None and tool_name_value in _TOOL_CALL_APPROVAL_NAMES:
+    current_tool_name = tool_name_value(tool_name) if tool_name is not None else ""
+    if approval_request_id is None and current_tool_name in _TOOL_CALL_APPROVAL_NAMES:
         approval_request_id = _first_string_in_payload(args, ("request_id",))
         if approval_request_id is None:
             approval_request_id = _first_string_in_payload(result, ("request_id",))
@@ -994,7 +1002,7 @@ _ASSISTANT_MUTATION_TOOLS = frozenset(
 
 
 def _assistant_mutation_audit_result(
-    tool_name: ToolName | None,
+    tool_name: McpToolName | None,
     args: dict[str, Any],
     result: dict[str, Any],
     redacted_keys: set[str],
@@ -1002,7 +1010,7 @@ def _assistant_mutation_audit_result(
     default_status: str,
 ) -> dict[str, Any]:
     audit_result = _redact_nested_value(redacted_keys, dict(result))
-    if tool_name is None or tool_name not in _ASSISTANT_MUTATION_TOOLS:
+    if not isinstance(tool_name, ToolName) or tool_name not in _ASSISTANT_MUTATION_TOOLS:
         return audit_result
 
     audit_result.setdefault("status", default_status)
@@ -1241,6 +1249,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 transport_session_map[transport_session_id] = bound_session_id
     setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
     semantic_adapter = GatewaySemanticAdapter(context)
+    addon_mcp_tool_names: list[str] = []
+    addon_catalog = load_addons(context.config.addon_loader)
+    for addon in addon_catalog.registrations:
+        addon_context = AddonContext(
+            addon_id=addon.addon_id,
+            runtime_dir=context.config.runtime_dir,
+            addon_runtime_dir=addon_runtime_dir(context.config.runtime_dir, addon.addon_id),
+            config=context.config,
+            service=context,
+        )
+        addon_mcp_tool_names.extend(
+            register_addon_mcp_tools(addon, server, addon_context)
+        )
+    if addon_mcp_tool_names:
+        context.policy.set_extra_mcp_tool_names(addon_mcp_tool_names)
 
     def _record_visible_tools(
         *,
@@ -1468,7 +1491,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     def audit_success(
         session_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         args: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
@@ -1490,7 +1513,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=None if session is None else session.vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_name_value(tool_name),
                 actor_user_id=actor_user_id,
                 **_tool_call_audit_fields(
                     session=session,
@@ -1506,13 +1529,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
-            tool_name.value,
+            tool_name_value(tool_name),
             session_id,
         )
 
     def audit_failure(
         session_id: str | None,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         args: dict[str, Any],
         error: str,
         *,
@@ -1538,7 +1561,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_name_value(tool_name),
                 actor_user_id=actor_user_id,
                 **_tool_call_audit_fields(
                     session=session,
@@ -1555,7 +1578,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         logger.info(
             "metric_mcp_tool_decision outcome=%s tool=%s session_id=%s reason=%s error_class=%s",
             decision,
-            tool_name.value,
+            tool_name_value(tool_name),
             session_id or "",
             error,
             error_class,
@@ -10017,7 +10040,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return []
 
         visible_tool_names = {
-            visibility.tool.value
+            tool_name_value(visibility.tool)
             for visibility in context.policy.visible_tools_for_session(
                 session,
                 workflow_run_id=workflow_run_id,
@@ -10044,12 +10067,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         *,
         session_id: str,
         session: Any,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         raw_args: dict[str, Any],
         result: dict[str, Any],
         decision: str,
         reason: str | None = None,
     ) -> None:
+        tool_value = tool_name_value(tool_name)
         redacted_keys = redacted_keys_for_session_id(session_id)
         context.audit.log(
             AuditEvent(
@@ -10058,7 +10082,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=None if session is None else session.vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_value,
                 actor_user_id=_session_actor_user_id(session),
                 **_tool_call_audit_fields(
                     session=session,
@@ -10078,11 +10102,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         *,
         session_id: str,
         session: Any,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         raw_args: dict[str, Any],
         sanitized_arguments: dict[str, Any],
         error: ToolArgumentPolicyError,
     ) -> None:
+        tool_value = tool_name_value(tool_name)
         redacted_keys = redacted_keys_for_session_id(session_id)
         denial_result = {
             "status": "denied",
@@ -10101,7 +10126,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=None if session is None else session.vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_value,
                 actor_user_id=_session_actor_user_id(session),
                 **_tool_call_audit_fields(
                     session=session,
@@ -10118,7 +10143,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=denied tool=%s session_id=%s reason=%s error_class=%s",
-            tool_name.value,
+            tool_value,
             session_id,
             error,
             "tool_argument_policy_violation",
@@ -10131,23 +10156,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
         sanitized_arguments: dict[str, Any],
         call_context: _ToolCallAuditContext,
     ) -> None:
-        tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-        if tool_enum is None:
+        tool_name: McpToolName = ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+        if not tool_name:
             return
         session_id = call_context.session_id
         if not session_id:
             return
         try:
-            session = context.policy.require_tool(session_id, tool_enum)
+            session = context.policy.require_tool(session_id, tool_name)
         except PolicyError:
             return
         try:
-            context.policy.require_tool_arguments(session, tool_enum, sanitized_arguments)
+            context.policy.require_tool_arguments(session, tool_name, sanitized_arguments)
         except ToolArgumentPolicyError as exc:
             audit_tool_argument_policy_denial(
                 session_id=session_id,
                 session=session,
-                tool_name=tool_enum,
+                tool_name=tool_name,
                 raw_args=raw_arguments,
                 sanitized_arguments=sanitized_arguments,
                 error=exc,
@@ -10161,26 +10186,29 @@ def create_server(context: RuntimeContext) -> FastMCP:
         sanitized_arguments: dict[str, Any],
         call_context: _ToolCallAuditContext,
     ) -> ApprovalRequest | None:
-        tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-        if tool_enum is None or raw_tool_name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
+        if raw_tool_name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
+            return None
+        tool_name: McpToolName = ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+        tool_value = tool_name_value(tool_name)
+        if not tool_value:
             return None
         session_id = call_context.session_id
         if not session_id:
             return None
         try:
-            session = context.policy.require_tool(session_id, tool_enum)
+            session = context.policy.require_tool(session_id, tool_name)
         except PolicyError:
             return None
-        if not context.policy.approval_required_for_tool(session, tool_enum):
+        if not context.policy.approval_required_for_tool(session, tool_name):
             return None
         redacted_keys = redacted_keys_for_session_id(session_id)
 
         approval_payload = _approval_gate_payload(
-            tool_name=tool_enum.value,
+            tool_name=tool_value,
             session_id=session_id,
             arguments=sanitized_arguments,
         )
-        grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_enum)
+        grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_name)
         payload_digest = digest_payload(approval_payload)
         supplied_request_id = str(raw_arguments.get("approval_request_id") or "").strip()
         if not supplied_request_id:
@@ -10188,9 +10216,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 session_id,
                 "mcp_tool_invocation",
                 approval_payload,
-                _approval_gate_human_summary(tool_enum.value, session_id),
-                tool_name=tool_enum.value,
-                intended_effect=_approval_gate_intended_effect(tool_enum.value, session_id),
+                _approval_gate_human_summary(tool_value, session_id),
+                tool_name=tool_value,
+                intended_effect=_approval_gate_intended_effect(tool_value, session_id),
                 approval_settings=grant_settings,
             )
             status = (
@@ -10208,7 +10236,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     redacted_keys=redacted_keys,
                     status=status,
                     reason=(
-                        f"Tool {tool_enum.value} requires approval before execution. "
+                        f"Tool {tool_value} requires approval before execution. "
                         f"Retry the exact same payload with approval_request_id={approval.request_id} "
                         "after a human approves it."
                     ),
@@ -10216,7 +10244,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "approval_settings": grant_settings.model_dump(mode="json"),
                 "used_count": approval.used_count,
                 "message": (
-                    f"Tool {tool_enum.value} requires approval before execution. "
+                    f"Tool {tool_value} requires approval before execution. "
                     f"Retry the exact same payload with approval_request_id={approval.request_id} "
                     "after a human approves it."
                 ),
@@ -10224,7 +10252,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_approval_gate(
                 session_id=session_id,
                 session=session,
-                tool_name=tool_enum,
+                tool_name=tool_name,
                 raw_args=raw_arguments,
                 result=result,
                 decision=status,
@@ -10242,10 +10270,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     f"Approval request {supplied_request_id} does not belong to session "
                     f"{session_id}"
                 )
-            if str(approval.tool_name or approval.action_type).strip() != tool_enum.value:
+            if str(approval.tool_name or approval.action_type).strip() != tool_value:
                 raise PolicyError(
                     f"Approval request {supplied_request_id} is not for tool "
-                    f"{tool_enum.value}"
+                    f"{tool_value}"
                 )
         except PolicyError as exc:
             approval_request_id = getattr(exc, "approval_request_id", None) or supplied_request_id
@@ -10265,7 +10293,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_approval_gate(
                 session_id=session_id,
                 session=session,
-                tool_name=tool_enum,
+                tool_name=tool_name,
                 raw_args=raw_arguments,
                 result=result,
                 decision="blocked",
@@ -10343,23 +10371,70 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     sanitized_arguments=sanitized_arguments,
                     call_context=call_context,
                 )
-                tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-                if tool_enum is not None and consumed_approval is None:
+                tool_name: McpToolName = (
+                    ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+                )
+                if tool_name and consumed_approval is None:
                     try:
                         context.policy.consume_tool_approval_lease_use(
                             session_id=call_context.session_id,
-                            tool_name=tool_enum,
+                            tool_name=tool_name,
                             workflow_run_id=call_context.workflow_run_id,
                             mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
                         )
                     except PolicyError as exc:
                         raise ToolError(str(exc)) from exc
-                return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+                result = await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+                if not call_context.audit_emitted:
+                    tool_value = tool_name_value(tool_name) if tool_name else raw_tool_name
+                    session = (
+                        context.session_repository.get_session(call_context.session_id)
+                        if call_context.session_id
+                        else None
+                    )
+                    redacted_keys = redacted_keys_for_session_id(call_context.session_id)
+                    result_payload = result if isinstance(result, dict) else {"result": result}
+                    audit_result = _assistant_mutation_audit_result(
+                        tool_name,
+                        raw_arguments,
+                        result_payload,
+                        redacted_keys,
+                        default_status="success",
+                    )
+                    context.audit.log(
+                        AuditEvent(
+                            event_type="tool_call",
+                            session_id=call_context.session_id,
+                            vm_id=None if session is None else session.vm_id,
+                            directory_path=None if session is None else session.directory_path,
+                            agent_role=_session_actor_role(session),
+                            tool_name=tool_value or None,
+                            actor_user_id=_session_actor_user_id(session),
+                            **_tool_call_audit_fields(
+                                session=session,
+                                tool_name=tool_name,
+                                args=raw_arguments,
+                                result=audit_result,
+                            ),
+                            decision="allowed",
+                            args=_redact_args(redacted_keys, raw_arguments),
+                            result=_redact_nested_value(redacted_keys, audit_result),
+                        )
+                    )
+                    _mark_tool_call_audited()
+                    logger.info(
+                        "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
+                        tool_value,
+                        call_context.session_id or "",
+                    )
+                return result
             finally:
                 reset_tool_approval_context(approval_context_token)
         except Exception as exc:
             if not call_context.audit_emitted:
-                tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+                tool_name: McpToolName | None = (
+                    ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name or None
+                )
                 session = (
                     context.session_repository.get_session(call_context.session_id)
                     if call_context.session_id
@@ -10368,7 +10443,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 redacted_keys = redacted_keys_for_session_id(call_context.session_id)
                 redacted_args = _redact_args(redacted_keys, raw_arguments)
                 error_result = _assistant_mutation_audit_result(
-                    tool_enum,
+                    tool_name,
                     raw_arguments,
                     {
                         "status": "error",
@@ -10389,7 +10464,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         actor_user_id=_session_actor_user_id(session),
                         **_tool_call_audit_fields(
                             session=session,
-                            tool_name=tool_enum,
+                            tool_name=tool_name,
                             args=raw_arguments,
                             result=error_result,
                         ),
@@ -10547,7 +10622,7 @@ def _install_mcp_http_logging(
                         if session is not None:
                             visible_tool_names = sorted(
                                 {
-                                    visibility.tool.value
+                                    tool_name_value(visibility.tool)
                                     for visibility in runtime_context.policy.visible_tools_for_session(
                                         session,
                                         workflow_run_id=workflow_run_id,

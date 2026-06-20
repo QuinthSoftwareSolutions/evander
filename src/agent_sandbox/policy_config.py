@@ -25,12 +25,15 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.models import (
     McpToolPolicyRule,
+    McpToolName,
     SessionManifest,
     ToolArgumentPolicyRule,
     ToolName,
     normalize_mcp_tool_policies,
+    normalize_tool_name,
     normalize_tool_argument_policies,
     normalize_tool_names,
+    tool_name_value,
     validate_tool_argument_policy_map,
 )
 from agent_sandbox.repositories.session_manifests import (
@@ -62,7 +65,11 @@ def _apply_inherited_mcp_tool_denies(
             if not bool(denied):
                 continue
             try:
-                denied_tools.add(ToolName(str(raw_tool_name).strip()).value)
+                denied_tools.add(
+                    tool_name_value(
+                        normalize_tool_name(raw_tool_name, field_name="mcp_tool_policies tool name")
+                    )
+                )
             except ValueError:
                 continue
     if not denied_tools:
@@ -97,7 +104,7 @@ class EffectivePolicyConfig(BaseModel):
     communication_file_blocked_extensions: list[str] = Field(default_factory=list)
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
-    approval_required_tools: list[ToolName] = Field(default_factory=list)
+    approval_required_tools: list[McpToolName] = Field(default_factory=list)
     mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
     tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     redacted_keys: set[str] = Field(
@@ -122,7 +129,7 @@ class EffectivePolicyConfig(BaseModel):
 
     @field_validator("approval_required_tools", mode="before")
     @classmethod
-    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+    def normalize_approval_required_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
 
     @field_validator("mcp_tool_policies", mode="before")

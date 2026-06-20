@@ -26,12 +26,15 @@ from agent_sandbox.workflow.events import WorkflowEventJournal
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import (
+    McpToolName,
     SessionActionResult,
     SessionSummary,
     ToolName,
     VmSummary,
     WakeScheduledRequest,
     WakeScheduleDefinition,
+    normalize_tool_name,
+    tool_name_value,
 )
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
@@ -401,7 +404,6 @@ class SessionAdminFacade:
                     "completed_at": request.completed_at,
                     "completion_evidence": dict(request.completion_evidence or {}),
                     "resume_mode": request.resume_mode,
-                    "status": request.status,
                     "enabled": request.enabled,
                     "source": request.source,
                     "created_at": request.created_at,
@@ -592,18 +594,21 @@ class SessionAdminFacade:
         session_id, manifest = admin_service_module._resolve_session_target(
             target, self._sessions_by_id()
         )
-        normalized_tools: list[ToolName] = []
-        seen: set[ToolName] = set()
+        normalized_tools: list[McpToolName] = []
+        seen: set[str] = set()
         for tool in allowed_tools:
-            normalized_tool = tool if isinstance(tool, ToolName) else ToolName(str(tool).strip())
-            if normalized_tool in seen:
+            normalized_tool = normalize_tool_name(tool, field_name="allowed_tools")
+            tool_value = tool_name_value(normalized_tool)
+            if tool_value in seen:
                 continue
-            seen.add(normalized_tool)
+            seen.add(tool_value)
             normalized_tools.append(normalized_tool)
         manifest.allowed_tools = normalized_tools
-        allowed_values = {tool.value for tool in normalized_tools}
+        allowed_values = {tool_name_value(tool) for tool in normalized_tools}
         manifest.approval_required_tools = [
-            tool for tool in manifest.approval_required_tools if tool.value in allowed_values
+            tool
+            for tool in manifest.approval_required_tools
+            if tool_name_value(tool) in allowed_values
         ]
         manifest.approval_tool_settings = {
             tool_name: settings

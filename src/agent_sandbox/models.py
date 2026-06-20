@@ -149,23 +149,46 @@ class ToolName(str, Enum):
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
 
-def normalize_tool_names(value: object, *, field_name: str) -> list[ToolName]:
+McpToolName = ToolName | str
+_MCP_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$")
+
+
+def tool_name_value(value: McpToolName) -> str:
+    return value.value if isinstance(value, ToolName) else str(value).strip()
+
+
+def normalize_tool_name(value: object, *, field_name: str = "tool_name") -> McpToolName:
+    candidate = value.value if isinstance(value, ToolName) else str(value).strip()
+    if not candidate:
+        raise ValueError(f"{field_name} must be a non-empty MCP tool name")
+    builtin = ToolName._value2member_map_.get(candidate)
+    if builtin is not None:
+        return builtin
+    if not _MCP_TOOL_NAME_PATTERN.fullmatch(candidate):
+        raise ValueError(
+            f"{field_name} must be a valid MCP tool name using letters, numbers, "
+            "underscore, dot, colon, or hyphen"
+        )
+    return candidate
+
+
+def normalize_tool_names(value: object, *, field_name: str) -> list[McpToolName]:
     if value is None:
         return []
     if isinstance(value, (str, ToolName)):
         value = [value]
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{field_name} must be a JSON array of tool names")
-    normalized: list[ToolName] = []
-    seen: set[ToolName] = set()
+    normalized: list[McpToolName] = []
+    seen: set[str] = set()
     for item in value:
-        candidate = item.value if isinstance(item, ToolName) else str(item).strip()
-        if not candidate:
+        if (item.value if isinstance(item, ToolName) else str(item).strip()) == "":
             continue
-        tool = ToolName(candidate)
-        if tool in seen:
+        tool = normalize_tool_name(item, field_name=field_name)
+        tool_value = tool_name_value(tool)
+        if tool_value in seen:
             continue
-        seen.add(tool)
+        seen.add(tool_value)
         normalized.append(tool)
     return normalized
 
@@ -189,13 +212,9 @@ def normalize_tool_argument_policies(
     normalized: dict[str, list[object]] = {}
     seen_tools: set[str] = set()
     for raw_tool_name, raw_rules in value.items():
-        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
-        if not candidate:
-            raise ValueError(f"{field_name} tool names must be non-empty")
-        try:
-            tool_name = ToolName(candidate).value
-        except ValueError as exc:
-            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        tool_name = tool_name_value(
+            normalize_tool_name(raw_tool_name, field_name=f"{field_name} tool name")
+        )
         if tool_name in seen_tools:
             raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
         seen_tools.add(tool_name)
@@ -459,13 +478,9 @@ def normalize_approval_tool_settings(
     normalized: dict[str, object] = {}
     seen_tools: set[str] = set()
     for raw_tool_name, raw_settings in value.items():
-        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
-        if not candidate:
-            raise ValueError(f"{field_name} tool names must be non-empty")
-        try:
-            tool_name = ToolName(candidate).value
-        except ValueError as exc:
-            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        tool_name = tool_name_value(
+            normalize_tool_name(raw_tool_name, field_name=f"{field_name} tool name")
+        )
         if tool_name in seen_tools:
             raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
         seen_tools.add(tool_name)
@@ -481,13 +496,9 @@ def normalize_mcp_tool_policies(value: object, *, field_name: str) -> dict[str, 
     normalized: dict[str, object] = {}
     seen_tools: set[str] = set()
     for raw_tool_name, raw_policy in value.items():
-        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
-        if not candidate:
-            raise ValueError(f"{field_name} tool names must be non-empty")
-        try:
-            tool_name = ToolName(candidate).value
-        except ValueError as exc:
-            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        tool_name = tool_name_value(
+            normalize_tool_name(raw_tool_name, field_name=f"{field_name} tool name")
+        )
         if tool_name in seen_tools:
             raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
         seen_tools.add(tool_name)
@@ -515,8 +526,8 @@ class SessionManifest(BaseModel):
     vm_provider_id: str | None = None
     model: str | None = None
     directory_path: str = "root"
-    allowed_tools: list[ToolName]
-    approval_required_tools: list[ToolName] = Field(default_factory=list)
+    allowed_tools: list[McpToolName]
+    approval_required_tools: list[McpToolName] = Field(default_factory=list)
     approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
     allowed_contact_ids: list[str] | None = None
@@ -571,8 +582,13 @@ class SessionManifest(BaseModel):
 
     @field_validator("approval_required_tools", mode="before")
     @classmethod
-    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+    def normalize_approval_required_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("allowed_tools", mode="before")
+    @classmethod
+    def normalize_allowed_tools(cls, value: object) -> list[McpToolName]:
+        return normalize_tool_names(value, field_name="allowed_tools")
 
     @field_validator("approval_tool_settings", mode="before")
     @classmethod
@@ -658,7 +674,7 @@ class SessionToolApprovalLease(BaseModel):
     lease_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     workflow_run_id: str = Field(min_length=1)
-    tools: list[ToolName]
+    tools: list[McpToolName]
     effect_execution_id: str | None = None
     approval_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
@@ -670,7 +686,7 @@ class SessionToolApprovalLease(BaseModel):
 
     @field_validator("tools", mode="before")
     @classmethod
-    def normalize_tools(cls, value: object) -> list[ToolName]:
+    def normalize_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="tools")
 
     @field_validator("approval_settings", mode="before")
@@ -698,7 +714,9 @@ class SessionToolApprovalLease(BaseModel):
             raise ValueError("used_counts must be a JSON object")
         normalized: dict[str, int] = {}
         for raw_tool_name, raw_count in value.items():
-            tool_name = ToolName(str(raw_tool_name).strip()).value
+            tool_name = tool_name_value(
+                normalize_tool_name(raw_tool_name, field_name="used_counts tool name")
+            )
             count = int(raw_count)
             if count < 0:
                 raise ValueError("used_counts values must be non-negative")
