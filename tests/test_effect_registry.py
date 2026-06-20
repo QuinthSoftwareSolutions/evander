@@ -726,6 +726,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         vm_name="lab-vm",
         labels={"workflow": "issue-worker", "role": "issue"},
         metadata={"issue_number": "42", "issue_title": "Fix picker"},
+        model_provider_mode="local_openai",
         dotnet=True,
     )
     admin_service = _AdminServiceStub(
@@ -759,6 +760,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         "issue_number": "42",
         "issue_title": "Fix picker",
     }
+    assert admin_service.create_vm_calls[0]["model_provider_mode"] == "local_openai"
     assert admin_service.create_vm_calls[0]["dotnet"] is True
 
 

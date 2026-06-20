@@ -3185,14 +3185,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "enum",
                 bindable=True,
                 description=(
-                    "Optional session-level relay mode override. Leave blank to use "
-                    "the directory provider default."
+                    "Optional OpenAI-compatible relay mode override. Leave blank to use "
+                    "the directory provider default; choose Claude as the agent provider "
+                    "for Anthropic routing."
                 ),
                 options=[
                     _field_option("openai_public", "Public OpenAI"),
                     _field_option("local_openai", "Local OpenAI"),
                     _field_option("azure_openai", "Azure OpenAI"),
-                    _field_option("anthropic", "Anthropic"),
                 ],
             ),
             _field(
@@ -22304,7 +22304,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 {"value": "openai_public", "label": "Public OpenAI"},
                 {"value": "local_openai", "label": "Local OpenAI"},
                 {"value": "azure_openai", "label": "Azure OpenAI"},
-                {"value": "anthropic", "label": "Anthropic"},
             ],
             "communication_targets": [
                 option.model_dump(mode="json")

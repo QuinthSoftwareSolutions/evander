@@ -5,6 +5,7 @@ from typing import Any
 
 from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_directory
 from agent_sandbox.events.provider_models import VmCreateEffectDefinition
+from agent_sandbox.provider_config import MODEL_PROVIDER_MODE_METADATA_KEY
 
 from .agent_session import contacts_config_for_directory
 
@@ -24,6 +25,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "labels": effect.labels,
             "model": effect.model,
+            MODEL_PROVIDER_MODE_METADATA_KEY: effect.model_provider_mode,
             "vm_user": effect.vm_user,
             "ttl_hours": effect.ttl_hours,
             "allowed_tools": effect.allowed_tools,
@@ -73,6 +75,9 @@ class VmCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             labels=self._as_string_mapping(payload.get("labels")),
             model=self._normalize_optional_string(payload.get("model")),
+            model_provider_mode=self._normalize_optional_string(
+                payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+            ),
             vm_user=vm_user,
             ttl_hours=self._as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=self._as_string_list(payload.get("allowed_tools")),

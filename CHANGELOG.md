@@ -9,10 +9,13 @@ material. Newer entries are added incrementally as changes land.
 
 - Added session-level `model_provider_mode` overrides so Codex agents in the
   same directory can choose public OpenAI, local OpenAI-compatible, Azure
-  OpenAI, or Anthropic relay routing without splitting directory scopes.
+  OpenAI relay routing without splitting directory scopes.
 - Exposed the override in Create Agent as a Codex-focused **Model relay** field,
   added CLI/workflow creation support, and documented same-directory public vs
   local OpenAI routing.
+- Wired the relay override through legacy `effect:vm:create` workflows and kept
+  Anthropic out of Codex-facing relay selectors; Claude agents still route via
+  the Anthropic relay by selecting the Claude agent provider.
 
 ## 2026-06-20 - Team Add-on People Agent Details
 
