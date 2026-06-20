@@ -22,6 +22,7 @@ from .git_naming import (
     validate_branch_name,
 )
 from .models import (
+    AgentAvatar,
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
@@ -689,6 +690,37 @@ class TeamStateRepository:
                     superior.subordinate_agent_ids = _append_unique(
                         superior.subordinate_agent_ids, agent.id
                     )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def set_agent_avatar(
+        self,
+        *,
+        agent_id: str,
+        avatar: AgentAvatar,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            agent.avatar = avatar
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def clear_agent_avatar(
+        self,
+        *,
+        agent_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            agent.avatar = None
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -3133,7 +3165,7 @@ def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) 
 
 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
-    payload = agent.model_dump(mode="json")
+    payload = agent.model_dump(mode="json", exclude={"avatar"})
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (
@@ -5809,7 +5841,7 @@ def _build_ephemeral_prompt(
 ) -> str:
     context = {
         "assignment": assignment.model_dump(mode="json"),
-        "parent_agent": parent.model_dump(mode="json"),
+        "parent_agent": parent.model_dump(mode="json", exclude={"avatar"}),
         "task": task.model_dump(mode="json"),
         "action_artifact_path": "/artifacts/team-action.json",
     }

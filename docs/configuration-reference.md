@@ -1147,6 +1147,7 @@ root directory-scoped config and host environment:
 | `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
 | `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
 | `RETELL_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/retell_phone.py` / `src/agent_sandbox/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
+| `OPENAI_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/voice_sessions.py` when Team Add-on browser direct agent calls use the default `openai_realtime_api_key_env` to mint ephemeral Realtime client secrets. |
 | `DIDWW_SIP_BRIDGE_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
 | `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
 | `ASTERISK_ARI_PASSWORD` | host shell or `secrets.env` | `src/agent_sandbox/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
@@ -1275,9 +1276,9 @@ invent fallback graph IDs for state nodes.
 | `retell_from_number` | provider config overlays | Outbound Retell caller number used only by the host-side create-call request. |
 | `retell_default_agent_id` | provider config overlays | Retell `override_agent_id` used for directory-contact phone calls. |
 | `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
-| `openai_realtime_model` | provider config overlays | Realtime model passed to projected voice-session bridges; defaults to `gpt-realtime-2`. |
-| `openai_realtime_api_key_env` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local API key env configuration instead of accepting per-call env-var names. |
-| `openai_realtime_api_base_url` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local upstream base URL configuration instead of accepting per-call base URL overrides. |
+| `openai_realtime_model` | provider config overlays | Realtime model passed to projected voice-session bridges and Team Add-on browser direct agent calls; defaults to `gpt-realtime-2`. |
+| `openai_realtime_api_key_env` | provider config overlays | Host env-var name used to mint ephemeral OpenAI Realtime client secrets for Team Add-on browser direct agent calls; defaults to `OPENAI_API_KEY`. SIP and meeting bridges still use bridge-local API key configuration. |
+| `openai_realtime_api_base_url` | provider config overlays | OpenAI-compatible Realtime API base URL used for Team Add-on browser direct agent calls; defaults to `https://api.openai.com/v1`. SIP and meeting bridges still use bridge-local upstream URL configuration. |
 | `voice_media_controller_url` | provider config overlays | Optional voice media controller URL passed to DIDWW or Teams bridges. |
 | `voice_media_controller_token_env` | provider config overlays | Host env-var name for the voice media controller token. |
 | `voice_media_controller_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for voice media controller and bridge requests. |

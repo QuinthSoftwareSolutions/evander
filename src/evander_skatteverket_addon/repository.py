@@ -71,6 +71,8 @@ class SkatteverketRepository:
                     token_url TEXT,
                     client_id_env TEXT,
                     client_secret_env TEXT,
+                    apigw_client_id_env TEXT,
+                    apigw_client_secret_env TEXT,
                     api_key_env TEXT,
                     certificate_subject TEXT,
                     redirect_uri TEXT,
@@ -116,6 +118,14 @@ class SkatteverketRepository:
                 );
                 """
             )
+            _ensure_columns(
+                conn,
+                "connections",
+                {
+                    "apigw_client_id_env": "TEXT",
+                    "apigw_client_secret_env": "TEXT",
+                },
+            )
 
     def state_payload(self) -> dict[str, Any]:
         return {
@@ -146,10 +156,10 @@ class SkatteverketRepository:
                 """
                 INSERT INTO connections (
                     connection_id, environment, display_name, base_url, token_url,
-                    client_id_env, client_secret_env, api_key_env, certificate_subject,
-                    redirect_uri, submission_endpoint, enabled_api_names_json, enabled,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    client_id_env, client_secret_env, apigw_client_id_env,
+                    apigw_client_secret_env, api_key_env, certificate_subject, redirect_uri,
+                    submission_endpoint, enabled_api_names_json, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(connection_id) DO UPDATE SET
                     environment = excluded.environment,
                     display_name = excluded.display_name,
@@ -157,6 +167,8 @@ class SkatteverketRepository:
                     token_url = excluded.token_url,
                     client_id_env = excluded.client_id_env,
                     client_secret_env = excluded.client_secret_env,
+                    apigw_client_id_env = excluded.apigw_client_id_env,
+                    apigw_client_secret_env = excluded.apigw_client_secret_env,
                     api_key_env = excluded.api_key_env,
                     certificate_subject = excluded.certificate_subject,
                     redirect_uri = excluded.redirect_uri,
@@ -173,6 +185,8 @@ class SkatteverketRepository:
                     _text(payload.get("token_url")),
                     _text(payload.get("client_id_env")),
                     _text(payload.get("client_secret_env")),
+                    _text(payload.get("apigw_client_id_env")),
+                    _text(payload.get("apigw_client_secret_env")),
                     _text(payload.get("api_key_env")),
                     _text(payload.get("certificate_subject")),
                     _text(payload.get("redirect_uri")),
@@ -436,6 +450,8 @@ def _connection_payload(row: sqlite3.Row) -> dict[str, Any]:
         "token_url": row["token_url"],
         "client_id_env": row["client_id_env"],
         "client_secret_env": row["client_secret_env"],
+        "apigw_client_id_env": row["apigw_client_id_env"],
+        "apigw_client_secret_env": row["apigw_client_secret_env"],
         "api_key_env": row["api_key_env"],
         "certificate_subject": row["certificate_subject"],
         "redirect_uri": row["redirect_uri"],
@@ -445,6 +461,13 @@ def _connection_payload(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _ensure_columns(conn: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+    for column_name, definition in columns.items():
+        if column_name not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def _draft_snapshot(row: sqlite3.Row) -> DraftSnapshot:

@@ -18,6 +18,7 @@ from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from truman_team_addon.models import (
+    AgentAvatar,
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
@@ -665,7 +666,21 @@ def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) ->
 
 
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
-    _seed_team(tmp_path)
+    repo = _seed_team(tmp_path)
+    repo.set_agent_avatar(
+        agent_id="backend",
+        avatar=AgentAvatar(
+            asset_id="av_wakeprivate0000000000000000000001",
+            source="generated",
+            mime_type="image/webp",
+            sha256="b" * 64,
+            style_preset="minimal",
+            prompt_note="private runtime prompt note",
+            model="gpt-image-2",
+            preview_id="av_previewwake00000000000000000001",
+        ),
+        expected_revision=repo.read().revision,
+    )
     resumer = FakeResumer()
     session_store = FakeSessionStore()
     file_copier = FakeFileCopier()
@@ -809,6 +824,9 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
     prompt = str(resumer.calls[0]["prompt"])
+    assert "wakeprivate" not in prompt
+    assert "private runtime prompt note" not in prompt
+    assert '"avatar"' not in prompt
     assert "team-action.json" in prompt
     assert "team-action.schema.json" in prompt
     assert "team-action.example.json" in prompt
@@ -2190,6 +2208,20 @@ def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path, max_ephemeral=1)
+    repo.set_agent_avatar(
+        agent_id="backend",
+        avatar=AgentAvatar(
+            asset_id="av_ephemeralprivate0000000000000001",
+            source="generated",
+            mime_type="image/webp",
+            sha256="c" * 64,
+            style_preset="professional",
+            prompt_note="ephemeral private note",
+            model="gpt-image-2",
+            preview_id="av_previewephemeral000000000001",
+        ),
+        expected_revision=repo.read().revision,
+    )
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
     dispatch_id = leases[0]["dispatch_id"]
     provider = TeamApplyAgentActionEffectProvider()
@@ -2231,6 +2263,10 @@ def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
     assert events[0].event_type == "team.ephemeral.requested"
     assert events[0].payload["assignment_id"] == "ephemeral-1"
     assert events[0].payload["metadata"]["team_addon"]["ephemeral_assignment_id"] == "ephemeral-1"
+    prompt = str(events[0].payload["prompt"])
+    assert "ephemeralprivate" not in prompt
+    assert "ephemeral private note" not in prompt
+    assert '"avatar"' not in prompt
 
 
 def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) -> None:

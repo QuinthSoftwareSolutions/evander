@@ -11,6 +11,11 @@ const taskStates = [
 ];
 const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
 const agentStatuses = ["active", "paused", "archived"];
+const avatarStylePresets = [
+  ["professional", "Professional"],
+  ["playful", "Playful"],
+  ["minimal", "Minimal"],
+];
 const projectStatuses = ["active", "blocked", "completed", "archived"];
 const gitProviders = [
   ["github", "GitHub"],
@@ -40,6 +45,7 @@ let activeTeamView = "workspace";
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedPeopleAgentId = null;
+let activeAgentVoiceCall = null;
 
 const teamViewIds = new Set([
   "workspace",
@@ -517,6 +523,27 @@ function bindRecordEditing() {
       return;
     }
 
+    const agentCallButton = event.target.closest("[data-agent-call-agent-id]");
+    if (agentCallButton) {
+      event.preventDefault();
+      void startAgentVoiceCall(agentCallButton, agentCallButton.dataset.agentCallAgentId);
+      return;
+    }
+
+    const agentCallMuteButton = event.target.closest("[data-agent-call-mute]");
+    if (agentCallMuteButton) {
+      event.preventDefault();
+      toggleAgentVoiceMute(agentCallMuteButton);
+      return;
+    }
+
+    const agentCallEndButton = event.target.closest("[data-agent-call-end]");
+    if (agentCallEndButton) {
+      event.preventDefault();
+      void endAgentVoiceCall(agentCallEndButton);
+      return;
+    }
+
     const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     if (contextRotationButton) {
       event.preventDefault();
@@ -554,6 +581,34 @@ function bindRecordEditing() {
         dismissActionButton,
         dismissActionButton.dataset.dismissActionId,
       );
+      return;
+    }
+
+    const avatarGenerateButton = event.target.closest("[data-avatar-generate-agent-id]");
+    if (avatarGenerateButton) {
+      event.preventDefault();
+      void generateAvatarPreview(avatarGenerateButton);
+      return;
+    }
+
+    const avatarAcceptButton = event.target.closest("[data-avatar-accept-agent-id]");
+    if (avatarAcceptButton) {
+      event.preventDefault();
+      void acceptAvatarPreview(avatarAcceptButton);
+      return;
+    }
+
+    const avatarUploadButton = event.target.closest("[data-avatar-upload-agent-id]");
+    if (avatarUploadButton) {
+      event.preventDefault();
+      void uploadAgentAvatar(avatarUploadButton);
+      return;
+    }
+
+    const avatarRemoveButton = event.target.closest("[data-avatar-remove-agent-id]");
+    if (avatarRemoveButton) {
+      event.preventDefault();
+      void removeAgentAvatar(avatarRemoveButton);
       return;
     }
 
@@ -1827,6 +1882,7 @@ function renderHierarchyNode(node, options = {}) {
       <li class="hierarchy-branch">
         <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
           <div class="hierarchy-node-summary">
+            ${renderAgentAvatar(node.agentData)}
             <div class="hierarchy-node-title">
               <strong>${escapeHtml(node.agentData.label)}</strong>
               ${
@@ -1906,7 +1962,10 @@ function renderAgents() {
           return `
               <li class="agent-item">
                 <div class="agent-line">
-                  <strong>${escapeHtml(details.label)}</strong>
+                  <div class="agent-title-with-avatar">
+                    ${renderAgentAvatar(details)}
+                    <strong>${escapeHtml(details.label)}</strong>
+                  </div>
                   <div class="record-actions">
                     <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
                     ${renderAgentStandDownControls(details.id, details)}
@@ -1982,6 +2041,7 @@ function renderSelectableAgent(agent) {
         aria-controls="people-agent-detail-view"
         aria-pressed="${selected ? "true" : "false"}"
       >
+          ${renderAgentAvatar(details)}
           <span class="compact-record-main">
             <strong>${escapeHtml(details.label)}</strong>
             <span>${escapeHtml(details.role)} - ${escapeHtml(details.id)}</span>
@@ -2021,6 +2081,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
   return `
     <div class="agent-detail">
       <div class="agent-detail-header">
+        ${renderAgentAvatar(details, "agent-avatar-large")}
         <div class="agent-detail-title">
           <h3>${escapeHtml(details.label)}</h3>
           <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
@@ -2036,6 +2097,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
         <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
         ${editButton("agent", details.id)}
       </div>
+      ${renderAgentVoiceCallPanel(details)}
       <div class="agent-detail-grid">
         ${renderAgentDetailField("Session", details.sessionId || "None")}
         ${renderAgentDetailField("Reports to", details.reportsToLabel)}
@@ -2068,6 +2130,88 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </section>
     </div>
   `;
+}
+
+function renderAgentVoiceCallPanel(details) {
+  const call = activeAgentVoiceCall?.agentId === details.id ? activeAgentVoiceCall : null;
+  const liveCallForOtherAgent =
+    activeAgentVoiceCall && !agentVoiceCallIsTerminal(activeAgentVoiceCall) && activeAgentVoiceCall.agentId !== details.id;
+  const callDisabled = details.status === "archived" || liveCallForOtherAgent;
+  const transcriptRows = (call?.transcript || [])
+    .slice(-4)
+    .map((entry) => {
+      const speaker = text(entry.speaker) || "voice";
+      return `<li><span>${escapeHtml(speaker)}</span>${escapeHtml(entry.text)}</li>`;
+    })
+    .join("");
+  if (!call || agentVoiceCallIsTerminal(call)) {
+    return `
+      <section class="agent-detail-section agent-voice-call-panel">
+        <div class="agent-voice-call-header">
+          <h3>Voice</h3>
+          <span class="state-pill neutral">idle</span>
+        </div>
+        <div class="record-actions agent-voice-call-controls">
+          <button class="record-action" type="button" data-agent-call-agent-id="${escapeAttr(details.id)}" ${callDisabled ? "disabled" : ""}>Call</button>
+        </div>
+        ${call?.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
+      </section>
+    `;
+  }
+  const retryEnd = call.cleanupRequested || call.status === "end_failed";
+  const endingDisabled = call.status === "ending" ? "disabled" : "";
+  return `
+    <section class="agent-detail-section agent-voice-call-panel">
+      <div class="agent-voice-call-header">
+        <h3>Voice</h3>
+        <span class="state-pill ${escapeAttr(agentVoiceCallPillClass(call))}">${escapeHtml(agentVoiceCallStatusLabel(call))}</span>
+      </div>
+      <div class="record-actions agent-voice-call-controls">
+        ${retryEnd ? "" : `<button class="record-action" type="button" data-agent-call-mute>${call.muted ? "Unmute" : "Mute"}</button>`}
+        <button class="record-action" type="button" data-agent-call-end ${endingDisabled}>${retryEnd ? "Retry end" : "End"}</button>
+      </div>
+      ${call.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
+      ${transcriptRows ? `<ol class="agent-voice-transcript">${transcriptRows}</ol>` : ""}
+    </section>
+  `;
+}
+
+function agentVoiceCallIsTerminal(call) {
+  return !call || call.status === "ended" || call.status === "failed";
+}
+
+function agentVoiceCallStatusLabel(call) {
+  const status = text(call?.status) || "idle";
+  if (status === "active") {
+    return "live";
+  }
+  if (status === "querying") {
+    return "querying";
+  }
+  if (status === "ending") {
+    return "ending";
+  }
+  if (status === "end_failed") {
+    return "end failed";
+  }
+  return status;
+}
+
+function agentVoiceCallPillClass(call) {
+  const status = text(call?.status);
+  if (status === "active" || status === "querying") {
+    return "accepted";
+  }
+  if (status === "failed") {
+    return "rejected";
+  }
+  if (status === "end_failed") {
+    return "rejected";
+  }
+  if (status === "connecting" || status === "ending") {
+    return "blocked";
+  }
+  return "neutral";
 }
 
 function renderAgentDetailField(label, value) {
@@ -2214,6 +2358,7 @@ function agentCardData(agent) {
     label: agentLabel(agent),
     role: agentRoleLabel(agent),
     roleId: text(agent?.role_id),
+    avatar: agent?.avatar || null,
     status: agentStatus(agent),
     sessionId: text(agent?.session_id),
     projectId: projectId || null,
@@ -4712,6 +4857,151 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
     }
 }
 
+async function uploadAgentAvatar(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarUploadAgentId);
+  const file = form?.elements.avatar_file?.files?.[0] || null;
+  if (!form || !agentId || !file) {
+    setStatus("Choose an avatar image to upload.", "error");
+    return;
+  }
+  const body = new FormData();
+  body.append("expected_revision", String(state.revision));
+  body.append("file", file);
+  await submitAvatarFormData(form, `/agents/${encodeURIComponent(agentId)}/avatar/upload`, body);
+}
+
+async function generateAvatarPreview(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarGenerateAgentId);
+  if (!form || !agentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const data = formData(form);
+  setFormBusy(form, true);
+  setStatus("Generating avatar preview.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/avatar/previews`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        style_preset: text(data.avatar_style_preset) || "professional",
+        prompt_note: text(data.avatar_prompt_note) || null,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    const preview = payload.preview || {};
+    const slot = form.querySelector("[data-avatar-preview-slot]");
+    if (slot) {
+      slot.innerHTML = `
+        <div class="avatar-preview-card">
+          <img src="${escapeAttr(preview.url)}" alt="Generated avatar preview" />
+          <div class="meta-line">Preview ready - ${escapeHtml(preview.style_preset || "generated")}</div>
+        </div>
+      `;
+    }
+    const acceptButton = form.querySelector("[data-avatar-accept-agent-id]");
+    if (acceptButton) {
+      acceptButton.disabled = false;
+      acceptButton.dataset.avatarPreviewId = preview.preview_id || "";
+    }
+    setStatus("Avatar preview generated.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Avatar generation failed.", "error");
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function acceptAvatarPreview(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarAcceptAgentId);
+  const previewId = text(button.dataset.avatarPreviewId);
+  if (!form || !agentId || !previewId) {
+    setStatus("Generate a preview before accepting it.", "error");
+    return;
+  }
+  await submitAvatarJson(
+    form,
+    `/agents/${encodeURIComponent(agentId)}/avatar/accept-preview`,
+    "POST",
+    { preview_id: previewId },
+    agentId,
+  );
+}
+
+async function removeAgentAvatar(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarRemoveAgentId);
+  if (!form || !agentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  await submitAvatarJson(
+    form,
+    `/agents/${encodeURIComponent(agentId)}/avatar`,
+    "DELETE",
+    {},
+    agentId,
+  );
+}
+
+async function submitAvatarFormData(form, endpoint, body) {
+  const drafts = captureFormDrafts();
+  setFormBusy(form, true);
+  setStatus("Saving avatar.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body,
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
+      return false;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    state = normalizeState(await response.json());
+    render();
+    openEditDialog("agent", text(form.dataset.editId));
+    void loadTimeline();
+    setStatus(`Saved avatar at revision ${state.revision}.`, "ok");
+    return true;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Avatar save failed.", "error");
+    return false;
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function submitAvatarJson(form, endpoint, method, payload, agentId) {
+  const saved = await submitMutation(
+    form,
+    endpoint,
+    method,
+    payload,
+    { resetOnSuccess: false },
+  );
+  if (saved && agentId) {
+    openEditDialog("agent", agentId);
+  }
+  return saved;
+}
+
 async function requestContextRotation(button, agentId) {
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
@@ -4762,6 +5052,606 @@ async function requestContextRotation(button, agentId) {
       button.disabled = false;
     }
   }
+}
+
+async function startAgentVoiceCall(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId || !state.agents[normalizedAgentId]) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  if (activeAgentVoiceCall && !agentVoiceCallIsTerminal(activeAgentVoiceCall)) {
+    setStatus("A voice call is already active.", "warning");
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+    setStatus("Browser voice calls require microphone and WebRTC support.", "error");
+    return;
+  }
+  const call = {
+    agentId: normalizedAgentId,
+    voiceSessionId: "",
+    requestId: createAgentVoiceRequestId(),
+    status: "connecting",
+    startupPhase: "microphone",
+    muted: false,
+    cancelRequested: false,
+    cleanupRequested: false,
+    transcript: [],
+    handledFunctionCalls: new Set(),
+    mediaStream: null,
+    peerConnection: null,
+    dataChannel: null,
+    remoteAudio: null,
+    callsUrl: "",
+    clientSecret: "",
+    error: "",
+  };
+  activeAgentVoiceCall = call;
+  button.disabled = true;
+  renderAgents();
+  setStatus("Connecting voice call.", "loading");
+  try {
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    call.mediaStream = mediaStream;
+    if (!agentVoiceCallIsCurrent(call)) {
+      cleanupAgentVoiceCall(call);
+      return;
+    }
+    if (call.cancelRequested) {
+      cleanupAgentVoiceCall(call);
+      clearAgentVoiceCallIfCurrent(call);
+      setStatus("Voice call cancelled.", "ok");
+      return;
+    }
+    call.startupPhase = "session";
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/voice-sessions`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ request_id: call.requestId }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (!agentVoiceCallIsCurrent(call)) {
+      call.voiceSessionId = text(payload.voice_session_id);
+      call.requestId = text(payload.request_id) || call.requestId;
+      await endAgentVoiceSessionOnServer(call, "ended", "Cancelled during startup.")
+        .catch(() => {});
+      cleanupAgentVoiceCall(call);
+      return;
+    }
+    call.voiceSessionId = text(payload.voice_session_id);
+    call.requestId = text(payload.request_id) || call.requestId;
+    call.clientSecret = realtimeClientSecretValue(payload);
+    call.callsUrl = text(payload.realtime?.calls_url) || "https://api.openai.com/v1/realtime/calls";
+    if (!call.voiceSessionId || !call.clientSecret) {
+      throw new Error("Voice call response was missing a session or client secret.");
+    }
+    if (call.cancelRequested) {
+      await endAgentVoiceCallAfterStartupCancel(call);
+      return;
+    }
+    call.startupPhase = "webrtc";
+    await connectBrowserRealtimeVoice(call);
+    if (!agentVoiceCallIsCurrent(call)) {
+      cleanupAgentVoiceCall(call);
+      return;
+    }
+    if (call.cancelRequested) {
+      await endAgentVoiceCallAfterStartupCancel(call);
+      return;
+    }
+    call.status = "active";
+    call.startupPhase = "active";
+    call.error = "";
+    renderAgents();
+    await recordAgentVoiceEvent(call.voiceSessionId, {
+      status: "active",
+      event_type: "browser_call.active",
+    });
+    if (!agentVoiceCallIsCurrent(call) || call.cancelRequested) {
+      return;
+    }
+    setStatus(`Voice call with ${agentLabel(state.agents[normalizedAgentId])} is live.`, "ok");
+  } catch (error) {
+    if (!agentVoiceCallIsCurrent(call)) {
+      cleanupAgentVoiceCall(call);
+      return;
+    }
+    const message = error instanceof Error ? error.message : "Voice call failed.";
+    await failAgentVoiceCall(call, message);
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function connectBrowserRealtimeVoice(call) {
+  const peerConnection = new RTCPeerConnection();
+  const dataChannel = peerConnection.createDataChannel("oai-events");
+  const remoteAudio = document.createElement("audio");
+  remoteAudio.autoplay = true;
+  remoteAudio.hidden = true;
+  remoteAudio.setAttribute("playsinline", "true");
+  document.body.appendChild(remoteAudio);
+  call.peerConnection = peerConnection;
+  call.dataChannel = dataChannel;
+  call.remoteAudio = remoteAudio;
+
+  peerConnection.addEventListener("track", (event) => {
+    const [stream] = event.streams;
+    if (stream) {
+      remoteAudio.srcObject = stream;
+      void remoteAudio.play().catch(() => {});
+    }
+  });
+  peerConnection.addEventListener("connectionstatechange", () => {
+    const status = peerConnection.connectionState;
+    if (status === "failed" && !agentVoiceCallIsTerminal(call) && call.status !== "ending") {
+      void failAgentVoiceCall(call, `WebRTC connection ${status}.`);
+    }
+  });
+  dataChannel.addEventListener("message", (event) => {
+    void handleRealtimeAgentVoiceEvent(call, event.data);
+  });
+  call.mediaStream.getTracks().forEach((track) => {
+    peerConnection.addTrack(track, call.mediaStream);
+  });
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+  const response = await fetch(call.callsUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${call.clientSecret}`,
+      "Content-Type": "application/sdp",
+    },
+    body: offer.sdp,
+  });
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  await peerConnection.setRemoteDescription({
+    type: "answer",
+    sdp: await response.text(),
+  });
+}
+
+function realtimeClientSecretValue(payload) {
+  return (
+    text(payload?.client_secret?.value) ||
+    text(payload?.client_secret?.client_secret?.value) ||
+    text(payload?.client_secret)
+  );
+}
+
+async function recordAgentVoiceEvent(voiceSessionId, payload) {
+  const normalizedVoiceSessionId = text(voiceSessionId);
+  if (!normalizedVoiceSessionId) {
+    return null;
+  }
+  const response = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(normalizedVoiceSessionId)}/events`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload || {}),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  return response.json();
+}
+
+async function endAgentVoiceCall(button) {
+  const call = activeAgentVoiceCall;
+  if (!call) {
+    return;
+  }
+  const wasConnecting = call.status === "connecting";
+  button.disabled = true;
+  call.cancelRequested = true;
+  call.status = "ending";
+  renderAgents();
+  if (!call.voiceSessionId && !call.requestId) {
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call cancelled.", "ok");
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (!call.voiceSessionId && wasConnecting && call.startupPhase === "microphone") {
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call cancelled.", "ok");
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (!call.voiceSessionId && wasConnecting) {
+    cleanupAgentVoiceCall(call);
+    setStatus("Cancelling voice call startup.", "loading");
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  try {
+    await endAgentVoiceSessionOnServer(call, "ended", "");
+    cleanupAgentVoiceCall(call);
+    call.status = "ended";
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call ended.", "ok");
+  } catch (error) {
+    markAgentVoiceEndFailed(call, "Voice call end failed", error);
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (button.isConnected) {
+    button.disabled = false;
+  }
+}
+
+function agentVoiceCallIsCurrent(call) {
+  return activeAgentVoiceCall === call;
+}
+
+function createAgentVoiceRequestId() {
+  if (globalThis.crypto?.randomUUID) {
+    return `browser-call:${globalThis.crypto.randomUUID()}`;
+  }
+  return `browser-call:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
+function clearAgentVoiceCallIfCurrent(call) {
+  if (!agentVoiceCallIsCurrent(call)) {
+    return;
+  }
+  activeAgentVoiceCall = null;
+  renderAgents();
+}
+
+async function endAgentVoiceCallAfterStartupCancel(call) {
+  try {
+    await endAgentVoiceSessionOnServer(call, "ended", "Cancelled during startup.");
+    cleanupAgentVoiceCall(call);
+    call.status = "ended";
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call cancelled.", "ok");
+  } catch (error) {
+    cleanupAgentVoiceCall(call);
+    markAgentVoiceEndFailed(call, "Voice call was stopped locally, but end update failed", error);
+  }
+}
+
+async function failAgentVoiceCall(call, message) {
+  call.status = "failed";
+  call.error = message;
+  if (agentVoiceCallIsCurrent(call)) {
+    renderAgents();
+  }
+  if (!call.voiceSessionId && !call.requestId) {
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus(message, "error");
+    return;
+  }
+  try {
+    await endAgentVoiceSessionOnServer(call, "failed", message);
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus(message, "error");
+  } catch (error) {
+    cleanupAgentVoiceCall(call);
+    markAgentVoiceEndFailed(call, `${message} End update failed`, error);
+  }
+}
+
+function markAgentVoiceEndFailed(call, prefix, error) {
+  call.status = "end_failed";
+  call.cleanupRequested = true;
+  call.error = `${prefix}: ${error instanceof Error ? error.message : "retry required"}`;
+  if (agentVoiceCallIsCurrent(call)) {
+    renderAgents();
+  }
+  setStatus(call.error, "error");
+}
+
+async function endAgentVoiceSessionOnServer(call, status, errorMessage) {
+  let endpoint = "";
+  if (call.voiceSessionId) {
+    endpoint = `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/end`;
+  } else if (call.requestId) {
+    endpoint = `${API_BASE}/voice-session-requests/${encodeURIComponent(call.requestId)}/end`;
+  } else {
+    return null;
+  }
+  const transcript = agentVoiceTranscriptExcerpt(call, { limit: 60 });
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      status,
+      transcript: transcript || null,
+      error: errorMessage || null,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  const payload = await response.json();
+  call.voiceSessionId = call.voiceSessionId || text(payload.voice_session_id);
+  return payload;
+}
+
+function cleanupAgentVoiceCall(call) {
+  try {
+    call.dataChannel?.close();
+  } catch {
+    // Ignore close races from the browser WebRTC stack.
+  }
+  try {
+    call.peerConnection?.close();
+  } catch {
+    // Ignore close races from the browser WebRTC stack.
+  }
+  call.mediaStream?.getTracks?.().forEach((track) => {
+    track.stop();
+  });
+  if (call.remoteAudio) {
+    call.remoteAudio.pause();
+    call.remoteAudio.srcObject = null;
+    call.remoteAudio.remove();
+  }
+  call.dataChannel = null;
+  call.peerConnection = null;
+  call.mediaStream = null;
+  call.remoteAudio = null;
+}
+
+function toggleAgentVoiceMute() {
+  const call = activeAgentVoiceCall;
+  if (!call?.mediaStream) {
+    return;
+  }
+  call.muted = !call.muted;
+  call.mediaStream.getAudioTracks().forEach((track) => {
+    track.enabled = !call.muted;
+  });
+  renderAgents();
+}
+
+async function handleRealtimeAgentVoiceEvent(call, rawEvent) {
+  let event;
+  try {
+    event = JSON.parse(rawEvent);
+  } catch {
+    return;
+  }
+  if (event.type === "error") {
+    const message = text(event.error?.message) || "Realtime voice error.";
+    call.error = message;
+    renderAgents();
+    setStatus(message, "error");
+    return;
+  }
+  const transcript = realtimeTranscriptFromEvent(event);
+  if (transcript) {
+    call.transcript.push(transcript);
+    call.transcript = call.transcript.slice(-40);
+    renderAgents();
+    if (call.voiceSessionId) {
+      void recordAgentVoiceEvent(call.voiceSessionId, {
+        text: transcript.text,
+        speaker: transcript.speaker,
+        event_type: transcript.eventType,
+        metadata: { realtime_event_type: event.type },
+      }).catch(() => {});
+    }
+  }
+  const functionCall = realtimeFunctionCallFromEvent(event);
+  if (functionCall) {
+    await handleRealtimeFunctionCall(call, functionCall);
+  }
+}
+
+function realtimeTranscriptFromEvent(event) {
+  const eventType = text(event.type);
+  if (eventType === "conversation.item.input_audio_transcription.completed") {
+    const transcript = text(event.transcript);
+    return transcript ? { speaker: "operator", text: transcript, eventType } : null;
+  }
+  if (
+    eventType === "response.audio_transcript.done" ||
+    eventType === "response.output_audio_transcript.done"
+  ) {
+    const transcript = text(event.transcript);
+    return transcript ? { speaker: "agent", text: transcript, eventType } : null;
+  }
+  return null;
+}
+
+function realtimeFunctionCallFromEvent(event) {
+  if (event.type === "response.function_call_arguments.done") {
+    return {
+      callId: text(event.call_id),
+      name: text(event.name),
+      argumentsText: text(event.arguments),
+    };
+  }
+  if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
+    return {
+      callId: text(event.item.call_id),
+      name: text(event.item.name),
+      argumentsText: text(event.item.arguments),
+    };
+  }
+  return null;
+}
+
+async function handleRealtimeFunctionCall(call, functionCall) {
+  if (!functionCall.callId || call.handledFunctionCalls.has(functionCall.callId)) {
+    return;
+  }
+  call.handledFunctionCalls.add(functionCall.callId);
+  if (functionCall.name !== "query_origin_agent") {
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: "failed",
+      error: `Unsupported function ${functionCall.name || "<empty>"}.`,
+    });
+    return;
+  }
+  const args = parseRealtimeFunctionArguments(functionCall.argumentsText);
+  const question = text(args.question || args.query);
+  if (!question) {
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: "failed",
+      error: "question is required",
+    });
+    return;
+  }
+  const previousStatus = call.status;
+  call.status = "querying";
+  renderAgents();
+  try {
+    const query = await createAgentVoiceQuery(call, {
+      question,
+      reason: text(args.reason),
+      functionCallId: functionCall.callId,
+    });
+    const completed = await waitForAgentVoiceQuery(call.voiceSessionId, query.query_id);
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: completed.status,
+      answer: completed.answer,
+      error: completed.error,
+      citations: completed.citations || [],
+      confidence: completed.confidence || null,
+    });
+  } catch (error) {
+    sendRealtimeFunctionOutput(call, functionCall.callId, {
+      status: "failed",
+      error: error instanceof Error ? error.message : "origin agent query failed",
+    });
+  } finally {
+    if (!agentVoiceCallIsTerminal(call)) {
+      call.status = previousStatus === "connecting" ? "active" : previousStatus;
+      renderAgents();
+    }
+  }
+}
+
+function parseRealtimeFunctionArguments(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function createAgentVoiceQuery(call, { question, reason, functionCallId }) {
+  const response = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/queries`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        question,
+        transcript_excerpt: agentVoiceTranscriptExcerpt(call),
+        deadline_seconds: 90,
+        metadata: {
+          reason: reason || null,
+          realtime_call_id: functionCallId,
+          source: "browser_realtime_function",
+        },
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  return response.json();
+}
+
+async function waitForAgentVoiceQuery(voiceSessionId, queryId) {
+  const startedAt = Date.now();
+  const timeoutMs = 90000;
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await fetch(
+      `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (["answered", "failed", "timeout"].includes(payload.status)) {
+      return payload;
+    }
+    await delay(1200);
+  }
+  const timeoutResponse = await fetch(
+    `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}/timeout`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ error: "Browser voice query timed out." }),
+    },
+  );
+  if (!timeoutResponse.ok) {
+    throw new Error(await responseText(timeoutResponse));
+  }
+  return timeoutResponse.json();
+}
+
+function sendRealtimeFunctionOutput(call, callId, output) {
+  if (!call.dataChannel || call.dataChannel.readyState !== "open") {
+    return;
+  }
+  call.dataChannel.send(
+    JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(output),
+      },
+    }),
+  );
+  call.dataChannel.send(JSON.stringify({ type: "response.create" }));
+}
+
+function agentVoiceTranscriptExcerpt(call, { limit = 12 } = {}) {
+  return (call.transcript || [])
+    .slice(-limit)
+    .map((entry) => `${text(entry.speaker) || "voice"}: ${entry.text}`)
+    .join("\n");
 }
 
 async function requestAgentStandDown(button, agentId) {
@@ -5304,6 +6194,7 @@ function renderEditFields(type, record) {
       ${selectField("Role", "role_id", "roles", record.role_id || "", { required: true })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
+      ${renderAvatarEditControls(record)}
       ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
@@ -5351,6 +6242,42 @@ function renderEditFields(type, record) {
     `;
   }
   return "";
+}
+
+function renderAvatarEditControls(record) {
+  const hasAvatar = Boolean(record?.avatar?.asset_id);
+  const styleOptions = avatarStylePresets
+    .map(([value, label]) => `<option value="${escapeAttr(value)}"${value === "professional" ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+  return `
+    <fieldset class="avatar-editor">
+      <legend>Avatar</legend>
+      <div class="avatar-editor-current">
+        ${renderAgentAvatar(record, "agent-avatar-large")}
+        <div>
+          <div class="meta-line">${hasAvatar ? `Current avatar - ${escapeHtml(record.avatar.source || "custom")}` : "No avatar set"}</div>
+          <div class="record-actions avatar-editor-actions">
+            <input type="file" name="avatar_file" accept="image/png,image/jpeg,image/webp" />
+            <button class="record-action" type="button" data-avatar-upload-agent-id="${escapeAttr(record.id)}">Upload</button>
+            ${hasAvatar ? `<button class="record-action" type="button" data-avatar-remove-agent-id="${escapeAttr(record.id)}">Remove</button>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="avatar-generation-grid">
+        <label>Style preset
+          <select name="avatar_style_preset">${styleOptions}</select>
+        </label>
+        <label>Generation notes
+          <textarea name="avatar_prompt_note" rows="2" placeholder="Optional visual hints"></textarea>
+        </label>
+      </div>
+      <div class="record-actions avatar-editor-actions">
+        <button class="record-action" type="button" data-avatar-generate-agent-id="${escapeAttr(record.id)}">Generate preview</button>
+        <button class="record-action" type="button" data-avatar-accept-agent-id="${escapeAttr(record.id)}" disabled>Accept preview</button>
+      </div>
+      <div class="avatar-preview-slot" data-avatar-preview-slot></div>
+    </fieldset>
+  `;
 }
 
 function editPayloadForForm(type, form) {
@@ -5575,6 +6502,12 @@ async function responseText(response) {
   }
 }
 
+function delay(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
+
 function orderedTasksForAgent(agentId) {
   return values(state.tasks)
     .filter((task) => task.owner_agent_id === agentId)
@@ -5694,7 +6627,35 @@ function text(value) {
 }
 
 function agentLabel(agent) {
-  return text(agent?.display_name) || text(agent?.name) || text(agent?.id);
+  return text(agent?.display_name) || text(agent?.name) || text(agent?.label) || text(agent?.id);
+}
+
+function avatarUrl(agentOrDetails) {
+  const avatar = agentOrDetails?.avatar;
+  const assetId = text(avatar?.asset_id);
+  if (!assetId) {
+    return "";
+  }
+  return text(avatar.url) || `${API_BASE}/avatars/${encodeURIComponent(assetId)}`;
+}
+
+function agentInitials(agentOrDetails) {
+  const label = agentLabel(agentOrDetails);
+  const parts = label.split(/[\s._-]+/).filter(Boolean);
+  const letters = parts.length > 1
+    ? `${parts[0][0] || ""}${parts[1][0] || ""}`
+    : label.slice(0, 2);
+  return (letters || "A").toUpperCase();
+}
+
+function renderAgentAvatar(agentOrDetails, extraClass = "") {
+  const src = avatarUrl(agentOrDetails);
+  const label = agentLabel(agentOrDetails);
+  const className = `agent-avatar ${extraClass}`.trim();
+  if (src) {
+    return `<span class="${escapeAttr(className)}"><img src="${escapeAttr(src)}" alt="${escapeAttr(`${label} avatar`)}" loading="lazy" /></span>`;
+  }
+  return `<span class="${escapeAttr(`${className} agent-avatar-fallback`)}" aria-hidden="true">${escapeHtml(agentInitials(agentOrDetails))}</span>`;
 }
 
 function roleLabel(roleOrId) {

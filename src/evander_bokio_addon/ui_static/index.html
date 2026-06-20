@@ -4,6 +4,46 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Bokio Add-on</title>
+    <script>
+      (function () {
+        const storageKey = "admin-web:theme";
+        function storedTheme() {
+          try {
+            return window.localStorage.getItem(storageKey);
+          } catch (_error) {
+            return null;
+          }
+        }
+        function resolveTheme() {
+          const theme = storedTheme();
+          if (theme === "dark" || theme === "light") {
+            return theme;
+          }
+          return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        }
+        function applyTheme() {
+          const theme = resolveTheme();
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        }
+        applyTheme();
+        window.addEventListener("storage", function (event) {
+          if (event.key === storageKey) {
+            applyTheme();
+          }
+        });
+        if (window.matchMedia) {
+          const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+          if (mediaQuery.addEventListener) {
+            mediaQuery.addEventListener("change", applyTheme);
+          } else if (mediaQuery.addListener) {
+            mediaQuery.addListener(applyTheme);
+          }
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="./bokio-ui.css" />
   </head>
   <body>

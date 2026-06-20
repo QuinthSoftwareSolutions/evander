@@ -108,6 +108,28 @@ class EphemeralAgentPolicy(TeamModel):
     max_concurrent: int = Field(default=0, ge=0)
 
 
+class AgentAvatar(TeamModel):
+    asset_id: str
+    source: Literal["uploaded", "generated"]
+    mime_type: str = "image/webp"
+    sha256: str
+    created_at: datetime = Field(default_factory=utc_now)
+    style_preset: str | None = None
+    prompt_note: str | None = None
+    model: str | None = None
+    preview_id: str | None = None
+
+    @field_validator("asset_id", "source", "mime_type", "sha256", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("style_preset", "prompt_note", "model", "preview_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class TeamRole(TeamModel):
     id: str
     team_id: str
@@ -272,6 +294,7 @@ class PersistentAgent(TeamModel):
     team_id: str
     project_id: str | None = None
     display_name: str | None = None
+    avatar: AgentAvatar | None = None
     role_id: str
     session_id: str
     reports_to_agent_id: str | None = None
@@ -1375,11 +1398,19 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
     return payload
 
 
-def team_state_payload(state: TeamState) -> dict[str, Any]:
+def team_state_payload(
+    state: TeamState,
+    *,
+    include_agent_avatars: bool = True,
+) -> dict[str, Any]:
     payload = state.model_dump(mode="json")
     payload["available_role_permissions"] = [permission.value for permission in RolePermission]
     payload["agents"] = {
-        agent_id: _agent_payload_with_role(state, agent)
+        agent_id: _agent_payload_with_role(
+            state,
+            agent,
+            include_avatar=include_agent_avatars,
+        )
         for agent_id, agent in state.agents.items()
     }
     payload["tasks"] = {
@@ -1390,8 +1421,15 @@ def team_state_payload(state: TeamState) -> dict[str, Any]:
     return payload
 
 
-def _agent_payload_with_role(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
+def _agent_payload_with_role(
+    state: TeamState,
+    agent: PersistentAgent,
+    *,
+    include_avatar: bool = True,
+) -> dict[str, Any]:
     payload = agent.model_dump(mode="json")
+    if not include_avatar:
+        payload.pop("avatar", None)
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (

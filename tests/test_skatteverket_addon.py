@@ -8,14 +8,17 @@ from types import SimpleNamespace
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
 
-from agent_sandbox.addons import AddonLoaderConfig, load_addons
+from agent_sandbox.addons import AddonContext, AddonLoaderConfig, addon_runtime_dir, load_addons
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import ApprovalStatus, SessionManifest
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.workflow.plugins import load_provider_plugins
+from evander_skatteverket_addon.api import admin_api_routes
 from evander_skatteverket_addon.catalog import ADDON_ID, catalog_payload
 from evander_skatteverket_addon.mcp import (
     CONNECTION_STATUS_TOOL,
@@ -104,6 +107,87 @@ def test_bundled_skatteverket_addon_packaging_contract_is_declared() -> None:
     assert addon_entry_points["skatteverket"] == "evander_skatteverket_addon:register_addon"
     assert package_data["evander_skatteverket_addon"] == ["ui_static/*"]
     assert (PROJECT_ROOT / "src/evander_skatteverket_addon/ui_static/index.html").is_file()
+
+
+def test_skatteverket_static_ui_exposes_connection_editor() -> None:
+    static_dir = PROJECT_ROOT / "src" / "evander_skatteverket_addon" / "ui_static"
+    index_html = (static_dir / "index.html").read_text(encoding="utf-8")
+    ui_js = (static_dir / "skatteverket-ui.js").read_text(encoding="utf-8")
+    ui_css = (static_dir / "skatteverket-ui.css").read_text(encoding="utf-8")
+
+    assert 'id="connection-form"' in index_html
+    for field_name in (
+        "connection_id",
+        "display_name",
+        "environment",
+        "base_url",
+        "token_url",
+        "submission_endpoint",
+        "client_id_env",
+        "client_secret_env",
+        "apigw_client_id_env",
+        "apigw_client_secret_env",
+        "api_key_env",
+        "certificate_subject",
+        "redirect_uri",
+    ):
+        assert f'name="{field_name}"' in index_html
+    assert 'id="api-picker"' in index_html
+    assert 'class="skv-help"' in index_html
+    assert "OAuth2 Client secret env help" in index_html
+    assert "APIgw Client secret env help" in index_html
+    assert "Skatteverket access tokens" in index_html
+    assert 'fetch(`${apiBase}/connections`' in ui_js
+    assert 'method: "POST"' in ui_js
+    assert "enabled_api_names" in ui_js
+    assert ".skv-api-picker" in ui_css
+    assert ".skv-help::after" in ui_css
+
+
+def test_skatteverket_admin_api_upserts_connection(tmp_path: Path) -> None:
+    context = AddonContext(
+        addon_id=ADDON_ID,
+        runtime_dir=tmp_path,
+        addon_runtime_dir=addon_runtime_dir(tmp_path, ADDON_ID),
+    )
+    client = TestClient(Starlette(routes=admin_api_routes(context)))
+
+    response = client.post(
+        "/connections",
+        json={
+            "connection_id": "default",
+            "environment": "komplett_testtjanst",
+            "display_name": "Skatteverket test",
+            "base_url": "https://api.example.test",
+            "token_url": "https://login.example.test/token",
+            "client_id_env": "SKV_CLIENT_ID",
+            "client_secret_env": "SKV_CLIENT_SECRET",
+            "apigw_client_id_env": "SKV_APIGW_CLIENT_ID",
+            "apigw_client_secret_env": "SKV_APIGW_CLIENT_SECRET",
+            "api_key_env": "SKV_API_KEY",
+            "certificate_subject": "CN=test",
+            "redirect_uri": "https://admin.example.test/skv/callback",
+            "submission_endpoint": "https://api.example.test/submit",
+            "enabled_api_names": ["momsdeklaration", "skattekonto"],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 201
+    connection = response.json()["connection"]
+    assert connection["connection_id"] == "default"
+    assert connection["enabled_api_names"] == ["momsdeklaration", "skattekonto"]
+
+    status = client.get("/connection-status").json()
+    assert status["configured"] is True
+    assert status["ready"] is False
+    assert status["missing_secret_refs"] == [
+        "SKV_CLIENT_ID",
+        "SKV_CLIENT_SECRET",
+        "SKV_APIGW_CLIENT_ID",
+        "SKV_APIGW_CLIENT_SECRET",
+        "SKV_API_KEY",
+    ]
 
 
 def test_skatteverket_addon_loads_admin_and_workflow_surfaces() -> None:

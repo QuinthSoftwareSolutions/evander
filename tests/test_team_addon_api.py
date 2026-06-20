@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
+from PIL import Image
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
@@ -10,6 +14,7 @@ from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
+from agent_sandbox.models import SessionManifest
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -25,6 +30,12 @@ from truman_team_addon.models import (
     TeamTaskState,
 )
 from truman_team_addon.repository import TeamStateRepository
+
+
+def _png_avatar_bytes(color: tuple[int, int, int] = (23, 111, 122)) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (32, 24), color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
@@ -250,6 +261,342 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
     return repo
 
 
+class _FakeAvatarGenerator:
+    model = "gpt-image-2"
+
+    async def generate(self, *, prompt: str) -> bytes:
+        assert "Backend" in prompt
+        return _png_avatar_bytes((140, 60, 170))
+
+
+class _FailingAvatarGenerator:
+    model = "gpt-image-2"
+
+    async def generate(self, *, prompt: str) -> bytes:
+        raise RuntimeError("OpenAI image generation request failed: timeout")
+
+
+def test_agent_avatar_upload_normalizes_and_serves_image(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.png", _png_avatar_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    avatar = payload["agents"]["backend"]["avatar"]
+    assert avatar["source"] == "uploaded"
+    assert avatar["mime_type"] == "image/webp"
+    assert avatar["asset_id"].startswith("av_")
+    assert len(avatar["sha256"]) == 64
+
+    image_response = client.get(f"/api/addons/team-addon/avatars/{avatar['asset_id']}")
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"].startswith("image/webp")
+    assert image_response.content.startswith(b"RIFF")
+
+
+def test_agent_avatar_upload_rejects_non_image(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.txt", b"not an image", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert "valid PNG, JPEG, or WebP" in response.json()["error"]
+
+
+def test_agent_avatar_upload_rejects_corrupt_recognized_image(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    corrupt_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.png", corrupt_png, "image/png")},
+    )
+
+    assert response.status_code == 400
+    assert "valid PNG, JPEG, or WebP" in response.json()["error"]
+
+
+def test_generated_agent_avatar_preview_wraps_transport_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    monkeypatch.setattr(
+        "truman_team_addon.api.openai_avatar_generator_from_config",
+        lambda _config: _FailingAvatarGenerator(),
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/previews",
+        json={},
+    )
+
+    assert response.status_code == 503
+    assert "OpenAI image generation request failed" in response.json()["error"]
+
+
+def test_generated_agent_avatar_preview_is_accepted_with_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    monkeypatch.setattr(
+        "truman_team_addon.api.openai_avatar_generator_from_config",
+        lambda _config: _FakeAvatarGenerator(),
+    )
+    client = _client(tmp_path)
+
+    preview_response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/previews",
+        json={"style_preset": "minimal", "prompt_note": "teal accent"},
+    )
+
+    assert preview_response.status_code == 201
+    preview = preview_response.json()["preview"]
+    assert preview["preview_id"].startswith("av_")
+    assert preview["style_preset"] == "minimal"
+    assert repo.read().agents["backend"].avatar is None
+    assert client.get(preview["url"]).status_code == 200
+
+    accept_response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/accept-preview",
+        json={
+            "expected_revision": repo.read().revision,
+            "preview_id": preview["preview_id"],
+        },
+    )
+
+    assert accept_response.status_code == 200
+    avatar = accept_response.json()["agents"]["backend"]["avatar"]
+    assert avatar["source"] == "generated"
+    assert avatar["asset_id"] == preview["preview_id"]
+    assert avatar["style_preset"] == "minimal"
+    assert client.get(f"/api/addons/team-addon/avatars/{avatar['asset_id']}").status_code == 200
+
+
+def test_agent_avatar_accept_preview_requires_current_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    monkeypatch.setattr(
+        "truman_team_addon.api.openai_avatar_generator_from_config",
+        lambda _config: _FakeAvatarGenerator(),
+    )
+    client = _client(tmp_path)
+    preview = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/previews",
+        json={},
+    ).json()["preview"]
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/accept-preview",
+        json={"expected_revision": repo.read().revision - 1, "preview_id": preview["preview_id"]},
+    )
+
+    assert response.status_code == 409
+    assert repo.read().agents["backend"].avatar is None
+    assert client.get(preview["url"]).status_code == 200
+
+
+def test_openai_avatar_generator_wraps_http_transport_errors() -> None:
+    from truman_team_addon.avatars import OpenAIAvatarGenerator
+
+    async def _handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failed")
+
+    generator = OpenAIAvatarGenerator(
+        api_key="token",
+        api_key_source="OPENAI_API_KEY",
+        transport=httpx.MockTransport(_handler),
+    )
+
+    try:
+        asyncio.run(generator.generate(prompt="avatar"))
+    except RuntimeError as exc:
+        assert "OpenAI image generation request failed" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_agent_avatar_delete_clears_state_and_asset(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    upload = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.png", _png_avatar_bytes(), "image/png")},
+    ).json()
+    asset_id = upload["agents"]["backend"]["avatar"]["asset_id"]
+
+    response = client.request(
+        "DELETE",
+        "/api/addons/team-addon/agents/backend/avatar",
+        json={"expected_revision": upload["revision"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agents"]["backend"]["avatar"] is None
+    assert client.get(f"/api/addons/team-addon/avatars/{asset_id}").status_code == 404
+
+
+def test_agent_voice_session_create_query_and_end(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client_secret_calls: list[dict[str, object]] = []
+
+    class _FakeRealtimeClientSecretService:
+        def __init__(self, *, config) -> None:
+            self.config = config
+
+        def create_client_secret(self, **kwargs):
+            client_secret_calls.append(kwargs)
+            return {"value": "ek_test", "expires_at": 123}
+
+    monkeypatch.setattr(
+        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        _FakeRealtimeClientSecretService,
+    )
+    client = TestClient(create_app(service))
+
+    response = client.post("/api/addons/team-addon/agents/backend/voice-sessions", json={})
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["channel"] == "browser_agent_call"
+    assert payload["status"] == "connecting"
+    assert payload["client_secret"]["value"] == "ek_test"
+    assert payload["realtime"]["transport"] == "webrtc_browser"
+    assert payload["projection"]["metadata"]["agent_id"] == "backend"
+    assert payload["projection"]["context"]["open_tasks"][0]["title"] == "Blocked task"
+    prompt = client_secret_calls[0]["instructions"]
+    assert "Selected agent: backend (backend)" in prompt
+    assert "Blocked task" in prompt
+    assert "Status update?" in prompt
+    assert "Waiting task deliverable." in prompt
+    assert client_secret_calls[0]["safety_identifier"] == "team-addon:backend"
+    record = service.runtime.voice_session_store.get_by_voice_session_id(
+        payload["voice_session_id"]
+    )
+    assert record is not None
+    assert record.channel == "browser_agent_call"
+    assert record.origin_session_id == "session-backend"
+
+    event_response = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
+        json={
+            "status": "active",
+            "text": "What is blocked?",
+            "speaker": "operator",
+            "event_type": "browser_call.transcript",
+        },
+    )
+    assert event_response.status_code == 200
+    assert event_response.json()["transcript_events"][0]["text"] == "What is blocked?"
+
+    query_response = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/queries",
+        json={
+            "question": "Which files changed?",
+            "transcript_excerpt": "operator: Which files changed?",
+            "deadline_seconds": 60,
+        },
+    )
+    assert query_response.status_code == 201
+    query = query_response.json()
+    assert query["status"] == "pending"
+    assert service.runtime.wake_store.get_request(
+        f"voice-query:{query['query_id']}"
+    ) is not None
+
+    end_response = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
+        json={"status": "ended", "summary": "Operator asked about blockers."},
+    )
+    assert end_response.status_code == 200
+    ended = end_response.json()
+    assert ended["status"] == "ended"
+    assert ended["reconciliation_status"] == "scheduled"
+    assert service.runtime.wake_store.get_request(
+        f"voice-session-reconcile:{payload['voice_session_id']}"
+    ) is not None
+
+
+def test_agent_voice_session_can_end_by_request_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class _FakeRealtimeClientSecretService:
+        def __init__(self, *, config) -> None:
+            self.config = config
+
+        def create_client_secret(self, **_kwargs):
+            return {"value": "ek_test", "expires_at": 123}
+
+    monkeypatch.setattr(
+        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        _FakeRealtimeClientSecretService,
+    )
+    client = TestClient(create_app(service))
+    request_id = "browser-call:test-request"
+    created = client.post(
+        "/api/addons/team-addon/agents/backend/voice-sessions",
+        json={"request_id": request_id},
+    )
+    assert created.status_code == 201
+
+    ended = client.post(
+        f"/api/addons/team-addon/voice-session-requests/{request_id}/end",
+        json={"status": "ended", "error": "Cancelled during startup."},
+    )
+
+    assert ended.status_code == 200
+    payload = ended.json()
+    assert payload["request_id"] == request_id
+    assert payload["status"] == "ended"
+    assert payload["reconciliation_status"] == "scheduled"
+
+
 def _auto_dev_squad_materialization_payload(
     *,
     duplicate_reviewer_agent_id: str | None = None,
@@ -418,6 +765,14 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "renderProjectCostCounter" in script.text
     assert "renderAgentInboxHeaderIndicators" in script.text
     assert "renderAgentInboxIndicatorIcon" in script.text
+    assert "data-agent-call-agent-id" in script.text
+    assert "RTCPeerConnection" in script.text
+    assert "oai-events" in script.text
+    assert "query_origin_agent" in script.text
+    assert "cancelRequested" in script.text
+    assert "agentVoiceCallIsCurrent" in script.text
+    assert "Retry end" in script.text
+    assert "voice-session-requests" in script.text
     assert "agent-inbox-indicator" in script.text
     assert 'direction: "down"' in script.text
     assert 'direction: "up"' in script.text
@@ -450,6 +805,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text
     assert ".agent-inbox-bubble" in stylesheet.text
+    assert ".agent-voice-call-panel" in stylesheet.text
+    assert ".agent-voice-transcript" in stylesheet.text
 
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200

@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 5
+SQLITE_SCHEMA_VERSION = 6
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -104,6 +104,12 @@ class TeamStateSqliteStore:
                     table_name="team_agent_runtimes",
                     column_name="low_priority_batch_due_after_cycles",
                     definition="INTEGER",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agents",
+                    column_name="avatar_json",
+                    definition="TEXT",
                 )
                 connection.execute(
                     """
@@ -431,6 +437,9 @@ class TeamStateSqliteStore:
                 "team_id": row["team_id"],
                 "project_id": row["project_id"],
                 "display_name": row["display_name"],
+                "avatar": (
+                    _json_loads(row["avatar_json"]) if row["avatar_json"] is not None else None
+                ),
                 "role_id": row["role_id"],
                 "session_id": row["session_id"],
                 "reports_to_agent_id": row["reports_to_agent_id"],
@@ -445,16 +454,17 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_agents(
-                    id, team_id, project_id, display_name, role_id, session_id,
+                    id, team_id, project_id, display_name, avatar_json, role_id, session_id,
                     reports_to_agent_id, max_ephemeral_concurrent, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
                     agent["team_id"],
                     agent.get("project_id"),
                     agent.get("display_name"),
+                    _json_dumps(agent.get("avatar")) if agent.get("avatar") is not None else None,
                     agent["role_id"],
                     agent["session_id"],
                     agent.get("reports_to_agent_id"),
@@ -1450,6 +1460,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
     team_id TEXT NOT NULL,
     project_id TEXT,
     display_name TEXT,
+    avatar_json TEXT,
     role_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     reports_to_agent_id TEXT,

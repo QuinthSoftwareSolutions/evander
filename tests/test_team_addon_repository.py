@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from truman_team_addon.models import (
+    AgentAvatar,
     AgentInboxItem,
     AgentRuntime,
     AgentStandDownSource,
@@ -173,6 +174,28 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
 
 
+def test_repository_round_trips_agent_avatar_metadata(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    avatar = AgentAvatar(
+        asset_id="av_0123456789abcdef0123456789abcdef",
+        source="uploaded",
+        mime_type="image/webp",
+        sha256="a" * 64,
+    )
+
+    state = repo.set_agent_avatar(
+        agent_id="backend",
+        avatar=avatar,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.agents["backend"].avatar == avatar
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.agents["backend"].avatar is not None
+    assert reread.agents["backend"].avatar.asset_id == avatar.asset_id
+    assert reread.agents["worker"].avatar is None
+
+
 def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     tmp_path: Path,
 ) -> None:
@@ -228,7 +251,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_started_at" in runtime_columns
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
-    assert metadata["sqlite_schema_version"] == "5"
+    assert metadata["sqlite_schema_version"] == "6"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:

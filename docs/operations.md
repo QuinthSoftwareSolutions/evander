@@ -990,7 +990,8 @@ raw phone numbers or phone-provider credentials.
     uses that value where the configured Retell prompt references the dynamic variable.
 - Runtime state:
   - `runtime/retell-phone-calls-store.json`
-  - `runtime/voice-sessions-store.json` for projected OpenAI Realtime phone and meeting sessions
+  - `runtime/voice-sessions-store.json` for projected OpenAI Realtime phone, meeting, and Team
+    Add-on browser direct agent sessions
 - Webhook endpoint:
   - `POST /retell/webhook`
   - Verifies `X-Retell-Signature` with the configured Retell API key against the raw request body.
@@ -1005,6 +1006,21 @@ Example directory-scoped `providers.json` overlay:
   "retell_default_agent_id": "agent_123"
 }
 ```
+
+### Team Add-on browser direct agent calls
+
+The Team Add-on People tab can start a browser WebRTC call to the selected persistent agent. This
+path reuses projected voice-session state, origin-agent query delegation, and reconciliation wakes,
+but it does not use DIDWW, Asterisk, SIP, or the host media bridge. The Admin API validates the
+selected agent and origin session, writes a `browser_agent_call` record to
+`runtime/voice-sessions-store.json`, and mints an OpenAI Realtime ephemeral client secret with the
+agent's current team, role, task, inbox, review, deliverable, runtime, and visible tool context.
+
+Set `openai_realtime_api_key_env` to the host environment variable used for the OpenAI Realtime API
+key, or leave it at the default `OPENAI_API_KEY`. `openai_realtime_api_base_url` defaults to
+`https://api.openai.com/v1`. The browser receives only the ephemeral client secret, never the host
+API key. When a browser call ends, the add-on schedules the same same-context reconciliation wake
+used by phone and meeting voice sessions.
 
 For the `openai_realtime_didww` backend, configure:
 

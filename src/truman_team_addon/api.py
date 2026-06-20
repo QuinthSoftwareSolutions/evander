@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
@@ -15,7 +18,24 @@ from agent_sandbox.events.internal import (
     InternalEventSource,
     internal_event_store_path,
 )
+from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.voice_sessions import (
+    OpenAIRealtimeClientSecretService,
+    VoiceQueryDelegator,
+    normalize_voice_session_status,
+    sanitize_voice_metadata,
+    voice_query_payload,
+)
 
+from .avatars import (
+    AVATAR_MIME_TYPE,
+    MAX_AVATAR_UPLOAD_BYTES,
+    AvatarStorage,
+    build_avatar_prompt,
+    normalize_prompt_note,
+    normalize_style_preset,
+    openai_avatar_generator_from_config,
+)
 from .models import (
     AgentStatus,
     EphemeralAgentPolicy,
@@ -25,6 +45,7 @@ from .models import (
     ReviewProfileCriterion,
     TeamRecordState,
     TeamTaskState,
+    TeamState,
     team_state_payload,
 )
 from .costs import TeamCostService
@@ -35,6 +56,7 @@ from .repository import TeamStateConflictError, TeamStateRepository
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
+    avatar_storage = AvatarStorage(context.runtime_dir)
 
     async def get_state(_request: Request) -> JSONResponse:
         return JSONResponse(team_state_payload(repository.read()))
@@ -301,6 +323,384 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
+
+    async def create_avatar_preview(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.read()
+        agent_id = request.path_params["agent_id"]
+        agent = state.agents.get(agent_id)
+        if agent is None:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
+        role = state.roles.get(agent.role_id)
+        team = state.teams.get(agent.team_id)
+        style_preset = normalize_style_preset(payload.get("style_preset"))
+        prompt_note = normalize_prompt_note(payload.get("prompt_note"))
+        prompt = build_avatar_prompt(
+            agent=agent,
+            role_name=role.name if role is not None else None,
+            team_name=team.name if team is not None else None,
+            style_preset=style_preset,
+            prompt_note=prompt_note,
+        )
+        generator = openai_avatar_generator_from_config(context.config)
+        try:
+            content = await generator.generate(prompt=prompt)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        try:
+            preview = avatar_storage.store_generated_preview(
+                agent_id=agent.id,
+                content=content,
+                style_preset=style_preset,
+                prompt_note=prompt_note,
+                model=generator.model,
+            )
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse({"preview": preview.payload()}, status_code=201)
+
+    async def upload_agent_avatar(request: Request) -> JSONResponse:
+        try:
+            form = await request.form()
+        except Exception as exc:
+            raise ValueError("Request body must be multipart form data") from exc
+        expected_revision = _coerce_int(form.get("expected_revision"), "expected_revision")
+        file_value = form.get("file")
+        if not isinstance(file_value, UploadFile):
+            raise ValueError("file is required")
+        content = await file_value.read(MAX_AVATAR_UPLOAD_BYTES + 1)
+        try:
+            avatar = avatar_storage.store_upload(content)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        old_asset_id = _current_agent_avatar_asset_id(
+            repository.read(),
+            request.path_params["agent_id"],
+        )
+        try:
+            state = repository.set_agent_avatar(
+                agent_id=request.path_params["agent_id"],
+                avatar=avatar,
+                expected_revision=expected_revision,
+            )
+        except Exception:
+            avatar_storage.delete_asset_if_unreferenced(
+                asset_id=avatar.asset_id,
+                state=repository.read(),
+            )
+            raise
+        avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
+        return JSONResponse(team_state_payload(state))
+
+    async def accept_agent_avatar_preview(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        expected_revision = _expected_revision(payload)
+        agent_id = request.path_params["agent_id"]
+        before = repository.read()
+        if agent_id not in before.agents:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
+        if before.revision != expected_revision:
+            raise TeamStateConflictError(
+                expected_revision=expected_revision,
+                current_revision=before.revision,
+            )
+        old_asset_id = _current_agent_avatar_asset_id(before, agent_id)
+        try:
+            avatar = avatar_storage.avatar_from_preview(
+                preview_id=_required(payload, "preview_id"),
+                agent_id=agent_id,
+            )
+        except FileNotFoundError:
+            return JSONResponse({"error": "avatar preview not found"}, status_code=404)
+        state = repository.set_agent_avatar(
+            agent_id=agent_id,
+            avatar=avatar,
+            expected_revision=expected_revision,
+        )
+        avatar_storage.promote_preview(preview_id=avatar.preview_id or avatar.asset_id)
+        avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
+        return JSONResponse(team_state_payload(state))
+
+    async def delete_agent_avatar(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        old_asset_id = _current_agent_avatar_asset_id(
+            repository.read(),
+            request.path_params["agent_id"],
+        )
+        state = repository.clear_agent_avatar(
+            agent_id=request.path_params["agent_id"],
+            expected_revision=_expected_revision(payload),
+        )
+        avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
+        return JSONResponse(team_state_payload(state))
+
+    async def create_agent_voice_session(request: Request) -> JSONResponse:
+        payload = await _read_optional_payload(request)
+        state = repository.read()
+        agent_id = request.path_params["agent_id"]
+        agent = state.agents.get(agent_id)
+        if agent is None:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
+        if _enum_value(agent.status) == AgentStatus.ARCHIVED.value:
+            return JSONResponse({"error": "archived agents cannot be called"}, status_code=403)
+        runtime = _runtime_from_context(context)
+        session = runtime.session_repository.get_session(agent.session_id)
+        if session is None:
+            return JSONResponse({"error": "agent session not found"}, status_code=404)
+        if _session_is_expired(session):
+            return JSONResponse({"error": "agent session is expired"}, status_code=403)
+        resolved_config = runtime.resolve_provider_config_for_session(session.session_id)
+        try:
+            tool_summary = runtime.policy.allowed_tool_summary_for_session(session)
+        except Exception:
+            tool_summary = None
+        projection = _build_agent_voice_projection(
+            state=state,
+            agent=agent,
+            session=session,
+            tool_summary=tool_summary,
+        )
+        prompt = str(projection["prompt"])
+        prompt_metadata = _agent_voice_prompt_metadata(
+            state=state,
+            agent=agent,
+            session=session,
+            prompt=prompt,
+        )
+        record, created = runtime.voice_session_store.prepare_session(
+            origin_session_id=session.session_id,
+            directory_path=session.directory_path,
+            channel="browser_agent_call",
+            request_id=_optional(payload, "request_id"),
+            prompt_metadata=prompt_metadata,
+            projection=projection,
+            caller_metadata={
+                "call_surface": "team_people_tab",
+                "agent_id": agent.id,
+                "team_id": agent.team_id,
+                "project_id": agent.project_id,
+            },
+            contact_id=agent.id,
+            contact_display_name=_agent_display_name(agent),
+        )
+        try:
+            client_secret = OpenAIRealtimeClientSecretService(
+                config=resolved_config,
+            ).create_client_secret(
+                instructions=prompt,
+                safety_identifier=f"team-addon:{agent.id}",
+                include_query_origin_agent=payload.get("include_query_origin_agent") is not False,
+            )
+        except (RuntimeError, ProviderRequestError) as exc:
+            runtime.voice_session_store.complete_session(
+                record.voice_session_id,
+                status="failed",
+                error=str(exc),
+            )
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        record = runtime.voice_session_store.attach_bridge_session(
+            record.voice_session_id,
+            bridge_session_id=None,
+            status="connecting",
+            realtime_metadata={
+                "provider": "openai_realtime",
+                "transport": "webrtc_browser",
+                "model": getattr(resolved_config, "openai_realtime_model", "gpt-realtime-2"),
+                "call_surface": "team_people_tab",
+            },
+        )
+        return JSONResponse(
+            {
+                **_team_voice_session_payload(record),
+                "created": created,
+                "projection": projection,
+                "client_secret": client_secret,
+                "realtime": {
+                    "provider": "openai_realtime",
+                    "transport": "webrtc_browser",
+                    "calls_url": _realtime_calls_url(resolved_config),
+                    "model": getattr(
+                        resolved_config,
+                        "openai_realtime_model",
+                        "gpt-realtime-2",
+                    ),
+                },
+            },
+            status_code=201 if created else 200,
+        )
+
+    async def record_agent_voice_event(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        voice_session_id = request.path_params["voice_session_id"]
+        record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        payload = await _read_payload(request)
+        updated = record
+        event_type = _optional(payload, "event_type")
+        event_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        transcript_text = _optional(payload, "text")
+        if transcript_text:
+            updated = runtime.voice_session_store.append_transcript_event(
+                voice_session_id,
+                text=transcript_text,
+                speaker=_optional(payload, "speaker"),
+                metadata={
+                    "event_type": event_type or "browser_call.transcript",
+                    **dict(event_metadata),
+                },
+            ) or updated
+        raw_status = _optional(payload, "status")
+        if raw_status:
+            status = normalize_voice_session_status(raw_status, default=updated.status)
+            if status in {"ended", "failed"}:
+                updated = runtime.voice_session_store.complete_session(
+                    voice_session_id,
+                    status=status,
+                    transcript=_optional(payload, "transcript"),
+                    summary=_optional(payload, "summary"),
+                    decisions=_optional_string_list(payload, "decisions")
+                    if "decisions" in payload
+                    else None,
+                    action_items=_optional_string_list(payload, "action_items")
+                    if "action_items" in payload
+                    else None,
+                    error=_optional(payload, "error"),
+                )
+                runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
+            else:
+                updated = runtime.voice_session_store.attach_bridge_session(
+                    voice_session_id,
+                    bridge_session_id=None,
+                    status=status,
+                    realtime_metadata={
+                        "last_browser_event": event_type or "browser_call.status",
+                        **dict(event_metadata),
+                    },
+                )
+        return JSONResponse(_team_voice_session_payload(updated))
+
+    async def end_agent_voice_session(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        voice_session_id = request.path_params["voice_session_id"]
+        record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        payload = await _read_optional_payload(request)
+        status = normalize_voice_session_status(payload.get("status"), default="ended")
+        if status not in {"ended", "failed"}:
+            raise ValueError("status must be ended or failed")
+        updated = runtime.voice_session_store.complete_session(
+            voice_session_id,
+            status=status,
+            transcript=_optional(payload, "transcript"),
+            summary=_optional(payload, "summary"),
+            decisions=_optional_string_list(payload, "decisions") if "decisions" in payload else None,
+            action_items=_optional_string_list(payload, "action_items")
+            if "action_items" in payload
+            else None,
+            error=_optional(payload, "error"),
+        )
+        reconciled = runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
+        return JSONResponse(_team_voice_session_payload(reconciled or updated))
+
+    async def end_agent_voice_session_by_request(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        request_id = request.path_params["request_id"]
+        record = runtime.voice_session_store.get_by_request_id(request_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        payload = await _read_optional_payload(request)
+        status = normalize_voice_session_status(payload.get("status"), default="ended")
+        if status not in {"ended", "failed"}:
+            raise ValueError("status must be ended or failed")
+        updated = runtime.voice_session_store.complete_session(
+            record.voice_session_id,
+            status=status,
+            transcript=_optional(payload, "transcript"),
+            summary=_optional(payload, "summary"),
+            decisions=_optional_string_list(payload, "decisions") if "decisions" in payload else None,
+            action_items=_optional_string_list(payload, "action_items")
+            if "action_items" in payload
+            else None,
+            error=_optional(payload, "error"),
+        )
+        reconciled = runtime.voice_session_reconciler.schedule_reconciliation(
+            record.voice_session_id
+        )
+        return JSONResponse(_team_voice_session_payload(reconciled or updated))
+
+    async def create_agent_voice_query(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        voice_session_id = request.path_params["voice_session_id"]
+        record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        payload = await _read_payload(request)
+        query = VoiceQueryDelegator(
+            store=runtime.voice_session_store,
+            wake_store=runtime.wake_store,
+        ).create_query_and_wake_origin(
+            voice_session_id,
+            question=_required(payload, "question"),
+            transcript_excerpt=_optional(payload, "transcript_excerpt"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            deadline_seconds=_optional_int(payload, "deadline_seconds")
+            if "deadline_seconds" in payload
+            else None,
+        )
+        return JSONResponse(voice_query_payload(query), status_code=201)
+
+    async def get_agent_voice_query(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        voice_session_id = request.path_params["voice_session_id"]
+        record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        query = runtime.voice_session_store.get_query_for_voice_session(
+            voice_session_id,
+            request.path_params["query_id"],
+        )
+        if query is None:
+            return JSONResponse({"error": "voice query not found"}, status_code=404)
+        return JSONResponse(voice_query_payload(query))
+
+    async def timeout_agent_voice_query(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        voice_session_id = request.path_params["voice_session_id"]
+        record = runtime.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        query = runtime.voice_session_store.get_query_for_voice_session(
+            voice_session_id,
+            request.path_params["query_id"],
+        )
+        if query is None:
+            return JSONResponse({"error": "voice query not found"}, status_code=404)
+        payload = await _read_optional_payload(request)
+        query = runtime.voice_session_store.mark_query_timeout(
+            query.query_id,
+            error=_optional(payload, "error"),
+        )
+        return JSONResponse(voice_query_payload(query))
+
+    async def get_avatar_asset(request: Request) -> FileResponse | JSONResponse:
+        try:
+            path = avatar_storage.asset_path(request.path_params["asset_id"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if not path.is_file():
+            return JSONResponse({"error": "avatar not found"}, status_code=404)
+        return FileResponse(path, media_type=AVATAR_MIME_TYPE)
+
+    async def get_avatar_preview(request: Request) -> FileResponse | JSONResponse:
+        try:
+            path = avatar_storage.preview_path(request.path_params["preview_id"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if not path.is_file():
+            return JSONResponse({"error": "avatar preview not found"}, status_code=404)
+        return FileResponse(path, media_type=AVATAR_MIME_TYPE)
 
     async def request_agent_context_rotation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -600,6 +1000,71 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
         Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
         Route(
+            "/agents/{agent_id}/voice-sessions",
+            _with_errors(create_agent_voice_session),
+            methods=["POST"],
+        ),
+        Route(
+            "/voice-sessions/{voice_session_id}/events",
+            _with_errors(record_agent_voice_event),
+            methods=["POST"],
+        ),
+        Route(
+            "/voice-sessions/{voice_session_id}/end",
+            _with_errors(end_agent_voice_session),
+            methods=["POST"],
+        ),
+        Route(
+            "/voice-session-requests/{request_id}/end",
+            _with_errors(end_agent_voice_session_by_request),
+            methods=["POST"],
+        ),
+        Route(
+            "/voice-sessions/{voice_session_id}/queries",
+            _with_errors(create_agent_voice_query),
+            methods=["POST"],
+        ),
+        Route(
+            "/voice-sessions/{voice_session_id}/queries/{query_id}",
+            _with_errors(get_agent_voice_query),
+            methods=["GET"],
+        ),
+        Route(
+            "/voice-sessions/{voice_session_id}/queries/{query_id}/timeout",
+            _with_errors(timeout_agent_voice_query),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar/previews",
+            _with_errors(create_avatar_preview),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar/upload",
+            _with_errors(upload_agent_avatar),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar/accept-preview",
+            _with_errors(accept_agent_avatar_preview),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar",
+            _with_errors(delete_agent_avatar),
+            methods=["DELETE"],
+        ),
+        Route(
+            "/avatars/{asset_id}",
+            _with_errors(get_avatar_asset),
+            methods=["GET"],
+        ),
+        Route(
+            "/avatar-previews/{preview_id}",
+            _with_errors(get_avatar_preview),
+            methods=["GET"],
+        ),
+        Route(
             "/agents/{agent_id}/context-rotation",
             _with_errors(request_agent_context_rotation),
             methods=["POST"],
@@ -689,6 +1154,315 @@ def _session_repository_from_context(context: AddonContext) -> Any | None:
     return getattr(service, "session_repository", None)
 
 
+def _runtime_from_context(context: AddonContext) -> Any:
+    service = getattr(context, "service", None)
+    runtime = getattr(service, "runtime", None)
+    if runtime is None and service is not None and hasattr(service, "voice_session_store"):
+        runtime = service
+    if runtime is None:
+        raise RuntimeError("Admin runtime is unavailable")
+    return runtime
+
+
+def _session_is_expired(session: Any) -> bool:
+    expires_at = getattr(session, "expires_at", None)
+    if not isinstance(expires_at, datetime):
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= datetime.now(UTC)
+
+
+def _build_agent_voice_projection(
+    *,
+    state: TeamState,
+    agent: Any,
+    session: Any,
+    tool_summary: Any | None,
+) -> dict[str, Any]:
+    team = state.teams.get(agent.team_id)
+    project = state.projects.get(agent.project_id) if agent.project_id else None
+    role = state.roles.get(agent.role_id)
+    runtime = state.agent_runtimes.get(agent.id)
+    subordinates = [
+        state.agents[subordinate_id]
+        for subordinate_id in agent.subordinate_agent_ids
+        if subordinate_id in state.agents
+    ]
+    open_tasks = [
+        task
+        for task in state.tasks.values()
+        if task.owner_agent_id == agent.id
+        and _enum_value(task.state)
+        not in {
+            TeamTaskState.FINISHED.value,
+            TeamTaskState.ACCEPTED.value,
+            TeamTaskState.REJECTED.value,
+        }
+    ]
+    open_tasks.sort(
+        key=lambda task: (
+            int(task.priority),
+            task.created_at.isoformat() if task.created_at else "",
+            task.id,
+        )
+    )
+    pending_inbox = [
+        item
+        for item in state.inbox.values()
+        if item.recipient_agent_id == agent.id and _enum_value(item.state) != "handled"
+    ]
+    pending_inbox.sort(key=lambda item: item.created_at.isoformat())
+    pending_reviews = [
+        review
+        for review in state.review_requests.values()
+        if review.reviewer_agent_id == agent.id
+        and _enum_value(review.state)
+        not in {TeamRecordState.ACCEPTED.value, TeamRecordState.REJECTED.value}
+    ]
+    pending_reviews.sort(key=lambda review: (review.created_at or datetime.min).isoformat())
+    recent_deliverables = [
+        deliverable
+        for deliverable in state.deliverables.values()
+        if deliverable.producer_agent_id == agent.id
+    ]
+    recent_deliverables.sort(
+        key=lambda deliverable: deliverable.created_at.isoformat(),
+        reverse=True,
+    )
+    active_stand_downs = [
+        stand_down
+        for stand_down in state.stand_downs.values()
+        if stand_down.agent_id == agent.id and not stand_down.cleared_by
+    ]
+    context_payload = {
+        "team_state_revision": state.revision,
+        "agent": {
+            "id": agent.id,
+            "display_name": _agent_display_name(agent),
+            "status": _enum_value(agent.status),
+            "session_id": agent.session_id,
+            "reports_to_agent_id": agent.reports_to_agent_id,
+            "subordinates": [
+                {
+                    "id": subordinate.id,
+                    "display_name": _agent_display_name(subordinate),
+                    "status": _enum_value(subordinate.status),
+                }
+                for subordinate in subordinates
+            ],
+        },
+        "team": {
+            "id": team.id if team else agent.team_id,
+            "name": team.name if team else agent.team_id,
+            "archived": bool(team.archived) if team else False,
+        },
+        "project": {
+            "id": project.id if project else agent.project_id,
+            "name": project.name if project else agent.project_id,
+            "status": _enum_value(project.status) if project else None,
+            "goals": [
+                {
+                    "id": goal.id,
+                    "description": goal.description,
+                    "state": _enum_value(goal.state),
+                }
+                for goal in (project.goals if project else [])
+            ],
+        },
+        "role": {
+            "id": role.id if role else agent.role_id,
+            "name": role.name if role else agent.role_id,
+            "description": role.description if role else "",
+            "permissions": [_enum_value(permission) for permission in (role.permissions if role else [])],
+        },
+        "runtime": {
+            "wake_reason": getattr(runtime, "wake_reason", None),
+            "active_dispatch_id": getattr(runtime, "active_dispatch_id", None),
+            "wake_leased_until": _datetime_text(getattr(runtime, "wake_leased_until", None)),
+            "last_wake_at": _datetime_text(getattr(runtime, "last_wake_at", None)),
+            "next_wake_at": _datetime_text(getattr(runtime, "next_wake_at", None)),
+            "no_progress_count": getattr(runtime, "no_progress_count", None),
+            "last_progress_at": _datetime_text(getattr(runtime, "last_progress_at", None)),
+            "auto_context_clearing_enabled": getattr(
+                runtime,
+                "auto_context_clearing_enabled",
+                False,
+            ),
+            "context_rotation_pending": getattr(runtime, "context_rotation_pending", False),
+            "last_handoff_summary": getattr(runtime, "last_handoff_summary", None),
+            "last_thread_id": getattr(runtime, "last_thread_id", None),
+        },
+        "open_tasks": [
+            {
+                "id": task.id,
+                "priority": task.priority,
+                "state": _enum_value(task.state),
+                "title": task.title,
+                "description": _limit_text(task.description, 700),
+                "parent_task_id": task.parent_task_id,
+                "dependency_task_ids": list(task.dependency_task_ids),
+                "deliverable_ids": list(task.deliverable_ids),
+            }
+            for task in open_tasks[:10]
+        ],
+        "pending_inbox": [
+            {
+                "id": item.id,
+                "item_type": _enum_value(item.item_type),
+                "sender_agent_id": item.sender_agent_id,
+                "task_id": item.task_id,
+                "priority": _enum_value(item.priority),
+                "response_requested": item.response_requested,
+                "payload": sanitize_voice_metadata(item.payload),
+            }
+            for item in pending_inbox[:10]
+        ],
+        "pending_reviews": [
+            {
+                "id": review.id,
+                "deliverable_id": review.deliverable_id,
+                "state": _enum_value(review.state),
+                "instructions": _limit_text(review.instructions, 500),
+                "findings": list(review.findings),
+            }
+            for review in pending_reviews[:6]
+        ],
+        "recent_deliverables": [
+            {
+                "id": deliverable.id,
+                "task_id": deliverable.task_id,
+                "state": _enum_value(deliverable.state),
+                "summary": _limit_text(deliverable.summary, 500),
+                "artifact_refs": list(deliverable.artifact_refs),
+            }
+            for deliverable in recent_deliverables[:6]
+        ],
+        "active_stand_downs": [
+            {
+                "id": stand_down.id,
+                "scope": stand_down.scope,
+                "source": _enum_value(stand_down.source),
+                "reason": stand_down.reason,
+                "set_by": stand_down.set_by,
+                "set_at": _datetime_text(stand_down.set_at),
+            }
+            for stand_down in active_stand_downs[:5]
+        ],
+        "origin_session": {
+            "session_id": session.session_id,
+            "directory_path": session.directory_path,
+            "model": session.model,
+            "expires_at": _datetime_text(session.expires_at),
+        },
+        "tool_summary": sanitize_voice_metadata(tool_summary or {}),
+    }
+    instructions = (
+        "You are the browser voice projection of the selected persistent Team Add-on agent. "
+        "The operator clicked Call in the Agent Addon People tab, so speak as a live helper "
+        "for this agent and team status, not as a phone bridge.\n\n"
+        "Use the projected team context below to answer questions about the agent, team, "
+        "tasks, inbox, reviews, deliverables, runtime state, and visible tool capabilities. "
+        "Keep answers concise and conversational. Do not claim to have changed files, tasks, "
+        "or runtime state unless the origin agent confirms it. If a question needs files, "
+        "tools, repository state, or live session details not present in the projection, call "
+        "query_origin_agent with a concise question and continue once the answer arrives.\n\n"
+        f"Selected agent: {_agent_display_name(agent)} ({agent.id})\n"
+        f"Team: {context_payload['team']['name']} ({context_payload['team']['id']})\n"
+        f"Project: {context_payload['project']['name'] or 'None'} "
+        f"({context_payload['project']['id'] or 'none'})\n"
+        f"Role: {context_payload['role']['name']} ({context_payload['role']['id']})\n\n"
+        "Projected context JSON:\n"
+        f"{json.dumps(context_payload, indent=2, sort_keys=True, default=str)}"
+    )
+    return {
+        "prompt": instructions,
+        "metadata": {
+            "call_surface": "team_people_tab",
+            "agent_id": agent.id,
+            "team_id": agent.team_id,
+            "project_id": agent.project_id,
+            "team_state_revision": state.revision,
+        },
+        "context": context_payload,
+    }
+
+
+def _agent_voice_prompt_metadata(
+    *,
+    state: TeamState,
+    agent: Any,
+    session: Any,
+    prompt: str,
+) -> dict[str, Any]:
+    normalized = str(prompt or "").strip()
+    return {
+        "sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        "length": len(normalized),
+        "team_state_revision": state.revision,
+        "agent_id": agent.id,
+        "team_id": agent.team_id,
+        "project_id": agent.project_id,
+        "role_id": agent.role_id,
+        "session_id": session.session_id,
+        "call_surface": "team_people_tab",
+    }
+
+
+def _team_voice_session_payload(record: Any) -> dict[str, Any]:
+    return {
+        "voice_session_id": record.voice_session_id,
+        "request_id": record.request_id,
+        "origin_session_id": record.origin_session_id,
+        "directory_path": record.directory_path,
+        "channel": record.channel,
+        "status": record.status,
+        "contact_id": record.contact_id,
+        "contact_display_name": record.contact_display_name,
+        "transcript": record.transcript,
+        "transcript_events": [
+            event.model_dump(mode="json") for event in record.transcript_events
+        ],
+        "reconciliation_status": record.reconciliation_status,
+        "reconciliation_request_id": record.reconciliation_request_id,
+        "error": record.error,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        "ended_at": record.ended_at.isoformat() if record.ended_at else None,
+    }
+
+
+def _realtime_calls_url(config: Any) -> str:
+    base_url = str(
+        getattr(config, "openai_realtime_api_base_url", "https://api.openai.com/v1")
+        or "https://api.openai.com/v1"
+    ).strip().rstrip("/")
+    return f"{base_url}/realtime/calls"
+
+
+def _agent_display_name(agent: Any) -> str:
+    return str(getattr(agent, "display_name", None) or getattr(agent, "id", "")).strip()
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _datetime_text(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
+
+
+def _limit_text(value: Any, max_length: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3]}..."
+
+
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:
     if not isinstance(events, list):
         return []
@@ -727,6 +1501,21 @@ def _optional_event_text(value: object) -> str | None:
 
 async def _read_payload(request: Request) -> Mapping[str, Any]:
     payload = await request.json()
+    if not isinstance(payload, Mapping):
+        raise ValueError("request body must be a JSON object")
+    return payload
+
+
+async def _read_optional_payload(request: Request) -> Mapping[str, Any]:
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("request body must be a JSON object") from exc
+    if payload is None:
+        return {}
     if not isinstance(payload, Mapping):
         raise ValueError("request body must be a JSON object")
     return payload
@@ -847,6 +1636,14 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
         else:
             normalized["bare_repo_name"] = bare_repo
     return ProjectGitConfig.model_validate(normalized)
+
+
+def _current_agent_avatar_asset_id(state: Any, agent_id: str) -> str | None:
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return None
+    avatar = getattr(agent, "avatar", None)
+    return getattr(avatar, "asset_id", None)
 
 
 def _expected_revision(payload: Mapping[str, Any]) -> int:

@@ -12,6 +12,7 @@ dependencies = [
   "croniter>=6.2.2",
   "httpx>=0.28.1",
   "mcp>=1.9.0",
+  "Pillow>=10.2.0",
   "pydantic>=2.8.0",
   "python-multipart>=0.0.26",
   "starlette>=0.52.0",
