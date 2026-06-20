@@ -4,9 +4,14 @@ import asyncio
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.addons import AddonLoaderConfig, load_addons
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import ApprovalStatus, SessionManifest
 from agent_sandbox.runtime import build_runtime
@@ -20,6 +25,14 @@ from evander_skatteverket_addon.mcp import (
     REQUEST_SUBMISSION_APPROVAL_TOOL,
     SUBMIT_APPROVED_DRAFT_TOOL,
     VALIDATE_DRAFT_TOOL,
+)
+from evander_skatteverket_addon.provider_schemas import (
+    SkatteverketRequestSubmissionApprovalEffectDefinition,
+    SkatteverketSubmitApprovedDraftEffectDefinition,
+)
+from evander_skatteverket_addon.providers import (
+    SkatteverketRequestSubmissionApprovalEffectProvider,
+    SkatteverketSubmitApprovedDraftEffectProvider,
 )
 from evander_skatteverket_addon.repository import SkatteverketRepository
 
@@ -62,6 +75,24 @@ def _call_tool(server, name: str, arguments: dict[str, object]):
             return structured["result"]
         return structured
     return result
+
+
+def _insert_session(context, session_id: str, *, allowed_tools: list[str]) -> None:
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id=session_id,
+            allowed_tools=allowed_tools,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+
+
+def _effect_context(context) -> EffectRuntimeContext:
+    return EffectRuntimeContext(
+        resolved_config=context.config,
+        admin_service=SimpleNamespace(runtime=context),
+    )
 
 
 def test_bundled_skatteverket_addon_packaging_contract_is_declared() -> None:
@@ -198,6 +229,106 @@ def test_skatteverket_submit_tool_requires_exact_draft_approval(tmp_path: Path) 
             "submission_approval_request_id": approval.request_id,
         },
     )
+
+    assert submitted["status"] == "blocked"
+    assert submitted["submission"]["approval_request_id"] == approval.request_id
+
+
+def test_skatteverket_submit_tool_rejects_other_session_approval(tmp_path: Path) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[
+            CREATE_DRAFT_TOOL,
+            VALIDATE_DRAFT_TOOL,
+            REQUEST_SUBMISSION_APPROVAL_TOOL,
+            SUBMIT_APPROVED_DRAFT_TOOL,
+        ],
+    )
+    _insert_session(context, "session-other", allowed_tools=[SUBMIT_APPROVED_DRAFT_TOOL])
+    server = create_server(context)
+
+    draft = _call_tool(
+        server,
+        CREATE_DRAFT_TOOL,
+        {
+            "session_id": "session-skv",
+            "api_name": "momsdeklaration",
+            "period": "2026-05",
+            "subject_id": "165560000000",
+            "payload": {"momsAttBetala": 123},
+        },
+    )
+    validated = _call_tool(
+        server,
+        VALIDATE_DRAFT_TOOL,
+        {"session_id": "session-skv", "draft_id": draft["draft_id"]},
+    )
+    approval_result = _call_tool(
+        server,
+        REQUEST_SUBMISSION_APPROVAL_TOOL,
+        {"session_id": "session-skv", "draft_id": validated["draft_id"]},
+    )
+    approval = context.approvals.get(approval_result["approval_request_id"])
+    assert approval is not None
+    approval.status = ApprovalStatus.APPROVED
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(ToolError, match="belongs to session session-skv, not session-other"):
+        _call_tool(
+            server,
+            SUBMIT_APPROVED_DRAFT_TOOL,
+            {
+                "session_id": "session-other",
+                "draft_id": validated["draft_id"],
+                "submission_approval_request_id": approval.request_id,
+            },
+        )
+
+    assert context.approvals.get(approval.request_id).status == ApprovalStatus.APPROVED
+
+
+def test_skatteverket_workflow_approval_nodes_use_admin_runtime_policy(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = SkatteverketRepository(context.config.runtime_dir)
+    draft = repo.create_draft(
+        api_name="momsdeklaration",
+        period="2026-05",
+        subject_id="165560000000",
+        payload={"momsAttBetala": 123},
+        source_session_id="session-skv",
+    )
+    validated = repo.validate_draft(draft["draft_id"])
+
+    request_provider = SkatteverketRequestSubmissionApprovalEffectProvider()
+    request_provider.initialize(
+        SkatteverketRequestSubmissionApprovalEffectDefinition(
+            draft_id=validated["draft_id"],
+            session_id="session-skv",
+        ),
+        _effect_context(context),
+    )
+
+    approval_result = request_provider.execute()
+
+    assert approval_result["status"] == "pending_approval"
+    approval = context.approvals.get(approval_result["approval_request_id"])
+    assert approval is not None
+    assert approval.session_id == "session-skv"
+    approval.status = ApprovalStatus.APPROVED
+    context.approvals.put(approval.request_id, approval)
+
+    submit_provider = SkatteverketSubmitApprovedDraftEffectProvider()
+    submit_provider.initialize(
+        SkatteverketSubmitApprovedDraftEffectDefinition(
+            draft_id=validated["draft_id"],
+            approval_request_id=approval.request_id,
+        ),
+        _effect_context(context),
+    )
+
+    submitted = submit_provider.execute()
 
     assert submitted["status"] == "blocked"
     assert submitted["submission"]["approval_request_id"] == approval.request_id

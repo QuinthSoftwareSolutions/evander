@@ -146,7 +146,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         submission_approval_request_id: str,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        _require_tool(session_id, SUBMIT_APPROVED_DRAFT_TOOL)
+        resolved_session_id = _require_tool(session_id, SUBMIT_APPROVED_DRAFT_TOOL)
         normalized_approval_request_id = str(submission_approval_request_id or "").strip()
         if not normalized_approval_request_id:
             raise ToolError("submission_approval_request_id is required")
@@ -157,13 +157,23 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             approval = runtime.policy.require_approved(
                 normalized_approval_request_id,
                 approval_payload,
-                consume=True,
+                consume=False,
             )
+            if approval.session_id != resolved_session_id:
+                raise ToolError(
+                    f"approval_request_id {normalized_approval_request_id} belongs to "
+                    f"session {approval.session_id}, not {resolved_session_id}"
+                )
             if str(approval.tool_name or "").strip() != SUBMIT_APPROVED_DRAFT_TOOL:
                 raise ToolError(
                     f"approval_request_id {normalized_approval_request_id} is not for "
                     f"{SUBMIT_APPROVED_DRAFT_TOOL}"
                 )
+            approval = runtime.policy.require_approved(
+                normalized_approval_request_id,
+                approval_payload,
+                consume=True,
+            )
             idempotency_key = f"{draft.draft_id}:{draft.revision}:{approval.request_id}"
             response = SkatteverketClient(repo.default_connection()).submit_draft(
                 draft,

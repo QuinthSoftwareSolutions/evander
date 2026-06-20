@@ -257,7 +257,7 @@ class SkatteverketRequestSubmissionApprovalEffectProvider(EffectProviderBase):
         repo = SkatteverketRepository(_runtime_dir(self.runtime_context))
         draft = repo.get_draft(str(payload.get("draft_id") or ""))
         session_id = _optional_text(payload.get("session_id"))
-        runtime_policy = getattr(self.runtime_context, "policy", None)
+        runtime_policy = _runtime_policy(self.runtime_context)
         if runtime_policy is None:
             return {
                 "status": "policy_context_unavailable",
@@ -300,14 +300,23 @@ class SkatteverketSubmitApprovedDraftEffectProvider(EffectProviderBase):
         repo = SkatteverketRepository(_runtime_dir(self.runtime_context))
         draft = repo.get_draft(str(payload.get("draft_id") or ""))
         approval_request_id = str(payload.get("approval_request_id") or "").strip()
-        runtime_policy = getattr(self.runtime_context, "policy", None)
+        runtime_policy = _runtime_policy(self.runtime_context)
         if runtime_policy is None:
             return {
                 "status": "policy_context_unavailable",
                 "submission_id": None,
                 "draft": repo.get_draft_payload(draft.draft_id),
             }
-        runtime_policy.require_approved(
+        approval = runtime_policy.require_approved(
+            approval_request_id,
+            draft.approval_payload(),
+            consume=False,
+        )
+        if str(approval.tool_name or "").strip() != SUBMIT_APPROVED_DRAFT_TOOL:
+            raise ValueError(
+                f"approval_request_id {approval_request_id} is not for {SUBMIT_APPROVED_DRAFT_TOOL}"
+            )
+        approval = runtime_policy.require_approved(
             approval_request_id,
             draft.approval_payload(),
             consume=True,
@@ -431,6 +440,19 @@ def _runtime_dir(context: Any) -> Path:
     if runtime_dir is None:
         raise RuntimeError("Skatteverket add-on provider requires resolved_config.runtime_dir")
     return Path(runtime_dir)
+
+
+def _runtime_policy(context: Any):
+    policy = getattr(context, "policy", None)
+    if policy is not None:
+        return policy
+    admin_service = getattr(context, "admin_service", None)
+    admin_runtime = getattr(admin_service, "runtime", None)
+    if admin_runtime is not None:
+        policy = getattr(admin_runtime, "policy", None)
+        if policy is not None:
+            return policy
+    return getattr(admin_service, "policy", None)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
