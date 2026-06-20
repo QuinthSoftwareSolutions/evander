@@ -604,6 +604,32 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         reconciled = runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
         return JSONResponse(_team_voice_session_payload(reconciled or updated))
 
+    async def end_agent_voice_session_by_request(request: Request) -> JSONResponse:
+        runtime = _runtime_from_context(context)
+        request_id = request.path_params["request_id"]
+        record = runtime.voice_session_store.get_by_request_id(request_id)
+        if record is None or record.channel != "browser_agent_call":
+            return JSONResponse({"error": "voice session not found"}, status_code=404)
+        payload = await _read_optional_payload(request)
+        status = normalize_voice_session_status(payload.get("status"), default="ended")
+        if status not in {"ended", "failed"}:
+            raise ValueError("status must be ended or failed")
+        updated = runtime.voice_session_store.complete_session(
+            record.voice_session_id,
+            status=status,
+            transcript=_optional(payload, "transcript"),
+            summary=_optional(payload, "summary"),
+            decisions=_optional_string_list(payload, "decisions") if "decisions" in payload else None,
+            action_items=_optional_string_list(payload, "action_items")
+            if "action_items" in payload
+            else None,
+            error=_optional(payload, "error"),
+        )
+        reconciled = runtime.voice_session_reconciler.schedule_reconciliation(
+            record.voice_session_id
+        )
+        return JSONResponse(_team_voice_session_payload(reconciled or updated))
+
     async def create_agent_voice_query(request: Request) -> JSONResponse:
         runtime = _runtime_from_context(context)
         voice_session_id = request.path_params["voice_session_id"]
@@ -986,6 +1012,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route(
             "/voice-sessions/{voice_session_id}/end",
             _with_errors(end_agent_voice_session),
+            methods=["POST"],
+        ),
+        Route(
+            "/voice-session-requests/{request_id}/end",
+            _with_errors(end_agent_voice_session_by_request),
             methods=["POST"],
         ),
         Route(

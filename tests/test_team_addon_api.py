@@ -549,6 +549,54 @@ def test_agent_voice_session_create_query_and_end(
     ) is not None
 
 
+def test_agent_voice_session_can_end_by_request_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class _FakeRealtimeClientSecretService:
+        def __init__(self, *, config) -> None:
+            self.config = config
+
+        def create_client_secret(self, **_kwargs):
+            return {"value": "ek_test", "expires_at": 123}
+
+    monkeypatch.setattr(
+        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        _FakeRealtimeClientSecretService,
+    )
+    client = TestClient(create_app(service))
+    request_id = "browser-call:test-request"
+    created = client.post(
+        "/api/addons/team-addon/agents/backend/voice-sessions",
+        json={"request_id": request_id},
+    )
+    assert created.status_code == 201
+
+    ended = client.post(
+        f"/api/addons/team-addon/voice-session-requests/{request_id}/end",
+        json={"status": "ended", "error": "Cancelled during startup."},
+    )
+
+    assert ended.status_code == 200
+    payload = ended.json()
+    assert payload["request_id"] == request_id
+    assert payload["status"] == "ended"
+    assert payload["reconciliation_status"] == "scheduled"
+
+
 def _auto_dev_squad_materialization_payload(
     *,
     duplicate_reviewer_agent_id: str | None = None,
@@ -721,6 +769,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "RTCPeerConnection" in script.text
     assert "oai-events" in script.text
     assert "query_origin_agent" in script.text
+    assert "cancelRequested" in script.text
+    assert "agentVoiceCallIsCurrent" in script.text
+    assert "Retry end" in script.text
+    assert "voice-session-requests" in script.text
     assert "agent-inbox-indicator" in script.text
     assert 'direction: "down"' in script.text
     assert 'direction: "up"' in script.text

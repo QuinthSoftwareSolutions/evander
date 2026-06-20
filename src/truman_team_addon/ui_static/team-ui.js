@@ -2158,6 +2158,8 @@ function renderAgentVoiceCallPanel(details) {
       </section>
     `;
   }
+  const retryEnd = call.cleanupRequested || call.status === "end_failed";
+  const endingDisabled = call.status === "ending" ? "disabled" : "";
   return `
     <section class="agent-detail-section agent-voice-call-panel">
       <div class="agent-voice-call-header">
@@ -2165,8 +2167,8 @@ function renderAgentVoiceCallPanel(details) {
         <span class="state-pill ${escapeAttr(agentVoiceCallPillClass(call))}">${escapeHtml(agentVoiceCallStatusLabel(call))}</span>
       </div>
       <div class="record-actions agent-voice-call-controls">
-        <button class="record-action" type="button" data-agent-call-mute>${call.muted ? "Unmute" : "Mute"}</button>
-        <button class="record-action" type="button" data-agent-call-end>End</button>
+        ${retryEnd ? "" : `<button class="record-action" type="button" data-agent-call-mute>${call.muted ? "Unmute" : "Mute"}</button>`}
+        <button class="record-action" type="button" data-agent-call-end ${endingDisabled}>${retryEnd ? "Retry end" : "End"}</button>
       </div>
       ${call.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
       ${transcriptRows ? `<ol class="agent-voice-transcript">${transcriptRows}</ol>` : ""}
@@ -2189,6 +2191,9 @@ function agentVoiceCallStatusLabel(call) {
   if (status === "ending") {
     return "ending";
   }
+  if (status === "end_failed") {
+    return "end failed";
+  }
   return status;
 }
 
@@ -2198,6 +2203,9 @@ function agentVoiceCallPillClass(call) {
     return "accepted";
   }
   if (status === "failed") {
+    return "rejected";
+  }
+  if (status === "end_failed") {
     return "rejected";
   }
   if (status === "connecting" || status === "ending") {
@@ -5063,9 +5071,12 @@ async function startAgentVoiceCall(button, agentId) {
   const call = {
     agentId: normalizedAgentId,
     voiceSessionId: "",
-    requestId: "",
+    requestId: createAgentVoiceRequestId(),
     status: "connecting",
+    startupPhase: "microphone",
     muted: false,
+    cancelRequested: false,
+    cleanupRequested: false,
     transcript: [],
     handledFunctionCalls: new Set(),
     mediaStream: null,
@@ -5083,6 +5094,17 @@ async function startAgentVoiceCall(button, agentId) {
   try {
     const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     call.mediaStream = mediaStream;
+    if (!agentVoiceCallIsCurrent(call)) {
+      cleanupAgentVoiceCall(call);
+      return;
+    }
+    if (call.cancelRequested) {
+      cleanupAgentVoiceCall(call);
+      clearAgentVoiceCallIfCurrent(call);
+      setStatus("Voice call cancelled.", "ok");
+      return;
+    }
+    call.startupPhase = "session";
     const response = await fetch(
       `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/voice-sessions`,
       {
@@ -5091,41 +5113,61 @@ async function startAgentVoiceCall(button, agentId) {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ request_id: call.requestId }),
       },
     );
     if (!response.ok) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    if (!agentVoiceCallIsCurrent(call)) {
+      call.voiceSessionId = text(payload.voice_session_id);
+      call.requestId = text(payload.request_id) || call.requestId;
+      await endAgentVoiceSessionOnServer(call, "ended", "Cancelled during startup.")
+        .catch(() => {});
+      cleanupAgentVoiceCall(call);
+      return;
+    }
     call.voiceSessionId = text(payload.voice_session_id);
-    call.requestId = text(payload.request_id);
+    call.requestId = text(payload.request_id) || call.requestId;
     call.clientSecret = realtimeClientSecretValue(payload);
     call.callsUrl = text(payload.realtime?.calls_url) || "https://api.openai.com/v1/realtime/calls";
     if (!call.voiceSessionId || !call.clientSecret) {
       throw new Error("Voice call response was missing a session or client secret.");
     }
+    if (call.cancelRequested) {
+      await endAgentVoiceCallAfterStartupCancel(call);
+      return;
+    }
+    call.startupPhase = "webrtc";
     await connectBrowserRealtimeVoice(call);
+    if (!agentVoiceCallIsCurrent(call)) {
+      cleanupAgentVoiceCall(call);
+      return;
+    }
+    if (call.cancelRequested) {
+      await endAgentVoiceCallAfterStartupCancel(call);
+      return;
+    }
     call.status = "active";
+    call.startupPhase = "active";
     call.error = "";
     renderAgents();
     await recordAgentVoiceEvent(call.voiceSessionId, {
       status: "active",
       event_type: "browser_call.active",
     });
+    if (!agentVoiceCallIsCurrent(call) || call.cancelRequested) {
+      return;
+    }
     setStatus(`Voice call with ${agentLabel(state.agents[normalizedAgentId])} is live.`, "ok");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Voice call failed.";
-    call.status = "failed";
-    call.error = message;
-    renderAgents();
-    if (call.voiceSessionId) {
-      await endAgentVoiceSessionOnServer(call, "failed", message).catch(() => {});
+    if (!agentVoiceCallIsCurrent(call)) {
+      cleanupAgentVoiceCall(call);
+      return;
     }
-    cleanupAgentVoiceCall(call);
-    activeAgentVoiceCall = null;
-    renderAgents();
-    setStatus(message, "error");
+    const message = error instanceof Error ? error.message : "Voice call failed.";
+    await failAgentVoiceCall(call, message);
   } finally {
     if (button.isConnected) {
       button.disabled = false;
@@ -5155,16 +5197,7 @@ async function connectBrowserRealtimeVoice(call) {
   peerConnection.addEventListener("connectionstatechange", () => {
     const status = peerConnection.connectionState;
     if (status === "failed" && !agentVoiceCallIsTerminal(call) && call.status !== "ending") {
-      call.status = "failed";
-      call.error = `WebRTC connection ${status}.`;
-      renderAgents();
-      if (call.voiceSessionId) {
-        void endAgentVoiceSessionOnServer(call, "failed", call.error).catch(() => {});
-      }
-      cleanupAgentVoiceCall(call);
-      activeAgentVoiceCall = null;
-      renderAgents();
-      setStatus(call.error, "error");
+      void failAgentVoiceCall(call, `WebRTC connection ${status}.`);
     }
   });
   dataChannel.addEventListener("message", (event) => {
@@ -5227,49 +5260,148 @@ async function endAgentVoiceCall(button) {
   if (!call) {
     return;
   }
+  const wasConnecting = call.status === "connecting";
   button.disabled = true;
+  call.cancelRequested = true;
   call.status = "ending";
   renderAgents();
-  try {
-    await endAgentVoiceSessionOnServer(call, "ended", "");
-    setStatus("Voice call ended.", "ok");
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "Voice call end failed.", "error");
-  } finally {
+  if (!call.voiceSessionId && !call.requestId) {
     cleanupAgentVoiceCall(call);
-    call.status = "ended";
-    activeAgentVoiceCall = null;
-    renderAgents();
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call cancelled.", "ok");
     if (button.isConnected) {
       button.disabled = false;
     }
+    return;
+  }
+  if (!call.voiceSessionId && wasConnecting && call.startupPhase === "microphone") {
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call cancelled.", "ok");
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (!call.voiceSessionId && wasConnecting) {
+    cleanupAgentVoiceCall(call);
+    setStatus("Cancelling voice call startup.", "loading");
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  try {
+    await endAgentVoiceSessionOnServer(call, "ended", "");
+    cleanupAgentVoiceCall(call);
+    call.status = "ended";
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call ended.", "ok");
+  } catch (error) {
+    markAgentVoiceEndFailed(call, "Voice call end failed", error);
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (button.isConnected) {
+    button.disabled = false;
   }
 }
 
+function agentVoiceCallIsCurrent(call) {
+  return activeAgentVoiceCall === call;
+}
+
+function createAgentVoiceRequestId() {
+  if (globalThis.crypto?.randomUUID) {
+    return `browser-call:${globalThis.crypto.randomUUID()}`;
+  }
+  return `browser-call:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
+function clearAgentVoiceCallIfCurrent(call) {
+  if (!agentVoiceCallIsCurrent(call)) {
+    return;
+  }
+  activeAgentVoiceCall = null;
+  renderAgents();
+}
+
+async function endAgentVoiceCallAfterStartupCancel(call) {
+  try {
+    await endAgentVoiceSessionOnServer(call, "ended", "Cancelled during startup.");
+    cleanupAgentVoiceCall(call);
+    call.status = "ended";
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus("Voice call cancelled.", "ok");
+  } catch (error) {
+    cleanupAgentVoiceCall(call);
+    markAgentVoiceEndFailed(call, "Voice call was stopped locally, but end update failed", error);
+  }
+}
+
+async function failAgentVoiceCall(call, message) {
+  call.status = "failed";
+  call.error = message;
+  if (agentVoiceCallIsCurrent(call)) {
+    renderAgents();
+  }
+  if (!call.voiceSessionId && !call.requestId) {
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus(message, "error");
+    return;
+  }
+  try {
+    await endAgentVoiceSessionOnServer(call, "failed", message);
+    cleanupAgentVoiceCall(call);
+    clearAgentVoiceCallIfCurrent(call);
+    setStatus(message, "error");
+  } catch (error) {
+    cleanupAgentVoiceCall(call);
+    markAgentVoiceEndFailed(call, `${message} End update failed`, error);
+  }
+}
+
+function markAgentVoiceEndFailed(call, prefix, error) {
+  call.status = "end_failed";
+  call.cleanupRequested = true;
+  call.error = `${prefix}: ${error instanceof Error ? error.message : "retry required"}`;
+  if (agentVoiceCallIsCurrent(call)) {
+    renderAgents();
+  }
+  setStatus(call.error, "error");
+}
+
 async function endAgentVoiceSessionOnServer(call, status, errorMessage) {
-  if (!call.voiceSessionId) {
+  let endpoint = "";
+  if (call.voiceSessionId) {
+    endpoint = `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/end`;
+  } else if (call.requestId) {
+    endpoint = `${API_BASE}/voice-session-requests/${encodeURIComponent(call.requestId)}/end`;
+  } else {
     return null;
   }
   const transcript = agentVoiceTranscriptExcerpt(call, { limit: 60 });
-  const response = await fetch(
-    `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/end`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        status,
-        transcript: transcript || null,
-        error: errorMessage || null,
-      }),
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
     },
-  );
+    body: JSON.stringify({
+      status,
+      transcript: transcript || null,
+      error: errorMessage || null,
+    }),
+  });
   if (!response.ok) {
     throw new Error(await responseText(response));
   }
-  return response.json();
+  const payload = await response.json();
+  call.voiceSessionId = call.voiceSessionId || text(payload.voice_session_id);
+  return payload;
 }
 
 function cleanupAgentVoiceCall(call) {
