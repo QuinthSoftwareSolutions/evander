@@ -39,6 +39,7 @@ let showArchived = false;
 let activeTeamView = "workspace";
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
+let selectedPeopleAgentId = null;
 
 const teamViewIds = new Set([
   "workspace",
@@ -475,6 +476,13 @@ function bindForms() {
 
 function bindRecordEditing() {
   document.addEventListener("click", (event) => {
+    const selectAgentButton = event.target.closest("[data-select-agent-id]");
+    if (selectAgentButton) {
+      event.preventDefault();
+      selectPeopleAgent(selectAgentButton.dataset.selectAgentId);
+      return;
+    }
+
     const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     if (contextRotationButton) {
       event.preventDefault();
@@ -1996,20 +2004,17 @@ function renderHierarchyNode(node, options = {}) {
 function renderAgents() {
   const allAgents = values(state.agents).sort(byId);
   const agents = allAgents.filter(isVisibleAgent);
+  if (activeTeamView === "people") {
+    renderPeopleAgents(allAgents, agents);
+    return;
+  }
+  renderIntoActiveTargets("[data-agent-detail-view]", "");
   if (!allAgents.length) {
     renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
     return;
   }
   if (!agents.length) {
     renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
-    return;
-  }
-  if (activeTeamView === "people") {
-    renderIntoActiveTargets("[data-agents-view]", `
-      <ul class="agent-list compact-record-list">
-        ${agents.map((agent) => renderCompactAgent(agent)).join("")}
-      </ul>
-    `);
     return;
   }
   renderIntoActiveTargets("[data-agents-view]", `
@@ -2041,7 +2046,43 @@ function renderAgents() {
   `);
 }
 
-function renderCompactAgent(agent) {
+function renderPeopleAgents(allAgents, agents) {
+  if (!allAgents.length) {
+    selectedPeopleAgentId = null;
+    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
+    renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(null, "No agents registered."));
+    return;
+  }
+  if (!agents.length) {
+    selectedPeopleAgentId = null;
+    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
+    renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(null, "No visible agents."));
+    return;
+  }
+
+  const selectedAgent = agents.find((agent) => text(agent.id) === text(selectedPeopleAgentId)) || null;
+  if (selectedPeopleAgentId && !selectedAgent) {
+    selectedPeopleAgentId = null;
+  }
+
+  renderIntoActiveTargets("[data-agents-view]", `
+    <ul class="agent-list compact-record-list people-agent-list">
+      ${agents.map((agent) => renderSelectableAgent(agent)).join("")}
+    </ul>
+  `);
+  renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(selectedAgent));
+}
+
+function selectPeopleAgent(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId || !state.agents[normalizedAgentId]) {
+    return;
+  }
+  selectedPeopleAgentId = normalizedAgentId;
+  renderAgents();
+}
+
+function renderSelectableAgent(agent) {
   const details = agentCardData(agent);
   const blockedWaiting = details.taskStats.blockedWaitingCount;
   const inboxCount = details.inboxCount;
@@ -2050,10 +2091,16 @@ function renderCompactAgent(agent) {
     blockedWaiting ? `${blockedWaiting} blocked/waiting` : "",
     inboxCount ? `${inboxCount} inbox` : "",
   ].filter(Boolean);
+  const selected = text(selectedPeopleAgentId) === details.id;
   return `
-    <li class="agent-item agent-item-compact">
-      <details>
-        <summary class="agent-summary compact-record-summary">
+    <li class="agent-item agent-item-compact people-agent-card${selected ? " is-selected" : ""}" data-agent-id="${escapeAttr(details.id)}">
+      <button
+        class="agent-summary compact-record-summary people-agent-select"
+        type="button"
+        data-select-agent-id="${escapeAttr(details.id)}"
+        aria-controls="people-agent-detail-view"
+        aria-pressed="${selected ? "true" : "false"}"
+      >
           <span class="compact-record-main">
             <strong>${escapeHtml(details.label)}</strong>
             <span>${escapeHtml(details.role)} - ${escapeHtml(details.id)}</span>
@@ -2061,26 +2108,113 @@ function renderCompactAgent(agent) {
           <span class="agent-summary-meta">
             <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
             ${renderAgentAwakePill(details)}
-            ${renderAgentInboxHeaderIndicators(details)}
+            ${renderAgentInboxHeaderIndicators(details, { interactive: false })}
             <span>${escapeHtml(summaryBits.join(" - ") || "no open work")}</span>
           </span>
-        </summary>
-        <div class="compact-record-body">
-          <div class="record-actions">
-            ${renderAgentStandDownControls(details.id, details)}
-            <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
-            ${editButton("agent", details.id)}
-          </div>
-          <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - max ephemeral ${details.ephemeralCapacity}</div>
-          ${details.projectId ? `<div class="meta-line">Project ${escapeHtml(details.projectLabel || details.projectId)}</div>` : ""}
-          ${details.runtime?.summary ? `<div class="meta-line">Runtime ${escapeHtml(details.runtime.summary)}</div>` : ""}
-          ${details.standDownActive ? `<div class="meta-line">${escapeHtml(agentStandDownSummary(details))}</div>` : ""}
-          ${renderAgentOpenTasks(details.taskStats.openTasks)}
-          ${renderAgentInbox(agent.id)}
-        </div>
-      </details>
+      </button>
     </li>
   `;
+}
+
+function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
+  if (!agent) {
+    return `
+      <div class="agent-detail-empty">
+        <p class="empty-state">${escapeHtml(emptyMessage)}</p>
+      </div>
+    `;
+  }
+
+  const details = agentCardData(agent);
+  const snapshot = agentWorkSnapshot(details);
+  const waitingRows = snapshot.waiting.length
+    ? snapshot.waiting.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+    : `<li>Clear</li>`;
+  const runtimeRows = agentRuntimeDetailRows(details);
+  const projectValue = details.projectId
+    ? details.projectLabel && details.projectLabel !== details.projectId
+      ? `${details.projectLabel} (${details.projectId})`
+      : details.projectId
+    : "None";
+
+  return `
+    <div class="agent-detail">
+      <div class="agent-detail-header">
+        <div class="agent-detail-title">
+          <h3>${escapeHtml(details.label)}</h3>
+          <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
+        </div>
+        <div class="agent-detail-badges">
+          <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+          ${renderAgentAwakePill(details)}
+          ${renderAgentInboxHeaderIndicators(details)}
+        </div>
+      </div>
+      <div class="record-actions agent-detail-actions">
+        ${renderAgentStandDownControls(details.id, details)}
+        <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
+        ${editButton("agent", details.id)}
+      </div>
+      <div class="agent-detail-grid">
+        ${renderAgentDetailField("Session", details.sessionId || "None")}
+        ${renderAgentDetailField("Reports to", details.reportsToLabel)}
+        ${renderAgentDetailField("Project", projectValue)}
+        ${renderAgentDetailField("Subordinates", details.directSubordinateCount)}
+        ${renderAgentDetailField("Open tasks", `${details.taskStats.openCount} / ${details.taskStats.totalCount}`)}
+        ${renderAgentDetailField("Ephemeral", `${details.ephemeralCurrentCount} / ${details.ephemeralCapacity}`)}
+      </div>
+      <section class="agent-detail-section">
+        <h3>Work</h3>
+        <div class="agent-detail-work-line">
+          <span>Now</span>
+          <strong>${escapeHtml(snapshot.primary)}</strong>
+        </div>
+        <div class="meta-line">Waiting</div>
+        <ul class="inline-list agent-detail-list">
+          ${waitingRows}
+        </ul>
+        ${renderAgentOpenTasks(details.taskStats.openTasks)}
+      </section>
+      <section class="agent-detail-section">
+        <h3>Runtime</h3>
+        <ul class="inline-list agent-detail-list">
+          ${runtimeRows.map((row) => `<li>${escapeHtml(row)}</li>`).join("")}
+        </ul>
+      </section>
+      <section class="agent-detail-section">
+        <h3>Inbox</h3>
+        ${renderAgentInbox(details.id) || `<p class="empty-state">No pending inbox.</p>`}
+      </section>
+    </div>
+  `;
+}
+
+function renderAgentDetailField(label, value) {
+  return `
+    <div class="agent-detail-field">
+      <span class="agent-detail-label">${escapeHtml(label)}</span>
+      <strong class="agent-detail-value">${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function agentRuntimeDetailRows(details) {
+  const runtime = details.runtime || {};
+  if (!runtime.present) {
+    return ["No runtime snapshot"];
+  }
+  const rows = [runtime.summary || runtime.status || "Runtime idle"];
+  if (runtime.lastHandoffSummary) {
+    rows.push(`Last handoff ${runtime.lastHandoffSummary}`);
+  }
+  if (runtime.autoContextClearingEnabled || runtime.contextRotationPending) {
+    rows.push(
+      `Context clearing ${runtime.autoContextClearingEnabled ? "auto on" : "auto off"}${
+        runtime.contextRotationPending ? " - pending" : ""
+      }`,
+    );
+  }
+  return rows;
 }
 
 function renderAgentOpenTasks(openTasks) {
@@ -2394,7 +2528,7 @@ function renderAgentAwakePill(agentData) {
   `;
 }
 
-function renderAgentInboxHeaderIndicators(agentData) {
+function renderAgentInboxHeaderIndicators(agentData, { interactive = true } = {}) {
   const indicatorItems = agentData.inboxIndicatorItems || {};
   return `
     <span class="agent-inbox-indicators" aria-label="Pending inbox summary">
@@ -2403,25 +2537,27 @@ function renderAgentInboxHeaderIndicators(agentData) {
         direction: "down",
         label: "Status requests",
         items: indicatorItems.status_request || [],
+        interactive,
       })}
       ${renderAgentInboxHeaderIndicator({
         itemType: "progress_report",
         direction: "up",
         label: "Progress reports",
         items: indicatorItems.progress_report || [],
+        interactive,
       })}
     </span>
   `;
 }
 
-function renderAgentInboxHeaderIndicator({ itemType, direction, label, items }) {
+function renderAgentInboxHeaderIndicator({ itemType, direction, label, items, interactive = true }) {
   const rows = Array.isArray(items) ? items : [];
   const count = rows.length;
   const stateClass = count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty";
   return `
     <span
       class="agent-inbox-indicator agent-inbox-indicator--${escapeAttr(itemType)} ${stateClass}"
-      tabindex="0"
+      ${interactive ? `tabindex="0"` : ""}
       aria-label="${escapeAttr(`${label}: ${count}`)}"
     >
       ${renderAgentInboxIndicatorIcon(direction)}

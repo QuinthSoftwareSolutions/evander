@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Team Add-on People Agent Details
+
+- Split the focused People tab into a two-column desktop layout with selectable
+  agent cards on the left and selected-agent details on the right.
+
 ## 2026-06-17 - Team Add-on Boundary Cleanup
 
 - Removed the Team-specific manager directive MCP tool, Team metadata policy

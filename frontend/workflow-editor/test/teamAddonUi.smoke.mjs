@@ -26,7 +26,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
   assert.match(script, /data-planning-task-status/);
-  assert.match(script, /renderCompactAgent/);
+  assert.match(script, /data-select-agent-id/);
+  assert.match(script, /renderSelectableAgent/);
+  assert.match(script, /renderPeopleAgentDetail/);
   assert.match(script, /renderCompactRuntimeAgentRow/);
   assert.match(script, /agentAwakeState/);
 });
@@ -2824,10 +2826,31 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   assert.equal(await page.locator(".agent-item").count(), 4);
   assert.equal(await page.locator("#team-people-page .hierarchy-view").count(), 0);
-  assert.equal(await page.locator("#team-people-page .agent-item-compact details[open]").count(), 0);
-  await page.locator("#team-people-page").getByText("Project Lead").first().waitFor({
+  assert.equal(await page.locator("#team-people-page .people-agent-detail-panel").count(), 1);
+  assert.equal(
+    await page.locator("#team-people-page .people-layout").evaluate((element) => {
+      return getComputedStyle(element).gridTemplateColumns.split(" ").length;
+    }),
+    2,
+  );
+  await page.locator("#people-agent-detail-view").getByText("No agent selected.").waitFor({
     state: "visible",
   });
+  const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  await alphaLeadCard.waitFor({ state: "visible" });
+  await alphaLeadCard.getByRole("button").click();
+  await alphaLeadCard.locator('.people-agent-select[aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "alpha-lead" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByText("session-alpha-lead").waitFor({
+    state: "visible",
+  });
+  await page
+    .locator("#people-agent-detail-view .agent-detail-work-line strong", { hasText: "Draft pending delivery" })
+    .waitFor({ state: "visible" });
 
   await page.getByRole("tab", { name: "Planning" }).click();
   await page.locator("#team-planning-page").waitFor({ state: "visible" });

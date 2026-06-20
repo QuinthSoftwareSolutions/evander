@@ -710,15 +710,21 @@
         data-team-view-panel="people"
         hidden
       >
-        <section class="content-panel people-agents-panel" aria-labelledby="focused-agents-heading">
-          <div class="focused-section-header">
-            <div>
-              <p class="section-label">People</p>
-              <h2 id="focused-agents-heading">Agents</h2>
+        <div class="people-layout">
+          <section class="content-panel people-agents-panel" aria-labelledby="focused-agents-heading">
+            <div class="focused-section-header">
+              <div>
+                <p class="section-label">People</p>
+                <h2 id="focused-agents-heading">Agents</h2>
+              </div>
             </div>
-          </div>
-          <div class="agents-view" data-agents-view></div>
-        </section>
+            <div class="agents-view" data-agents-view></div>
+          </section>
+          <aside class="content-panel people-agent-detail-panel" aria-labelledby="people-agent-detail-heading">
+            <h2 id="people-agent-detail-heading">Agent details</h2>
+            <div id="people-agent-detail-view" class="people-agent-detail-view" data-agent-detail-view></div>
+          </aside>
+        </div>
         <section class="content-panel" aria-labelledby="focused-roles-heading">
           <h2 id="focused-roles-heading">Roles</h2>
           <div class="roles-view" data-roles-view></div>

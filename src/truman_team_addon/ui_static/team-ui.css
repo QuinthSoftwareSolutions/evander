@@ -209,6 +209,32 @@ button.team-view-tab[aria-selected="true"] {
   display: none;
 }
 
+.people-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.people-agents-panel,
+.people-agent-detail-panel {
+  min-width: 0;
+}
+
+.people-agent-detail-panel {
+  min-height: 18rem;
+}
+
+.people-agent-detail-panel h2 {
+  margin: 0;
+  line-height: 1.15;
+}
+
+.people-agent-detail-view {
+  margin-top: 0.85rem;
+}
+
 .setup-form-mount {
   width: min(100%, 56rem);
 }
@@ -1729,8 +1755,168 @@ button.record-action:hover {
   background: transparent;
 }
 
+.people-agent-list {
+  margin-top: 0.85rem;
+}
+
+.people-agent-card {
+  overflow: hidden;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    background 0.16s ease;
+}
+
+.people-agent-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 rgba(23, 111, 122, 0.68);
+}
+
+button.people-agent-select {
+  width: 100%;
+  min-height: 3.2rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+button.people-agent-select:hover,
+button.people-agent-select[aria-pressed="true"] {
+  background: rgba(23, 111, 122, 0.08);
+  color: var(--ink);
+}
+
+button.people-agent-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .agent-summary .awake-indicator {
   margin-top: 0;
+}
+
+.agent-detail {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.agent-detail-empty {
+  display: grid;
+  min-height: 12rem;
+  place-items: center;
+  text-align: center;
+}
+
+.agent-detail-empty .empty-state {
+  margin: 0;
+}
+
+.agent-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-detail-title {
+  min-width: 0;
+}
+
+.agent-detail-title h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-title .meta-line {
+  margin-top: 0.18rem;
+}
+
+.agent-detail-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.agent-detail-actions {
+  justify-content: flex-start;
+}
+
+.agent-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 0.75rem;
+}
+
+.agent-detail-field {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding: 0.4rem 0;
+}
+
+.agent-detail-field:nth-child(-n + 2) {
+  border-top: 0;
+}
+
+.agent-detail-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-detail-value {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.9rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-section {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.agent-detail-section h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.agent-detail-work-line {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: start;
+}
+
+.agent-detail-work-line span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-detail-work-line strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-list {
+  margin-top: 0.15rem;
 }
 
 .runtime-severity-warning {
@@ -2103,6 +2289,7 @@ label textarea {
 @media (max-width: 1180px) {
   .team-layout,
   .content-grid,
+  .people-layout,
   .project-columns,
   .delivery-buckets,
   .delivery-detail-grid,
@@ -2115,6 +2302,7 @@ label textarea {
   .delivery-team-title,
   .delivery-project-title,
   .delivery-bucket-title,
+  .agent-detail-header,
   .org-focus-header,
   .org-focus-team-header {
     display: grid;
@@ -2162,6 +2350,7 @@ label textarea {
   .runtime-section-header,
   .focused-section-header,
   .planning-header,
+  .agent-detail-header,
   .agent-line,
   .task-line,
   .record-line,
@@ -2187,6 +2376,7 @@ label textarea {
   .planning-project-meta,
   .runtime-summary-meta,
   .agent-summary-meta,
+  .agent-detail-badges,
   .planning-filters {
     justify-content: flex-start;
   }
@@ -2215,6 +2405,19 @@ label textarea {
 
   .delivery-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .agent-detail-grid,
+  .agent-detail-work-line {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-detail-field:nth-child(n) {
+    border-top: 1px solid var(--line);
+  }
+
+  .agent-detail-field:first-child {
+    border-top: 0;
   }
 
   .summary-grid {
