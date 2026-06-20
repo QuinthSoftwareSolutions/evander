@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -778,3 +779,522 @@ def test_azure_query_provider_update_pull_request_skips_unexpected_status(
     assert result.skipped_reason == "unexpected_status"
     assert result.status == "completed"
     assert methods == ["GET", "GET"]
+
+
+def test_pr_query_service_expands_closed_status_to_completed_and_abandoned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = request.url.params["searchCriteria.status"]
+        statuses.append(status)
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "pullRequestId": 17 if status == "completed" else 18,
+                        "title": status,
+                        "status": status,
+                    }
+                ]
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = PrQueryService(
+        providers={
+            "azure_devops": AzureDevOpsPrQueryProvider(
+                organization_url="https://dev.azure.com/org",
+                project="proj",
+                pat="secret",
+            )
+        }
+    )
+
+    result = service.list_pull_requests(provider="ado", repo="repo-1", status="closed")
+
+    assert statuses == ["completed", "abandoned"]
+    assert [item.pr_id for item in result.pull_requests] == ["17", "18"]
+    assert result.paging["statuses"] == ["completed", "abandoned"]
+    assert result.paging["has_more"] is False
+
+    statuses.clear()
+    limited = service.list_pull_requests(provider="ado", repo="repo-1", status="closed", top=1)
+
+    assert statuses == ["completed", "abandoned"]
+    assert [item.pr_id for item in limited.pull_requests] == ["17"]
+    assert limited.paging["total_merged_count"] == 2
+    assert limited.paging["has_more"] is True
+
+
+def test_pr_query_service_applies_pagination_after_merging_closed_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, int | None, int | None]] = []
+    by_status = {
+        "completed": [
+            {
+                "pullRequestId": 1,
+                "title": "Completed newest",
+                "status": "completed",
+                "closedDate": "2026-06-04T10:00:00Z",
+            },
+            {
+                "pullRequestId": 3,
+                "title": "Completed older",
+                "status": "completed",
+                "closedDate": "2026-06-02T10:00:00Z",
+            },
+        ],
+        "abandoned": [
+            {
+                "pullRequestId": 2,
+                "title": "Abandoned middle",
+                "status": "abandoned",
+                "closedDate": "2026-06-03T10:00:00Z",
+            },
+            {
+                "pullRequestId": 4,
+                "title": "Abandoned oldest",
+                "status": "abandoned",
+                "closedDate": "2026-06-01T10:00:00Z",
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = request.url.params["searchCriteria.status"]
+        top_value = request.url.params.get("$top")
+        skip_value = request.url.params.get("$skip")
+        top = int(top_value) if top_value is not None else None
+        skip = int(skip_value) if skip_value is not None else 0
+        requests.append((status, top, skip))
+        values = by_status[status]
+        if top is not None:
+            values = values[skip : skip + top]
+        else:
+            values = values[skip:]
+        return httpx.Response(200, json={"value": values})
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = PrQueryService(
+        providers={
+            "azure_devops": AzureDevOpsPrQueryProvider(
+                organization_url="https://dev.azure.com/org",
+                project="proj",
+                pat="secret",
+            )
+        }
+    )
+
+    first_page = service.list_pull_requests(provider="ado", repo="repo-1", status="closed", top=2)
+    second_page = service.list_pull_requests(
+        provider="ado",
+        repo="repo-1",
+        status="closed",
+        top=2,
+        skip=2,
+    )
+
+    assert [item.pr_id for item in first_page.pull_requests] == ["1", "2"]
+    assert first_page.paging["next_skip"] == 2
+    assert [item.pr_id for item in second_page.pull_requests] == ["3", "4"]
+    assert requests == [
+        ("completed", 2, 0),
+        ("abandoned", 2, 0),
+        ("completed", 4, 0),
+        ("abandoned", 4, 0),
+    ]
+
+
+def test_azure_query_provider_resolves_identity_with_ambiguous_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "vssps.dev.azure.com"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "user-1",
+                        "providerDisplayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                    {
+                        "id": "user-2",
+                        "providerDisplayName": "Alex Other",
+                        "uniqueName": "alex.other@example.com",
+                    },
+                ]
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.resolve_identity(query="Alex")
+
+    assert result.confidence == "ambiguous"
+    assert [match.id for match in result.matches] == ["user-1", "user-2"]
+    assert result.id is None
+
+
+def test_azure_query_provider_lists_pr_comment_activity_by_author_and_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if request.url.path.endswith("/pullrequests"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "pullRequestId": 17,
+                            "title": "Fix race",
+                            "status": request.url.params["searchCriteria.status"],
+                            "creationDate": "2026-05-01T00:00:00Z",
+                            "_links": {
+                                "web": {
+                                    "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+                                }
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/17/threads"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 501,
+                            "status": "active",
+                            "threadContext": {"filePath": "/src/app.py", "rightFileStart": {"line": 12}},
+                            "comments": [
+                                {
+                                    "id": 1,
+                                    "publishedDate": "2026-06-02T10:00:00Z",
+                                    "author": {
+                                        "id": "user-1",
+                                        "displayName": "Alex Example",
+                                        "uniqueName": "alex@example.com",
+                                    },
+                                    "content": "Please check this path.",
+                                    "commentType": "text",
+                                },
+                                {
+                                    "id": 2,
+                                    "publishedDate": "2026-05-20T10:00:00Z",
+                                    "author": {"displayName": "Alex Example"},
+                                    "content": "Too old.",
+                                    "commentType": "text",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_comment_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+    )
+
+    assert result.count == 1
+    assert result.comments[0].pr_id == "17"
+    assert result.comments[0].comment_id == "1"
+    assert result.comments[0].file_path == "/src/app.py"
+    assert "Please check" in (result.comments[0].body_snippet or "")
+
+
+def test_azure_query_provider_pages_comment_activity_after_scanning_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pull_request_queries: list[tuple[int | None, int | None]] = []
+    pull_requests = [
+        {
+            "pullRequestId": 17,
+            "title": "No matching activity",
+            "status": "active",
+            "creationDate": "2026-06-01T00:00:00Z",
+        },
+        {
+            "pullRequestId": 18,
+            "title": "Has matching activity",
+            "status": "active",
+            "creationDate": "2026-06-02T00:00:00Z",
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            top_value = request.url.params.get("$top")
+            skip_value = request.url.params.get("$skip")
+            top = int(top_value) if top_value is not None else None
+            skip = int(skip_value) if skip_value is not None else 0
+            pull_request_queries.append((top, skip))
+            values = pull_requests[skip : skip + top] if top is not None else pull_requests[skip:]
+            return httpx.Response(200, json={"value": values})
+        if request.url.path.endswith("/pullRequests/17/threads"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 501,
+                            "comments": [
+                                {
+                                    "id": 1,
+                                    "publishedDate": "2026-06-04T10:00:00Z",
+                                    "author": {"uniqueName": "other@example.com"},
+                                    "content": "Not the requested author.",
+                                    "commentType": "text",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/18/threads"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 502,
+                            "comments": [
+                                {
+                                    "id": 2,
+                                    "publishedDate": "2026-06-04T12:00:00Z",
+                                    "author": {
+                                        "displayName": "Alex Example",
+                                        "uniqueName": "alex@example.com",
+                                    },
+                                    "content": "Newest matching comment.",
+                                    "commentType": "text",
+                                },
+                                {
+                                    "id": 3,
+                                    "publishedDate": "2026-06-04T11:00:00Z",
+                                    "author": {
+                                        "displayName": "Alex Example",
+                                        "uniqueName": "alex@example.com",
+                                    },
+                                    "content": "Second matching comment.",
+                                    "commentType": "text",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_comment_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+        top=1,
+        skip=1,
+    )
+
+    assert pull_request_queries == [(200, 0)]
+    assert result.count == 1
+    assert result.comments[0].comment_id == "3"
+    assert result.paging["total_activity_count"] == 2
+    assert result.paging["has_more"] is False
+
+
+def test_azure_query_provider_lists_pr_commit_activity_by_author_and_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            if request.url.params["searchCriteria.status"] == "abandoned":
+                return httpx.Response(200, json={"value": []})
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "pullRequestId": 17,
+                            "title": "Fix race",
+                            "status": "completed",
+                            "closedDate": "2026-06-03T00:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/17/commits"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "commitId": "abc123",
+                            "comment": "Fix race",
+                            "author": {
+                                "name": "Alex Example",
+                                "email": "alex@example.com",
+                                "date": "2026-06-02T09:00:00Z",
+                            },
+                            "committer": {
+                                "name": "CI",
+                                "email": "ci@example.com",
+                                "date": "2026-06-02T09:05:00Z",
+                            },
+                        },
+                        {
+                            "commitId": "def456",
+                            "comment": "Other",
+                            "author": {
+                                "name": "Other User",
+                                "email": "other@example.com",
+                                "date": "2026-06-02T09:00:00Z",
+                            },
+                        },
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_commit_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["closed"],
+    )
+
+    assert result.count == 1
+    assert result.commits[0].commit_id == "abc123"
+    assert result.commits[0].pr_status == "completed"
+    assert result.commits[0].unverified_date is False
+
+
+def test_azure_query_provider_pages_commit_activity_after_scanning_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pull_request_queries: list[tuple[int | None, int | None]] = []
+    pull_requests = [
+        {
+            "pullRequestId": 17,
+            "title": "No matching commits",
+            "status": "active",
+            "creationDate": "2026-06-01T00:00:00Z",
+        },
+        {
+            "pullRequestId": 18,
+            "title": "Has matching commits",
+            "status": "active",
+            "creationDate": "2026-06-02T00:00:00Z",
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            top_value = request.url.params.get("$top")
+            skip_value = request.url.params.get("$skip")
+            top = int(top_value) if top_value is not None else None
+            skip = int(skip_value) if skip_value is not None else 0
+            pull_request_queries.append((top, skip))
+            values = pull_requests[skip : skip + top] if top is not None else pull_requests[skip:]
+            return httpx.Response(200, json={"value": values})
+        if request.url.path.endswith("/pullRequests/17/commits"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "commitId": "other",
+                            "author": {
+                                "name": "Other User",
+                                "email": "other@example.com",
+                                "date": "2026-06-04T12:30:00Z",
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/18/commits"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "commitId": "newer",
+                            "author": {
+                                "name": "Alex Example",
+                                "email": "alex@example.com",
+                                "date": "2026-06-04T12:00:00Z",
+                            },
+                        },
+                        {
+                            "commitId": "older",
+                            "author": {
+                                "name": "Alex Example",
+                                "email": "alex@example.com",
+                                "date": "2026-06-04T11:00:00Z",
+                            },
+                        },
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_commit_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+        top=1,
+        skip=1,
+    )
+
+    assert pull_request_queries == [(200, 0)]
+    assert result.count == 1
+    assert result.commits[0].commit_id == "older"
+    assert result.paging["total_activity_count"] == 2
+    assert result.paging["has_more"] is False

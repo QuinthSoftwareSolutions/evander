@@ -272,6 +272,20 @@ test("groups aggregate gate with data shaping", () => {
   ]);
 });
 
+test("groups buffer gate with timing gates", () => {
+  const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("gate", "gate:debounce", "Debounce"),
+    catalogNode("gate", "gate:buffer", "Buffer"),
+  ], "gate");
+
+  const timing = groups.find((group) => group.label === "Timing");
+  assert.ok(timing);
+  assert.deepEqual(timing.entries.map((entry) => entry.type), [
+    "gate:buffer",
+    "gate:debounce",
+  ]);
+});
+
 test("falls back to namespace groups for unknown node types", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("query", "query:cloud-run:job", "Cloud job"),

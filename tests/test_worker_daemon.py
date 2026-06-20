@@ -413,6 +413,75 @@ def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: 
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
+def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+
+    first = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "# Base\n",
+                    "overwrite": True,
+                }
+            ]
+        },
+    )
+    merged = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "Team guidance v1\n",
+                    "mode": "0644",
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": "truman-team-addon",
+                }
+            ]
+        },
+    )
+    replaced = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "Team guidance v2\n",
+                    "mode": "0644",
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": "truman-team-addon",
+                }
+            ]
+        },
+    )
+
+    assert first.status_code == 200
+    assert merged.status_code == 200
+    assert merged.json()["copied_paths"] == ["/home/agent/AGENTS.md"]
+    assert replaced.status_code == 200
+    assert replaced.json()["copied_paths"] == ["/home/agent/AGENTS.md"]
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    assert target.read_text(encoding="utf-8") == (
+        "# Base\n\n"
+        "<!-- agent-sandbox-managed-section:truman-team-addon:begin -->\n"
+        "Team guidance v2\n"
+        "<!-- agent-sandbox-managed-section:truman-team-addon:end -->\n"
+    )
+
+
 def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     tmp_path: Path,
 ) -> None:

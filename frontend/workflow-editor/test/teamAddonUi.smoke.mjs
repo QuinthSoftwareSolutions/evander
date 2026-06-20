@@ -67,6 +67,47 @@ function roleName(roleKey) {
     .join(" ");
 }
 
+function slugIdPart(value, fallback = "record") {
+  const slug = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || fallback;
+}
+
+function existingIdSet(existingIds) {
+  if (existingIds instanceof Set) return new Set(existingIds);
+  if (Array.isArray(existingIds)) return new Set(existingIds);
+  return new Set(Object.keys(existingIds || {}));
+}
+
+function generatedId(prefix, labels, existingIds) {
+  const base = [
+    slugIdPart(prefix),
+    ...labels.map((label) => slugIdPart(label, "")).filter(Boolean),
+  ].join("-");
+  const used = existingIdSet(existingIds);
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function uniqueIdFromBase(base, existingIds) {
+  const used = existingIdSet(existingIds);
+  let candidate = String(base ?? "").trim();
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function putRole(
   state,
   {
@@ -151,13 +192,6 @@ function autoDevSquadTemplate() {
     ],
     required_fields: [
       {
-        path: "team.id",
-        label: "Team ID",
-        description: "Stable identifier for the new team.",
-        required: true,
-        example: "team-auto-dev-squad",
-      },
-      {
         path: "team.name",
         label: "Team Name",
         description: "Human-readable team name.",
@@ -170,13 +204,6 @@ function autoDevSquadTemplate() {
         description: "Optional target for manager escalations.",
         required: false,
         example: "slack://ops-channel",
-      },
-      {
-        path: "project.id",
-        label: "Project ID",
-        description: "Stable project identifier.",
-        required: true,
-        example: "project-auto-dev-squad",
       },
       {
         path: "project.name",
@@ -228,25 +255,11 @@ function autoDevSquadTemplate() {
         example: "github",
       },
       {
-        path: "manager.agent_id",
-        label: "Manager Agent ID",
-        description: "Persistent manager agent identifier.",
-        required: true,
-        example: "manager-auto-dev-squad",
-      },
-      {
         path: "manager.session_id",
         label: "Manager Session ID",
         description: "Persistent manager session identifier.",
         required: true,
         example: "session-manager-auto-dev-squad",
-      },
-      {
-        path: "project_lead.agent_id",
-        label: "Project Lead Agent ID",
-        description: "Persistent project lead agent identifier.",
-        required: true,
-        example: "project-lead-auto-dev-squad",
       },
       {
         path: "project_lead.session_id",
@@ -256,13 +269,6 @@ function autoDevSquadTemplate() {
         example: "session-project-lead-auto-dev-squad",
       },
       {
-        path: "implementer.agent_id",
-        label: "Implementer Agent ID",
-        description: "Persistent implementer agent identifier.",
-        required: true,
-        example: "implementer-auto-dev-squad",
-      },
-      {
         path: "implementer.session_id",
         label: "Implementer Session ID",
         description: "Persistent implementer session identifier.",
@@ -270,25 +276,11 @@ function autoDevSquadTemplate() {
         example: "session-implementer-auto-dev-squad",
       },
       {
-        path: "reviewer.agent_id",
-        label: "Reviewer Agent ID",
-        description: "Persistent reviewer agent identifier.",
-        required: true,
-        example: "reviewer-auto-dev-squad",
-      },
-      {
         path: "reviewer.session_id",
         label: "Reviewer Session ID",
         description: "Persistent reviewer session identifier.",
         required: true,
         example: "session-reviewer-auto-dev-squad",
-      },
-      {
-        path: "release_operator.agent_id",
-        label: "Release Operator Agent ID",
-        description: "Persistent release operator agent identifier.",
-        required: true,
-        example: "release-operator-auto-dev-squad",
       },
       {
         path: "release_operator.session_id",
@@ -998,7 +990,7 @@ async function createTeamAddonServer(
       ) {
         const payload = await requestJson(request);
         requests.push({ method: request.method, pathname, payload });
-        const duplicateError = materializationDuplicateError(state, payload);
+        const duplicateError = materializationDuplicateError(state, payload, template);
         if (duplicateError) {
           jsonResponse(response, { error: duplicateError }, 400);
           return;
@@ -1089,61 +1081,81 @@ async function createTeamAddonServer(
   return { port: address.port, requests, state, timelineRequests };
 }
 
-function materializationDuplicateError(state, payload) {
-  const ids = [];
-  const teamId = payload?.team?.id;
-  const projectId = payload?.project?.id;
-  const managerAgentId = payload?.team?.manager_agent_id;
-  const projectLeadAgentId = payload?.project?.lead_agent_id;
-  const implementerAgentId = payload?.agents?.implementer?.agent_id;
-  const reviewerAgentId = payload?.agents?.reviewer?.agent_id;
-  const releaseOperatorAgentId = payload?.agents?.release_operator?.agent_id;
-
-  if (teamId && state.teams[teamId]) ids.push(teamId);
-  if (projectId && state.projects[projectId]) ids.push(projectId);
-  if (managerAgentId && state.agents[managerAgentId]) ids.push(managerAgentId);
-  if (projectLeadAgentId && state.agents[projectLeadAgentId]) ids.push(projectLeadAgentId);
-  if (implementerAgentId && state.agents[implementerAgentId]) ids.push(implementerAgentId);
-  if (reviewerAgentId && state.agents[reviewerAgentId]) ids.push(reviewerAgentId);
-  if (releaseOperatorAgentId && state.agents[releaseOperatorAgentId]) ids.push(releaseOperatorAgentId);
-  if (projectId) {
-    const reviewProfileId = materializedTemplateRecordId(projectId, "auto-dev-review");
-    const implementTaskId = materializedTemplateRecordId(projectId, "implement-scoped-slice");
-    const releaseTaskId = materializedTemplateRecordId(projectId, "release-handoff");
-    if (state.review_profiles[reviewProfileId]) ids.push(reviewProfileId);
-    if (state.tasks[implementTaskId]) ids.push(implementTaskId);
-    if (state.tasks[releaseTaskId]) ids.push(releaseTaskId);
+function materializationDuplicateError(state, payload, template) {
+  const ids = resolveTemplateMaterializationIds(state, payload, template);
+  const duplicates = [];
+  if (payload?.team?.id && state.teams[ids.teamId]) duplicates.push(ids.teamId);
+  if (payload?.project?.id && state.projects[ids.projectId]) duplicates.push(ids.projectId);
+  for (const [roleKey, roleInput] of Object.entries(payload?.agents || {})) {
+    const agentId = roleInput?.agent_id;
+    if (agentId && state.agents[ids.agentIds[roleKey]]) duplicates.push(ids.agentIds[roleKey]);
   }
-  return ids.length ? `duplicate ids: ${Array.from(new Set(ids)).join(", ")}` : null;
+  return duplicates.length
+    ? `duplicate ids: ${Array.from(new Set(duplicates)).join(", ")}`
+    : null;
 }
 
 function materializedTemplateRecordId(projectId, templateRecordId) {
   return `${projectId}-${templateRecordId}`;
 }
 
-function applyTemplateMaterialization(state, payload, template) {
+function resolveTemplateMaterializationIds(state, payload, template) {
   const team = payload.team || {};
   const project = payload.project || {};
   const agents = payload.agents || {};
-  const manager = team.manager_agent_id;
-  const projectLead = project.lead_agent_id;
-  const implementer = agents.implementer || {};
-  const reviewer = agents.reviewer || {};
-  const releaseOperator = agents.release_operator || {};
-  const roleIds = {
-    manager: roleId(team.id, "manager"),
-    project_lead: roleId(project.id, "project_lead"),
-    implementer: roleId(project.id, "implementer"),
-    reviewer: roleId(project.id, "reviewer"),
-    release_operator: roleId(project.id, "release_operator"),
-  };
+  const teamId = team.id || generatedId("team", [team.name], state.teams);
+  const projectId = project.id || generatedId("project", [teamId, project.name], state.projects);
+
+  const roleIds = {};
+  const usedRoleIds = existingIdSet(state.roles);
+  for (const role of template.roles) {
+    const scopeId = role.key === template.root_role_key ? teamId : projectId;
+    const roleIdentifier = uniqueIdFromBase(roleId(scopeId, role.key), usedRoleIds);
+    usedRoleIds.add(roleIdentifier);
+    roleIds[role.key] = roleIdentifier;
+  }
+
+  const agentIds = {};
+  const usedAgentIds = existingIdSet(state.agents);
+  for (const role of template.roles) {
+    const roleInput = agents[role.key] || {};
+    const scopeId = role.key === template.root_role_key ? teamId : projectId;
+    const agentIdentifier =
+      roleInput.agent_id || generatedId("agent", [scopeId, role.label], usedAgentIds);
+    usedAgentIds.add(agentIdentifier);
+    agentIds[role.key] = agentIdentifier;
+  }
+
+  const reviewProfileIds = template.review_profiles.map((profile) =>
+    uniqueIdFromBase(materializedTemplateRecordId(projectId, profile.id), state.review_profiles),
+  );
+  const taskIds = {};
+  const usedTaskIds = existingIdSet(state.tasks);
+  for (const task of template.tasks) {
+    const taskId = uniqueIdFromBase(materializedTemplateRecordId(projectId, task.id), usedTaskIds);
+    usedTaskIds.add(taskId);
+    taskIds[task.id] = taskId;
+  }
+
+  return { teamId, projectId, roleIds, agentIds, reviewProfileIds, taskIds };
+}
+
+function applyTemplateMaterialization(state, payload, template) {
+  const team = payload.team || {};
+  const project = payload.project || {};
+  const ids = resolveTemplateMaterializationIds(state, payload, template);
+  const manager = ids.agentIds.manager;
+  const projectLead = ids.agentIds.project_lead;
+  const implementer = ids.agentIds.implementer;
+  const reviewer = ids.agentIds.reviewer;
+  const releaseOperator = ids.agentIds.release_operator;
 
   state.revision += 1;
   for (const role of template.roles) {
     putRole(state, {
-      id: roleIds[role.key],
-      teamId: team.id,
-      projectId: role.key === template.root_role_key ? null : project.id,
+      id: ids.roleIds[role.key],
+      teamId: ids.teamId,
+      projectId: role.key === template.root_role_key ? null : ids.projectId,
       roleKey: role.key,
       name: role.label,
       description: role.description,
@@ -1151,92 +1163,92 @@ function applyTemplateMaterialization(state, payload, template) {
       ephemeralPolicy: role.ephemeral_policy,
     });
   }
-  state.teams[team.id] = {
-    id: team.id,
+  state.teams[ids.teamId] = {
+    id: ids.teamId,
     name: team.name,
     manager_agent_id: manager,
     operator_communication_target_id: team.operator_communication_target_id ?? null,
-    project_ids: [project.id],
+    project_ids: [ids.projectId],
     archived: false,
   };
   state.agents[manager] = {
     id: manager,
-    team_id: team.id,
+    team_id: ids.teamId,
     project_id: null,
-    role_id: roleIds.manager,
+    role_id: ids.roleIds.manager,
     session_id: team.manager_session_id,
     reports_to_agent_id: null,
     subordinate_agent_ids: [projectLead],
     ephemeral_policy: { max_concurrent: 0 },
     status: "active",
   };
-  state.projects[project.id] = {
-    id: project.id,
-    team_id: team.id,
+  state.projects[ids.projectId] = {
+    id: ids.projectId,
+    team_id: ids.teamId,
     name: project.name,
     lead_agent_id: projectLead,
     goals: template.project_goals.map((goal) => ({
       ...goal,
-      id: materializedTemplateRecordId(project.id, goal.id),
+      id: materializedTemplateRecordId(ids.projectId, goal.id),
     })),
     git: project.git || null,
     status: "active",
   };
   state.agents[projectLead] = {
     id: projectLead,
-    team_id: team.id,
-    project_id: project.id,
-    role_id: roleIds.project_lead,
+    team_id: ids.teamId,
+    project_id: ids.projectId,
+    role_id: ids.roleIds.project_lead,
     session_id: project.lead_session_id,
     reports_to_agent_id: manager,
-    subordinate_agent_ids: [implementer.agent_id, reviewer.agent_id, releaseOperator.agent_id],
+    subordinate_agent_ids: [implementer, reviewer, releaseOperator],
     ephemeral_policy: { max_concurrent: 1 },
     status: "active",
   };
-  state.agents[implementer.agent_id] = {
-    id: implementer.agent_id,
-    team_id: team.id,
-    project_id: project.id,
-    role_id: roleIds.implementer,
-    session_id: implementer.session_id,
+  state.agents[implementer] = {
+    id: implementer,
+    team_id: ids.teamId,
+    project_id: ids.projectId,
+    role_id: ids.roleIds.implementer,
+    session_id: payload.agents?.implementer?.session_id,
     reports_to_agent_id: projectLead,
     subordinate_agent_ids: [],
     ephemeral_policy: { max_concurrent: 2 },
     status: "active",
   };
-  state.agents[reviewer.agent_id] = {
-    id: reviewer.agent_id,
-    team_id: team.id,
-    project_id: project.id,
-    role_id: roleIds.reviewer,
-    session_id: reviewer.session_id,
+  state.agents[reviewer] = {
+    id: reviewer,
+    team_id: ids.teamId,
+    project_id: ids.projectId,
+    role_id: ids.roleIds.reviewer,
+    session_id: payload.agents?.reviewer?.session_id,
     reports_to_agent_id: projectLead,
     subordinate_agent_ids: [],
     ephemeral_policy: { max_concurrent: 1 },
     status: "active",
   };
-  state.agents[releaseOperator.agent_id] = {
-    id: releaseOperator.agent_id,
-    team_id: team.id,
-    project_id: project.id,
-    role_id: roleIds.release_operator,
-    session_id: releaseOperator.session_id,
+  state.agents[releaseOperator] = {
+    id: releaseOperator,
+    team_id: ids.teamId,
+    project_id: ids.projectId,
+    role_id: ids.roleIds.release_operator,
+    session_id: payload.agents?.release_operator?.session_id,
     reports_to_agent_id: projectLead,
     subordinate_agent_ids: [],
     ephemeral_policy: { max_concurrent: 1 },
     status: "active",
   };
-  const reviewProfileId = materializedTemplateRecordId(project.id, "auto-dev-review");
-  const implementTaskId = materializedTemplateRecordId(project.id, "implement-scoped-slice");
-  const releaseTaskId = materializedTemplateRecordId(project.id, "release-handoff");
+  const reviewProfileId = ids.reviewProfileIds[0];
+  const implementTaskId = ids.taskIds["implement-scoped-slice"];
+  const releaseTaskId = ids.taskIds["release-handoff"];
   state.review_profiles[reviewProfileId] = {
     id: reviewProfileId,
-    team_id: team.id,
-    project_id: project.id,
+    team_id: ids.teamId,
+    project_id: ids.projectId,
     name: "Auto-Dev Delivery Review",
     description:
       "Checks that the slice stays in scope, automated tests exist, risk is understood, and the release handoff is ready.",
-    applicable_role_ids: [roleIds.reviewer],
+    applicable_role_ids: [ids.roleIds.reviewer],
     criteria: template.review_profiles[0].criteria.map((criterion) => ({ ...criterion })),
     archived: false,
     created_at: "2026-06-09T00:00:00Z",
@@ -1244,8 +1256,8 @@ function applyTemplateMaterialization(state, payload, template) {
   };
   state.tasks[implementTaskId] = {
     id: implementTaskId,
-    owner_agent_id: implementer.agent_id,
-    project_id: project.id,
+    owner_agent_id: implementer,
+    project_id: ids.projectId,
     priority: 10,
     state: "pending",
     title: "Implement the scoped slice",
@@ -1260,8 +1272,8 @@ function applyTemplateMaterialization(state, payload, template) {
   };
   state.tasks[releaseTaskId] = {
     id: releaseTaskId,
-    owner_agent_id: releaseOperator.agent_id,
-    project_id: project.id,
+    owner_agent_id: releaseOperator,
+    project_id: ids.projectId,
     priority: 20,
     state: "pending",
     title: "Prepare release handoff",
@@ -1279,18 +1291,12 @@ function applyTemplateMaterialization(state, payload, template) {
     success: true,
     template_id: template.id,
     template_name: template.name,
-    created_team_id: team.id,
-    created_project_id: project.id,
-    created_agent_ids: {
-      manager: manager,
-      project_lead: projectLead,
-      implementer: implementer.agent_id,
-      reviewer: reviewer.agent_id,
-      release_operator: releaseOperator.agent_id,
-    },
-    role_ids: roleIds,
-    created_review_profile_ids: [reviewProfileId],
-    created_task_ids: [implementTaskId, releaseTaskId],
+    team_id: ids.teamId,
+    project_id: ids.projectId,
+    agent_ids: ids.agentIds,
+    role_ids: ids.roleIds,
+    review_profile_ids: [reviewProfileId],
+    task_ids: [implementTaskId, releaseTaskId],
     revision: state.revision,
   };
 }
@@ -1312,24 +1318,33 @@ function applyMutation(state, pathname, payload) {
     return;
   }
   if (pathname === "/api/addons/team-addon/teams") {
-    const managerRoleId = payload.manager_role_id || roleId(payload.id, "manager");
+    const teamId = payload.id || generatedId("team", [payload.name], state.teams);
+    const managerRoleId =
+      payload.manager_role_id || uniqueIdFromBase(roleId(teamId, "manager"), state.roles);
+    const managerAgentId =
+      payload.manager_agent_id ||
+      generatedId(
+        "agent",
+        [teamId, payload.manager_display_name || payload.manager_role_name || "Manager"],
+        state.agents,
+      );
     putRole(state, {
       id: managerRoleId,
-      teamId: payload.id,
+      teamId,
       roleKey: "manager",
       name: payload.manager_role_name || "Manager",
     });
-    state.teams[payload.id] = {
-      id: payload.id,
+    state.teams[teamId] = {
+      id: teamId,
       name: payload.name,
-      manager_agent_id: payload.manager_agent_id,
+      manager_agent_id: managerAgentId,
       operator_communication_target_id: payload.operator_communication_target_id ?? null,
       project_ids: [],
       archived: false,
     };
-    state.agents[payload.manager_agent_id] = {
-      id: payload.manager_agent_id,
-      team_id: payload.id,
+    state.agents[managerAgentId] = {
+      id: managerAgentId,
+      team_id: teamId,
       project_id: null,
       display_name: payload.manager_display_name ?? null,
       role_id: managerRoleId,
@@ -1342,29 +1357,46 @@ function applyMutation(state, pathname, payload) {
     return;
   }
   if (pathname === "/api/addons/team-addon/projects") {
-    const leadRoleId = payload.lead_role_id || roleId(payload.id, "project_lead");
+    const projectId =
+      payload.id || generatedId("project", [payload.team_id, payload.name], state.projects);
+    const leadRoleId =
+      payload.lead_role_id || uniqueIdFromBase(roleId(projectId, "project_lead"), state.roles);
+    const leadAgentId =
+      payload.lead_agent_id ||
+      generatedId(
+        "agent",
+        [projectId, payload.lead_display_name || payload.lead_role_name || "Project Lead"],
+        state.agents,
+      );
+    const usedGoalIds = new Set();
+    const goals = (payload.goals || []).map((goal) => {
+      const goalId =
+        goal.id || generatedId("goal", [projectId, goal.description], usedGoalIds);
+      usedGoalIds.add(goalId);
+      return { ...goal, id: goalId };
+    });
     putRole(state, {
       id: leadRoleId,
       teamId: payload.team_id,
-      projectId: payload.id,
+      projectId,
       roleKey: "project_lead",
       name: payload.lead_role_name || "Project Lead",
       ephemeralPolicy: { max_concurrent: 0 },
     });
-    state.projects[payload.id] = {
-      id: payload.id,
+    state.projects[projectId] = {
+      id: projectId,
       team_id: payload.team_id,
       name: payload.name,
-      lead_agent_id: payload.lead_agent_id,
-      goals: payload.goals || [],
+      lead_agent_id: leadAgentId,
+      goals,
       git: payload.git || null,
       status: "active",
     };
-    state.teams[payload.team_id].project_ids.push(payload.id);
-    state.agents[payload.lead_agent_id] = {
-      id: payload.lead_agent_id,
+    state.teams[payload.team_id].project_ids.push(projectId);
+    state.agents[leadAgentId] = {
+      id: leadAgentId,
       team_id: payload.team_id,
-      project_id: payload.id,
+      project_id: projectId,
       display_name: payload.lead_display_name ?? null,
       role_id: leadRoleId,
       session_id: payload.lead_session_id,
@@ -1374,16 +1406,20 @@ function applyMutation(state, pathname, payload) {
       status: "active",
     };
     state.agents[state.teams[payload.team_id].manager_agent_id].subordinate_agent_ids.push(
-      payload.lead_agent_id,
+      leadAgentId,
     );
     return;
   }
   if (pathname === "/api/addons/team-addon/roles") {
+    const roleIdentifier =
+      payload.id ||
+      payload.role_id ||
+      generatedId("role", [payload.project_id || payload.team_id, payload.name], state.roles);
     putRole(state, {
-      id: payload.id || payload.role_id,
+      id: roleIdentifier,
       teamId: payload.team_id,
       projectId: payload.project_id || null,
-      roleKey: payload.name || payload.id || payload.role_id,
+      roleKey: payload.name || roleIdentifier,
       name: payload.name,
       description: payload.description || "",
       permissions: payload.permissions || [],
@@ -1392,8 +1428,16 @@ function applyMutation(state, pathname, payload) {
     return;
   }
   if (pathname === "/api/addons/team-addon/agents") {
-    state.agents[payload.id] = {
-      id: payload.id,
+    const role = state.roles[payload.role_id];
+    const agentId =
+      payload.id ||
+      generatedId(
+        "agent",
+        [payload.project_id, payload.display_name || role?.name || payload.session_id],
+        state.agents,
+      );
+    state.agents[agentId] = {
+      id: agentId,
       team_id: payload.team_id,
       project_id: payload.project_id,
       display_name: payload.display_name ?? null,
@@ -1406,12 +1450,14 @@ function applyMutation(state, pathname, payload) {
         state.roles[payload.role_id]?.ephemeral_policy || { max_concurrent: 0 },
       status: "active",
     };
-    state.agents[payload.reports_to_agent_id].subordinate_agent_ids.push(payload.id);
+    state.agents[payload.reports_to_agent_id].subordinate_agent_ids.push(agentId);
     return;
   }
   if (pathname === "/api/addons/team-addon/tasks") {
-    state.tasks[payload.id] = {
-      id: payload.id,
+    const taskId =
+      payload.id || generatedId("task", [payload.project_id, payload.title], state.tasks);
+    state.tasks[taskId] = {
+      id: taskId,
       owner_agent_id: payload.owner_agent_id,
       project_id: payload.project_id,
       priority: payload.priority,
@@ -1426,13 +1472,36 @@ function applyMutation(state, pathname, payload) {
     };
     return;
   }
-  if (pathname === "/api/addons/team-addon/tasks/task") {
-    Object.assign(state.tasks.task, payload);
+  const taskUpdateMatch = pathname.match(/^\/api\/addons\/team-addon\/tasks\/(.+)$/);
+  if (taskUpdateMatch) {
+    const taskId = decodeURIComponent(taskUpdateMatch[1]);
+    Object.assign(state.tasks[taskId], payload);
+    return;
+  }
+  if (pathname === "/api/addons/team-addon/review-profiles") {
+    const profileId =
+      payload.id ||
+      generatedId("profile", [payload.project_id || payload.team_id, payload.name], state.review_profiles);
+    state.review_profiles[profileId] = {
+      id: profileId,
+      team_id: payload.team_id,
+      project_id: payload.project_id || null,
+      name: payload.name,
+      description: payload.description || "",
+      applicable_role_ids: payload.applicable_role_ids || [],
+      criteria: payload.criteria || [],
+      archived: false,
+      created_at: "2026-06-09T00:00:00Z",
+      updated_at: "2026-06-09T00:00:00Z",
+    };
     return;
   }
   if (pathname === "/api/addons/team-addon/deliverables") {
-    state.deliverables[payload.id] = {
-      id: payload.id,
+    const deliverableId =
+      payload.id ||
+      generatedId("deliverable", [payload.task_id, payload.summary], state.deliverables);
+    state.deliverables[deliverableId] = {
+      id: deliverableId,
       task_id: payload.task_id,
       producer_agent_id: payload.producer_agent_id,
       artifact_refs: payload.artifact_refs || [],
@@ -1440,19 +1509,26 @@ function applyMutation(state, pathname, payload) {
       state: payload.state || "pending",
       review_request_ids: [],
     };
-    state.tasks[payload.task_id].deliverable_ids.push(payload.id);
+    state.tasks[payload.task_id].deliverable_ids.push(deliverableId);
     return;
   }
   if (pathname === "/api/addons/team-addon/review-requests") {
-    state.review_requests[payload.id] = {
-      id: payload.id,
+    const reviewRequestId =
+      payload.id ||
+      generatedId(
+        "review",
+        [payload.deliverable_id, payload.profile_id || payload.reviewer_agent_id],
+        state.review_requests,
+      );
+    state.review_requests[reviewRequestId] = {
+      id: reviewRequestId,
       deliverable_id: payload.deliverable_id,
       reviewer_agent_id: payload.reviewer_agent_id,
       state: payload.state || "pending",
       findings: payload.findings || [],
       decision_at: null,
     };
-    state.deliverables[payload.deliverable_id].review_request_ids.push(payload.id);
+    state.deliverables[payload.deliverable_id].review_request_ids.push(reviewRequestId);
   }
 }
 
@@ -1501,14 +1577,10 @@ async function openDetails(page, name) {
 async function fillAutoDevSquadForm(page) {
   const form = page.locator("#setup-template-form");
   await form.locator('[name="template_id"]').selectOption("auto-dev-squad");
-  await form.locator('[name="team_id"]').fill("team-auto-dev-squad");
   await form.locator('[name="team_name"]').fill("Auto-Dev Squad");
-  await form.locator('[name="manager_agent_id"]').fill("manager-auto-dev-squad");
   await form.locator('[name="manager_session_id"]').fill("session-manager-auto-dev-squad");
   await form.locator('[name="operator_communication_target_id"]').fill("slack://ops-channel");
-  await form.locator('[name="project_id"]').fill("project-auto-dev-squad");
   await form.locator('[name="project_name"]').fill("Reviewed Auto-Dev Delivery");
-  await form.locator('[name="project_lead_agent_id"]').fill("project-lead-auto-dev-squad");
   await form.locator('[name="project_lead_session_id"]').fill("session-project-lead-auto-dev-squad");
   await form.locator('[name="host_repo_path"]').fill("/srv/repos/auto-dev-squad");
   await form.locator('[name="bare_repo"]').fill("auto-dev-squad.git");
@@ -1516,11 +1588,8 @@ async function fillAutoDevSquadForm(page) {
   await form.locator('[name="canonical_origin_url"]').fill("ssh://git.example/auto-dev-squad.git");
   await form.locator('[name="provider"]').selectOption("github");
   await form.locator('[name="canonical_release_branch_prefix"]').fill("releases");
-  await form.locator('[name="implementer_agent_id"]').fill("implementer-auto-dev-squad");
   await form.locator('[name="implementer_session_id"]').fill("session-implementer-auto-dev-squad");
-  await form.locator('[name="reviewer_agent_id"]').fill("reviewer-auto-dev-squad");
   await form.locator('[name="reviewer_session_id"]').fill("session-reviewer-auto-dev-squad");
-  await form.locator('[name="release_operator_agent_id"]').fill("release-operator-auto-dev-squad");
   await form.locator('[name="release_operator_session_id"]').fill("session-release-operator-auto-dev-squad");
 }
 
@@ -1528,6 +1597,15 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
   const statusMessage = page.locator("#status-message");
+  const teamId = "team-team";
+  const managerId = "agent-team-team-team-manager";
+  const projectId = "project-team-team-project";
+  const leadId = "agent-project-team-team-project-project-lead";
+  const roleId = "role-project-team-team-project-backend";
+  const backendId = "agent-project-team-team-project-backend-agent";
+  const taskId = "task-project-team-team-project-build-backend";
+  const deliverableId =
+    "deliverable-task-project-team-team-project-build-backend-backend-task-is-ready";
 
   await page
     .locator("#hierarchy-view")
@@ -1537,8 +1615,6 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await openDetails(page, "Create team");
   const teamForm = page.locator("#create-team-form");
   await teamForm.locator('[name="name"]').fill("Team");
-  await teamForm.locator('[name="id"]').fill("team");
-  await teamForm.locator('[name="manager_agent_id"]').fill("manager");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
   await teamForm.locator('[name="manager_display_name"]').fill("Team Manager");
   await teamForm.locator('[name="operator_communication_target_id"]').fill("ops-channel");
@@ -1546,15 +1622,12 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await page.getByText("Saved revision 1.").waitFor({ state: "visible" });
 
   await openDetails(page, "Create project");
-  await waitForSelectOption(page, '#create-project-form [name="team_id"]', "team");
+  await waitForSelectOption(page, '#create-project-form [name="team_id"]', teamId);
   const projectForm = page.locator("#create-project-form");
-  await projectForm.locator('[name="team_id"]').selectOption("team");
+  await projectForm.locator('[name="team_id"]').selectOption(teamId);
   await projectForm.locator('[name="name"]').fill("Project");
-  await projectForm.locator('[name="id"]').fill("project");
-  await projectForm.locator('[name="lead_agent_id"]').fill("lead");
   await projectForm.locator('[name="lead_session_id"]').fill("session-lead");
   await projectForm.locator('[name="lead_display_name"]').fill("Project Lead");
-  await projectForm.locator('[name="goal_id"]').fill("goal");
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
   await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
   await projectForm.locator('[name="bare_repo"]').fill("project.git");
@@ -1563,27 +1636,25 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
 
   await openDetails(page, "Create role");
-  await waitForSelectOption(page, '#create-role-form [name="team_id"]', "team");
+  await waitForSelectOption(page, '#create-role-form [name="team_id"]', teamId);
   const roleForm = page.locator("#create-role-form");
-  await roleForm.locator('[name="team_id"]').selectOption("team");
-  await roleForm.locator('[name="project_id"]').selectOption("project");
+  await roleForm.locator('[name="team_id"]').selectOption(teamId);
+  await roleForm.locator('[name="project_id"]').selectOption(projectId);
   await roleForm.locator('[name="name"]').fill("Backend");
-  await roleForm.locator('[name="id"]').fill("project__backend");
   await roleForm.locator('[name="max_concurrent"]').fill("2");
   await roleForm.getByRole("button", { name: "Create role" }).click();
   await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
 
   await openDetails(page, "Register agent");
-  await waitForSelectOption(page, '#register-agent-form [name="reports_to_agent_id"]', "lead");
-  await waitForSelectOption(page, '#register-agent-form [name="role_id"]', "project__backend");
+  await waitForSelectOption(page, '#register-agent-form [name="reports_to_agent_id"]', leadId);
+  await waitForSelectOption(page, '#register-agent-form [name="role_id"]', roleId);
   const agentForm = page.locator("#register-agent-form");
-  await agentForm.locator('[name="team_id"]').selectOption("team");
-  await agentForm.locator('[name="project_id"]').selectOption("project");
-  await agentForm.locator('[name="role_id"]').selectOption("project__backend");
-  await agentForm.locator('[name="id"]').fill("backend");
+  await agentForm.locator('[name="team_id"]').selectOption(teamId);
+  await agentForm.locator('[name="project_id"]').selectOption(projectId);
+  await agentForm.locator('[name="role_id"]').selectOption(roleId);
   await agentForm.locator('[name="session_id"]').fill("session-backend");
   await agentForm.locator('[name="display_name"]').fill("Backend Agent");
-  await agentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
+  await agentForm.locator('[name="reports_to_agent_id"]').selectOption(leadId);
   await agentForm.locator('[name="max_concurrent"]').fill("2");
   await agentForm.getByRole("button", { name: "Register agent" }).click();
   await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
@@ -1592,15 +1663,14 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await page.getByText("Backend Agent").first().waitFor({ state: "visible" });
 
   await openDetails(page, "Create task");
-  await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', "backend");
+  await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', backendId);
   const taskForm = page.locator("#create-task-form");
-  await taskForm.locator('[name="owner_agent_id"]').selectOption("backend");
-  await taskForm.locator('[name="project_id"]').selectOption("project");
+  await taskForm.locator('[name="owner_agent_id"]').selectOption(backendId);
+  await taskForm.locator('[name="project_id"]').selectOption(projectId);
   await taskForm.locator('[name="priority"]').fill("5");
   await taskForm.locator('[name="title"]').fill("Build backend");
-  await taskForm.locator('[name="id"]').fill("task");
   await taskForm.locator('[name="description"]').fill("Implement backend work.");
-  await taskForm.locator('[name="created_by_agent_id"]').selectOption("lead");
+  await taskForm.locator('[name="created_by_agent_id"]').selectOption(leadId);
   await taskForm.getByRole("button", { name: "Create task" }).click();
   try {
     await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
@@ -1611,30 +1681,28 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   }
 
   await openDetails(page, "Update task");
-  await waitForSelectOption(page, '#update-task-form [name="task_id"]', "task");
+  await waitForSelectOption(page, '#update-task-form [name="task_id"]', taskId);
   const updateForm = page.locator("#update-task-form");
-  await updateForm.locator('[name="task_id"]').selectOption("task");
+  await updateForm.locator('[name="task_id"]').selectOption(taskId);
   await updateForm.locator('[name="state"]').selectOption("waiting_for_review");
   await updateForm.getByRole("button", { name: "Update task" }).click();
   await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
 
   await openDetails(page, "Record deliverable");
-  await waitForSelectOption(page, '#record-deliverable-form [name="task_id"]', "task");
+  await waitForSelectOption(page, '#record-deliverable-form [name="task_id"]', taskId);
   const deliverableForm = page.locator("#record-deliverable-form");
-  await deliverableForm.locator('[name="id"]').fill("deliverable");
-  await deliverableForm.locator('[name="task_id"]').selectOption("task");
-  await deliverableForm.locator('[name="producer_agent_id"]').selectOption("backend");
+  await deliverableForm.locator('[name="task_id"]').selectOption(taskId);
+  await deliverableForm.locator('[name="producer_agent_id"]').selectOption(backendId);
   await deliverableForm.locator('[name="summary"]').fill("Backend task is ready.");
   await deliverableForm.locator('[name="artifact_refs"]').fill("artifacts/backend.tar.gz");
   await deliverableForm.getByRole("button", { name: "Record deliverable" }).click();
   await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
   await openDetails(page, "Request review");
-  await waitForSelectOption(page, '#record-review-form [name="deliverable_id"]', "deliverable");
+  await waitForSelectOption(page, '#record-review-form [name="deliverable_id"]', deliverableId);
   const reviewForm = page.locator("#record-review-form");
-  await reviewForm.locator('[name="id"]').fill("review");
-  await reviewForm.locator('[name="deliverable_id"]').selectOption("deliverable");
-  await reviewForm.locator('[name="reviewer_agent_id"]').selectOption("lead");
+  await reviewForm.locator('[name="deliverable_id"]').selectOption(deliverableId);
+  await reviewForm.locator('[name="reviewer_agent_id"]').selectOption(leadId);
   await reviewForm.getByRole("button", { name: "Request review" }).click();
   await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
 
@@ -1660,6 +1728,8 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
   const { port, requests, state } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
   const statusMessage = page.locator("#status-message");
+  const generatedTeamId = "team-auto-dev-squad";
+  const generatedProjectId = "project-team-auto-dev-squad-reviewed-auto-dev-delivery";
 
   await page.locator("#hierarchy-view").getByText("No teams registered.").waitFor({
     state: "visible",
@@ -1698,16 +1768,12 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
   );
   assert.equal(requests[0].payload.expected_revision, 0);
   assert.deepEqual(requests[0].payload.team, {
-    id: "team-auto-dev-squad",
     name: "Auto-Dev Squad",
-    manager_agent_id: "manager-auto-dev-squad",
     manager_session_id: "session-manager-auto-dev-squad",
     operator_communication_target_id: "slack://ops-channel",
   });
   assert.deepEqual(requests[0].payload.project, {
-    id: "project-auto-dev-squad",
     name: "Reviewed Auto-Dev Delivery",
-    lead_agent_id: "project-lead-auto-dev-squad",
     lead_session_id: "session-project-lead-auto-dev-squad",
     git: {
       host_repo_path: "/srv/repos/auto-dev-squad",
@@ -1720,34 +1786,27 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
   });
   assert.deepEqual(requests[0].payload.agents, {
     implementer: {
-      agent_id: "implementer-auto-dev-squad",
       session_id: "session-implementer-auto-dev-squad",
     },
     reviewer: {
-      agent_id: "reviewer-auto-dev-squad",
       session_id: "session-reviewer-auto-dev-squad",
     },
     release_operator: {
-      agent_id: "release-operator-auto-dev-squad",
       session_id: "session-release-operator-auto-dev-squad",
     },
   });
   assert.equal(state.revision, 1);
-  assert.equal(state.teams["team-auto-dev-squad"].project_ids[0], "project-auto-dev-squad");
+  assert.equal(state.teams[generatedTeamId].project_ids[0], generatedProjectId);
   assert.equal(
-    state.review_profiles["project-auto-dev-squad-auto-dev-review"].criteria[0].id,
+    state.review_profiles[`${generatedProjectId}-auto-dev-review`].criteria[0].id,
     "scope",
   );
 
   await fillAutoDevSquadForm(page);
   await page.locator("#setup-template-form").getByRole("button", { name: "Materialize template" }).click();
-  await page.getByText(/duplicate ids/).waitFor({ state: "visible" });
-  assert.equal(await page.locator('#setup-template-form [name="team_id"]').inputValue(), "team-auto-dev-squad");
-  assert.equal(
-    await page.locator('#setup-template-form [name="manager_session_id"]').inputValue(),
-    "session-manager-auto-dev-squad",
-  );
-  assert.equal(state.revision, 1);
+  await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
+  assert.equal(state.teams["team-auto-dev-squad-2"].project_ids[0], "project-team-auto-dev-squad-2-reviewed-auto-dev-delivery");
+  assert.equal(state.revision, 2);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].payload.expected_revision, 1);
 });
@@ -1951,13 +2010,11 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   await openDetails(page, "Create team");
   const teamForm = page.locator("#create-team-form");
   await teamForm.locator('[name="name"]').fill("Team");
-  await teamForm.locator('[name="id"]').fill("team");
-  await teamForm.locator('[name="manager_agent_id"]').fill("manager");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
   await teamForm.getByRole("button", { name: "Create team" }).click();
 
   await page.getByText(/Revision conflict/).waitFor({ state: "visible" });
-  assert.equal(await teamForm.locator('[name="id"]').inputValue(), "team");
+  assert.equal(await teamForm.locator('[name="name"]').inputValue(), "Team");
   assert.equal(await teamForm.locator('[name="manager_session_id"]').inputValue(), "session-manager");
   await page.locator(".hierarchy-team h3", { hasText: "Existing" }).waitFor({ state: "visible" });
 });

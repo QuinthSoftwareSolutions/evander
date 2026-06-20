@@ -7,7 +7,7 @@ from typing import Any
 from agent_sandbox.events.provider_models import (
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
 )
-from agent_sandbox.models import SessionToolApprovalLease, ToolName
+from agent_sandbox.models import SessionToolApprovalLease, tool_name_value
 from agent_sandbox.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
     SessionToolApprovalLeaseRepository,
@@ -139,7 +139,7 @@ class SessionRevokeMcpToolApprovalLeaseEffectProvider(EffectProviderBase):
             "mcp_tool_approval_lease_id": lease.lease_id,
             "session_id": lease.session_id,
             "workflow_run_id": lease.workflow_run_id,
-            "tools": [tool.value if isinstance(tool, ToolName) else str(tool) for tool in lease.tools],
+            "tools": [tool_name_value(tool) for tool in lease.tools],
             "revoked": True,
             "already_revoked": already_revoked,
             "revoked_at": revoked_at.astimezone(UTC).isoformat() if revoked_at is not None else None,

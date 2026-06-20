@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 import unicodedata
 
 import yaml
@@ -26,8 +27,8 @@ from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.models import (
     DirectoryPath,
     McpToolPolicyRule,
+    McpToolName,
     ToolArgumentPolicyRule,
-    ToolName,
     normalize_mcp_tool_policies,
     normalize_tool_argument_policies,
     normalize_tool_names,
@@ -52,6 +53,49 @@ from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
 from agent_sandbox.workflow.validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+
+
+def _host_is_loopback(host: str) -> bool:
+    normalized = host.strip().casefold()
+    if normalized == "localhost":
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_is_unspecified(host: str) -> bool:
+    normalized = host.strip().casefold()
+    try:
+        return ip_address(normalized).is_unspecified
+    except ValueError:
+        return normalized == ""
+
+
+def _http_url_host_and_port(value: str) -> tuple[str, int]:
+    parsed = urlsplit(value)
+    if parsed.hostname is None:
+        return "", 443 if parsed.scheme == "https" else 80
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.hostname.casefold(), port
+
+
+def _local_openai_upstream_conflicts_with_relay_listener(
+    *, upstream_url: str, relay_host: str, relay_port: int
+) -> bool:
+    upstream_host, upstream_port = _http_url_host_and_port(upstream_url)
+    if upstream_port != relay_port:
+        return False
+
+    relay_bind_host = relay_host.strip().casefold()
+    if upstream_host == relay_bind_host:
+        return True
+    if _host_is_unspecified(relay_bind_host):
+        return _host_is_loopback(upstream_host) or _host_is_unspecified(upstream_host)
+    if _host_is_loopback(relay_bind_host):
+        return _host_is_loopback(upstream_host) or _host_is_unspecified(upstream_host)
+    return False
 
 
 def _contains_url_control_character(value: str) -> bool:
@@ -323,12 +367,17 @@ class GatewayConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
-    model_provider_mode: Literal["openai_public", "azure_openai", "anthropic"] = Field(
-        default="openai_public",
-        validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
+    model_provider_mode: Literal["openai_public", "azure_openai", "anthropic", "local_openai"] = (
+        Field(
+            default="openai_public",
+            validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
+        )
     )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
+    local_openai_api_key: str = "ollama"
+    local_openai_provider_name: str = "local_openai"
     azure_openai_endpoint: str | None = None
     azure_openai_auth_mode: Literal["api_key"] = "api_key"
     azure_openai_api_key_env: str | None = None
@@ -385,7 +434,7 @@ class GatewayConfig(BaseModel):
         ge=1,
     )
     pr_reply_require_approval: bool = False
-    approval_required_tools: list[ToolName] = Field(default_factory=list)
+    approval_required_tools: list[McpToolName] = Field(default_factory=list)
     mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
     tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     github_token_env: str = "GITHUB_TOKEN"
@@ -494,6 +543,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "local_openai_api_base_url",
         "anthropic_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
@@ -521,7 +571,7 @@ class GatewayConfig(BaseModel):
 
     @field_validator("approval_required_tools", mode="before")
     @classmethod
-    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+    def normalize_approval_required_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
 
     @field_validator("mcp_tool_policies", mode="before")
@@ -557,6 +607,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "local_openai_api_base_url",
         "anthropic_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
@@ -609,6 +660,16 @@ class GatewayConfig(BaseModel):
             return value
         text = str(value).strip()
         return text or None
+
+    @field_validator("local_openai_api_key", "local_openai_provider_name", mode="before")
+    @classmethod
+    def normalize_local_openai_required_strings(cls, value: object, info) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"{info.field_name} cannot be empty")
+        return text
 
     @field_validator("azure_openai_auth_mode", mode="before")
     @classmethod
@@ -869,6 +930,28 @@ class GatewayConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_local_openai_provider_config(self, info) -> GatewayConfig:
+        context = getattr(info, "context", None) or {}
+        if context.get("directory_config_domain") == "providers" and context.get(
+            "validation_scope"
+        ) == "overlay":
+            return self
+        if self.model_provider_mode != "local_openai":
+            return self
+        if _local_openai_upstream_conflicts_with_relay_listener(
+            upstream_url=self.local_openai_api_base_url,
+            relay_host=self.openai_relay_host,
+            relay_port=self.openai_relay_port,
+        ):
+            raise ValueError(
+                "model_provider_mode='local_openai' requires local_openai_api_base_url "
+                "to point at an endpoint other than the OpenAI relay listener; set "
+                "openai_relay_host to a guest-facing address or set "
+                "local_openai_api_base_url to a non-conflicting host/port"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_inbound_phone_routes(self) -> GatewayConfig:
         route_ids = [route.id for route in self.inbound_phone_routes]
         duplicates = sorted(route_id for route_id, count in Counter(route_ids).items() if count > 1)
@@ -884,7 +967,9 @@ class GatewayConfig(BaseModel):
         return self.scheduled_wake_prefix_text
 
     @property
-    def openai_provider_mode(self) -> Literal["openai_public", "azure_openai", "anthropic"]:
+    def openai_provider_mode(
+        self,
+    ) -> Literal["openai_public", "azure_openai", "anthropic", "local_openai"]:
         return self.model_provider_mode
 
 

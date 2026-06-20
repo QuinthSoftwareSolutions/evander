@@ -309,6 +309,49 @@ def test_relay_uses_session_directory_provider_overlay(tmp_path: Path) -> None:
     assert captured["url"] == "https://team-a.example/v1/responses"
 
 
+def test_relay_routes_local_openai_requests_without_host_api_key_env(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["accept-encoding"] = request.headers.get("accept-encoding", "")
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/session/session-local/responses?foo=bar",
+        json={"model": "qwen3-coder:30b", "input": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer ollama-placeholder"
+    assert captured["accept-encoding"] == "identity"
+    assert captured["url"] == "http://127.0.0.1:11435/v1/responses?foo=bar"
+    assert captured["payload"] == {
+        "model": "qwen3-coder:30b",
+        "input": "hello",
+    }
+
+
 def test_relay_routes_azure_openai_responses_requests_through_session_directory_overlays(
     tmp_path: Path,
 ) -> None:
@@ -362,8 +405,7 @@ def test_relay_routes_azure_openai_responses_requests_through_session_directory_
 
     assert response.status_code == 200
     assert captured["url"] == (
-        "https://example-resource.openai.azure.com/openai/v1/responses"
-        "?foo=bar&api-version=preview"
+        "https://example-resource.openai.azure.com/openai/v1/responses?foo=bar&api-version=preview"
     )
     assert captured["api-key"] == "azure-key"
     assert captured["authorization"] == ""
@@ -525,8 +567,7 @@ def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
     assert b"data: first" in body
     assert b"data: second" in body
     assert captured["url"] == (
-        "https://example-resource.openai.azure.com/openai/v1/responses"
-        "?api-version=preview"
+        "https://example-resource.openai.azure.com/openai/v1/responses?api-version=preview"
     )
     assert captured["api-key"] == "azure-key"
     assert captured["payload"] == {

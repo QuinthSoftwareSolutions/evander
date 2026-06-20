@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.models import ToolName
+from agent_sandbox.models import ApprovalGrantSettings, ToolName
 from agent_sandbox.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
@@ -43,6 +43,44 @@ def test_tool_approval_lease_allows_only_matching_session_run_and_tool(tmp_path)
         session_id="session-1",
         workflow_run_id="run-1",
         tool_name=ToolName.DISCORD_POST_STATUS,
+    )
+
+
+def test_tool_approval_lease_stops_approving_tool_after_max_uses(tmp_path):
+    repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    lease = repository.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_settings={
+            ToolName.RUN_SCRIPT.value: ApprovalGrantSettings(max_uses=1),
+        },
+    )
+
+    assert repository.is_tool_approved(
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="run-1",
+        tool_name=ToolName.RUN_SCRIPT,
+    )
+    assert repository.consume_tool_use(
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="run-1",
+        tool_name=ToolName.RUN_SCRIPT,
+    )
+    assert not repository.is_tool_approved(
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="run-1",
+        tool_name=ToolName.RUN_SCRIPT,
+    )
+    assert not repository.consume_tool_use(
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="run-1",
+        tool_name=ToolName.RUN_SCRIPT,
     )
 
 

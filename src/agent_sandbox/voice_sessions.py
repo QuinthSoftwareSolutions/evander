@@ -24,7 +24,12 @@ from agent_sandbox.directory_config import (
 )
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.messaging.wake_store import WakeRequestRepository
-from agent_sandbox.models import SessionManifest, ToolName, WakeScheduleDefinition, utc_now
+from agent_sandbox.models import (
+    SessionManifest,
+    WakeScheduleDefinition,
+    tool_name_value,
+    utc_now,
+)
 from agent_sandbox.retell_phone import (
     RetellPhoneCallService,
     sanitize_retell_metadata,
@@ -597,18 +602,21 @@ class VoiceSessionStore:
 class VoiceProjectionService:
     @staticmethod
     def _fallback_tool_summary(session: SessionManifest) -> dict[str, Any]:
+        approval_required_values = {
+            tool_name_value(tool) for tool in session.approval_required_tools
+        }
         allowed_tools = [
             {
-                "tool_name": tool.value if isinstance(tool, ToolName) else str(tool),
+                "tool_name": tool_name_value(tool),
                 "source": "session.allowed_tools",
-                "requires_approval": tool in session.approval_required_tools,
+                "requires_approval": tool_name_value(tool) in approval_required_values,
             }
             for tool in session.allowed_tools
         ]
         approval_required_tools = [
-            tool.value if isinstance(tool, ToolName) else str(tool)
+            tool_name_value(tool)
             for tool in session.approval_required_tools
-            if str(tool or "").strip()
+            if tool_name_value(tool)
         ]
         return {
             "session_id": session.session_id,
@@ -732,10 +740,7 @@ class VoiceProjectionService:
             "directory_path": session.directory_path,
             "channel": channel,
             "model": session.model,
-            "allowed_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.allowed_tools
-            ],
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "tool_summary": normalized_tool_summary,
             "origin_metadata": session_metadata,
             "caller_metadata": sanitize_voice_metadata(metadata or {}),

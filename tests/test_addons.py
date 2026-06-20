@@ -17,6 +17,7 @@ from agent_sandbox.addons import (
     addon_runtime_dir,
     addon_storage_path,
     load_addons,
+    register_addon_mcp_tools,
     resolve_addon_admin_api_routes,
 )
 from agent_sandbox.workflow.plugins import load_provider_plugins
@@ -42,6 +43,44 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/index.html").is_file()
     assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.js").is_file()
     assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.css").is_file()
+
+
+def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+
+    assert addon_entry_points["bokio"] == "evander_bokio_addon:register_addon"
+    assert package_data["evander_bokio_addon"] == ["ui_static/*"]
+    assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/index.html").is_file()
+    assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/bokio-ui.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/bokio-ui.css").is_file()
+
+
+def test_addon_mcp_tool_registrar_returns_registered_names(tmp_path: Path) -> None:
+    calls: list[tuple[object, str]] = []
+
+    def registrar(server, context):
+        calls.append((server, context.addon_id))
+        return ["custom_tool", "custom_tool"]
+
+    registration = AddonRegistration(
+        addon_id="custom-addon",
+        display_name="Custom Add-on",
+        mcp_tools=registrar,
+    )
+    server = object()
+    context = AddonContext(
+        addon_id="custom-addon",
+        runtime_dir=tmp_path,
+        addon_runtime_dir=tmp_path / "addons" / "custom-addon",
+    )
+
+    names = register_addon_mcp_tools(registration, server, context)
+
+    assert names == ("custom_tool",)
+    assert calls == [(server, "custom-addon")]
 
 
 def test_load_addons_supports_explicit_module_list(tmp_path: Path, monkeypatch) -> None:
@@ -223,6 +262,10 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert "effect:team:consolidate-git-branches" not in disabled.effect_providers
     assert "query:team:state" not in disabled.query_providers
     assert "effect:team:wake-due-agents" not in disabled.node_definition_resolvers
+    assert not any(
+        entry.type.startswith(("effect:team:", "query:team:"))
+        for entry in disabled.workflow_editor_catalog_entries
+    )
 
     enabled = load_provider_plugins(
         module_names=[],
@@ -245,3 +288,43 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert "query:team:agent-action-artifact" in enabled.query_providers
     assert "query:team:session-routing" in enabled.query_providers
     assert "effect:team:wake-due-agents" in enabled.node_definition_resolvers
+    catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
+    assert "effect:team:wake-due-agents" in catalog_entries
+    assert "effect:team:apply-agent-action" in catalog_entries
+    assert "query:team:state" in catalog_entries
+    assert catalog_entries["effect:team:wake-due-agents"].label == "Wake Team agents"
+    assert catalog_entries["effect:team:wake-due-agents"].description
+    assert all(
+        field.description
+        for entry in catalog_entries.values()
+        for field in entry.fields
+    )
+
+
+def test_bundled_bokio_addon_workflow_providers_are_optional() -> None:
+    disabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+    )
+    assert "query:bokio:company" not in disabled.query_providers
+    assert "effect:bokio:prepare-journal-entry" not in disabled.effect_providers
+
+    enabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+        addon_loader=AddonLoaderConfig(
+            modules=["evander_bokio_addon"],
+            enabled_addon_ids=["bokio-addon"],
+        ),
+    )
+
+    assert "addon:bokio-addon" in enabled.loaded_plugins
+    assert "query:bokio:company" in enabled.query_providers
+    assert "query:bokio:chart-of-accounts" in enabled.query_providers
+    assert "effect:bokio:prepare-journal-entry" in enabled.effect_providers
+    assert "effect:bokio:create-bank-payment" in enabled.effect_providers
+    catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
+    assert catalog_entries["query:bokio:company"].label == "Bokio company"
+    assert catalog_entries["effect:bokio:create-bank-payment"].description

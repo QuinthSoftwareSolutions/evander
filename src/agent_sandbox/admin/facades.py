@@ -26,12 +26,15 @@ from agent_sandbox.workflow.events import WorkflowEventJournal
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import (
+    McpToolName,
     SessionActionResult,
     SessionSummary,
     ToolName,
     VmSummary,
     WakeScheduledRequest,
     WakeScheduleDefinition,
+    normalize_tool_name,
+    tool_name_value,
 )
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
@@ -66,6 +69,7 @@ class WorkerAdminDependencies:
     read_worker_global_config: Any
     write_worker_global_config: Any
     read_workflow_editor_document: Any
+    read_composed_workflow_editor_document: Any
     read_workflow_editor_catalog: Any
     validate_workflow_editor_document: Any
     save_workflow_editor_document: Any
@@ -400,7 +404,6 @@ class SessionAdminFacade:
                     "completed_at": request.completed_at,
                     "completion_evidence": dict(request.completion_evidence or {}),
                     "resume_mode": request.resume_mode,
-                    "status": request.status,
                     "enabled": request.enabled,
                     "source": request.source,
                     "created_at": request.created_at,
@@ -591,18 +594,21 @@ class SessionAdminFacade:
         session_id, manifest = admin_service_module._resolve_session_target(
             target, self._sessions_by_id()
         )
-        normalized_tools: list[ToolName] = []
-        seen: set[ToolName] = set()
+        normalized_tools: list[McpToolName] = []
+        seen: set[str] = set()
         for tool in allowed_tools:
-            normalized_tool = tool if isinstance(tool, ToolName) else ToolName(str(tool).strip())
-            if normalized_tool in seen:
+            normalized_tool = normalize_tool_name(tool, field_name="allowed_tools")
+            tool_value = tool_name_value(normalized_tool)
+            if tool_value in seen:
                 continue
-            seen.add(normalized_tool)
+            seen.add(tool_value)
             normalized_tools.append(normalized_tool)
         manifest.allowed_tools = normalized_tools
-        allowed_values = {tool.value for tool in normalized_tools}
+        allowed_values = {tool_name_value(tool) for tool in normalized_tools}
         manifest.approval_required_tools = [
-            tool for tool in manifest.approval_required_tools if tool.value in allowed_values
+            tool
+            for tool in manifest.approval_required_tools
+            if tool_name_value(tool) in allowed_values
         ]
         manifest.approval_tool_settings = {
             tool_name: settings
@@ -969,8 +975,15 @@ class WorkerAdminFacade:
             worker_id, payload, expected_revision=expected_revision
         )
 
-    def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        return self._deps.read_workflow_editor_document()
+    def read_workflow_editor_document(
+        self, workflow_pack: str | None = None
+    ) -> WorkflowEditorDocumentPayload:
+        if workflow_pack is None:
+            return self._deps.read_workflow_editor_document()
+        return self._deps.read_workflow_editor_document(workflow_pack=workflow_pack)
+
+    def read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
+        return self._deps.read_composed_workflow_editor_document()
 
     def read_workflow_editor_catalog(
         self, directory_path: str | None = None
@@ -983,9 +996,14 @@ class WorkerAdminFacade:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
+        if workflow_pack is None:
+            return self._deps.validate_workflow_editor_document(
+                config=config, layout=layout, graphs=graphs
+            )
         return self._deps.validate_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config, layout=layout, graphs=graphs, workflow_pack=workflow_pack
         )
 
     def save_workflow_editor_document(
@@ -995,9 +1013,21 @@ class WorkerAdminFacade:
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         expected_revision: str | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
+        if workflow_pack is None:
+            return self._deps.save_workflow_editor_document(
+                config=config,
+                layout=layout,
+                graphs=graphs,
+                expected_revision=expected_revision,
+            )
         return self._deps.save_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs, expected_revision=expected_revision
+            config=config,
+            layout=layout,
+            graphs=graphs,
+            expected_revision=expected_revision,
+            workflow_pack=workflow_pack,
         )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:

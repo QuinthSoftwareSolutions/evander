@@ -17,11 +17,14 @@ from urllib.parse import quote, unquote, urlparse, urlunparse
 import httpx
 from agent_sandbox.ado_mentions import (
     AdoResolvedMention,
+    AdoMentionResolver,
     normalize_ado_mention_refs,
     render_ado_mentions_prefix,
     resolve_ado_mentions,
 )
 from agent_sandbox.models import (
+    AdoPrCommentActivityResponse,
+    AdoPrCommitActivityResponse,
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
     HasPendingDiscordMessagesResponse,
@@ -36,6 +39,7 @@ from agent_sandbox.models import (
     PullRequestItem,
     PullRequestReviewer,
     PrFeedbackItem,
+    ResolveAdoIdentityResponse,
     SessionManifest,
     TeamsMessageEnvelope,
     UpdatePullRequestResponse,
@@ -59,7 +63,12 @@ from agent_sandbox.email.providers import (
 )
 from agent_sandbox.repositories.records import DiscordRecordsRepository, TeamsRecordsRepository
 from agent_sandbox.text_formatting import render_markdownish_text_to_html
-from agent_sandbox.pr_feedback.providers import pr_feedback_item_payload
+from agent_sandbox.pr_feedback.providers import (
+    _ado_line_from_context,
+    _ado_should_skip_comment,
+    _ado_thread_resolved,
+    pr_feedback_item_payload,
+)
 from agent_sandbox.pr_feedback.store import PrFeedbackRepository, PrFeedbackStore, _stream_key
 
 _LOGGER = logging.getLogger(__name__)
@@ -132,6 +141,142 @@ def _parse_dt(value: Any) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _parse_optional_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return _parse_dt(text)
+
+
+def _iso_z(value: datetime) -> str:
+    normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.isoformat().replace("+00:00", "Z")
+
+
+def _datetime_in_range(value: datetime | None, *, since: datetime, until: datetime | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    start = since.astimezone(UTC) if since.tzinfo is not None else since.replace(tzinfo=UTC)
+    if normalized < start:
+        return False
+    if until is not None:
+        end = until.astimezone(UTC) if until.tzinfo is not None else until.replace(tzinfo=UTC)
+        if normalized > end:
+            return False
+    return True
+
+
+def _text_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _identity_property(identity: Mapping[str, Any], key: str) -> str | None:
+    properties = identity.get("properties")
+    if not isinstance(properties, Mapping):
+        return None
+    value = properties.get(key)
+    if isinstance(value, Mapping):
+        value = value.get("$value")
+    return _text_or_none(value)
+
+
+def _identity_email(identity: Mapping[str, Any]) -> str | None:
+    for key in ("Mail", "SignInAddress", "Account"):
+        value = _identity_property(identity, key)
+        if value and "@" in value:
+            return value
+    for key in ("uniqueName", "mailAddress", "email"):
+        value = _text_or_none(identity.get(key))
+        if value and "@" in value:
+            return value
+    return None
+
+
+def _ado_identity_summary(query: str, identity: Mapping[str, Any]) -> dict[str, Any]:
+    display_name = (
+        _text_or_none(identity.get("providerDisplayName"))
+        or _text_or_none(identity.get("displayName"))
+        or _text_or_none(identity.get("customDisplayName"))
+        or _text_or_none(identity.get("uniqueName"))
+    )
+    unique_name = (
+        _text_or_none(identity.get("uniqueName"))
+        or _identity_property(identity, "Account")
+        or _identity_property(identity, "Mail")
+        or _identity_property(identity, "SignInAddress")
+    )
+    descriptor = _text_or_none(identity.get("descriptor")) or _text_or_none(
+        identity.get("subjectDescriptor")
+    )
+    return {
+        "id": _text_or_none(identity.get("id")),
+        "descriptor": descriptor,
+        "display_name": display_name or query,
+        "unique_name": unique_name,
+        "email": _identity_email(identity),
+        "raw": dict(identity),
+    }
+
+
+def _identity_match_values(value: Any) -> set[str]:
+    values: set[str] = set()
+
+    def add(candidate: Any) -> None:
+        text = str(candidate or "").strip()
+        if text:
+            values.add(text.casefold())
+
+    if isinstance(value, Mapping):
+        for key in (
+            "id",
+            "descriptor",
+            "subjectDescriptor",
+            "displayName",
+            "display_name",
+            "providerDisplayName",
+            "customDisplayName",
+            "uniqueName",
+            "unique_name",
+            "email",
+            "mailAddress",
+            "name",
+        ):
+            add(value.get(key))
+        properties = value.get("properties")
+        if isinstance(properties, Mapping):
+            for key in ("Account", "Mail", "SignInAddress"):
+                raw = properties.get(key)
+                if isinstance(raw, Mapping):
+                    raw = raw.get("$value")
+                add(raw)
+    else:
+        add(value)
+    return values
+
+
+def _identity_matches(query: str | None, value: Any) -> bool:
+    text = str(query or "").strip()
+    if not text:
+        return True
+    expected = text.casefold()
+    return expected in _identity_match_values(value)
+
+
+def _snippet(text: str | None, *, limit: int = 240) -> str | None:
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 1)].rstrip() + "..."
 
 
 def _normalize_graph_teams_reaction_type(reaction: str) -> str:
@@ -3568,6 +3713,385 @@ class AzureDevOpsPrQueryProvider:
         self.pat = pat
         self.timeout_seconds = timeout_seconds
 
+    def resolve_identity(
+        self,
+        *,
+        query: str,
+        project: str | None = None,
+    ) -> ResolveAdoIdentityResponse:
+        del project
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            raise ValueError("query is required")
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            identities: list[dict[str, Any]]
+            if normalized_query.casefold() == "me":
+                response = client.get(
+                    f"{self.organization_url}/_apis/connectionData",
+                    params={"api-version": "7.1-preview.1"},
+                    auth=("", self.pat),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                authenticated = (
+                    payload.get("authenticatedUser") if isinstance(payload, dict) else None
+                )
+                identities = [authenticated] if isinstance(authenticated, dict) else []
+            else:
+                resolver = AdoMentionResolver(
+                    client=client,
+                    organization_url=self.organization_url,
+                    pat=self.pat,
+                )
+                try:
+                    resolved = resolver.resolve(normalized_query)
+                    matches = [
+                        {
+                            "id": resolved.id,
+                            "descriptor": resolved.descriptor,
+                            "display_name": resolved.display_name,
+                            "unique_name": resolved.unique_name,
+                            "email": resolved.unique_name
+                            if resolved.unique_name and "@" in resolved.unique_name
+                            else None,
+                            "raw": resolved.audit_payload(),
+                        }
+                    ]
+                    return ResolveAdoIdentityResponse(
+                        query=normalized_query,
+                        confidence="exact",
+                        id=resolved.id,
+                        descriptor=resolved.descriptor,
+                        display_name=resolved.display_name,
+                        unique_name=resolved.unique_name,
+                        email=matches[0]["email"],
+                        matches=matches,
+                    )
+                except ValueError:
+                    identities = resolver._read_identities(  # noqa: SLF001 - reuse ADO identity API wrapper.
+                        {
+                            "searchFilter": "General",
+                            "filterValue": normalized_query,
+                            "queryMembership": "None",
+                        }
+                    )
+
+        matches = [
+            _ado_identity_summary(normalized_query, identity)
+            for identity in identities
+            if isinstance(identity, dict)
+            and identity.get("isContainer") is not True
+            and identity.get("isActive") is not False
+            and _text_or_none(identity.get("id"))
+        ]
+        exact_matches = [
+            item for item in matches if normalized_query.casefold() in _identity_match_values(item)
+        ]
+        selected = exact_matches[0] if len(exact_matches) == 1 else None
+        if selected is None and len(matches) == 1:
+            selected = matches[0]
+        confidence = "none"
+        if selected is not None:
+            confidence = "exact" if len(matches) == 1 or len(exact_matches) == 1 else "low"
+        elif matches:
+            confidence = "ambiguous"
+        return ResolveAdoIdentityResponse(
+            query=normalized_query,
+            confidence=confidence,
+            id=selected.get("id") if selected else None,
+            descriptor=selected.get("descriptor") if selected else None,
+            display_name=selected.get("display_name") if selected else None,
+            unique_name=selected.get("unique_name") if selected else None,
+            email=selected.get("email") if selected else None,
+            matches=matches,
+        )
+
+    def list_pr_comment_activity(
+        self,
+        *,
+        repo: str,
+        author: str | None,
+        since: datetime,
+        until: datetime | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        include_system_comments: bool = False,
+        top: int = 100,
+        skip: int = 0,
+    ) -> AdoPrCommentActivityResponse:
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        project_name = _normalize_optional_text(project) or self.project
+        status_values = _activity_statuses(statuses)
+        pull_requests = self._activity_pull_request_candidates(
+            repo=repo,
+            project=project_name,
+            statuses=status_values,
+        )
+        comments: list[dict[str, Any]] = []
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            for pull_request in pull_requests:
+                response = client.get(
+                    (
+                        f"{self.organization_url}/{project_name}/_apis/git/repositories/"
+                        f"{repo_identifier}/pullRequests/{pull_request.pr_id}/threads"
+                    ),
+                    params={"api-version": "7.1"},
+                    auth=("", self.pat),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                raw_threads = payload.get("value") if isinstance(payload, dict) else None
+                for thread in raw_threads if isinstance(raw_threads, list) else []:
+                    if not isinstance(thread, dict):
+                        continue
+                    thread_id = str(thread.get("id") or "").strip() or None
+                    thread_context = (
+                        thread.get("threadContext")
+                        if isinstance(thread.get("threadContext"), dict)
+                        else {}
+                    )
+                    file_path = _text_or_none(thread_context.get("filePath"))
+                    line = _ado_line_from_context(thread_context)
+                    resolved = _ado_thread_resolved(thread.get("status"))
+                    raw_comments = [
+                        item for item in thread.get("comments", []) if isinstance(item, dict)
+                    ]
+                    for comment in raw_comments:
+                        if comment.get("isDeleted"):
+                            continue
+                        created_at = _parse_optional_dt(
+                            comment.get("publishedDate") or comment.get("lastUpdatedDate")
+                        )
+                        if not _datetime_in_range(created_at, since=since, until=until):
+                            continue
+                        author_identity = (
+                            comment.get("author") if isinstance(comment.get("author"), dict) else {}
+                        )
+                        author_name = _text_or_none(author_identity.get("displayName"))
+                        body = _text_or_none(comment.get("content")) or ""
+                        if not include_system_comments and _ado_should_skip_comment(
+                            author=author_name or "unknown",
+                            body=body,
+                            comment_type=comment.get("commentType"),
+                            file_path=file_path,
+                        ):
+                            continue
+                        if not _identity_matches(author, author_identity or author_name):
+                            continue
+                        comment_id = str(comment.get("id") or "").strip() or None
+                        comment_links = (
+                            comment.get("_links") if isinstance(comment.get("_links"), dict) else {}
+                        )
+                        comment_web_link = (
+                            comment_links.get("web")
+                            if isinstance(comment_links.get("web"), dict)
+                            else {}
+                        )
+                        comments.append(
+                            {
+                                "repo": repo,
+                                "project": project_name,
+                                "pr_id": pull_request.pr_id,
+                                "pr_title": pull_request.title,
+                                "pr_status": pull_request.status,
+                                "pr_url": pull_request.url,
+                                "thread_id": thread_id,
+                                "comment_id": comment_id,
+                                "author": author_name,
+                                "author_identity": author_identity,
+                                "created_at": created_at,
+                                "body": body,
+                                "body_snippet": _snippet(body),
+                                "file_path": file_path,
+                                "line": line,
+                                "resolved": resolved,
+                                "url": _text_or_none(comment_web_link.get("href"))
+                                or pull_request.url,
+                                "raw": comment,
+                            }
+                        )
+        comments.sort(key=lambda item: item["created_at"], reverse=True)
+        total_activity_count = len(comments)
+        paged_comments = comments[skip : skip + top]
+        next_skip = (
+            skip + len(paged_comments)
+            if skip + len(paged_comments) < total_activity_count
+            else None
+        )
+        return AdoPrCommentActivityResponse(
+            repo=repo,
+            project=project_name,
+            comments=paged_comments,
+            count=len(paged_comments),
+            paging={
+                "skip": skip,
+                "top": top,
+                "candidate_count": len(pull_requests),
+                "total_activity_count": total_activity_count,
+                "returned_count": len(paged_comments),
+                "has_more": next_skip is not None,
+                "next_skip": next_skip,
+                "statuses": status_values,
+            },
+        )
+
+    def list_pr_commit_activity(
+        self,
+        *,
+        repo: str,
+        author: str | None,
+        since: datetime,
+        until: datetime | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+    ) -> AdoPrCommitActivityResponse:
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        project_name = _normalize_optional_text(project) or self.project
+        status_values = _activity_statuses(statuses)
+        pull_requests = self._activity_pull_request_candidates(
+            repo=repo,
+            project=project_name,
+            statuses=status_values,
+        )
+        commits: list[dict[str, Any]] = []
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            for pull_request in pull_requests:
+                response = client.get(
+                    (
+                        f"{self.organization_url}/{project_name}/_apis/git/repositories/"
+                        f"{repo_identifier}/pullRequests/{pull_request.pr_id}/commits"
+                    ),
+                    params={"api-version": "7.1"},
+                    auth=("", self.pat),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                raw_commits = payload.get("value") if isinstance(payload, dict) else None
+                for commit in raw_commits if isinstance(raw_commits, list) else []:
+                    if not isinstance(commit, dict):
+                        continue
+                    commit_author = commit.get("author") if isinstance(commit.get("author"), dict) else {}
+                    committer = (
+                        commit.get("committer") if isinstance(commit.get("committer"), dict) else {}
+                    )
+                    if author and not (
+                        _identity_matches(author, commit_author)
+                        or _identity_matches(author, committer)
+                    ):
+                        continue
+                    authored_at = _parse_optional_dt(commit_author.get("date"))
+                    committed_at = _parse_optional_dt(committer.get("date"))
+                    best_date = authored_at or committed_at
+                    unverified_date = False
+                    if best_date is None:
+                        pr_date = pull_request.updated_at or pull_request.created_at
+                        if not _datetime_in_range(pr_date, since=since, until=until):
+                            continue
+                        unverified_date = True
+                    elif not _datetime_in_range(best_date, since=since, until=until):
+                        continue
+                    commit_id = str(commit.get("commitId") or commit.get("commit_id") or "").strip()
+                    if not commit_id:
+                        continue
+                    commits.append(
+                        {
+                            "repo": repo,
+                            "project": project_name,
+                            "pr_id": pull_request.pr_id,
+                            "pr_title": pull_request.title,
+                            "pr_status": pull_request.status,
+                            "pr_url": pull_request.url,
+                            "commit_id": commit_id,
+                            "comment": _text_or_none(commit.get("comment")),
+                            "url": _text_or_none(commit.get("url")),
+                            "author": commit_author,
+                            "committer": committer,
+                            "authored_at": authored_at,
+                            "committed_at": committed_at,
+                            "unverified_date": unverified_date,
+                            "raw": commit,
+                        }
+                    )
+        commits.sort(
+            key=lambda item: item.get("authored_at")
+            or item.get("committed_at")
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        total_activity_count = len(commits)
+        paged_commits = commits[skip : skip + top]
+        next_skip = (
+            skip + len(paged_commits)
+            if skip + len(paged_commits) < total_activity_count
+            else None
+        )
+        return AdoPrCommitActivityResponse(
+            repo=repo,
+            project=project_name,
+            commits=paged_commits,
+            count=len(paged_commits),
+            paging={
+                "skip": skip,
+                "top": top,
+                "candidate_count": len(pull_requests),
+                "total_activity_count": total_activity_count,
+                "returned_count": len(paged_commits),
+                "has_more": next_skip is not None,
+                "next_skip": next_skip,
+                "statuses": status_values,
+            },
+        )
+
+    def _activity_pull_request_candidates(
+        self,
+        *,
+        repo: str,
+        project: str,
+        statuses: list[str],
+    ) -> list[PullRequestItem]:
+        page_size = 200
+        candidates: dict[tuple[str, str, str], PullRequestItem] = {}
+        for status in statuses:
+            page_skip = 0
+            page_cursor: str | None = None
+            seen_pages: set[tuple[int, str | None]] = set()
+            while True:
+                page_key = (page_skip, page_cursor)
+                if page_key in seen_pages:
+                    break
+                seen_pages.add(page_key)
+                response = self.list_pull_requests(
+                    repo=repo,
+                    project=project,
+                    status=status,
+                    top=page_size,
+                    skip=page_skip,
+                    cursor=page_cursor,
+                    include_links=True,
+                )
+                for item in response.pull_requests:
+                    candidates[(item.provider, item.repo, item.pr_id)] = item
+                paging = response.paging or {}
+                next_cursor = str(response.next_cursor or paging.get("next_cursor") or "").strip()
+                if next_cursor and next_cursor != page_cursor:
+                    page_cursor = next_cursor
+                    continue
+                raw_next_skip = paging.get("next_skip")
+                next_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
+                if next_skip is not None and next_skip > page_skip:
+                    page_skip = next_skip
+                    page_cursor = None
+                    continue
+                if not paging.get("has_more"):
+                    break
+                if not response.pull_requests:
+                    break
+                page_skip += len(response.pull_requests)
+                page_cursor = None
+        return list(candidates.values())
+
     def list_pull_requests(
         self,
         *,
@@ -4323,6 +4847,35 @@ def _normalize_string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in raw_items if str(item).strip()]
 
 
+def _expand_pull_request_statuses(
+    *,
+    status: str | None = None,
+    statuses: list[str] | None = None,
+) -> list[str | None]:
+    raw_values = _normalize_string_list(statuses)
+    if not raw_values and status is not None:
+        raw_values = _normalize_string_list(status)
+    if not raw_values:
+        return [None]
+    normalized: list[str | None] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        value = raw.strip().lower()
+        expanded = ["completed", "abandoned"] if value == "closed" else [value]
+        for item in expanded:
+            key = item.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(item)
+    return normalized or [None]
+
+
+def _activity_statuses(statuses: list[str] | None = None) -> list[str]:
+    raw = _normalize_string_list(statuses) or ["active", "completed", "abandoned"]
+    return [item for item in _expand_pull_request_statuses(statuses=raw) if item is not None]
+
+
 @dataclass(frozen=True)
 class _PullRequestTagExpression:
     kind: Literal["tag", "and", "or", "not"]
@@ -4536,6 +5089,7 @@ class PrQueryService:
         repo: str,
         project: str | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
         creator_id: str | None = None,
         reviewer_id: str | None = None,
         source_ref_name: str | None = None,
@@ -4557,25 +5111,154 @@ class PrQueryService:
             raise ValueError(
                 f"PR query provider {provider_name!r} is not configured for this gateway instance"
             )
-        return self.providers[provider_name].list_pull_requests(
+        status_values = _expand_pull_request_statuses(status=status, statuses=statuses)
+        merged_page = len(status_values) > 1
+        merged_skip = max(0, int(skip or 0)) if merged_page else skip
+        merged_fetch_top = (
+            (merged_skip or 0) + top if merged_page and top is not None else top
+        )
+        responses = [
+            self.providers[provider_name].list_pull_requests(
+                repo=repo,
+                project=project,
+                status=status_value,
+                creator_id=creator_id,
+                reviewer_id=reviewer_id,
+                source_ref_name=source_ref_name,
+                target_ref_name=target_ref_name,
+                source_repository_id=source_repository_id,
+                repository_id=repository_id,
+                min_time=min_time,
+                max_time=max_time,
+                query_time_range_type=query_time_range_type,
+                include_links=include_links,
+                max_comment_length=max_comment_length,
+                tags=tags,
+                top=merged_fetch_top,
+                skip=0 if merged_page else skip,
+                cursor=None if merged_page else cursor,
+            )
+            for status_value in status_values
+        ]
+        if len(responses) == 1:
+            response = responses[0]
+            response.paging = {**response.paging, "statuses": status_values}
+            return response
+        merged: dict[tuple[str, str, str], PullRequestItem] = {}
+        paging_by_status: dict[str, dict[str, Any]] = {}
+        for status_value, response in zip(status_values, responses, strict=True):
+            paging_by_status[str(status_value)] = response.paging
+            for item in response.pull_requests:
+                merged[(item.provider, item.repo, item.pr_id)] = item
+        items = list(merged.values())
+        items.sort(
+            key=lambda item: item.updated_at
+            or item.created_at
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        total_merged_count = len(items)
+        page_start = int(merged_skip or 0)
+        page_end = page_start + top if top is not None else None
+        limited_items = items[page_start:page_end]
+        has_more = (
+            (page_end is not None and total_merged_count > page_end)
+            or any(bool(response.paging.get("has_more")) for response in responses)
+        )
+        next_skip = (
+            page_start + len(limited_items)
+            if has_more and top is not None and limited_items
+            else None
+        )
+        return ListPullRequestsResponse(
+            provider=responses[0].provider,
+            repo=responses[0].repo,
+            project=responses[0].project,
+            pull_requests=limited_items,
+            count=len(limited_items),
+            paging={
+                "statuses": status_values,
+                "by_status": paging_by_status,
+                "returned_count": len(limited_items),
+                "total_merged_count": total_merged_count,
+                "has_more": has_more,
+                "next_skip": next_skip,
+            },
+            next_cursor=None,
+        )
+
+    def resolve_ado_identity(
+        self,
+        *,
+        query: str,
+        project: str | None = None,
+    ) -> ResolveAdoIdentityResponse:
+        provider_name = "azure_devops"
+        if provider_name not in self.providers:
+            raise ValueError("PR query provider 'azure_devops' is not configured for this gateway instance")
+        resolve_identity = getattr(self.providers[provider_name], "resolve_identity", None)
+        if not callable(resolve_identity):
+            raise ValueError("PR query provider 'azure_devops' does not support identity resolution")
+        return resolve_identity(query=query, project=project)
+
+    def list_ado_pr_comment_activity(
+        self,
+        *,
+        repo: str,
+        author: str | None,
+        since: datetime,
+        until: datetime | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        include_system_comments: bool = False,
+        top: int = 100,
+        skip: int = 0,
+    ) -> AdoPrCommentActivityResponse:
+        provider_name = "azure_devops"
+        if provider_name not in self.providers:
+            raise ValueError("PR query provider 'azure_devops' is not configured for this gateway instance")
+        list_activity = getattr(self.providers[provider_name], "list_pr_comment_activity", None)
+        if not callable(list_activity):
+            raise ValueError("PR query provider 'azure_devops' does not support PR comment activity")
+        return list_activity(
             repo=repo,
+            author=author,
+            since=since,
+            until=until,
             project=project,
-            status=status,
-            creator_id=creator_id,
-            reviewer_id=reviewer_id,
-            source_ref_name=source_ref_name,
-            target_ref_name=target_ref_name,
-            source_repository_id=source_repository_id,
-            repository_id=repository_id,
-            min_time=min_time,
-            max_time=max_time,
-            query_time_range_type=query_time_range_type,
-            include_links=include_links,
-            max_comment_length=max_comment_length,
-            tags=tags,
+            statuses=statuses,
+            include_system_comments=include_system_comments,
             top=top,
             skip=skip,
-            cursor=cursor,
+        )
+
+    def list_ado_pr_commit_activity(
+        self,
+        *,
+        repo: str,
+        author: str | None,
+        since: datetime,
+        until: datetime | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+    ) -> AdoPrCommitActivityResponse:
+        provider_name = "azure_devops"
+        if provider_name not in self.providers:
+            raise ValueError("PR query provider 'azure_devops' is not configured for this gateway instance")
+        list_activity = getattr(self.providers[provider_name], "list_pr_commit_activity", None)
+        if not callable(list_activity):
+            raise ValueError("PR query provider 'azure_devops' does not support PR commit activity")
+        return list_activity(
+            repo=repo,
+            author=author,
+            since=since,
+            until=until,
+            project=project,
+            statuses=statuses,
+            top=top,
+            skip=skip,
         )
 
     def update_pull_request(

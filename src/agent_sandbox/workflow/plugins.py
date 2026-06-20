@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from agent_sandbox.addons import AddonLoaderConfig, load_addons
+from agent_sandbox.workflow.catalog import WorkflowEditorNodeCatalogEntry
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope
 
 from agent_sandbox.effects.providers.base import EffectProviderBase
@@ -34,6 +35,9 @@ class ProviderPluginRegistration:
     node_definition_resolvers: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]] = field(
         default_factory=dict
     )
+    workflow_editor_catalog_entries: Sequence[WorkflowEditorNodeCatalogEntry] = field(
+        default_factory=tuple
+    )
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,7 @@ class LoadedProviderCatalog:
     effect_providers: Mapping[str, type[EffectProviderBase]]
     query_providers: Mapping[str, type[QueryProviderBase]]
     node_definition_resolvers: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]]
+    workflow_editor_catalog_entries: tuple[WorkflowEditorNodeCatalogEntry, ...]
     loaded_plugins: tuple[str, ...]
 
 
@@ -58,6 +63,7 @@ def load_provider_plugins(
     effect_providers: dict[str, type[EffectProviderBase]] = {}
     query_providers: dict[str, type[QueryProviderBase]] = {}
     node_definition_resolvers: dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]] = {}
+    workflow_editor_catalog_entries: dict[str, WorkflowEditorNodeCatalogEntry] = {}
     loaded_plugins: list[str] = []
 
     registration_specs: list[tuple[str, Any]] = []
@@ -95,6 +101,12 @@ def load_provider_plugins(
         effect_providers.update(registration.effect_providers)
         query_providers.update(registration.query_providers)
         node_definition_resolvers.update(registration.node_definition_resolvers)
+        for entry in registration.workflow_editor_catalog_entries:
+            if entry.type in workflow_editor_catalog_entries:
+                raise ValueError(
+                    f"Duplicate workflow editor catalog entry for {entry.type!r} from {source}"
+                )
+            workflow_editor_catalog_entries[entry.type] = entry
         loaded_plugins.append(source)
 
     return LoadedProviderCatalog(
@@ -103,6 +115,7 @@ def load_provider_plugins(
         effect_providers=effect_providers,
         query_providers=query_providers,
         node_definition_resolvers=node_definition_resolvers,
+        workflow_editor_catalog_entries=tuple(workflow_editor_catalog_entries.values()),
         loaded_plugins=tuple(loaded_plugins),
     )
 
@@ -128,51 +141,136 @@ def _coerce_registration(*, source: str, value: Any) -> ProviderPluginRegistrati
     if callable(value):
         value = value()
     if isinstance(value, ProviderPluginRegistration):
-        return value
+        return _build_registration(
+            source=source,
+            trigger_providers=value.trigger_providers,
+            gate_providers=value.gate_providers,
+            effect_providers=value.effect_providers,
+            query_providers=value.query_providers,
+            node_definition_resolvers=value.node_definition_resolvers,
+            workflow_editor_catalog_entries=value.workflow_editor_catalog_entries,
+        )
     register = getattr(value, "register_providers", None)
     if callable(register):
         candidate = register()
         if isinstance(candidate, ProviderPluginRegistration):
-            return candidate
+            return _build_registration(
+                source=source,
+                trigger_providers=candidate.trigger_providers,
+                gate_providers=candidate.gate_providers,
+                effect_providers=candidate.effect_providers,
+                query_providers=candidate.query_providers,
+                node_definition_resolvers=candidate.node_definition_resolvers,
+                workflow_editor_catalog_entries=candidate.workflow_editor_catalog_entries,
+            )
         value = candidate
 
     if isinstance(value, Mapping):
-        return ProviderPluginRegistration(
-            trigger_providers=_coerce_provider_mapping(
-                source=source, mapping=value.get("trigger_providers")
-            ),
-            gate_providers=_coerce_provider_mapping(
-                source=source, mapping=value.get("gate_providers")
-            ),
-            effect_providers=_coerce_provider_mapping(
-                source=source, mapping=value.get("effect_providers")
-            ),
-            query_providers=_coerce_provider_mapping(
-                source=source, mapping=value.get("query_providers")
-            ),
-            node_definition_resolvers=_coerce_node_definition_resolvers(
-                source=source, mapping=value.get("node_definition_resolvers")
-            ),
+        return _build_registration(
+            source=source,
+            trigger_providers=value.get("trigger_providers"),
+            gate_providers=value.get("gate_providers"),
+            effect_providers=value.get("effect_providers"),
+            query_providers=value.get("query_providers"),
+            node_definition_resolvers=value.get("node_definition_resolvers"),
+            workflow_editor_catalog_entries=value.get("workflow_editor_catalog_entries"),
         )
 
-    return ProviderPluginRegistration(
-        trigger_providers=_coerce_provider_mapping(
-            source=source, mapping=getattr(value, "trigger_providers", None)
-        ),
-        gate_providers=_coerce_provider_mapping(
-            source=source, mapping=getattr(value, "gate_providers", None)
-        ),
-        effect_providers=_coerce_provider_mapping(
-            source=source, mapping=getattr(value, "effect_providers", None)
-        ),
-        query_providers=_coerce_provider_mapping(
-            source=source, mapping=getattr(value, "query_providers", None)
-        ),
-        node_definition_resolvers=_coerce_node_definition_resolvers(
-            source=source, mapping=getattr(value, "node_definition_resolvers", None)
-        ),
+    return _build_registration(
+        source=source,
+        trigger_providers=getattr(value, "trigger_providers", None),
+        gate_providers=getattr(value, "gate_providers", None),
+        effect_providers=getattr(value, "effect_providers", None),
+        query_providers=getattr(value, "query_providers", None),
+        node_definition_resolvers=getattr(value, "node_definition_resolvers", None),
+        workflow_editor_catalog_entries=getattr(value, "workflow_editor_catalog_entries", None),
     )
 
+
+def _build_registration(
+    *,
+    source: str,
+    trigger_providers: Mapping[str, type[Any]] | None,
+    gate_providers: Mapping[str, type[Any]] | None,
+    effect_providers: Mapping[str, type[Any]] | None,
+    query_providers: Mapping[str, type[Any]] | None,
+    node_definition_resolvers: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]] | None,
+    workflow_editor_catalog_entries: Sequence[Any] | None,
+) -> ProviderPluginRegistration:
+    normalized_trigger_providers = _coerce_provider_mapping(
+        source=source, mapping=trigger_providers
+    )
+    normalized_gate_providers = _coerce_provider_mapping(source=source, mapping=gate_providers)
+    normalized_effect_providers = _coerce_provider_mapping(
+        source=source, mapping=effect_providers
+    )
+    normalized_query_providers = _coerce_provider_mapping(source=source, mapping=query_providers)
+    normalized_node_definition_resolvers = _coerce_node_definition_resolvers(
+        source=source, mapping=node_definition_resolvers
+    )
+    normalized_catalog_entries = _coerce_workflow_editor_catalog_entries(
+        source=source,
+        entries=workflow_editor_catalog_entries,
+        trigger_providers=normalized_trigger_providers,
+        gate_providers=normalized_gate_providers,
+        effect_providers=normalized_effect_providers,
+        query_providers=normalized_query_providers,
+    )
+    return ProviderPluginRegistration(
+        trigger_providers=normalized_trigger_providers,
+        gate_providers=normalized_gate_providers,
+        effect_providers=normalized_effect_providers,
+        query_providers=normalized_query_providers,
+        node_definition_resolvers=normalized_node_definition_resolvers,
+        workflow_editor_catalog_entries=normalized_catalog_entries,
+    )
+
+
+def _coerce_workflow_editor_catalog_entries(
+    *,
+    source: str,
+    entries: Sequence[Any] | None,
+    trigger_providers: Mapping[str, type[Any]],
+    gate_providers: Mapping[str, type[Any]],
+    effect_providers: Mapping[str, type[Any]],
+    query_providers: Mapping[str, type[Any]],
+) -> tuple[WorkflowEditorNodeCatalogEntry, ...]:
+    if entries is None:
+        return ()
+    if isinstance(entries, (str, bytes)) or not isinstance(entries, Sequence):
+        raise TypeError(f"Workflow editor catalog entries from {source} must be a sequence")
+    provider_maps = {
+        "trigger": trigger_providers,
+        "gate": gate_providers,
+        "effect": effect_providers,
+        "query": query_providers,
+    }
+    seen: set[str] = set()
+    normalized: list[WorkflowEditorNodeCatalogEntry] = []
+    for raw_entry in entries:
+        entry = (
+            raw_entry
+            if isinstance(raw_entry, WorkflowEditorNodeCatalogEntry)
+            else WorkflowEditorNodeCatalogEntry.model_validate(raw_entry)
+        )
+        node_type = str(entry.type or "").strip()
+        if not node_type:
+            raise ValueError(
+                f"Workflow editor catalog entry from {source} contains an empty node type"
+            )
+        if node_type in seen:
+            raise ValueError(
+                f"Duplicate workflow editor catalog entry for {node_type!r} from {source}"
+            )
+        seen.add(node_type)
+        providers = provider_maps[entry.kind]
+        if node_type not in providers:
+            raise ValueError(
+                f"Workflow editor catalog entry {node_type!r} from {source} "
+                f"does not match a registered {entry.kind} provider"
+            )
+        normalized.append(entry.model_copy(update={"type": node_type}))
+    return tuple(normalized)
 
 def _coerce_node_definition_resolvers(
     *,

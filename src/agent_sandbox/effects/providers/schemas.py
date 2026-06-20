@@ -562,6 +562,8 @@ class VmCopyFilesItemDefinition(BaseModel):
     destination_path: ConfigValue
     mode: ConfigValue | None = None
     overwrite: ConfigValue | None = True
+    merge_strategy: ConfigValue | None = None
+    section_id: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_source_or_content(self) -> "VmCopyFilesItemDefinition":
@@ -569,6 +571,11 @@ class VmCopyFilesItemDefinition(BaseModel):
             raise ValueError("either source_path or content is required")
         if self.source_path is not None and self.content is not None:
             raise ValueError("source_path and content are mutually exclusive")
+        if self.merge_strategy == "managed_section":
+            if self.source_path is not None:
+                raise ValueError("managed_section merge requires inline content")
+            if self.section_id is None:
+                raise ValueError("managed_section merge requires section_id")
         return self
 
 

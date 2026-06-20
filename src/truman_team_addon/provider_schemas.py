@@ -17,6 +17,7 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     lease_seconds: ConfigValue | None = None
     wake_interval_seconds: ConfigValue | None = None
     max_no_progress_count: ConfigValue | None = None
+    low_priority_wake_after_cycles: ConfigValue | None = None
     action_artifact_path: ConfigValue | None = None
     resume_mode: ConfigValue | None = None
 

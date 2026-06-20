@@ -196,18 +196,25 @@ def compose_workflow_ir(
     graphs: list[WorkflowPackGraph] = []
     nodes: list[WorkflowIRNode] = []
     edges: list[EdgeDefinition] = []
+    loaded_packs: list[tuple[str, WorkflowPack]] = []
 
     for pack_reference in workflow_packs or []:
         pack = load_workflow_pack(project_dir, pack_reference)
+        _validate_workflow_pack_internal_refs(pack, pack_reference=pack_reference)
+        loaded_packs.append((pack_reference, pack))
         graphs.extend(pack.graphs)
         nodes.extend(pack.ir.nodes)
         edges.extend(pack.ir.edges)
 
     for pack_reference in built_in_workflow_packs or []:
         pack = load_workflow_pack(project_dir, pack_reference)
+        _validate_workflow_pack_internal_refs(pack, pack_reference=pack_reference)
+        loaded_packs.append((pack_reference, pack))
         graphs.extend(pack.graphs)
         nodes.extend(pack.ir.nodes)
         edges.extend(pack.ir.edges)
+
+    _validate_global_workflow_pack_ids(loaded_packs)
 
     if inline_ir:
         inline_payload = migrate_agent_prompt_lifecycle_ports(dict(inline_ir))
@@ -251,3 +258,78 @@ def compose_workflow_ir(
         queries=queries,
         edges=[edge.model_dump(mode="json") for edge in edges],
     )
+
+
+def _validate_workflow_pack_internal_refs(
+    pack: WorkflowPack,
+    *,
+    pack_reference: object,
+) -> None:
+    node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
+    for edge in pack.ir.edges:
+        if edge.source_id in node_ids and edge.target_id in node_ids:
+            continue
+        raise ValueError(
+            f"workflow pack {pack_reference!r} edge {edge.source_id!r} -> "
+            f"{edge.target_id!r} must reference nodes from the same pack"
+        )
+
+    for graph in pack.graphs:
+        unknown_node_ids = sorted(node_id for node_id in graph.node_ids if node_id not in node_ids)
+        if unknown_node_ids:
+            unknown_list = ", ".join(unknown_node_ids)
+            raise ValueError(
+                f"workflow pack {pack_reference!r} graph {graph.id!r} references "
+                f"nodes outside the pack: {unknown_list}"
+            )
+
+
+def _validate_global_workflow_pack_ids(
+    packs: list[tuple[str, WorkflowPack]],
+) -> None:
+    node_owners: dict[str, str] = {}
+    graph_owners: dict[str, str] = {}
+    webhook_slug_owners: dict[str, str] = {}
+
+    for pack_reference, pack in packs:
+        owner = str(pack_reference)
+        for graph in pack.graphs:
+            _record_unique_workflow_pack_id(
+                graph_owners,
+                graph.id,
+                owner=owner,
+                label="workflow graph",
+            )
+        for ir_node in pack.ir.nodes:
+            node = ir_node.node
+            _record_unique_workflow_pack_id(
+                node_owners,
+                node.id,
+                owner=owner,
+                label="workflow node",
+            )
+            if node.type != "trigger:http:webhook":
+                continue
+            slug = str(node.config.get("slug") or "").strip()
+            if not slug:
+                continue
+            _record_unique_workflow_pack_id(
+                webhook_slug_owners,
+                slug,
+                owner=owner,
+                label="webhook slug",
+            )
+
+
+def _record_unique_workflow_pack_id(
+    owners: dict[str, str],
+    value: str,
+    *,
+    owner: str,
+    label: str,
+) -> None:
+    if value in owners:
+        raise ValueError(
+            f"Duplicate {label} id {value!r} in workflow packs {owners[value]!r} and {owner!r}"
+        )
+    owners[value] = owner

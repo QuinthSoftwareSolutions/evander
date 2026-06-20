@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from agent_sandbox.events.models import (
     GateAggregateDefinition,
     GateAwaitAgentDefinition,
+    GateBufferDefinition,
     GateDebounceDefinition,
     GateDeserializeDefinition,
     GateDedupeDefinition,
@@ -24,6 +25,7 @@ from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node
 _GATE_MODEL_BY_TYPE = {
     "gate:filter": GateFilterDefinition,
     "gate:debounce": GateDebounceDefinition,
+    "gate:buffer": GateBufferDefinition,
     "gate:deserialize": GateDeserializeDefinition,
     "gate:serialize": GateSerializeDefinition,
     "gate:map": GateMapDefinition,

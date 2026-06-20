@@ -6,6 +6,7 @@ from typing import Any
 __all__ = [
     "AggregateGateProvider",
     "AwaitAgentGateProvider",
+    "BufferGateProvider",
     "FilterGateProvider",
     "ForGateProvider",
     "GateProviderBase",
@@ -19,6 +20,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "AggregateGateProvider": ".aggregate_gate",
     "AwaitAgentGateProvider": ".await_agent",
+    "BufferGateProvider": ".buffer_gate",
     "FilterGateProvider": ".filter_gate",
     "ForGateProvider": ".for_gate",
     "GateProviderBase": ".base",

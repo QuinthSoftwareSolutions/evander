@@ -87,6 +87,12 @@ class TeamInboxItemState(str, Enum):
     HANDLED = "handled"
 
 
+class TeamInboxPriority(str, Enum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
 class TeamModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -306,6 +312,9 @@ class AgentRuntime(TeamModel):
     next_wake_at: datetime | None = None
     no_progress_count: int = Field(default=0, ge=0)
     last_progress_at: datetime | None = None
+    low_priority_batch_started_at: datetime | None = None
+    low_priority_batch_cycle_count: int = Field(default=0, ge=0)
+    low_priority_batch_due_after_cycles: int | None = Field(default=None, ge=0)
     auto_context_clearing_enabled: bool = False
     context_rotation_pending: bool = False
     context_rotation_requested_by: str | None = None
@@ -528,6 +537,8 @@ class AgentInboxItem(TeamModel):
     item_type: TeamInboxItemType
     sender_agent_id: str | None = None
     task_id: str | None = None
+    response_requested: bool = True
+    priority: TeamInboxPriority = TeamInboxPriority.NORMAL
     payload: dict[str, Any] = Field(default_factory=dict)
     state: TeamInboxItemState = TeamInboxItemState.PENDING
     created_at: datetime = Field(default_factory=utc_now)
@@ -1494,6 +1505,15 @@ def _runtime_agent_payload(
         "wake_reason": runtime.wake_reason if runtime is not None else None,
         "active_dispatch_id": runtime.active_dispatch_id if runtime is not None else None,
         "no_progress_count": runtime.no_progress_count if runtime is not None else 0,
+        "low_priority_batch_started_at": _json_datetime(
+            runtime.low_priority_batch_started_at if runtime is not None else None
+        ),
+        "low_priority_batch_cycle_count": (
+            runtime.low_priority_batch_cycle_count if runtime is not None else 0
+        ),
+        "low_priority_batch_due_after_cycles": (
+            runtime.low_priority_batch_due_after_cycles if runtime is not None else None
+        ),
         "auto_context_clearing_enabled": (
             runtime.auto_context_clearing_enabled if runtime is not None else False
         ),
@@ -1606,6 +1626,8 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
                 inbox_item_id=item.id,
                 sender_agent_id=item.sender_agent_id,
                 item_type=item.item_type.value,
+                response_requested=item.response_requested,
+                priority=item.priority.value,
             )
         )
     return rows

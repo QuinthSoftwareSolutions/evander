@@ -19,6 +19,7 @@ from agent_sandbox.models import (
     ApprovalRequest,
     ApprovalStatus,
     DiscordCommandEnvelope,
+    McpToolName,
     McpToolPolicyRule,
     SessionManifest,
     ToolArgumentConstraint,
@@ -27,6 +28,7 @@ from agent_sandbox.models import (
     TeamsMessageEnvelope,
     ToolName,
     digest_payload,
+    tool_name_value,
 )
 from agent_sandbox.messaging.targets import (
     CommunicationTargetCapability,
@@ -78,11 +80,12 @@ class ToolApprovalContext:
     session_id: str | None = None
     workflow_run_id: str | None = None
     lease_id: str | None = None
+    reserved_tool_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ToolVisibility:
-    tool: ToolName
+    tool: McpToolName
     available: bool
     visible: bool
     source: str
@@ -112,10 +115,12 @@ _TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
 )
 
 
-def mandatory_approval_required_for_tool(tool_name: ToolName) -> bool:
-    if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+def mandatory_approval_required_for_tool(tool_name: McpToolName) -> bool:
+    tool_value = tool_name_value(tool_name)
+    if tool_value in {ToolName.APPROVAL_SUBMIT.value, ToolName.APPROVAL_CHECK.value}:
         return False
-    return tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS
+    builtin = ToolName._value2member_map_.get(tool_value)
+    return builtin in ALWAYS_APPROVAL_REQUIRED_TOOLS if builtin is not None else False
 
 
 def set_tool_approval_context(
@@ -123,11 +128,15 @@ def set_tool_approval_context(
     session_id: str | None,
     workflow_run_id: str | None,
     lease_id: str | None,
+    reserved_tool_name: McpToolName | None = None,
 ) -> Token[ToolApprovalContext | None]:
     context = ToolApprovalContext(
         session_id=str(session_id or "").strip() or None,
         workflow_run_id=str(workflow_run_id or "").strip() or None,
         lease_id=str(lease_id or "").strip() or None,
+        reserved_tool_name=tool_name_value(reserved_tool_name)
+        if reserved_tool_name is not None
+        else None,
     )
     return _TOOL_APPROVAL_CONTEXT.set(context)
 
@@ -261,7 +270,7 @@ def _matches_pattern(value: Any, pattern: str, *, case_sensitive: bool) -> bool:
 
 
 def _tool_argument_policy_error(
-    tool_name: ToolName,
+    tool_name: McpToolName,
     rule: ToolArgumentPolicyRule,
     constraint: ToolArgumentConstraint,
     message: str,
@@ -271,11 +280,11 @@ def _tool_argument_policy_error(
         rule_name=rule.name,
         constraint_id=constraint.id,
         path=constraint.path,
-        message=f"tool argument policy violation for {tool_name.value}: {message}",
+        message=f"tool argument policy violation for {tool_name_value(tool_name)}: {message}",
     )
 
 
-def _tool_approval_locked(tool_name: ToolName) -> bool:
+def _tool_approval_locked(tool_name: McpToolName) -> bool:
     return mandatory_approval_required_for_tool(tool_name)
 
 
@@ -362,11 +371,17 @@ class PolicyEngine:
         *,
         policy_config: PolicyConfigResolver | None = None,
         tool_approval_leases: SessionToolApprovalLeaseRepository | None = None,
+        extra_mcp_tool_names: list[str] | None = None,
     ) -> None:
         self.config = config
         self.session_store = as_session_manifest_repository(session_store)
         self.approval_store = approval_store
         self.tool_approval_leases = tool_approval_leases
+        self.extra_mcp_tool_names = {
+            str(tool_name or "").strip()
+            for tool_name in extra_mcp_tool_names or []
+            if str(tool_name or "").strip()
+        }
         self.policy_config = policy_config or PolicyConfigResolver(
             config,
             session_store=session_store,
@@ -375,6 +390,21 @@ class PolicyEngine:
 
     def set_approval_notification_dispatcher(self, dispatcher: Any | None) -> None:
         self.approval_notification_dispatcher = dispatcher
+
+    def set_extra_mcp_tool_names(self, tool_names: list[str] | tuple[str, ...] | set[str]) -> None:
+        self.extra_mcp_tool_names = {
+            str(tool_name or "").strip()
+            for tool_name in tool_names
+            if str(tool_name or "").strip()
+        }
+
+    def _iter_known_tool_names(self) -> list[McpToolName]:
+        builtins: list[McpToolName] = list(ToolName)
+        builtin_values = {tool.value for tool in ToolName}
+        extras = sorted(
+            tool_name for tool_name in self.extra_mcp_tool_names if tool_name not in builtin_values
+        )
+        return [*builtins, *extras]
 
     def get_session(self, session_id: str) -> SessionManifest:
         session = self.session_store.get_session(session_id)
@@ -387,29 +417,30 @@ class PolicyEngine:
     def _tool_approval_status_for_session(
         self,
         session: SessionManifest,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         *,
         effective_policy: EffectivePolicyConfig | None = None,
     ) -> ToolApprovalStatus:
-        if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+        tool_value = tool_name_value(tool_name)
+        if tool_value in {ToolName.APPROVAL_SUBMIT.value, ToolName.APPROVAL_CHECK.value}:
             return ToolApprovalStatus(requires_approval=False, approval_locked=False)
         if _tool_approval_locked(tool_name):
             return ToolApprovalStatus(requires_approval=True, approval_locked=True)
         effective_policy = effective_policy or self.effective_policy_for_session(session)
-        required_tools = set(session.approval_required_tools or [])
-        required_tools.update(effective_policy.approval_required_tools)
-        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        required_tools = {tool_name_value(tool) for tool in session.approval_required_tools or []}
+        required_tools.update(tool_name_value(tool) for tool in effective_policy.approval_required_tools)
+        rule = effective_policy.mcp_tool_policies.get(tool_value)
         if rule is not None and rule.require_approval:
             return ToolApprovalStatus(requires_approval=True, approval_locked=False)
         return ToolApprovalStatus(
-            requires_approval=tool_name in required_tools,
+            requires_approval=tool_value in required_tools,
             approval_locked=False,
         )
 
     def _tool_requires_approval_for_session(
         self,
         session: SessionManifest,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         *,
         effective_policy: EffectivePolicyConfig | None = None,
     ) -> bool:
@@ -422,7 +453,7 @@ class PolicyEngine:
     def _tool_visibility_blocked(
         self,
         *,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         source: str,
         reason: str,
         requires_approval: bool = False,
@@ -441,13 +472,15 @@ class PolicyEngine:
     def _tool_visibility_for_session(
         self,
         session: SessionManifest,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         *,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
         effective_policy: EffectivePolicyConfig | None = None,
     ) -> ToolVisibility:
         effective_policy = effective_policy or self.effective_policy_for_session(session)
+        tool_value = tool_name_value(tool_name)
+        tool_enum = ToolName._value2member_map_.get(tool_value)
         approval_status = self._tool_approval_status_for_session(
             session,
             tool_name,
@@ -456,7 +489,7 @@ class PolicyEngine:
         requires_approval = approval_status.requires_approval
         approval_locked = approval_status.approval_locked
 
-        if tool_name.value.startswith("assistant_"):
+        if tool_value.startswith("assistant_"):
             profile = str(session.metadata.get("capability_profile") or "").strip().lower()
             if not profile:
                 return self._tool_visibility_blocked(
@@ -469,7 +502,7 @@ class PolicyEngine:
                     requires_approval=requires_approval,
                     approval_locked=approval_locked,
                 )
-            if tool_name in {
+            if tool_enum in {
                 ToolName.ASSISTANT_UPSERT_CONFIG,
                 ToolName.ASSISTANT_CREATE_WORKFLOW,
                 ToolName.ASSISTANT_RUN_SAFE_OPERATION,
@@ -485,23 +518,24 @@ class PolicyEngine:
                         approval_locked=approval_locked,
                     )
 
-        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        rule = effective_policy.mcp_tool_policies.get(tool_value)
         if rule is not None and rule.denied:
             return self._tool_visibility_blocked(
                 tool_name=tool_name,
                 source="directory.mcp_tool_policies",
                 reason=(
-                    f"Tool {tool_name.value} is denied by directory policy for session "
+                    f"Tool {tool_value} is denied by directory policy for session "
                     f"{session.session_id}"
                 ),
                 requires_approval=requires_approval,
                 approval_locked=approval_locked,
             )
 
-        has_tool_permission = tool_name in session.allowed_tools
+        allowed_tool_values = {tool_name_value(tool) for tool in session.allowed_tools}
+        has_tool_permission = tool_value in allowed_tool_values
         source = "session.allowed_tools"
-        if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
-            has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
+        if tool_value == ToolName.LIST_PENDING_AGENT_PROMPTS.value and not has_tool_permission:
+            has_tool_permission = ToolName.RESPOND_TO_AGENT.value in allowed_tool_values
             if has_tool_permission:
                 source = "session.allowed_tools.respond_to_agent"
         if not has_tool_permission:
@@ -518,23 +552,23 @@ class PolicyEngine:
             return self._tool_visibility_blocked(
                 tool_name=tool_name,
                 source="session.allowed_tools",
-                reason=f"Tool {tool_name.value} is not allowed for session {session.session_id}",
+                reason=f"Tool {tool_value} is not allowed for session {session.session_id}",
                 requires_approval=requires_approval,
                 approval_locked=approval_locked,
             )
 
-        if tool_name == ToolName.SCHEDULE_RESUME and not (
+        if tool_value == ToolName.SCHEDULE_RESUME.value and not (
             session_has_vm_binding(session) or session_is_container_worker_vm(session)
         ):
             return self._tool_visibility_blocked(
                 tool_name=tool_name,
                 source="session.vm_binding",
-                reason=f"Tool {tool_name.value} requires a session with a VM binding",
+                reason=f"Tool {tool_value} requires a session with a VM binding",
                 requires_approval=requires_approval,
                 approval_locked=approval_locked,
             )
 
-        if tool_name in {
+        if tool_enum in {
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
@@ -572,7 +606,7 @@ class PolicyEngine:
     def require_tool(
         self,
         session_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         *,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
@@ -587,22 +621,23 @@ class PolicyEngine:
         if not visibility.available:
             raise PolicyError(
                 visibility.reason
-                or f"Tool {tool_name.value} is not allowed for session {session_id}"
+                or f"Tool {tool_name_value(tool_name)} is not allowed for session {session_id}"
             )
         return session
 
-    def require_tool_not_denied(self, session: SessionManifest, tool_name: ToolName) -> None:
+    def require_tool_not_denied(self, session: SessionManifest, tool_name: McpToolName) -> None:
+        tool_value = tool_name_value(tool_name)
         rule = self.mcp_tool_policy_for_session(session, tool_name)
         if rule is not None and rule.denied:
             raise PolicyError(
-                f"Tool {tool_name.value} is denied by directory policy for session {session.session_id}"
+                f"Tool {tool_value} is denied by directory policy for session {session.session_id}"
             )
 
     def _lease_allows_tool(
         self,
         *,
         session_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
     ) -> bool:
@@ -617,6 +652,23 @@ class PolicyEngine:
             resolved_lease_id = resolved_lease_id or context.lease_id
         if not resolved_workflow_run_id or not resolved_lease_id:
             return False
+        if (
+            context is not None
+            and context.session_id == normalized_session_id
+            and context.reserved_tool_name == tool_name_value(tool_name)
+            and context.workflow_run_id == resolved_workflow_run_id
+            and context.lease_id == resolved_lease_id
+        ):
+            lease = self.tool_approval_leases.get_lease(resolved_lease_id)
+            if (
+                lease is not None
+                and lease.session_id == normalized_session_id
+                and lease.workflow_run_id == resolved_workflow_run_id
+                and lease.revoked_at is None
+                and lease.expires_at > datetime.now(UTC)
+                and context.reserved_tool_name in {tool_name_value(tool) for tool in lease.tools}
+            ):
+                return True
         return self.tool_approval_leases.is_tool_approved(
             lease_id=resolved_lease_id,
             session_id=normalized_session_id,
@@ -628,29 +680,46 @@ class PolicyEngine:
         self,
         *,
         session_id: str | None,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
-    ) -> None:
+        per_invocation_approval_consumed: bool = False,
+    ) -> bool:
         if self.tool_approval_leases is None:
-            return
+            return False
         normalized_session_id = str(session_id or "").strip()
         normalized_workflow_run_id = str(workflow_run_id or "").strip()
         normalized_lease_id = str(mcp_tool_approval_lease_id or "").strip()
         if not normalized_session_id or not normalized_workflow_run_id or not normalized_lease_id:
-            return
+            return False
         session = self.get_session(normalized_session_id)
-        if tool_name in session.allowed_tools:
-            return
+        tool_value = tool_name_value(tool_name)
+        if tool_value in {tool_name_value(tool) for tool in session.allowed_tools}:
+            return False
         self.require_tool_not_denied(session, tool_name)
-        rule = self.mcp_tool_policy_for_session(session, tool_name)
-        if rule is not None and rule.require_approval:
+        lease_is_usable = self.tool_approval_leases.is_tool_approved(
+            lease_id=normalized_lease_id,
+            session_id=normalized_session_id,
+            workflow_run_id=normalized_workflow_run_id,
+            tool_name=tool_name,
+        )
+        if not lease_is_usable:
             raise PolicyError(
-                f"Tool {tool_name.value} requires per-invocation approval in this directory"
+                f"Tool {tool_value} is not allowed for session {normalized_session_id}: "
+                f"approval lease {normalized_lease_id} is not usable"
             )
-        if rule is not None and rule.require_exact_payload:
+        rule = self.mcp_tool_policy_for_session(session, tool_name)
+        if rule is not None and rule.require_approval and not per_invocation_approval_consumed:
             raise PolicyError(
-                f"Tool {tool_name.value} requires exact-payload approval in this directory"
+                f"Tool {tool_value} requires per-invocation approval in this directory"
+            )
+        if (
+            rule is not None
+            and rule.require_exact_payload
+            and not per_invocation_approval_consumed
+        ):
+            raise PolicyError(
+                f"Tool {tool_value} requires exact-payload approval in this directory"
             )
         consumed = self.tool_approval_leases.consume_tool_use(
             lease_id=normalized_lease_id,
@@ -660,12 +729,16 @@ class PolicyEngine:
         )
         if not consumed:
             raise PolicyError(
-                f"Tool {tool_name.value} is not allowed for session {normalized_session_id}: "
+                f"Tool {tool_value} is not allowed for session {normalized_session_id}: "
                 f"approval lease {normalized_lease_id} is not usable"
             )
+        return True
 
-    def approval_required_for_tool(self, session: SessionManifest, tool_name: ToolName) -> bool:
-        if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+    def approval_required_for_tool(self, session: SessionManifest, tool_name: McpToolName) -> bool:
+        if tool_name_value(tool_name) in {
+            ToolName.APPROVAL_SUBMIT.value,
+            ToolName.APPROVAL_CHECK.value,
+        }:
             return False
         self.require_tool_not_denied(session, tool_name)
         return self._tool_requires_approval_for_session(session, tool_name)
@@ -673,7 +746,7 @@ class PolicyEngine:
     def tool_visibility_for_session(
         self,
         session: SessionManifest,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         *,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
@@ -694,7 +767,7 @@ class PolicyEngine:
     ) -> list[ToolVisibility]:
         effective_policy = self.effective_policy_for_session(session)
         visibilities: list[ToolVisibility] = []
-        for tool in ToolName:
+        for tool in self._iter_known_tool_names():
             visibility = self._tool_visibility_for_session(
                 session,
                 tool,
@@ -719,7 +792,7 @@ class PolicyEngine:
         approval_required_tools: list[str] = []
         unavailable_tools: list[dict[str, Any]] = []
 
-        for tool in ToolName:
+        for tool in self._iter_known_tool_names():
             visibility = self._tool_visibility_for_session(
                 session,
                 tool,
@@ -729,7 +802,7 @@ class PolicyEngine:
             )
             if visibility.visible:
                 entry: dict[str, Any] = {
-                    "tool_name": visibility.tool.value,
+                    "tool_name": tool_name_value(visibility.tool),
                     "source": visibility.source,
                     "requires_approval": visibility.requires_approval,
                     "approval_locked": visibility.approval_locked,
@@ -738,11 +811,11 @@ class PolicyEngine:
                     entry["approval_settings"] = visibility.approval_settings.model_dump(mode="json")
                 available_tools.append(entry)
                 if visibility.requires_approval:
-                    approval_required_tools.append(visibility.tool.value)
+                    approval_required_tools.append(tool_name_value(visibility.tool))
                 continue
             unavailable_tools.append(
                 {
-                    "tool_name": visibility.tool.value,
+                    "tool_name": tool_name_value(visibility.tool),
                     "source": visibility.source,
                     "reason": visibility.reason,
                 }
@@ -756,29 +829,32 @@ class PolicyEngine:
         }
 
     def mcp_tool_policy_for_session(
-        self, session: SessionManifest, tool_name: ToolName
+        self, session: SessionManifest, tool_name: McpToolName
     ) -> McpToolPolicyRule | None:
-        return self.effective_policy_for_session(session).mcp_tool_policies.get(tool_name.value)
+        return self.effective_policy_for_session(session).mcp_tool_policies.get(
+            tool_name_value(tool_name)
+        )
 
     def approval_grant_settings_for_tool(
         self,
         session: SessionManifest,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         *,
         effective_policy: EffectivePolicyConfig | None = None,
     ) -> ApprovalGrantSettings:
         if effective_policy is not None:
-            rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+            rule = effective_policy.mcp_tool_policies.get(tool_name_value(tool_name))
         else:
             rule = self.mcp_tool_policy_for_session(session, tool_name)
         settings = ApprovalGrantSettings()
         if rule is not None and rule.default_settings is not None:
             settings = rule.default_settings
-        session_settings = session.approval_tool_settings.get(tool_name.value)
+        session_settings = session.approval_tool_settings.get(tool_name_value(tool_name))
         if session_settings is not None:
             settings = session_settings
         effective_settings = self._apply_approval_grant_limits(settings, rule)
-        if tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS:
+        builtin = ToolName._value2member_map_.get(tool_name_value(tool_name))
+        if builtin in ALWAYS_APPROVAL_REQUIRED_TOOLS:
             return ApprovalGrantSettings(
                 ttl_seconds=effective_settings.ttl_seconds,
                 max_uses=1,
@@ -805,17 +881,18 @@ class PolicyEngine:
         )
 
     def tool_argument_policy_for_session(
-        self, session: SessionManifest, tool_name: ToolName
+        self, session: SessionManifest, tool_name: McpToolName
     ) -> list[ToolArgumentPolicyRule]:
         effective_policy = self.effective_policy_for_session(session)
-        inherited_rules = list(effective_policy.tool_argument_policies.get(tool_name.value, []))
-        session_rules = list(session.tool_argument_policies.get(tool_name.value, []))
+        tool_value = tool_name_value(tool_name)
+        inherited_rules = list(effective_policy.tool_argument_policies.get(tool_value, []))
+        session_rules = list(session.tool_argument_policies.get(tool_value, []))
         return inherited_rules + session_rules
 
     def require_tool_arguments(
         self,
         session: SessionManifest,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         arguments: dict[str, Any] | Any,
     ) -> None:
         rules = self.tool_argument_policy_for_session(session, tool_name)

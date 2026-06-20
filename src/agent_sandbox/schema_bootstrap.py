@@ -591,6 +591,11 @@ _GATE_OUTPUT_SCHEMAS = {
     "gate:aggregate": {
         "count": {"type": "integer"},
     },
+    "gate:buffer": {
+        "items": {"type": "array"},
+        "count": {"type": "integer"},
+        "release_reason": {"type": "string"},
+    },
     "gate:for": {
         "current_element": {"type": "object"},
         "current_index": {"type": "integer"},

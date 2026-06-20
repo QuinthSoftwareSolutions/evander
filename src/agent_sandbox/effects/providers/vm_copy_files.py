@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shlex
@@ -12,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from agent_sandbox.managed_sections import normalize_managed_section_id
 from agent_sandbox.workflow.binding import resolve_workflow_bindings
 
 from .base import EffectProviderBase
@@ -119,7 +121,6 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         with tempfile.TemporaryDirectory(prefix="agent-sandbox-vm-copy-files-") as staging_dir:
             staging_root = Path(staging_dir)
             for index, entry in enumerate(files):
-                staged_source = self._stage_source_file(entry, staging_root, index=index)
                 remote_path = self._normalize_remote_path(entry["destination_path"])
                 if not entry["overwrite"]:
                     self._ensure_remote_absent(
@@ -128,15 +129,30 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 self._ensure_remote_parent(
                     vm_name, vm_ip, vm_user, ssh_private_key_path, remote_path
                 )
-                self._copy_one_file(
-                    vm_name=vm_name,
-                    vm_ip=vm_ip,
-                    vm_user=vm_user,
-                    ssh_private_key_path=ssh_private_key_path,
-                    local_source=staged_source,
-                    remote_path=remote_path,
-                    mode=entry["mode"],
-                )
+                if entry.get("merge_strategy") == "managed_section":
+                    self._merge_remote_managed_section(
+                        vm_name=vm_name,
+                        vm_ip=vm_ip,
+                        vm_user=vm_user,
+                        ssh_private_key_path=ssh_private_key_path,
+                        remote_path=remote_path,
+                        content=self._text_content(entry.get("content")),
+                        section_id=str(entry.get("section_id") or ""),
+                        mode=entry["mode"],
+                    )
+                    recursive = False
+                else:
+                    staged_source = self._stage_source_file(entry, staging_root, index=index)
+                    self._copy_one_file(
+                        vm_name=vm_name,
+                        vm_ip=vm_ip,
+                        vm_user=vm_user,
+                        ssh_private_key_path=ssh_private_key_path,
+                        local_source=staged_source,
+                        remote_path=remote_path,
+                        mode=entry["mode"],
+                    )
+                    recursive = staged_source.is_dir()
                 copied_files.append(
                     {
                         "source_path": entry.get("source_path"),
@@ -144,9 +160,11 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                         "source_kind": "content"
                         if entry.get("content") is not None
                         else "source_path",
-                        "recursive": staged_source.is_dir(),
+                        "recursive": recursive,
                         "mode": entry["mode"],
                         "overwrite": entry["overwrite"],
+                        "merge_strategy": entry.get("merge_strategy"),
+                        "section_id": entry.get("section_id"),
                     }
                 )
 
@@ -333,6 +351,91 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 or f"Failed to set mode for {remote_path}"
             )
 
+    def _merge_remote_managed_section(
+        self,
+        *,
+        vm_name: str,
+        vm_ip: str,
+        vm_user: str,
+        ssh_private_key_path: Path,
+        remote_path: str,
+        content: str,
+        section_id: str,
+        mode: str | None,
+    ) -> None:
+        from agent_sandbox.admin.service import _ssh_options
+
+        normalized_section_id = normalize_managed_section_id(section_id)
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        script = "\n".join(
+            [
+                "python3 - <<'PY'",
+                "import base64",
+                "import re",
+                "from pathlib import Path",
+                f"path = Path({remote_path!r})",
+                f"section_id = {normalized_section_id!r}",
+                f"content = base64.b64decode({encoded_content!r}).decode('utf-8')",
+                "begin_marker = f'<!-- agent-sandbox-managed-section:{section_id}:begin -->'",
+                "end_marker = f'<!-- agent-sandbox-managed-section:{section_id}:end -->'",
+                "body = content.rstrip() + '\\n'",
+                "section = f'{begin_marker}\\n{body}{end_marker}\\n'",
+                "existing = path.read_text(encoding='utf-8') if path.exists() else ''",
+                "pattern = re.compile(rf'(?ms)^{re.escape(begin_marker)}\\n.*?^{re.escape(end_marker)}\\n?')",
+                "if pattern.search(existing):",
+                "    merged = pattern.sub(section, existing, count=1)",
+                "elif not existing:",
+                "    merged = section",
+                "else:",
+                "    prefix = existing if existing.endswith('\\n') else existing + '\\n'",
+                "    if not prefix.endswith('\\n\\n'):",
+                "        prefix += '\\n'",
+                "    merged = prefix + section",
+                "path.write_text(merged, encoding='utf-8')",
+                "PY",
+            ]
+        )
+        completed = subprocess.run(
+            [
+                "ssh",
+                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                f"{vm_user}@{vm_ip}",
+                "bash",
+                "-s",
+            ],
+            capture_output=True,
+            text=True,
+            input=f"{script}\n",
+            check=False,
+            env=os.environ.copy(),
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                (completed.stderr or completed.stdout or "").strip()
+                or f"Failed to merge managed section into {remote_path}"
+            )
+        if mode is None:
+            return
+        chmod_mode = self._normalize_mode(mode)
+        chmod_command = f"chmod {shlex.quote(chmod_mode)} -- {shlex.quote(remote_path)}"
+        chmod_result = subprocess.run(
+            [
+                "ssh",
+                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                f"{vm_user}@{vm_ip}",
+                chmod_command,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=os.environ.copy(),
+        )
+        if chmod_result.returncode != 0:
+            raise RuntimeError(
+                (chmod_result.stderr or chmod_result.stdout or "").strip()
+                or f"Failed to set mode for {remote_path}"
+            )
+
     def _stage_source_file(self, entry: dict[str, Any], staging_root: Path, *, index: int) -> Path:
         if entry.get("content") is not None:
             suffix = self._suffix_for_destination(entry["destination_path"])
@@ -373,26 +476,36 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             if (source_path is None) == (content is None):
                 raise ValueError(
                     "effect:vm:copy-files entries require exactly one of source_path or content"
-                )
+            )
             mode = self._normalize_optional_string(raw_entry.get("mode"))
             content_format = self._normalize_content_format(raw_entry.get("content_format"))
+            merge_strategy = self._normalize_merge_strategy(raw_entry.get("merge_strategy"))
+            section_id = self._normalize_optional_string(raw_entry.get("section_id"))
+            if merge_strategy == "managed_section":
+                if source_path is not None:
+                    raise ValueError(
+                        "effect:vm:copy-files managed_section entries require inline content"
+                    )
+                section_id = normalize_managed_section_id(section_id or "")
             overwrite = raw_entry.get("overwrite")
             if overwrite is None:
                 overwrite = True
             elif not isinstance(overwrite, bool):
                 raise ValueError("effect:vm:copy-files overwrite must be a boolean when provided")
-            entries.append(
-                {
-                    "source_path": source_path,
-                    "destination_path": destination_path,
-                    "content": self._render_inline_content(content, content_format=content_format)
-                    if content is not None
-                    else None,
-                    "content_format": content_format,
-                    "mode": mode,
-                    "overwrite": overwrite,
-                }
-            )
+            entry = {
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "content": self._render_inline_content(content, content_format=content_format)
+                if content is not None
+                else None,
+                "content_format": content_format,
+                "mode": mode,
+                "overwrite": overwrite,
+            }
+            if merge_strategy is not None:
+                entry["merge_strategy"] = merge_strategy
+                entry["section_id"] = section_id
+            entries.append(entry)
         return entries
 
     @staticmethod
@@ -435,6 +548,19 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             )
         return text
 
+    @staticmethod
+    def _normalize_merge_strategy(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if text != "managed_section":
+            raise ValueError(
+                "effect:vm:copy-files merge_strategy must be one of: managed_section"
+            )
+        return text
+
     @classmethod
     def _render_inline_content(cls, content: Any, *, content_format: str | None) -> Any:
         if content_format in (None, "text"):
@@ -444,6 +570,12 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if content_format == "yaml":
             return yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
         raise ValueError(f"Unsupported content_format: {content_format}")
+
+    @staticmethod
+    def _text_content(content: Any) -> str:
+        if isinstance(content, (bytes, bytearray)):
+            return bytes(content).decode("utf-8")
+        return str(content if content is not None else "")
 
     @staticmethod
     def _normalize_optional_string(value: Any) -> str | None:

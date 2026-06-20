@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bokio Add-on</title>
+    <link rel="stylesheet" href="./bokio-ui.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="toolbar">
+        <div>
+          <h1>Bokio</h1>
+          <p id="connection-summary">Loading connection state...</p>
+        </div>
+        <button id="refresh" type="button">Refresh</button>
+      </header>
+      <section class="grid">
+        <article class="panel">
+          <h2>Company</h2>
+          <pre id="company">No data loaded.</pre>
+        </article>
+        <article class="panel">
+          <h2>Prepared actions</h2>
+          <div id="actions" class="actions"></div>
+        </article>
+      </section>
+    </main>
+    <script src="./bokio-ui.js"></script>
+  </body>
+</html>

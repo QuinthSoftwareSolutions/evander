@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -47,6 +48,7 @@ from .models import (
     RolePermission,
     Team,
     TeamInboxItemState,
+    TeamInboxPriority,
     TeamInboxItemType,
     TeamRecordState,
     TeamRole,
@@ -193,9 +195,9 @@ class TeamStateRepository:
     def create_team(
         self,
         *,
-        team_id: str,
+        team_id: str | None,
         name: str,
-        manager_agent_id: str,
+        manager_agent_id: str | None,
         manager_session_id: str,
         manager_display_name: str | None = None,
         manager_role_id: str | None = None,
@@ -204,40 +206,66 @@ class TeamStateRepository:
         max_cost_usd: object | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_team_id = _optional_text(team_id)
+        normalized_name = _required_text(name, "name")
+        normalized_manager_agent_id = _optional_text(manager_agent_id)
+        normalized_manager_session_id = _required_text(manager_session_id, "manager_session_id")
+        normalized_manager_display_name = _optional_text(manager_display_name)
+        normalized_manager_role_id = _optional_text(manager_role_id)
+        normalized_manager_role_name = _optional_text(manager_role_name) or "Manager"
+        normalized_operator_target = _optional_text(operator_communication_target_id)
+
         def _mutate(state: TeamState) -> TeamState:
-            _require_absent(state.teams, team_id, "team")
-            _require_absent(state.agents, manager_agent_id, "agent")
-            role_id = _optional_text(manager_role_id) or _default_role_id(
-                team_id=team_id,
+            effective_team_id = normalized_team_id or _generated_id(
+                prefix="team",
+                labels=[normalized_name],
+                existing_ids=state.teams,
+            )
+            _require_absent(state.teams, effective_team_id, "team")
+            role_base_id = _default_role_id(
+                team_id=effective_team_id,
                 project_id=None,
                 role_key="manager",
             )
+            role_id = normalized_manager_role_id or _unique_id_from_base(
+                role_base_id,
+                existing_ids=state.roles,
+            )
             _require_absent(state.roles, role_id, "role")
+            effective_manager_agent_id = normalized_manager_agent_id or _generated_id(
+                prefix="agent",
+                labels=[
+                    effective_team_id,
+                    normalized_manager_display_name or normalized_manager_role_name,
+                ],
+                existing_ids=state.agents,
+            )
+            _require_absent(state.agents, effective_manager_agent_id, "agent")
             now = utc_now()
             role = TeamRole(
                 id=role_id,
-                team_id=team_id,
-                name=_optional_text(manager_role_name) or "Manager",
+                team_id=effective_team_id,
+                name=normalized_manager_role_name,
                 permissions=[RolePermission.CREATE_ROOT_TASK],
                 created_at=now,
                 updated_at=now,
             )
             state.roles[role.id] = role
             manager = PersistentAgent(
-                id=manager_agent_id,
-                team_id=team_id,
-                display_name=manager_display_name,
+                id=effective_manager_agent_id,
+                team_id=effective_team_id,
+                display_name=normalized_manager_display_name,
                 role_id=role.id,
-                session_id=manager_session_id,
+                session_id=normalized_manager_session_id,
                 reports_to_agent_id=None,
                 ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
             )
             state.agents[manager.id] = manager
-            state.teams[team_id] = Team(
-                id=team_id,
-                name=name,
+            state.teams[effective_team_id] = Team(
+                id=effective_team_id,
+                name=normalized_name,
                 manager_agent_id=manager.id,
-                operator_communication_target_id=operator_communication_target_id,
+                operator_communication_target_id=normalized_operator_target,
                 max_cost_usd=max_cost_usd,
                 created_at=now,
                 updated_at=now,
@@ -280,63 +308,94 @@ class TeamStateRepository:
     def create_project(
         self,
         *,
-        project_id: str,
+        project_id: str | None,
         team_id: str,
         name: str,
-        lead_agent_id: str,
+        lead_agent_id: str | None,
         lead_session_id: str,
         lead_display_name: str | None = None,
-        goals: list[ProjectGoal] | None = None,
+        goals: list[ProjectGoal | Mapping[str, Any]] | None = None,
         git: ProjectGitConfig | None = None,
         lead_role_id: str | None = None,
         lead_role_name: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_project_id = _optional_text(project_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_name = _required_text(name, "name")
+        normalized_lead_agent_id = _optional_text(lead_agent_id)
+        normalized_lead_session_id = _required_text(lead_session_id, "lead_session_id")
+        normalized_lead_display_name = _optional_text(lead_display_name)
+        normalized_lead_role_id = _optional_text(lead_role_id)
+        normalized_lead_role_name = _optional_text(lead_role_name) or "Project Lead"
+        goal_inputs = list(goals or [])
+
         def _mutate(state: TeamState) -> TeamState:
-            team = _require_present(state.teams, team_id, "team")
-            _require_absent(state.projects, project_id, "project")
-            _require_absent(state.agents, lead_agent_id, "agent")
-            role_id = _optional_text(lead_role_id) or _default_role_id(
-                team_id=team_id,
-                project_id=project_id,
+            team = _require_present(state.teams, normalized_team_id, "team")
+            effective_project_id = normalized_project_id or _generated_id(
+                prefix="project",
+                labels=[normalized_team_id, normalized_name],
+                existing_ids=state.projects,
+            )
+            _require_absent(state.projects, effective_project_id, "project")
+            role_base_id = _default_role_id(
+                team_id=normalized_team_id,
+                project_id=effective_project_id,
                 role_key="project_lead",
             )
+            role_id = normalized_lead_role_id or _unique_id_from_base(
+                role_base_id,
+                existing_ids=state.roles,
+            )
             _require_absent(state.roles, role_id, "role")
+            effective_lead_agent_id = normalized_lead_agent_id or _generated_id(
+                prefix="agent",
+                labels=[
+                    effective_project_id,
+                    normalized_lead_display_name or normalized_lead_role_name,
+                ],
+                existing_ids=state.agents,
+            )
+            _require_absent(state.agents, effective_lead_agent_id, "agent")
+            project_goals = _project_goals_with_generated_ids(
+                goal_inputs,
+                project_id=effective_project_id,
+            )
             now = utc_now()
             role = TeamRole(
                 id=role_id,
-                team_id=team_id,
-                project_id=project_id,
-                name=_optional_text(lead_role_name) or "Project Lead",
+                team_id=normalized_team_id,
+                project_id=effective_project_id,
+                name=normalized_lead_role_name,
                 permissions=[RolePermission.CREATE_ROOT_TASK],
                 created_at=now,
                 updated_at=now,
             )
             state.roles[role.id] = role
             lead = PersistentAgent(
-                id=lead_agent_id,
-                team_id=team_id,
-                project_id=project_id,
-                display_name=lead_display_name,
+                id=effective_lead_agent_id,
+                team_id=normalized_team_id,
+                project_id=effective_project_id,
+                display_name=normalized_lead_display_name,
                 role_id=role.id,
-                session_id=lead_session_id,
+                session_id=normalized_lead_session_id,
                 reports_to_agent_id=team.manager_agent_id,
                 ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
             )
             state.agents[lead.id] = lead
             manager = state.agents[team.manager_agent_id]
             manager.subordinate_agent_ids = _append_unique(manager.subordinate_agent_ids, lead.id)
-            state.projects[project_id] = Project(
-                id=project_id,
-                team_id=team_id,
-                name=name,
+            state.projects[effective_project_id] = Project(
+                id=effective_project_id,
+                team_id=normalized_team_id,
+                name=normalized_name,
                 lead_agent_id=lead.id,
-                goals=goals or [],
+                goals=project_goals,
                 git=git,
                 created_at=now,
                 updated_at=now,
             )
-            team.project_ids = _append_unique(team.project_ids, project_id)
+            team.project_ids = _append_unique(team.project_ids, effective_project_id)
             team.updated_at = now
             return state
 
@@ -371,7 +430,7 @@ class TeamStateRepository:
     def create_role(
         self,
         *,
-        role_id: str,
+        role_id: str | None,
         team_id: str,
         name: str,
         project_id: str | None = None,
@@ -380,21 +439,33 @@ class TeamStateRepository:
         ephemeral_policy: EphemeralAgentPolicy | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_role_id = _optional_text(role_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_name = _required_text(name, "name")
+        normalized_description = _optional_text(description) or ""
+        normalized_project_id = _optional_text(project_id)
+
         def _mutate(state: TeamState) -> TeamState:
-            _require_absent(state.roles, role_id, "role")
-            _require_present(state.teams, team_id, "team")
-            normalized_project_id = _optional_text(project_id)
+            _require_present(state.teams, normalized_team_id, "team")
             if normalized_project_id is not None:
                 project = _require_present(state.projects, normalized_project_id, "project")
-                if project.team_id != team_id:
-                    raise ValueError(f"project {normalized_project_id} does not belong to team {team_id}")
+                if project.team_id != normalized_team_id:
+                    raise ValueError(
+                        f"project {normalized_project_id} does not belong to team {normalized_team_id}"
+                    )
+            effective_role_id = normalized_role_id or _generated_id(
+                prefix="role",
+                labels=[normalized_project_id or normalized_team_id, normalized_name],
+                existing_ids=state.roles,
+            )
+            _require_absent(state.roles, effective_role_id, "role")
             now = utc_now()
             role = TeamRole(
-                id=role_id,
-                team_id=team_id,
+                id=effective_role_id,
+                team_id=normalized_team_id,
                 project_id=normalized_project_id,
-                name=name,
-                description=description or "",
+                name=normalized_name,
+                description=normalized_description,
                 permissions=_normalize_role_permissions(permissions),
                 ephemeral_policy=ephemeral_policy or EphemeralAgentPolicy(),
                 created_at=now,
@@ -458,7 +529,7 @@ class TeamStateRepository:
     def register_agent(
         self,
         *,
-        agent_id: str,
+        agent_id: str | None,
         team_id: str,
         project_id: str,
         role_id: str,
@@ -468,25 +539,56 @@ class TeamStateRepository:
         ephemeral_policy: EphemeralAgentPolicy | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_agent_id = _optional_text(agent_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_project_id = _required_text(project_id, "project_id")
+        normalized_role_id = _required_text(role_id, "role_id")
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_reports_to_agent_id = _required_text(
+            reports_to_agent_id,
+            "reports_to_agent_id",
+        )
+        normalized_display_name = _optional_text(display_name)
+
         def _mutate(state: TeamState) -> TeamState:
-            _require_absent(state.agents, agent_id, "agent")
-            _require_present(state.teams, team_id, "team")
-            project = _require_present(state.projects, project_id, "project")
-            if project.team_id != team_id:
-                raise ValueError(f"project {project_id} does not belong to team {team_id}")
-            role = _require_present(state.roles, role_id, "role")
-            _validate_role_assignment(role, team_id=team_id, project_id=project_id)
-            superior = _require_present(state.agents, reports_to_agent_id, "superior agent")
-            if superior.team_id != team_id:
-                raise ValueError(f"superior agent {reports_to_agent_id} is not in team {team_id}")
+            _require_present(state.teams, normalized_team_id, "team")
+            project = _require_present(state.projects, normalized_project_id, "project")
+            if project.team_id != normalized_team_id:
+                raise ValueError(
+                    f"project {normalized_project_id} does not belong to team {normalized_team_id}"
+                )
+            role = _require_present(state.roles, normalized_role_id, "role")
+            _validate_role_assignment(
+                role,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+            )
+            superior = _require_present(
+                state.agents,
+                normalized_reports_to_agent_id,
+                "superior agent",
+            )
+            if superior.team_id != normalized_team_id:
+                raise ValueError(
+                    f"superior agent {normalized_reports_to_agent_id} is not in team {normalized_team_id}"
+                )
+            effective_agent_id = normalized_agent_id or _generated_id(
+                prefix="agent",
+                labels=[
+                    normalized_project_id,
+                    normalized_display_name or role.name or normalized_session_id,
+                ],
+                existing_ids=state.agents,
+            )
+            _require_absent(state.agents, effective_agent_id, "agent")
             agent = PersistentAgent(
-                id=agent_id,
-                team_id=team_id,
-                project_id=project_id,
-                display_name=display_name,
+                id=effective_agent_id,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                display_name=normalized_display_name,
                 role_id=role.id,
-                session_id=session_id,
-                reports_to_agent_id=reports_to_agent_id,
+                session_id=normalized_session_id,
+                reports_to_agent_id=normalized_reports_to_agent_id,
                 ephemeral_policy=(
                     ephemeral_policy
                     if ephemeral_policy is not None
@@ -736,7 +838,7 @@ class TeamStateRepository:
     def create_or_reprioritize_task(
         self,
         *,
-        task_id: str,
+        task_id: str | None,
         owner_agent_id: str,
         project_id: str,
         priority: int,
@@ -750,13 +852,19 @@ class TeamStateRepository:
         dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_task_id = _optional_text(task_id)
+        normalized_title = _required_text(title, "title")
+        normalized_description = _required_text(description, "description")
+        normalized_owner_agent_id = _required_text(owner_agent_id, "owner_agent_id")
+        normalized_project_id = _required_text(project_id, "project_id")
+
         def _mutate(state_model: TeamState) -> TeamState:
             now = utc_now()
-            if task_id in state_model.tasks:
-                task = state_model.tasks[task_id]
+            if normalized_task_id is not None and normalized_task_id in state_model.tasks:
+                task = state_model.tasks[normalized_task_id]
                 task.priority = priority
-                task.title = title
-                task.description = description
+                task.title = normalized_title
+                task.description = normalized_description
                 if set_parent_task_id or parent_task_id is not None:
                     task.parent_task_id = parent_task_id
                 if dependency_task_ids is not None:
@@ -775,14 +883,20 @@ class TeamStateRepository:
                         now=now,
                     )
                 return state_model
-            state_model.tasks[task_id] = AgentTask(
-                id=task_id,
-                owner_agent_id=owner_agent_id,
-                project_id=project_id,
+            effective_task_id = normalized_task_id or _generated_id(
+                prefix="task",
+                labels=[normalized_project_id, normalized_title],
+                existing_ids=state_model.tasks,
+            )
+            _require_absent(state_model.tasks, effective_task_id, "task")
+            state_model.tasks[effective_task_id] = AgentTask(
+                id=effective_task_id,
+                owner_agent_id=normalized_owner_agent_id,
+                project_id=normalized_project_id,
                 priority=priority,
                 state=state,
-                title=title,
-                description=description,
+                title=normalized_title,
+                description=normalized_description,
                 created_by_agent_id=created_by_agent_id,
                 created_by_actor=created_by_actor,
                 parent_task_id=parent_task_id,
@@ -791,11 +905,11 @@ class TeamStateRepository:
                 updated_at=now,
             )
             if state in _NON_TERMINAL_TASK_STATES:
-                _mark_agent_work_due(state_model, agent_id=owner_agent_id, now=now)
+                _mark_agent_work_due(state_model, agent_id=normalized_owner_agent_id, now=now)
             else:
                 _maybe_mark_idle_context_rotation_due(
                     state_model,
-                    agent_id=owner_agent_id,
+                    agent_id=normalized_owner_agent_id,
                     now=now,
                 )
             return state_model
@@ -945,6 +1059,8 @@ class TeamStateRepository:
                 sender_agent_id=None,
                 task_id=normalized_task_id,
                 item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+                response_requested=True,
+                priority=TeamInboxPriority.NORMAL,
                 payload=payload,
                 created_at=now,
                 updated_at=now,
@@ -961,7 +1077,7 @@ class TeamStateRepository:
     def record_deliverable(
         self,
         *,
-        deliverable_id: str,
+        deliverable_id: str | None,
         task_id: str,
         producer_agent_id: str,
         summary: str,
@@ -969,14 +1085,24 @@ class TeamStateRepository:
         state: TeamRecordState = TeamRecordState.PENDING,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_deliverable_id = _optional_text(deliverable_id)
+        normalized_task_id = _required_text(task_id, "task_id")
+        normalized_producer_agent_id = _required_text(producer_agent_id, "producer_agent_id")
+        normalized_summary = _required_text(summary, "summary")
+
         def _mutate(state_model: TeamState) -> TeamState:
-            _require_absent(state_model.deliverables, deliverable_id, "deliverable")
-            task = _require_present(state_model.tasks, task_id, "task")
+            task = _require_present(state_model.tasks, normalized_task_id, "task")
+            effective_deliverable_id = normalized_deliverable_id or _generated_id(
+                prefix="deliverable",
+                labels=[normalized_task_id, normalized_summary],
+                existing_ids=state_model.deliverables,
+            )
+            _require_absent(state_model.deliverables, effective_deliverable_id, "deliverable")
             deliverable = Deliverable(
-                id=deliverable_id,
-                task_id=task_id,
-                producer_agent_id=producer_agent_id,
-                summary=summary,
+                id=effective_deliverable_id,
+                task_id=normalized_task_id,
+                producer_agent_id=normalized_producer_agent_id,
+                summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
                 state=state,
             )
@@ -990,7 +1116,7 @@ class TeamStateRepository:
     def create_review_profile(
         self,
         *,
-        profile_id: str,
+        profile_id: str | None,
         team_id: str,
         project_id: str | None = None,
         name: str,
@@ -999,20 +1125,31 @@ class TeamStateRepository:
         criteria: list[ReviewProfileCriterion] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_profile_id = _optional_text(profile_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_name = _required_text(name, "name")
+        normalized_project_id = _optional_text(project_id)
+
         def _mutate(state: TeamState) -> TeamState:
-            _require_absent(state.review_profiles, profile_id, "review profile")
-            _require_present(state.teams, team_id, "team")
-            normalized_project_id = _optional_text(project_id)
+            _require_present(state.teams, normalized_team_id, "team")
             if normalized_project_id is not None:
                 project = _require_present(state.projects, normalized_project_id, "project")
-                if project.team_id != team_id:
-                    raise ValueError(f"project {normalized_project_id} does not belong to team {team_id}")
+                if project.team_id != normalized_team_id:
+                    raise ValueError(
+                        f"project {normalized_project_id} does not belong to team {normalized_team_id}"
+                    )
+            effective_profile_id = normalized_profile_id or _generated_id(
+                prefix="profile",
+                labels=[normalized_project_id or normalized_team_id, normalized_name],
+                existing_ids=state.review_profiles,
+            )
+            _require_absent(state.review_profiles, effective_profile_id, "review profile")
             now = utc_now()
             profile = ReviewProfile(
-                id=profile_id,
-                team_id=team_id,
+                id=effective_profile_id,
+                team_id=normalized_team_id,
                 project_id=normalized_project_id,
-                name=name,
+                name=normalized_name,
                 description=description,
                 applicable_role_ids=applicable_role_ids or [],
                 criteria=criteria or [],
@@ -1086,7 +1223,6 @@ class TeamStateRepository:
         normalized_inputs = _mapping(inputs, "inputs")
         team_input = _required_mapping(normalized_inputs, "team")
         project_input = _required_mapping(normalized_inputs, "project")
-        team_id = _required_text(team_input.get("id"), "team.id")
         team_name = _required_text(team_input.get("name"), "team.name")
         operator_communication_target_id = _optional_text(
             team_input.get("operator_communication_target_id")
@@ -1094,31 +1230,74 @@ class TeamStateRepository:
         max_cost_usd = (
             team_input.get("max_cost_usd") if "max_cost_usd" in team_input else None
         )
-        project_id = _required_text(project_input.get("id"), "project.id")
         project_name = _required_text(project_input.get("name"), "project.name")
         git = _project_git_config(project_input.get("git"))
 
         role_inputs = _materialize_role_inputs(template, normalized_inputs, team_input, project_input)
+        current_state = self.read()
+        team_id = _optional_text(team_input.get("id")) or _generated_id(
+            prefix="team",
+            labels=[team_name],
+            existing_ids=current_state.teams,
+        )
+        project_id = _optional_text(project_input.get("id")) or _generated_id(
+            prefix="project",
+            labels=[team_id, project_name],
+            existing_ids=current_state.projects,
+        )
         goal_ids = {
-            goal.id: _materialized_template_record_id(project_id, goal.id)
+            goal.id: _unique_id_from_base(
+                _materialized_template_record_id(project_id, goal.id),
+                existing_ids=set(),
+            )
             for goal in template.project_goals
         }
+        used_review_profile_ids = set(current_state.review_profiles)
         review_profile_ids = {
-            profile.id: _materialized_template_record_id(project_id, profile.id)
+            profile.id: _unique_id_from_base(
+                _materialized_template_record_id(project_id, profile.id),
+                existing_ids=used_review_profile_ids,
+            )
             for profile in template.review_profiles
         }
+        used_review_profile_ids.update(review_profile_ids.values())
+        used_task_ids = set(current_state.tasks)
         task_ids = {
-            task.id: _materialized_template_record_id(project_id, task.id)
+            task.id: _unique_id_from_base(
+                _materialized_template_record_id(project_id, task.id),
+                existing_ids=used_task_ids,
+            )
             for task in template.tasks
         }
-        role_ids = {
-            role.key: _default_role_id(
-                team_id=team_id,
-                project_id=None if role.key == template.root_role_key else project_id,
-                role_key=role.key,
+        used_task_ids.update(task_ids.values())
+        used_role_ids = set(current_state.roles)
+        role_ids: dict[str, str] = {}
+        for role in template.roles:
+            role_id = _unique_id_from_base(
+                _default_role_id(
+                    team_id=team_id,
+                    project_id=None if role.key == template.root_role_key else project_id,
+                    role_key=role.key,
+                ),
+                existing_ids=used_role_ids,
             )
-            for role in template.roles
-        }
+            used_role_ids.add(role_id)
+            role_ids[role.key] = role_id
+        used_agent_ids = set(current_state.agents)
+        for role in template.roles:
+            role_input = role_inputs[role.key]
+            agent_id = _optional_text(role_input.get("agent_id", role_input.get("id")))
+            if agent_id is None:
+                agent_id = _generated_id(
+                    prefix="agent",
+                    labels=[
+                        team_id if role.key == template.root_role_key else project_id,
+                        role.label,
+                    ],
+                    existing_ids=used_agent_ids,
+                )
+            role_input["agent_id"] = agent_id
+            used_agent_ids.add(agent_id)
         concrete_ids = [
             team_id,
             project_id,
@@ -1321,7 +1500,7 @@ class TeamStateRepository:
     def record_review_request(
         self,
         *,
-        review_request_id: str,
+        review_request_id: str | None,
         deliverable_id: str,
         reviewer_agent_id: str,
         state: TeamRecordState = TeamRecordState.PENDING,
@@ -1331,16 +1510,27 @@ class TeamStateRepository:
         decision_at: datetime | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_review_request_id = _optional_text(review_request_id)
+        normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
+        normalized_reviewer_agent_id = _required_text(reviewer_agent_id, "reviewer_agent_id")
+
         def _mutate(state_model: TeamState) -> TeamState:
-            _require_absent(state_model.review_requests, review_request_id, "review request")
-            deliverable = _require_present(state_model.deliverables, deliverable_id, "deliverable")
-            reviewer = _require_present(state_model.agents, reviewer_agent_id, "reviewer")
+            deliverable = _require_present(
+                state_model.deliverables,
+                normalized_deliverable_id,
+                "deliverable",
+            )
+            reviewer = _require_present(
+                state_model.agents,
+                normalized_reviewer_agent_id,
+                "reviewer",
+            )
             task = _require_present(state_model.tasks, deliverable.task_id, "task")
             project = _require_present(state_model.projects, task.project_id, "project")
             if reviewer.team_id != project.team_id:
                 raise ValueError(
-                    f"reviewer {reviewer_agent_id} is not in the same team as deliverable "
-                    f"{deliverable_id}"
+                    f"reviewer {normalized_reviewer_agent_id} is not in the same team as deliverable "
+                    f"{normalized_deliverable_id}"
                 )
             _profile, profile_error = _review_profile_for_request(
                 state_model,
@@ -1351,10 +1541,23 @@ class TeamStateRepository:
             )
             if profile_error is not None:
                 raise ValueError(profile_error)
+            effective_review_request_id = normalized_review_request_id or _generated_id(
+                prefix="review",
+                labels=[
+                    normalized_deliverable_id,
+                    review_profile_id or normalized_reviewer_agent_id,
+                ],
+                existing_ids=state_model.review_requests,
+            )
+            _require_absent(
+                state_model.review_requests,
+                effective_review_request_id,
+                "review request",
+            )
             review = ReviewRequest(
-                id=review_request_id,
-                deliverable_id=deliverable_id,
-                reviewer_agent_id=reviewer_agent_id,
+                id=effective_review_request_id,
+                deliverable_id=normalized_deliverable_id,
+                reviewer_agent_id=normalized_reviewer_agent_id,
                 state=state,
                 findings=findings or [],
                 review_profile_id=review_profile_id,
@@ -1652,6 +1855,8 @@ class TeamStateRepository:
                     sender_agent_id=None,
                     task_id=assignment.task_id,
                     item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+                    response_requested=True,
+                    priority=TeamInboxPriority.LOW,
                     payload={
                         "ephemeral_assignment_id": assignment.id,
                         "summary": assignment.summary,
@@ -1774,6 +1979,7 @@ class TeamStateRepository:
         lease_seconds: int = 900,
         wake_interval_seconds: int = 900,
         max_no_progress_count: int = 3,
+        low_priority_wake_after_cycles: int = 4,
         team_id: str | None = None,
         project_id: str | None = None,
         agent_id: str | None = None,
@@ -1784,6 +1990,7 @@ class TeamStateRepository:
         normalized_project_id = _optional_text(project_id)
         normalized_agent_id = _optional_text(agent_id)
         normalized_limit = max(0, int(limit))
+        low_priority_threshold = max(0, int(low_priority_wake_after_cycles))
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
 
@@ -1814,33 +2021,62 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                immediate_inbox = [
+                    item
+                    for item in pending_inbox
+                    if item.priority != TeamInboxPriority.LOW
+                ]
+                low_priority_inbox = [
+                    item for item in pending_inbox if item.priority == TeamInboxPriority.LOW
+                ]
                 action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
+                task_work_ready = any(
+                    state_model.dependency_status(task.id) == "satisfied"
+                    for task in active_tasks
+                ) or any(
+                    state_model.subtask_counts(task.id)["open"] > 0
+                    for task in active_tasks
+                )
                 wake_eligible = (
                     rotation_pending
                     or bool(pending_inbox)
                     or bool(action_feedback)
-                    or any(
-                        state_model.dependency_status(task.id) == "satisfied"
-                        for task in active_tasks
-                    )
-                    or any(
-                        state_model.subtask_counts(task.id)["open"] > 0
-                        for task in active_tasks
-                    )
+                    or task_work_ready
                 )
                 if not wake_eligible:
+                    _clear_low_priority_batch(runtime)
                     continue
                 due_by_time = (
                     runtime.next_wake_at is None
                     or _ensure_utc(runtime.next_wake_at) <= effective_now
                 )
+                immediate_wake_ready = (
+                    rotation_pending
+                    or bool(immediate_inbox)
+                    or bool(action_feedback)
+                    or (task_work_ready and due_by_time)
+                )
+                low_priority_wake_ready = False
+                if low_priority_inbox and not immediate_wake_ready:
+                    low_priority_wake_ready = _advance_low_priority_batch(
+                        runtime,
+                        now=effective_now,
+                        due_after_cycles=low_priority_threshold,
+                    )
+                    if not low_priority_wake_ready:
+                        runtime.updated_at = effective_now
+                        continue
+                elif not low_priority_inbox:
+                    _clear_low_priority_batch(runtime)
                 if (
                     not pending_inbox
                     and not rotation_pending
                     and not action_feedback
                     and not due_by_time
                 ):
+                    continue
+                if pending_inbox and not immediate_wake_ready and not low_priority_wake_ready:
                     continue
                 if (
                     max_no_progress_count >= 0
@@ -1854,11 +2090,14 @@ class TeamStateRepository:
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
                 reason = (
                     "inbox"
-                    if pending_inbox
+                    if immediate_inbox
+                    else "low_priority_inbox"
+                    if low_priority_wake_ready
                     else "action_feedback"
                     if action_feedback
                     else "scheduled"
                 )
+                _clear_low_priority_batch(runtime)
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
@@ -2184,14 +2423,28 @@ class TeamStateRepository:
                 projects_to_recalc.add(state_model.tasks[created_id].project_id)
                 _mark_progress()
 
-            for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
-                recipient_id = (
-                    _optional_text(question.get("recipient_agent_id"))
-                    or agent.reports_to_agent_id
-                )
-                upward_error = _upward_recipient_error(agent, recipient_id, "questions")
-                if upward_error is not None:
-                    result["errors"].append(upward_error)
+            for index, question in enumerate(
+                _list_of_mappings(normalized_action.get("questions"), "questions")
+            ):
+                try:
+                    recipient_id = (
+                        _optional_text(question.get("recipient_agent_id"))
+                        or agent.reports_to_agent_id
+                    )
+                    upward_error = _upward_recipient_error(agent, recipient_id, "questions")
+                    if upward_error is not None:
+                        result["errors"].append(upward_error)
+                        continue
+                    response_requested = _response_requested_from_item(
+                        question,
+                        default=True,
+                    )
+                    priority = _priority_from_item(
+                        question,
+                        default=TeamInboxPriority.NORMAL,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "questions", index, exc)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -2200,26 +2453,49 @@ class TeamStateRepository:
                     sender_agent_id=agent.id,
                     task_id=_optional_text(question.get("task_id")),
                     item_type=TeamInboxItemType.QUESTION,
+                    response_requested=response_requested,
+                    priority=priority,
                     payload={
                         key: value
                         for key, value in question.items()
-                        if key not in {"recipient_agent_id", "task_id"}
+                        if key
+                        not in {
+                            "recipient_agent_id",
+                            "task_id",
+                            "response_requested",
+                            "priority",
+                        }
                     },
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
                 _mark_progress()
 
-            for report in _list_of_mappings(
-                normalized_action.get("status_reports"), "status_reports"
-            ):
-                recipient_id = (
-                    _optional_text(report.get("recipient_agent_id"))
-                    or agent.reports_to_agent_id
+            for index, report in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("status_reports"),
+                    "status_reports",
                 )
-                upward_error = _upward_recipient_error(agent, recipient_id, "status_reports")
-                if upward_error is not None:
-                    result["errors"].append(upward_error)
+            ):
+                try:
+                    recipient_id = (
+                        _optional_text(report.get("recipient_agent_id"))
+                        or agent.reports_to_agent_id
+                    )
+                    upward_error = _upward_recipient_error(agent, recipient_id, "status_reports")
+                    if upward_error is not None:
+                        result["errors"].append(upward_error)
+                        continue
+                    response_requested = _response_requested_from_item(
+                        report,
+                        default=False,
+                    )
+                    priority = _priority_from_item(
+                        report,
+                        default=TeamInboxPriority.LOW,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "status_reports", index, exc)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -2228,10 +2504,18 @@ class TeamStateRepository:
                     sender_agent_id=agent.id,
                     task_id=_optional_text(report.get("task_id")),
                     item_type=TeamInboxItemType.PROGRESS_REPORT,
+                    response_requested=response_requested,
+                    priority=priority,
                     payload={
                         key: value
                         for key, value in report.items()
-                        if key not in {"recipient_agent_id", "task_id"}
+                        if key
+                        not in {
+                            "recipient_agent_id",
+                            "task_id",
+                            "response_requested",
+                            "priority",
+                        }
                     },
                 )
                 state_model.inbox[item.id] = item
@@ -2257,10 +2541,24 @@ class TeamStateRepository:
                         sender_agent_id=agent.id,
                         task_id=_optional_text(status_request.get("task_id")),
                         item_type=TeamInboxItemType.STATUS_REQUEST,
+                        response_requested=_response_requested_from_item(
+                            status_request,
+                            default=True,
+                        ),
+                        priority=_priority_from_item(
+                            status_request,
+                            default=TeamInboxPriority.NORMAL,
+                        ),
                         payload={
                             key: value
                             for key, value in status_request.items()
-                            if key not in {"recipient_agent_id", "task_id"}
+                            if key
+                            not in {
+                                "recipient_agent_id",
+                                "task_id",
+                                "response_requested",
+                                "priority",
+                            }
                         },
                     )
                     state_model.inbox[item.id] = item
@@ -2289,7 +2587,13 @@ class TeamStateRepository:
                     if task.owner_agent_id != agent.id:
                         result["errors"].append(f"agent {agent.id} cannot deliver task {task_id}")
                         continue
-                    deliverable_id = _optional_text(deliverable_payload.get("id")) or f"deliverable-{uuid4().hex}"
+                    deliverable_id = _optional_text(deliverable_payload.get("id"))
+                    if deliverable_id is None:
+                        deliverable_id = _generated_id(
+                            prefix="deliverable",
+                            labels=[task_id, deliverable_payload.get("summary")],
+                            existing_ids=state_model.deliverables,
+                        )
                     artifact_refs = _string_list(deliverable_payload.get("artifact_refs"), "artifact_refs")
                     artifact_space_ref = _optional_text(deliverable_payload.get("artifact_space_ref"))
                     if artifact_space_ref:
@@ -2320,6 +2624,8 @@ class TeamStateRepository:
                             sender_agent_id=agent.id,
                             task_id=task_id,
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+                            response_requested=True,
+                            priority=TeamInboxPriority.LOW,
                             payload={
                                 "deliverable_id": deliverable.id,
                                 "summary": deliverable.summary,
@@ -2664,6 +2970,8 @@ class TeamStateRepository:
                         recipient_agent_id=recipient_id,
                         sender_agent_id=None,
                         item_type=TeamInboxItemType.PROGRESS_REPORT,
+                        response_requested=True,
+                        priority=TeamInboxPriority.NORMAL,
                         payload={
                             "kind": "release_publish_failed",
                             "release_package_id": release.id,
@@ -2698,6 +3006,80 @@ def _append_unique(values: list[str], value: str) -> list[str]:
     if value in values:
         return values
     return [*values, value]
+
+
+_GENERATED_ID_PART_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug_id_part(value: object, *, fallback: str) -> str:
+    text = str(value or "").strip().lower()
+    slug = _GENERATED_ID_PART_RE.sub("-", text).strip("-")
+    return slug or fallback
+
+
+def _generated_id(
+    *,
+    prefix: str,
+    labels: list[object],
+    existing_ids: Mapping[str, Any] | set[str],
+) -> str:
+    prefix_part = _slug_id_part(prefix, fallback="record")
+    label_parts = [
+        _slug_id_part(label, fallback="")
+        for label in labels
+        if str(label or "").strip()
+    ]
+    base = "-".join([prefix_part, *[part for part in label_parts if part]])
+    used = set(existing_ids.keys() if isinstance(existing_ids, Mapping) else existing_ids)
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _unique_id_from_base(
+    base: str,
+    *,
+    existing_ids: Mapping[str, Any] | set[str],
+) -> str:
+    candidate = _required_text(base, "id")
+    used = set(existing_ids.keys() if isinstance(existing_ids, Mapping) else existing_ids)
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _project_goals_with_generated_ids(
+    goals: list[ProjectGoal | Mapping[str, Any]],
+    *,
+    project_id: str,
+) -> list[ProjectGoal]:
+    normalized: list[ProjectGoal] = []
+    used_ids: set[str] = set()
+    for index, raw_goal in enumerate(goals):
+        if isinstance(raw_goal, ProjectGoal):
+            payload = raw_goal.model_dump(mode="json")
+        elif isinstance(raw_goal, Mapping):
+            payload = dict(raw_goal)
+        else:
+            raise ValueError(f"goals[{index}] must be a JSON object")
+        goal_id = _optional_text(payload.get("id"))
+        if goal_id is None:
+            goal_id = _generated_id(
+                prefix="goal",
+                labels=[project_id, payload.get("description")],
+                existing_ids=used_ids,
+            )
+        if goal_id in used_ids:
+            raise ValueError(f"duplicate project goal id: {goal_id}")
+        used_ids.add(goal_id)
+        payload["id"] = goal_id
+        normalized.append(ProjectGoal.model_validate(payload))
+    return normalized
 
 
 def _remove_value(values: list[str], value: str) -> list[str]:
@@ -2811,9 +3193,8 @@ def _materialize_role_inputs(
             raise ValueError(f"{role.key} is required")
         role_inputs[role.key] = _mapping(raw_role_input, role.key)
         role_input = role_inputs[role.key]
-        role_input["agent_id"] = _required_text(
+        role_input["agent_id"] = _optional_text(
             role_input.get("agent_id", role_input.get("id")),
-            f"{role.key}.agent_id",
         )
         role_input["session_id"] = _required_text(
             role_input.get("session_id"),
@@ -3233,6 +3614,7 @@ def _mark_agent_work_due(
     runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
     runtime.no_progress_count = 0
     runtime.next_wake_at = None
+    _clear_low_priority_batch(runtime)
     runtime.updated_at = now
 
 
@@ -3243,6 +3625,53 @@ def _append_action_item_error(
     error: ValueError,
 ) -> None:
     result["errors"].append(f"{field_name}[{index}]: {error}")
+
+
+def _response_requested_from_item(
+    item: Mapping[str, Any],
+    *,
+    default: bool,
+) -> bool:
+    if "response_requested" not in item:
+        return default
+    value = item.get("response_requested")
+    if isinstance(value, bool):
+        return value
+    raise ValueError("response_requested must be a boolean")
+
+
+def _priority_from_item(
+    item: Mapping[str, Any],
+    *,
+    default: TeamInboxPriority,
+) -> TeamInboxPriority:
+    if "priority" not in item:
+        return default
+    try:
+        return TeamInboxPriority(str(item.get("priority") or "").strip())
+    except ValueError:
+        allowed = ", ".join(priority.value for priority in TeamInboxPriority)
+        raise ValueError(f"priority must be one of: {allowed}") from None
+
+
+def _clear_low_priority_batch(runtime: AgentRuntime) -> None:
+    runtime.low_priority_batch_started_at = None
+    runtime.low_priority_batch_cycle_count = 0
+    runtime.low_priority_batch_due_after_cycles = None
+
+
+def _advance_low_priority_batch(
+    runtime: AgentRuntime,
+    *,
+    now: datetime,
+    due_after_cycles: int,
+) -> bool:
+    if runtime.low_priority_batch_started_at is None:
+        runtime.low_priority_batch_started_at = now
+        runtime.low_priority_batch_cycle_count = 0
+    runtime.low_priority_batch_cycle_count += 1
+    runtime.low_priority_batch_due_after_cycles = due_after_cycles
+    return runtime.low_priority_batch_cycle_count >= due_after_cycles
 
 
 def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
@@ -3556,7 +3985,13 @@ def _plan_task_creation(
     if explicit_task_id is not None and legacy_task_id is not None and explicit_task_id != legacy_task_id:
         result["errors"].append("task creation has conflicting task_id and id")
         return None
-    task_id = explicit_task_id or legacy_task_id or f"task-{uuid4().hex}"
+    task_id = explicit_task_id or legacy_task_id
+    if task_id is None:
+        task_id = _generated_id(
+            prefix="task",
+            labels=[project_id, creation.get("title")],
+            existing_ids=set(state.tasks) | set(reserved_task_ids),
+        )
     if task_id in state.tasks or task_id in reserved_task_ids:
         result["errors"].append(f"task {task_id} already exists")
         return None
@@ -3822,6 +4257,8 @@ def _apply_operator_escalation(
         sender_agent_id=actor.id,
         task_id=task_id,
         item_type=TeamInboxItemType.ESCALATION,
+        response_requested=False,
+        priority=TeamInboxPriority.NORMAL,
         payload={"escalation_id": escalation_id, **payload},
     )
     result["created_inbox_item_ids"].append(inbox_id)
@@ -4088,7 +4525,13 @@ def _apply_review_request(
     if profile_error is not None:
         result["errors"].append(profile_error)
         return None
-    review_id = _optional_text(request.get("id")) or f"review-{uuid4().hex}"
+    review_id = _optional_text(request.get("id"))
+    if review_id is None:
+        review_id = _generated_id(
+            prefix="review",
+            labels=[deliverable_id, profile_id or reviewer_id],
+            existing_ids=state.review_requests,
+        )
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
         return None
@@ -4136,6 +4579,8 @@ def _apply_review_request(
         sender_agent_id=actor.id,
         task_id=deliverable.task_id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
+        response_requested=True,
+        priority=TeamInboxPriority.NORMAL,
         payload=payload,
     )
     result["created_inbox_item_ids"].append(inbox_id)
@@ -5022,6 +5467,8 @@ def _attach_promotion_failure(
                 else None
             ),
             item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=True,
+            priority=TeamInboxPriority.NORMAL,
             payload={
                 "kind": "git_promotion_failed",
                 "promotion_id": promotion.id,

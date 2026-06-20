@@ -16,6 +16,7 @@ from agent_sandbox.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
+from agent_sandbox.managed_sections import normalize_managed_section_id
 
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -241,11 +242,18 @@ class WorkerFileWrite(BaseModel):
     content_base64: str | None = None
     mode: str | None = None
     overwrite: bool = True
+    merge_strategy: str | None = None
+    section_id: str | None = None
 
     @model_validator(mode="after")
     def validate_content_source(self) -> "WorkerFileWrite":
         if (self.content is None) == (self.content_base64 is None):
             raise ValueError("exactly one of content or content_base64 is required")
+        if self.merge_strategy == "managed_section":
+            if self.content is None:
+                raise ValueError("managed_section merge requires UTF-8 text content")
+            if self.section_id is None:
+                raise ValueError("managed_section merge requires section_id")
         return self
 
     @field_validator("destination_path", mode="before")
@@ -263,6 +271,28 @@ class WorkerFileWrite(BaseModel):
             return None
         text = str(value).strip()
         return text or None
+
+    @field_validator("merge_strategy", mode="before")
+    @classmethod
+    def normalize_merge_strategy(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if text != "managed_section":
+            raise ValueError("merge_strategy must be one of: managed_section")
+        return text
+
+    @field_validator("section_id", mode="before")
+    @classmethod
+    def normalize_section_id(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return normalize_managed_section_id(text)
 
 
 class WorkerFileWriteRequest(BaseModel):

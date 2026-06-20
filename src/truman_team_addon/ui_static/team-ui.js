@@ -136,63 +136,47 @@ let tooltipCounter = 0;
 
 const fieldTooltips = {
   "setup-template-form:template_id": "Template blueprint used to create the team, project, roles, starter tasks, and review profile.",
-  "setup-template-form:team_id": "Immutable identifier for the new team. The UI suggests one from the team name, but you can edit it before creation.",
   "setup-template-form:team_name": "Human-readable name shown in hierarchy, filters, and timeline rows.",
-  "setup-template-form:manager_existing_agent_id": "Copy session defaults from an existing agent while keeping this new manager's ID editable.",
-  "setup-template-form:manager_agent_id": "Persistent manager agent ID for this team. Agents in multiple projects can report to this shared manager.",
+  "setup-template-form:manager_existing_agent_id": "Copy session defaults from an existing agent for the new manager.",
   "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
   "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
-  "setup-template-form:project_id": "Immutable identifier for the new project. It is used as a prefix for template-created records.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
   "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
-  "setup-template-form:project_lead_agent_id": "Persistent project lead agent ID. This agent owns project planning and release handoff tasks.",
   "setup-template-form:project_lead_session_id": "Session ID used when the project lead agent is woken or resumed.",
-  "setup-template-form:implementer_existing_agent_id": "Copy defaults from an existing implementer while keeping the new implementer ID editable.",
-  "setup-template-form:implementer_agent_id": "Persistent agent ID for the implementation role created by the template.",
+  "setup-template-form:implementer_existing_agent_id": "Copy defaults from an existing implementer for the template-created implementer.",
   "setup-template-form:implementer_session_id": "Session ID used when the implementer agent is woken or resumed.",
-  "setup-template-form:reviewer_existing_agent_id": "Copy defaults from an existing reviewer while keeping the new reviewer ID editable.",
-  "setup-template-form:reviewer_agent_id": "Persistent agent ID for the reviewer role created by the template.",
+  "setup-template-form:reviewer_existing_agent_id": "Copy defaults from an existing reviewer for the template-created reviewer.",
   "setup-template-form:reviewer_session_id": "Session ID used when the reviewer agent is woken or resumed.",
-  "setup-template-form:release_operator_existing_agent_id": "Copy defaults from an existing release operator while keeping the new release-operator ID editable.",
-  "setup-template-form:release_operator_agent_id": "Persistent agent ID for the release handoff and publication role.",
+  "setup-template-form:release_operator_existing_agent_id": "Copy defaults from an existing release operator for the release handoff role.",
   "setup-template-form:release_operator_session_id": "Session ID used when the release operator agent is woken or resumed.",
 
-  "create-team-form:id": "Immutable team identifier. The UI suggests one from the name, but you can edit it before creation.",
   "create-team-form:name": "Human-readable team name shown throughout the Team Add-on UI.",
-  "create-team-form:manager_existing_agent_id": "Copy session, display, and ID defaults from an existing agent without reusing that agent ID directly.",
-  "create-team-form:manager_agent_id": "Persistent ID for the manager agent created with this team.",
+  "create-team-form:manager_existing_agent_id": "Copy session and display defaults from an existing agent without reusing that agent.",
   "create-team-form:manager_session_id": "Session ID used to resume or wake the manager agent.",
-  "create-team-form:manager_display_name": "Optional display name. If blank, the agent ID is shown.",
-  "create-team-form:manager_role_id": "Optional role record ID for the manager role. Leave blank to let the backend derive one.",
+  "create-team-form:manager_display_name": "Optional display name. If blank, the generated agent ID is shown.",
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
   "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
 
-  "create-project-form:id": "Immutable project identifier. The UI suggests one from the name, but you can edit it before creation.",
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
   "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
   "create-project-form:lead_existing_agent_id": "Copy session and display defaults from an existing agent while creating a distinct new lead agent.",
-  "create-project-form:lead_agent_id": "Persistent project lead agent ID. The lead reports to the team's manager.",
   "create-project-form:lead_session_id": "Session ID used to resume or wake the project lead agent.",
-  "create-project-form:lead_display_name": "Optional display name. If blank, the lead agent ID is shown.",
-  "create-project-form:lead_role_id": "Optional role record ID for the project lead role. Leave blank to let the backend derive one.",
+  "create-project-form:lead_display_name": "Optional display name. If blank, the generated lead agent ID is shown.",
   "create-project-form:lead_role_name": "Human-readable role name for the project lead role.",
-  "create-project-form:goal_id": "Optional goal identifier. If blank, the UI derives one from the project ID.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
-  "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions while keeping the new ID editable.",
-  "register-agent-form:id": "Immutable agent identifier. The UI suggests one from project and role, but you can edit it before creation.",
+  "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions for the new agent.",
   "register-agent-form:team_id": "Team this persistent agent belongs to.",
   "register-agent-form:project_id": "Project this agent works in. Project agents must belong to the selected team.",
   "register-agent-form:role_id": "First-class role assigned to this agent.",
   "register-agent-form:session_id": "Session ID used when this agent is woken or resumed.",
-  "register-agent-form:display_name": "Optional display name. If blank, the agent ID is shown.",
+  "register-agent-form:display_name": "Optional display name. If blank, the generated agent ID is shown.",
   "register-agent-form:reports_to_agent_id": "Supervisor for routing, permissions, status requests, and hierarchy display.",
   "register-agent-form:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at the same time.",
   "edit:agent:auto_context_clearing_enabled": "When enabled, the Team runtime marks this agent for fresh context after it becomes idle.",
 
-  "create-task-form:id": "Immutable task identifier. The UI suggests one from project and title.",
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
   "create-task-form:project_id": "Project that owns this task and constrains parent and dependency links.",
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
@@ -211,12 +195,10 @@ const fieldTooltips = {
   "update-task-form:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
   "update-task-form:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
 
-  "create-review-profile-form:id": "Immutable review profile identifier.",
   "create-review-profile-form:team_id": "Team that owns this review profile.",
   "create-review-profile-form:project_id": "Optional project scope. Blank makes the profile team-wide.",
   "create-review-profile-form:name": "Human-readable profile name shown when requesting reviews.",
   "create-review-profile-form:description": "Optional summary of when this profile should be used.",
-  "create-role-form:id": "Immutable role identifier.",
   "create-role-form:team_id": "Team that owns this role.",
   "create-role-form:project_id": "Optional project scope. Blank makes the role team-wide.",
   "create-role-form:name": "Human-readable role name shown in the UI and wake prompts.",
@@ -227,14 +209,12 @@ const fieldTooltips = {
   "create-review-profile-form:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
   "create-review-profile-form:criteria": "Criteria rows in id | label | description | required format.",
 
-  "record-deliverable-form:id": "Immutable deliverable identifier.",
   "record-deliverable-form:task_id": "Task this deliverable completes or advances.",
   "record-deliverable-form:producer_agent_id": "Agent that produced the deliverable.",
   "record-deliverable-form:summary": "Short summary of the delivered work.",
   "record-deliverable-form:artifact_refs": "Optional artifact references, one per line or comma-separated.",
   "record-deliverable-form:state": "Initial deliverable state. Blank records it as pending.",
 
-  "record-review-form:id": "Immutable review request identifier.",
   "record-review-form:deliverable_id": "Deliverable that needs review.",
   "record-review-form:reviewer_agent_id": "Agent assigned to review the deliverable.",
   "record-review-form:review_profile_id": "Optional checklist profile applied to this review.",
@@ -292,7 +272,6 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTopLevelTabs();
   bindForms();
   bindRecordEditing();
-  bindGeneratedIds();
   bindExistingAgentPickers();
   bindRuntimeFilters();
   bindDeliveryFilters();
@@ -560,144 +539,6 @@ function bindRecordEditing() {
   });
 }
 
-function bindGeneratedIds() {
-  const rules = [
-    {
-      form: "#setup-template-form",
-      target: "team_id",
-      sources: ["team_name"],
-      build: (form) => joinIdParts(["team", fieldText(form, "team_name")]),
-    },
-    {
-      form: "#setup-template-form",
-      target: "manager_agent_id",
-      sources: ["team_name", "team_id"],
-      build: (form) => joinIdParts([fieldText(form, "team_id") || fieldText(form, "team_name"), "manager"]),
-    },
-    {
-      form: "#setup-template-form",
-      target: "project_id",
-      sources: ["project_name"],
-      build: (form) => joinIdParts(["project", fieldText(form, "project_name")]),
-    },
-    {
-      form: "#setup-template-form",
-      target: "project_lead_agent_id",
-      sources: ["project_name", "project_id"],
-      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "project-lead"]),
-    },
-    {
-      form: "#setup-template-form",
-      target: "implementer_agent_id",
-      sources: ["project_name", "project_id"],
-      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "implementer"]),
-    },
-    {
-      form: "#setup-template-form",
-      target: "reviewer_agent_id",
-      sources: ["project_name", "project_id"],
-      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "reviewer"]),
-    },
-    {
-      form: "#setup-template-form",
-      target: "release_operator_agent_id",
-      sources: ["project_name", "project_id"],
-      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "release-operator"]),
-    },
-    {
-      form: "#create-team-form",
-      target: "id",
-      sources: ["name"],
-      build: (form) => joinIdParts(["team", fieldText(form, "name")]),
-    },
-    {
-      form: "#create-team-form",
-      target: "manager_agent_id",
-      sources: ["name", "id"],
-      build: (form) => joinIdParts([fieldText(form, "id") || fieldText(form, "name"), "manager"]),
-    },
-    {
-      form: "#create-project-form",
-      target: "id",
-      sources: ["name"],
-      build: (form) => joinIdParts(["project", fieldText(form, "name")]),
-    },
-    {
-      form: "#create-project-form",
-      target: "lead_agent_id",
-      sources: ["name", "id"],
-      build: (form) => joinIdParts([fieldText(form, "id") || fieldText(form, "name"), "project-lead"]),
-    },
-    {
-      form: "#register-agent-form",
-      target: "id",
-      sources: ["project_id", "role_id"],
-      build: (form) => joinIdParts([fieldText(form, "project_id"), roleLabel(fieldText(form, "role_id")) || "agent"]),
-    },
-    {
-      form: "#create-role-form",
-      target: "id",
-      sources: ["team_id", "project_id", "name"],
-      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "team_id") || "role", fieldText(form, "name")]),
-    },
-    {
-      form: "#create-task-form",
-      target: "id",
-      sources: ["project_id", "title"],
-      build: (form) => joinIdParts([fieldText(form, "project_id") || "task", fieldText(form, "title")]),
-    },
-    {
-      form: "#create-review-profile-form",
-      target: "id",
-      sources: ["project_id", "team_id", "name"],
-      build: (form) =>
-        joinIdParts([fieldText(form, "project_id") || fieldText(form, "team_id") || "profile", fieldText(form, "name")]),
-    },
-  ];
-
-  rules.forEach((rule) => bindGeneratedIdRule(rule));
-}
-
-function bindGeneratedIdRule(rule) {
-  const form = document.querySelector(rule.form);
-  const target = form?.elements?.[rule.target];
-  if (!form || !target) {
-    return;
-  }
-  target.dataset.autogenerated = target.value ? "false" : "true";
-  target.addEventListener("input", () => {
-    if (!target.value) {
-      target.dataset.autogenerated = "true";
-      target.dataset.lastGenerated = "";
-      return;
-    }
-    if (target.value !== target.dataset.lastGenerated) {
-      target.dataset.autogenerated = "false";
-    }
-  });
-  (rule.sources || []).forEach((sourceName) => {
-    const source = form.elements[sourceName];
-    if (!source) {
-      return;
-    }
-    ["input", "change"].forEach((eventName) => {
-      source.addEventListener(eventName, () => fillGeneratedId(rule, form, target));
-    });
-  });
-  fillGeneratedId(rule, form, target);
-}
-
-function fillGeneratedId(rule, form, target) {
-  if (target.value && target.dataset.autogenerated !== "true") {
-    return;
-  }
-  const generated = text(rule.build(form));
-  if (!generated) {
-    return;
-  }
-  setAutogeneratedValue(target, generated);
-}
-
 function bindExistingAgentPickers() {
   document.querySelectorAll("[data-agent-source-picker]").forEach((select) => {
     select.addEventListener("change", () => applyExistingAgentDefaults(select));
@@ -720,21 +561,6 @@ function applyExistingAgentDefaults(select) {
     setFieldValue(form, select.dataset.maxConcurrentField, String(ephemeralCapacity(sourceAgent)));
   }
 
-  const idField = select.dataset.idField ? form.elements[select.dataset.idField] : null;
-  if (idField && (!idField.value || idField.dataset.autogenerated === "true")) {
-    const role =
-      roleLabel(fieldText(form, select.dataset.roleField)) ||
-      text(select.dataset.suggestedRole) ||
-      agentRoleLabel(sourceAgent) ||
-      "agent";
-    const scope =
-      fieldText(form, select.dataset.projectField) ||
-      fieldText(form, "project_id") ||
-      fieldText(form, "id") ||
-      fieldText(form, "team_id") ||
-      fieldText(form, "team_name");
-    setAutogeneratedValue(idField, joinIdParts([scope, role]));
-  }
 }
 
 function decorateFieldTooltips(root = document) {
@@ -2279,6 +2105,9 @@ function runtimeSummary(agentId) {
       nextWakeAt: null,
       wakeLeasedUntil: null,
       lastWakeAt: null,
+      lowPriorityBatchStartedAt: null,
+      lowPriorityBatchCycleCount: 0,
+      lowPriorityBatchDueAfterCycles: null,
       autoContextClearingEnabled: false,
       contextRotationPending: false,
       lastContextRotatedAt: null,
@@ -2290,6 +2119,9 @@ function runtimeSummary(agentId) {
   const nextWakeAt = text(runtime.next_wake_at);
   const wakeLeasedUntil = text(runtime.wake_leased_until);
   const lastWakeAt = text(runtime.last_wake_at);
+  const lowPriorityBatchStartedAt = text(runtime.low_priority_batch_started_at);
+  const lowPriorityBatchCycleCount = numberOrZero(runtime.low_priority_batch_cycle_count);
+  const lowPriorityBatchDueAfterCycles = numberOrNull(runtime.low_priority_batch_due_after_cycles);
   const contextRotationPending = Boolean(runtime.context_rotation_pending);
   const autoContextClearingEnabled = Boolean(runtime.auto_context_clearing_enabled);
   const lastContextRotatedAt = text(runtime.last_context_rotated_at);
@@ -2309,6 +2141,9 @@ function runtimeSummary(agentId) {
   if (lastWakeAt) {
     parts.push(`last wake ${lastWakeAt}`);
   }
+  if (lowPriorityBatchStartedAt && lowPriorityBatchDueAfterCycles !== null) {
+    parts.push(`low-priority batch ${lowPriorityBatchCycleCount}/${lowPriorityBatchDueAfterCycles}`);
+  }
   if (contextRotationPending) {
     parts.push("context clearing pending");
   }
@@ -2324,6 +2159,9 @@ function runtimeSummary(agentId) {
     nextWakeAt: nextWakeAt || null,
     wakeLeasedUntil: wakeLeasedUntil || null,
     lastWakeAt: lastWakeAt || null,
+    lowPriorityBatchStartedAt: lowPriorityBatchStartedAt || null,
+    lowPriorityBatchCycleCount,
+    lowPriorityBatchDueAfterCycles,
     autoContextClearingEnabled,
     contextRotationPending,
     lastContextRotatedAt: lastContextRotatedAt || null,
@@ -2467,6 +2305,8 @@ function renderAgentInboxBubble(item) {
   if (item.sender_agent_id) {
     metaParts.push(`from ${item.sender_agent_id}`);
   }
+  metaParts.push(inboxPriorityLabel(item));
+  metaParts.push(inboxReplyIntentLabel(item));
   return `
     <span class="agent-inbox-bubble">
       <strong>${escapeHtml(detail)}</strong>
@@ -2560,7 +2400,7 @@ function renderHierarchyDetails(agentData, { focused = false } = {}) {
       lines.push(
         `Inbox ${snapshot.inboxItems
           .slice(0, 2)
-          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxItemDetail(item) || item.id}`)
+          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxPriorityLabel(item)}: ${inboxReplyIntentLabel(item)}: ${inboxItemDetail(item) || item.id}`)
           .join("; ")}`,
       );
     }
@@ -2760,9 +2600,12 @@ function renderAgentInbox(agentId) {
           const label = inboxItemLabels[item.item_type] || item.item_type;
           const detail = inboxItemDetail(item);
           const sender = item.sender_agent_id ? ` from ${escapeHtml(item.sender_agent_id)}` : "";
+          const replyIntent = inboxReplyIntentLabel(item);
           return `
             <li>
               <span class="state-pill ${escapeHtml(item.item_type)}">${escapeHtml(label)}</span>
+              <span class="state-pill neutral">${escapeHtml(inboxPriorityLabel(item))}</span>
+              <span class="state-pill ${item.response_requested === false ? "neutral" : "info"}">${escapeHtml(replyIntent)}</span>
               ${detail ? `<span> ${escapeHtml(detail)}</span>` : ""}${sender}
             </li>
           `;
@@ -2775,6 +2618,15 @@ function renderAgentInbox(agentId) {
 function inboxItemDetail(item) {
   const payload = item.payload || {};
   return text(payload.question || payload.message || payload.title || payload.summary || "");
+}
+
+function inboxReplyIntentLabel(item) {
+  return item.response_requested === false ? "no reply needed" : "reply requested";
+}
+
+function inboxPriorityLabel(item) {
+  const priority = text(item.priority) || "normal";
+  return `${humanizeToken(priority)} priority`;
 }
 
 function renderProjects() {
@@ -4898,28 +4750,21 @@ function payloadForForm(form, data = formData(form)) {
   if (formId === "setup-template-form") {
     const payload = {
       team: {
-        id: text(data.team_id),
         name: text(data.team_name),
-        manager_agent_id: text(data.manager_agent_id),
         manager_session_id: text(data.manager_session_id),
       },
       project: {
-        id: text(data.project_id),
         name: text(data.project_name),
-        lead_agent_id: text(data.project_lead_agent_id),
         lead_session_id: text(data.project_lead_session_id),
       },
       agents: {
         implementer: {
-          agent_id: text(data.implementer_agent_id),
           session_id: text(data.implementer_session_id),
         },
         reviewer: {
-          agent_id: text(data.reviewer_agent_id),
           session_id: text(data.reviewer_session_id),
         },
         release_operator: {
-          agent_id: text(data.release_operator_agent_id),
           session_id: text(data.release_operator_session_id),
         },
       },
@@ -4940,16 +4785,10 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "create-team-form") {
     const payload = {
-      id: text(data.id),
       name: text(data.name),
-      manager_agent_id: text(data.manager_agent_id),
       manager_session_id: text(data.manager_session_id),
     };
-    const managerRoleId = text(data.manager_role_id);
     const managerRoleName = text(data.manager_role_name);
-    if (managerRoleId) {
-      payload.manager_role_id = managerRoleId;
-    }
     if (managerRoleName) {
       payload.manager_role_name = managerRoleName;
     }
@@ -4972,23 +4811,16 @@ function payloadForForm(form, data = formData(form)) {
     const goalDescription = text(data.goal_description);
     if (goalDescription) {
       goals.push({
-        id: text(data.goal_id) || `${text(data.id)}-goal`,
         description: goalDescription,
       });
     }
     const payload = {
-      id: text(data.id),
       team_id: text(data.team_id),
       name: text(data.name),
-      lead_agent_id: text(data.lead_agent_id),
       lead_session_id: text(data.lead_session_id),
       goals,
     };
-    const leadRoleId = text(data.lead_role_id);
     const leadRoleName = text(data.lead_role_name);
-    if (leadRoleId) {
-      payload.lead_role_id = leadRoleId;
-    }
     if (leadRoleName) {
       payload.lead_role_name = leadRoleName;
     }
@@ -5004,7 +4836,6 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "create-role-form") {
     const payload = {
-      id: text(data.id),
       team_id: text(data.team_id),
       name: text(data.name),
       description: text(data.description),
@@ -5019,7 +4850,6 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "register-agent-form") {
     const payload = {
-      id: text(data.id),
       team_id: text(data.team_id),
       project_id: text(data.project_id),
       role_id: text(data.role_id),
@@ -5035,7 +4865,6 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "create-task-form") {
     const payload = {
-      id: text(data.id),
       owner_agent_id: text(data.owner_agent_id),
       project_id: text(data.project_id),
       priority: numberOrZero(data.priority),
@@ -5055,7 +4884,6 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "create-review-profile-form") {
     const payload = {
-      id: text(data.id),
       team_id: text(data.team_id),
       name: text(data.name),
       description: text(data.description),
@@ -5070,7 +4898,6 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "record-deliverable-form") {
     const payload = {
-      id: text(data.id),
       task_id: text(data.task_id),
       producer_agent_id: text(data.producer_agent_id),
       summary: text(data.summary),
@@ -5083,7 +4910,6 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "record-review-form") {
     const payload = {
-      id: text(data.id),
       deliverable_id: text(data.deliverable_id),
       reviewer_agent_id: text(data.reviewer_agent_id),
       findings: splitList(data.findings),
@@ -5831,47 +5657,4 @@ function setFieldValue(form, name, value) {
   field.value = text(value);
   field.dispatchEvent(new Event("input", { bubbles: true }));
   field.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
-function setAutogeneratedValue(field, value) {
-  const generated = uniqueSuggestedId(value);
-  field.value = generated;
-  field.dataset.autogenerated = "true";
-  field.dataset.lastGenerated = generated;
-}
-
-function joinIdParts(parts) {
-  return (parts || [])
-    .map((part) => slugify(part))
-    .filter(Boolean)
-    .join("-");
-}
-
-function slugify(value) {
-  return text(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function uniqueSuggestedId(value) {
-  const base = slugify(value);
-  if (!base) {
-    return "";
-  }
-  const existing = new Set([
-    ...Object.keys(state.teams || {}),
-    ...Object.keys(state.projects || {}),
-    ...Object.keys(state.agents || {}),
-    ...Object.keys(state.tasks || {}),
-    ...Object.keys(state.review_profiles || {}),
-  ]);
-  if (!existing.has(base)) {
-    return base;
-  }
-  let index = 2;
-  while (existing.has(`${base}-${index}`)) {
-    index += 1;
-  }
-  return `${base}-${index}`;
 }

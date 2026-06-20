@@ -24,12 +24,16 @@ from agent_sandbox.events.provider_models import (
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryProviderBase
+from agent_sandbox.workflow.catalog import (
+    WorkflowEditorFieldDefinition,
+    WorkflowEditorNodeCatalogEntry,
+)
 from agent_sandbox.workflow.contracts import register_node_output_schema
 from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
-from .models import team_state_payload
+from .models import RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
     TeamAgentActionArtifactQueryDefinition,
@@ -51,11 +55,691 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 7
+ACTION_CONTRACT_SCHEMA_VERSION = 9
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
+TEAM_AGENT_GUIDANCE_VERSION = 1
+TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
+TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
+
+
+def _catalog_field(
+    key: str,
+    label: str,
+    kind: str,
+    *,
+    required: bool = False,
+    bindable: bool = True,
+    multiline: bool = False,
+    description: str,
+    placeholder: str | None = None,
+    json_value_type: str | None = None,
+    default_value: Any = None,
+) -> WorkflowEditorFieldDefinition:
+    return WorkflowEditorFieldDefinition(
+        key=key,
+        label=label,
+        kind=kind,
+        required=required,
+        bindable=bindable,
+        multiline=multiline,
+        description=description,
+        placeholder=placeholder,
+        json_value_type=json_value_type,
+        default_value=default_value,
+    )
+
+
+def _catalog_entry(
+    kind: str,
+    node_type: str,
+    label: str,
+    description: str,
+    fields: list[WorkflowEditorFieldDefinition],
+) -> WorkflowEditorNodeCatalogEntry:
+    return WorkflowEditorNodeCatalogEntry(
+        kind=kind,
+        type=node_type,
+        label=label,
+        description=description,
+        fields=fields,
+    )
+
+
+def _revision_field() -> WorkflowEditorFieldDefinition:
+    return _catalog_field(
+        "expected_revision",
+        "Expected revision",
+        "number",
+        required=False,
+        description=(
+            "Optional Team state revision guard. Bind this when an upstream Team state query "
+            "or operator action should reject stale writes."
+        ),
+        placeholder="42",
+    )
+
+
+def _valid_field() -> WorkflowEditorFieldDefinition:
+    return _catalog_field(
+        "valid",
+        "Valid",
+        "boolean",
+        required=False,
+        description=(
+            "Whether the upstream parsed action is valid. Bind this from an action-artifact "
+            "query or leave enabled for trusted workflow-created payloads."
+        ),
+        default_value=True,
+    )
+
+
+_TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
+    _catalog_entry(
+        "effect",
+        "effect:team:wake-due-agents",
+        "Wake Team agents",
+        "Lease due persistent Team agents, prepare project repos, and resume their sessions.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                description="Limit wake leasing to one Team. Leave blank to evaluate all Teams.",
+                placeholder="auto-dev",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Limit wake leasing to agents assigned to one Team project.",
+                placeholder="web-app",
+            ),
+            _catalog_field(
+                "agent_id",
+                "Agent ID",
+                "string",
+                description="Limit wake leasing to one persistent Team agent.",
+                placeholder="project-lead",
+            ),
+            _catalog_field(
+                "limit",
+                "Lease limit",
+                "number",
+                description="Maximum number of due agents to lease in this wake cycle.",
+                default_value=10,
+                placeholder="10",
+            ),
+            _catalog_field(
+                "lease_seconds",
+                "Lease seconds",
+                "number",
+                description="How long a Team runtime lease remains active before it can be retried.",
+                default_value=900,
+                placeholder="900",
+            ),
+            _catalog_field(
+                "wake_interval_seconds",
+                "Wake interval seconds",
+                "number",
+                description="Minimum idle interval before an unchanged agent is considered due again.",
+                default_value=900,
+                placeholder="900",
+            ),
+            _catalog_field(
+                "max_no_progress_count",
+                "Max no-progress count",
+                "number",
+                description="Stop leasing an agent after this many wake cycles without progress.",
+                default_value=3,
+                placeholder="3",
+            ),
+            _catalog_field(
+                "low_priority_wake_after_cycles",
+                "Low-priority wake cycles",
+                "number",
+                description="Batch low-priority inbox items until this many wake evaluations pass.",
+                default_value=4,
+                placeholder="4",
+            ),
+            _catalog_field(
+                "action_artifact_path",
+                "Action artifact path",
+                "string",
+                description="Relative artifact path the Team agent must write after it is resumed.",
+                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
+                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
+            ),
+            _catalog_field(
+                "resume_mode",
+                "Resume mode",
+                "string",
+                description="Agent resume mode for Team wakes. Leave blank for same-context resumes.",
+                default_value="same_context",
+                placeholder="same_context",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "query",
+        "query:team:agent-action-artifact",
+        "Read Team action artifact",
+        "Read and validate the JSON action artifact written by a Team agent session.",
+        [
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                required=True,
+                description="Truman session whose artifacts should be inspected.",
+                placeholder="${{team-route-completed-session.session_id}}",
+            ),
+            _catalog_field(
+                "path",
+                "Path",
+                "string",
+                description="Relative artifact path to read from the session artifacts directory.",
+                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
+                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
+            ),
+            _catalog_field(
+                "vm_user",
+                "VM user",
+                "string",
+                description="Guest user that owns the artifact path for libvirt-backed sessions.",
+                default_value="agent",
+                placeholder="agent",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:apply-agent-action",
+        "Apply Team action",
+        "Apply a persistent Team agent action, update Team state, and clear the active lease.",
+        [
+            _catalog_field(
+                "action",
+                "Action",
+                "json",
+                description="Structured Team action object, usually from Read Team action artifact.",
+                json_value_type="object",
+            ),
+            _valid_field(),
+            _catalog_field(
+                "error",
+                "Error",
+                "string",
+                description="Validation or artifact-read error to record when the action is not valid.",
+            ),
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                description="Persistent Team agent session that produced the action.",
+            ),
+            _catalog_field(
+                "dispatch_id",
+                "Dispatch ID",
+                "string",
+                description="Dispatch id for the active Team lease being completed.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:create-operator-directive",
+        "Create Team directive",
+        "Turn an operator instruction into a durable Team inbox item for the next Team wake.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                required=True,
+                description="Team that should receive the operator directive.",
+            ),
+            _catalog_field(
+                "message",
+                "Message",
+                "string",
+                required=True,
+                multiline=True,
+                description="Operator instruction to deliver through Team state.",
+            ),
+            _catalog_field(
+                "recipient_agent_id",
+                "Recipient agent ID",
+                "string",
+                description="Specific Team agent to receive the directive. Leave blank for manager routing.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional project context for the directive.",
+            ),
+            _catalog_field(
+                "task_id",
+                "Task ID",
+                "string",
+                description="Optional task context for the directive.",
+            ),
+            _catalog_field(
+                "title",
+                "Title",
+                "string",
+                description="Short title shown in Team timeline and inbox views.",
+            ),
+            _catalog_field(
+                "source",
+                "Source",
+                "string",
+                description="Origin label for audit, such as admin, discord, teams, or workflow.",
+                placeholder="workflow",
+            ),
+            _catalog_field(
+                "source_message_id",
+                "Source message ID",
+                "string",
+                description="Optional upstream message or event id for traceability.",
+            ),
+            _catalog_field(
+                "created_by",
+                "Created by",
+                "string",
+                description="Operator or workflow actor that created the directive.",
+            ),
+            _catalog_field(
+                "requesting_session_id",
+                "Requesting session ID",
+                "string",
+                description="Optional Truman session that requested the directive.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "query",
+        "query:team:session-routing",
+        "Route Team session completion",
+        "Classify a completed session as persistent Team work, ephemeral Team work, or ignored.",
+        [
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                required=True,
+                description="Completed Truman session id to classify against Team runtime state.",
+            ),
+            _catalog_field(
+                "dispatch_id",
+                "Dispatch ID",
+                "string",
+                description="Completed dispatch id. Persistent Team actions only route when this matches the active lease.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:request-ephemeral-agents",
+        "Request Team workers",
+        "Create Team ephemeral assignment records that downstream workflow nodes can materialize.",
+        [
+            _catalog_field(
+                "parent_agent_id",
+                "Parent agent ID",
+                "string",
+                required=True,
+                description="Persistent Team agent requesting the ephemeral workers.",
+            ),
+            _catalog_field(
+                "requests",
+                "Requests",
+                "json",
+                required=True,
+                description="Array of ephemeral worker request objects from a Team action.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "dispatch_id",
+                "Dispatch ID",
+                "string",
+                description="Dispatch id associated with the parent agent action.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:mark-ephemeral-spawned",
+        "Mark Team worker spawned",
+        "Attach a created Truman session to a Team ephemeral assignment.",
+        [
+            _catalog_field(
+                "assignment_id",
+                "Assignment ID",
+                "string",
+                required=True,
+                description="Team ephemeral assignment that was materialized.",
+            ),
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                description="Created Truman session id for the ephemeral worker.",
+            ),
+            _catalog_field(
+                "create_result",
+                "Create result",
+                "json",
+                description="Raw result object from the upstream agent-create node.",
+                json_value_type="object",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:apply-ephemeral-action",
+        "Apply Team worker action",
+        "Apply the action produced by a Team ephemeral worker session.",
+        [
+            _catalog_field(
+                "action",
+                "Action",
+                "json",
+                description="Structured action object produced by the ephemeral worker.",
+                json_value_type="object",
+            ),
+            _valid_field(),
+            _catalog_field(
+                "error",
+                "Error",
+                "string",
+                description="Validation or artifact-read error to record when the action is not valid.",
+            ),
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                description="Ephemeral worker session that produced the action.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:accept-ephemeral-deliverable",
+        "Accept Team worker deliverable",
+        "Promote or reject a completed ephemeral worker deliverable in Team state.",
+        [
+            _catalog_field(
+                "assignment_id",
+                "Assignment ID",
+                "string",
+                required=True,
+                description="Ephemeral assignment whose deliverable is being decided.",
+            ),
+            _catalog_field(
+                "accepted",
+                "Accepted",
+                "boolean",
+                description="Whether the deliverable should be accepted.",
+                default_value=True,
+            ),
+            _catalog_field(
+                "deliverable_id",
+                "Deliverable ID",
+                "string",
+                description="Optional deliverable id to attach to the accepted assignment.",
+            ),
+            _catalog_field(
+                "rejection_reason",
+                "Rejection reason",
+                "string",
+                description="Reason to record when the deliverable is rejected.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:mark-ephemeral-cleaned-up",
+        "Clean up Team worker",
+        "Mark a Team ephemeral worker assignment as cleaned up after session destruction.",
+        [
+            _catalog_field(
+                "assignment_id",
+                "Assignment ID",
+                "string",
+                description="Ephemeral assignment to mark cleaned up.",
+            ),
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                description="Destroyed Truman session id for lookup when assignment id is not bound.",
+            ),
+            _catalog_field(
+                "destroy_result",
+                "Destroy result",
+                "json",
+                description="Raw result object from the upstream agent-destroy node.",
+                json_value_type="object",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "query",
+        "query:team:state",
+        "Read Team state",
+        "Read filtered Team Add-on state for workflow decisions.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                description="Limit the returned Team state to one Team.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Limit the returned Team state to records for one project.",
+            ),
+            _catalog_field(
+                "agent_id",
+                "Agent ID",
+                "string",
+                description="Limit the returned Team state to one agent and dependent records.",
+            ),
+            _catalog_field(
+                "include_records",
+                "Include records",
+                "boolean",
+                description="Include matching record maps in addition to revision and success metadata.",
+                default_value=True,
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:publish-review-branch",
+        "Publish Team review branch",
+        "Publish a review branch or commit for a Team Git promotion request.",
+        [
+            _catalog_field(
+                "host_repo_path",
+                "Host repo path",
+                "string",
+                required=True,
+                description="Trusted host checkout path used to publish the review branch.",
+            ),
+            _catalog_field(
+                "target_branch",
+                "Target branch",
+                "string",
+                required=True,
+                description="Branch name to create or update for review.",
+            ),
+            _catalog_field(
+                "bare_repo_name",
+                "Bare repo name",
+                "string",
+                description="Optional host-local bare repo name when resolving the remote.",
+            ),
+            _catalog_field(
+                "bare_repo_path",
+                "Bare repo path",
+                "string",
+                description="Optional explicit host-local bare repo path.",
+            ),
+            _catalog_field(
+                "source_branch",
+                "Source branch",
+                "string",
+                description="Source branch to publish when no commit SHA is supplied.",
+            ),
+            _catalog_field(
+                "commit_sha",
+                "Commit SHA",
+                "string",
+                description="Specific commit to publish when the promotion selected one.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:record-git-promotion",
+        "Record Team Git promotion",
+        "Record a Team Git promotion result and attach resulting branch metadata to deliverables.",
+        [
+            _catalog_field(
+                "promotion_id",
+                "Promotion ID",
+                "string",
+                required=True,
+                description="Team Git promotion request being recorded.",
+            ),
+            _catalog_field(
+                "success",
+                "Success",
+                "boolean",
+                description="Whether the Git promotion succeeded.",
+                default_value=True,
+            ),
+            _catalog_field(
+                "result_outputs",
+                "Result outputs",
+                "json",
+                description="Output object from the upstream publish or consolidation step.",
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "error",
+                "Error",
+                "string",
+                description="Failure message to store when the promotion failed.",
+            ),
+            _catalog_field(
+                "commit_sha",
+                "Commit SHA",
+                "string",
+                description="Promoted commit SHA when it is known outside the result payload.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:consolidate-git-branches",
+        "Consolidate Team branches",
+        "Merge multiple Team source branches into a deterministic target branch.",
+        [
+            _catalog_field(
+                "host_repo_path",
+                "Host repo path",
+                "string",
+                required=True,
+                description="Trusted host checkout path used for branch consolidation.",
+            ),
+            _catalog_field(
+                "source_branches",
+                "Source branches",
+                "json",
+                required=True,
+                description="Array of branch names to merge in order.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "target_branch",
+                "Target branch",
+                "string",
+                required=True,
+                description="Branch that receives the consolidated result.",
+            ),
+            _catalog_field(
+                "base_branch",
+                "Base branch",
+                "string",
+                description="Optional base branch to reset from before merging source branches.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:mark-release-published",
+        "Mark Team release published",
+        "Record a Team release package as published or blocked after release automation.",
+        [
+            _catalog_field(
+                "release_package_id",
+                "Release package ID",
+                "string",
+                required=True,
+                description="Team release package being marked.",
+            ),
+            _catalog_field(
+                "success",
+                "Success",
+                "boolean",
+                description="Whether release publication succeeded.",
+                default_value=True,
+            ),
+            _catalog_field(
+                "canonical_branch",
+                "Canonical branch",
+                "string",
+                description="Canonical branch that now contains the release, when applicable.",
+            ),
+            _catalog_field(
+                "published_commit_sha",
+                "Published commit SHA",
+                "string",
+                description="Commit SHA published for the release package.",
+            ),
+            _catalog_field(
+                "result_outputs",
+                "Result outputs",
+                "json",
+                description="Output object from the release or Git publication step.",
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "error",
+                "Error",
+                "string",
+                description="Failure message to store when release publication failed.",
+            ),
+            _revision_field(),
+        ],
+    ),
+)
 
 
 class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
@@ -75,6 +759,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "lease_seconds",
             "wake_interval_seconds",
             "max_no_progress_count",
+            "low_priority_wake_after_cycles",
             "action_artifact_path",
             "resume_mode",
         )
@@ -109,6 +794,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 payload.get("max_no_progress_count"),
                 default=3,
             ),
+            low_priority_wake_after_cycles=_optional_int(
+                payload.get("low_priority_wake_after_cycles"),
+                default=4,
+            ),
             blocked_team_ids=blocked_team_ids,
         )
         action_path = _optional_text(payload.get("action_artifact_path")) or DEFAULT_ACTION_ARTIFACT_PATH
@@ -125,6 +814,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     agent=agent,
                     action_artifact_path=action_path,
                 )
+                guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
                     project_repo = _prepare_project_repo(context, state=state, agent=agent)
                 except Exception as exc:
@@ -175,6 +865,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "session_id": agent["session_id"],
                     "dispatch_id": lease["dispatch_id"],
                     "action_contract": seed_result,
+                    "agent_guidance": guidance_result,
                     "result": result_payload,
                 }
                 if project_repo is not None:
@@ -1235,6 +1926,69 @@ def register_providers() -> ProviderPluginRegistration:
                 lambda node: _materialize(TeamSessionRoutingQueryDefinition, node)
             ),
         },
+        workflow_editor_catalog_entries=_TEAM_WORKFLOW_EDITOR_CATALOG,
+    )
+
+
+def _team_agent_guidance_content() -> str:
+    return (
+        "# Team Add-on Guidance\n\n"
+        f"Guidance version: {TEAM_AGENT_GUIDANCE_VERSION}\n\n"
+        "Use the provided Team context and update only your own assigned tasks. "
+        "Questions and progress reports must go to your direct superior; "
+        "agents without a direct superior use operator_escalations. Use "
+        "task_creations only according to the task creation mandate in your wake "
+        "prompt. Use "
+        "status_requests only for direct subordinates. Use "
+        "review_requests/review_decisions for deliverable review, goal_updates "
+        "for project goals, git_* actions for review/feature/release branch "
+        "promotion, stand_downs/stand_down_revocations for direct-subordinate "
+        "hold control, and ephemeral_* actions for scoped worker delegation.\n\n"
+        "Each task carries derived graph context: dependency_status, "
+        "child_task_ids, blocked_by_task_ids, and subtask_counts. Do not start "
+        "tasks whose dependency_status is not 'satisfied'; wait until their "
+        "blocked_by_task_ids clear. Decompose large work by creating child tasks "
+        "via task_creations with parent_task_id instead of ad hoc checklists in "
+        "descriptions. Declare ordering between tasks with dependency_task_ids.\n\n"
+        "Action surface guide:\n"
+        "- Use task_updates for tasks you own. State, priority, title, and "
+        "description edits are owner-only. Do not accept or reject someone else's "
+        "task with task_updates.\n"
+        "- Use review_requests to ask a specific same-team agent to review a "
+        "deliverable. Include instructions when the reviewer needs a focused "
+        "check.\n"
+        "- For non-Git deliverables, stage files under /artifacts and list the "
+        "exact relative files or directories in deliverables[].artifact_paths. "
+        "The Team runtime publishes only those paths and records artifact refs "
+        "for reviewers.\n"
+        "- Use review_decisions only for review requests assigned to you. "
+        "Accepting a review is the action that cascades to deliverable/task "
+        "acceptance once all attached reviews are accepted.\n"
+        "- Before git_release_requests for Git work, make sure every deliverable "
+        "is accepted and already has git_refs.feature_branch. Raw agent or review "
+        "branches are not release sources; use git_review_promotions and "
+        "git_feature_updates first.\n"
+        "- If a deliverable should be reviewed by another agent, create a "
+        "review_requests item for that reviewer; do not mark the task accepted "
+        "yourself unless the task is actually yours.\n"
+        "- Inbox items with item_type operator_directive are durable operator "
+        "instructions that were relayed from an out-of-band channel. Handle them "
+        "through the Team dispatch by writing the appropriate task/status/review "
+        "actions to the configured Team action artifact, then include their ids "
+        "in handled_inbox_item_ids.\n"
+        "- Inbox items include response_requested. When response_requested is "
+        "false, do not send thank-you, acknowledgement, or other no-op replies; "
+        "either take the needed Team action or mark the item handled with "
+        "handled_inbox_item_ids. When response_requested is true, respond through "
+        "the normal allowed directional action surface if a response is needed.\n"
+        "- Inbox messages may include priority low, normal, or high. Use low for "
+        "FYI updates that can be batched, normal for ordinary coordination, and "
+        "high only for urgent blockers. Low-priority inbox may be delivered with "
+        "other work instead of waking the recipient immediately.\n"
+        "- Use stand_downs when you need a direct subordinate and that "
+        "subordinate's subtree to stop future Team work. Use "
+        "stand_down_revocations to clear a stand-down you set. Do not encode "
+        "stand-downs as prose-only status_requests.\n"
     )
 
 
@@ -1304,53 +2058,12 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
     example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
     return (
         "Continue your assigned team-agent work.\n"
-        "Use the provided team context and update only your own assigned tasks. "
-        "Questions and progress reports must go to your direct superior; top-level "
-        "managers use operator_escalations. Use task_creations only when you have "
-        "an active mandate: managers and project leads may create top-level tasks "
-        "when their role has create_root_task, while other agents must create child "
-        "tasks under their own active parent tasks. Use status_requests only "
-        "for direct subordinates. Use review_requests/review_decisions for deliverable "
-        "review, goal_updates for project goals, git_* actions for review/feature/release "
-        "branch promotion, stand_downs/stand_down_revocations for direct-subordinate "
-        "hold control, and ephemeral_* actions for scoped worker delegation.\n\n"
-        "Each task carries derived graph context: dependency_status, child_task_ids, "
-        "blocked_by_task_ids, and subtask_counts. Do not start tasks whose "
-        "dependency_status is not 'satisfied'; wait until their blocked_by_task_ids "
-        "clear. Decompose large work by creating child tasks via task_creations with "
-        "parent_task_id instead of ad hoc checklists in descriptions; non-lead "
-        "roles must include that active parent_task_id. Declare "
-        "ordering between tasks with dependency_task_ids.\n\n"
+        f"Follow the Team Add-on guidance in {TEAM_AGENT_GUIDANCE_PATH}, managed "
+        f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
+        f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below for this "
+        "dispatch and write the requested action artifact before finishing.\n\n"
+        f"{_task_creation_mandate_guidance(agent)}"
         f"{_project_repo_prompt_guidance(project_repo)}"
-        "Action surface guide:\n"
-        "- Use task_updates for tasks you own. State, priority, title, and "
-        "description edits are owner-only. Do not accept or reject someone else's "
-        "task with task_updates.\n"
-        "- Use review_requests to ask a specific same-team agent to review a "
-        "deliverable. Include instructions when the reviewer needs a focused "
-        "check.\n"
-        "- For non-Git deliverables, stage files under /artifacts and list the "
-        "exact relative files or directories in deliverables[].artifact_paths. "
-        "The Team runtime publishes only those paths and records artifact refs "
-        "for reviewers.\n"
-        "- Use review_decisions only for review requests assigned to you. Accepting "
-        "a review is the action that cascades to deliverable/task acceptance once "
-        "all attached reviews are accepted.\n"
-        "- Before git_release_requests for Git work, make sure every deliverable is "
-        "accepted and already has git_refs.feature_branch. Raw agent or review "
-        "branches are not release sources; use git_review_promotions and "
-        "git_feature_updates first.\n"
-        "- If a deliverable should be reviewed by another agent, create a "
-        "review_requests item for that reviewer; do not mark the task accepted "
-        "yourself unless the task is actually yours.\n"
-        "- Inbox items with item_type operator_directive are durable operator "
-        "instructions that were relayed from an out-of-band channel. Handle them "
-        "through this Team dispatch by writing the appropriate task/status/review "
-        "actions to team-action.json, then include their ids in "
-        "handled_inbox_item_ids.\n\n"
-        "- Use stand_downs when you need a direct subordinate and that subordinate's "
-        "subtree to stop future Team work. Use stand_down_revocations to clear a "
-        "stand-down you set. Do not encode stand-downs as prose-only status_requests.\n\n"
         f"{handoff_section}"
         f"{action_feedback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
@@ -1361,6 +2074,28 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
+    role_permissions = {
+        str(permission)
+        for permission in (agent.get("role_permissions") or [])
+        if permission is not None
+    }
+    if RolePermission.CREATE_ROOT_TASK.value in role_permissions:
+        return (
+            "Task creation mandate for this dispatch: your current role has "
+            f"{RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
+            "tasks by omitting parent_task_id when you otherwise have authority "
+            "to create the task. You may also create child tasks with "
+            "parent_task_id.\n\n"
+        )
+    return (
+        "Task creation mandate for this dispatch: your current role does not "
+        f"have {RolePermission.CREATE_ROOT_TASK.value}. You may NOT create "
+        "top-level tasks. Every task_creations item you submit must set "
+        "parent_task_id to one of your own active tasks.\n\n"
     )
 
 
@@ -1563,6 +2298,67 @@ def _seed_action_contract_files(
     }
 
 
+def _seed_team_agent_guidance(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+) -> dict[str, Any]:
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    metadata = _session_metadata(context, session_id=session_id)
+    known_vm_ip = _session_known_vm_ip(metadata)
+    if _metadata_has_current_agent_guidance(metadata):
+        return {
+            "seeded": False,
+            "reason": "already_seeded",
+            "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        }
+
+    provider = AgentCopyFilesEffectProvider()
+    provider.initialize(
+        AgentCopyFilesEffectDefinition(
+            id="team-seed-agent-guidance",
+            display_name="Seed Team agent guidance",
+            type="effect:agent:copy-files",
+            session_id=session_id,
+            vm_user="agent",
+            files=[
+                {
+                    "content": _team_agent_guidance_content(),
+                    "destination_path": TEAM_AGENT_GUIDANCE_PATH,
+                    "mode": "0644",
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                }
+            ],
+        ),
+        context,
+    )
+    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
+    copy_result = provider.execute(resolved_config=resolved_config)
+    if not bool(copy_result.get("success")):
+        message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
+        raise RuntimeError(message or "failed to seed Team agent guidance")
+
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    _mark_agent_guidance_seeded(
+        context,
+        session_id=session_id,
+        copy_result=copy_result,
+        vm_ip=copied_vm_ip,
+    )
+    return {
+        "seeded": True,
+        "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+        "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+        "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        "vm_ip": copied_vm_ip,
+        "copied_paths": list(copy_result.get("copied_paths") or []),
+    }
+
+
 def _session_has_current_action_contract(
     context: Any,
     *,
@@ -1577,6 +2373,21 @@ def _session_has_current_action_contract(
         schema_path=schema_path,
         example_path=example_path,
         action_artifact_path=action_artifact_path,
+    )
+
+
+def _metadata_has_current_agent_guidance(metadata: Mapping[str, Any]) -> bool:
+    team_addon = metadata.get("team_addon")
+    if not isinstance(team_addon, Mapping):
+        return False
+    guidance = team_addon.get("agent_guidance")
+    if not isinstance(guidance, Mapping):
+        return False
+    return (
+        int(guidance.get("guidance_version") or 0) == TEAM_AGENT_GUIDANCE_VERSION
+        and guidance.get("guidance_path") == TEAM_AGENT_GUIDANCE_PATH
+        and guidance.get("section_id") == TEAM_AGENT_GUIDANCE_SECTION_ID
+        and guidance.get("seeded") is True
     )
 
 
@@ -1656,6 +2467,34 @@ def _mark_action_contract_seeded(
             "schema_path": schema_path,
             "example_path": example_path,
             "action_artifact_path": action_artifact_path,
+            "copied_paths": list(copy_result.get("copied_paths") or []),
+        }
+    }
+    if vm_ip:
+        team_metadata["last_known_vm_ip"] = vm_ip
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": team_metadata},
+    )
+
+
+def _mark_agent_guidance_seeded(
+    context: Any,
+    *,
+    session_id: str,
+    copy_result: Mapping[str, Any],
+    vm_ip: str | None,
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    team_metadata: dict[str, Any] = {
+        "agent_guidance": {
+            "seeded": True,
+            "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }
@@ -1768,6 +2607,8 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "recipient_agent_id": {"type": "string", "minLength": 1},
                         "task_id": text_or_null,
                         "question": {"type": "string"},
+                        "response_requested": {"type": "boolean"},
+                        "priority": {"enum": ["low", "normal", "high"]},
                     },
                 },
             },
@@ -1992,6 +2833,8 @@ def _message_item_schema() -> dict[str, Any]:
             "message": {"type": "string"},
             "summary": {"type": "string"},
             "question": {"type": "string"},
+            "response_requested": {"type": "boolean"},
+            "priority": {"enum": ["low", "normal", "high"]},
         },
     }
 
@@ -2015,9 +2858,30 @@ def _persistent_action_example() -> dict[str, Any]:
                 "dependency_task_ids": [],
             }
         ],
-        "status_requests": [],
-        "questions": [],
-        "status_reports": [],
+        "status_requests": [
+            {
+                "recipient_agent_id": "direct-subordinate-agent-id",
+                "question": "Short status question.",
+                "response_requested": True,
+                "priority": "normal",
+            }
+        ],
+        "questions": [
+            {
+                "recipient_agent_id": "direct-superior-agent-id",
+                "question": "Question that needs a response.",
+                "response_requested": True,
+                "priority": "normal",
+            }
+        ],
+        "status_reports": [
+            {
+                "summary": "FYI progress update.",
+                "message": "No reply needed unless this changes your plan.",
+                "response_requested": False,
+                "priority": "low",
+            }
+        ],
         "operator_escalations": [],
         "stand_downs": [],
         "stand_down_revocations": [],

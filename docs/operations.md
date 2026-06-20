@@ -633,7 +633,7 @@ Storage layout for directory config:
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL`, `OPENAI_BASE_URL`, `AGENT_SANDBOX_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
-- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, Azure OpenAI, or Anthropic.
+- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, a host-local OpenAI-compatible endpoint, Azure OpenAI, or Anthropic.
 - For Azure OpenAI Codex routing, set `model_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
 
@@ -647,7 +647,27 @@ Storage layout for directory config:
       "gpt-5.4": "codex-gpt-5-4"
     }
   }
-```
+  ```
+- For local OpenAI-compatible Codex routing, keep `agent_provider` as `codex` and set `model_provider_mode: "local_openai"`. The relay forwards normal OpenAI-compatible HTTP requests to `local_openai_api_base_url`, sends `local_openai_api_key` as a placeholder bearer token, and records usage rows under `local_openai_provider_name`.
+- Ollama is the v1 local runtime target. Pull the recommended initial model on an RTX 5090-class host:
+
+  ```bash
+  ollama pull qwen3-coder:30b
+  ```
+
+  Keep Ollama host-local or on a private control-plane address; guests and worker containers should still reach only Truman's session-scoped relay URL. Because the relay itself defaults to `0.0.0.0:11434`, `local_openai` rejects the default `http://127.0.0.1:11434/v1` upstream unless the relay is moved off wildcard/loopback on that port. Either bind the relay only on the guest-facing control-plane address while Ollama keeps `127.0.0.1:11434`, or move Ollama to another private port and set `local_openai_api_base_url` accordingly.
+- Example local Ollama directory-scoped `providers.json` overlay when the relay keeps its default listener and Ollama is moved to `127.0.0.1:11435`:
+
+  ```json
+  {
+    "model_provider_mode": "local_openai",
+    "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+    "local_openai_api_key": "ollama",
+    "local_openai_provider_name": "local_openai"
+  }
+  ```
+
+- Restart `agent-sandbox-openai-relay.service` after changing provider config that the relay process has already loaded.
 - Public OpenAI remains the default when `model_provider_mode` is omitted.
 - For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and
@@ -766,6 +786,20 @@ A transport-terminated warning without client-visible failure can be expected fo
   - paging inputs: `top` (default `50`, max `200`) and `skip` (default `0`)
 - Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
   `total_matches`, `has_more`, `next_skip`).
+
+## Host-Side Azure DevOps Work Item Activity Tool
+
+- Gateway tool name: `query_ado_work_item_activity`.
+- The tool is policy-gated: each session manifest must include
+  `query_ado_work_item_activity` in `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - required `since` timestamp
+  - optional `until`, `project`, `actor`, `activity_types`, `states`, `types`, `tags_any`
+  - paging inputs: `top` (default `100`, max `200`) and `skip` (default `0`)
+- `activity_types` defaults to `["created", "changed", "commented"]`.
+- Response payload includes matching work items and per-item `activities` records with the matched
+  actor, timestamp, provenance (`created_field`, `changed_field`, `update`, or `comment`), and raw
+  provider payload snippets.
 
 ## Host-Side Azure DevOps Current Iteration Backlog Tool
 
@@ -1650,12 +1684,19 @@ without exposing provider credentials in the VM.
 2. Unread fetch when pending is true:
    - `list_unread_feedback(last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
    - `list_all_feedback(limit)` when you need full PR comment history, including already-read items
-   - `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
-     to enumerate PRs directly from the provider; `status` is forwarded to provider status criteria
-     (Azure DevOps uses `searchCriteria.status`), and pagination resumes with `next_cursor`.
+   - `list_pull_requests(provider, repo, status?, statuses?, creator_id?, reviewer_id?, project?,
+     min_time?, max_time?, query_time_range_type?, source_ref_name?, target_ref_name?, tags?, top?,
+     skip?, cursor?)` to enumerate PRs directly from the provider. Azure DevOps status values are
+     forwarded to `searchCriteria.status`; `closed` expands to ADO `completed` and `abandoned`.
    - `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
+   - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
+     before using personal activity filters.
+   - `list_ado_pr_comment_activity(repo, since, author?, until?, project?, statuses?, top?, skip?)`
+     to find ADO PR comments matching an author and date range.
+   - `list_ado_pr_commit_activity(repo, since, author?, until?, project?, statuses?, top?, skip?)`
+     to find ADO PR commits matching an author and date range.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:

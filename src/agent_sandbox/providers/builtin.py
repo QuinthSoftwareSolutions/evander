@@ -87,6 +87,7 @@ from agent_sandbox.effects.providers.vm_start import VmStartEffectProvider
 from agent_sandbox.effects.providers.vm_stop import VmStopEffectProvider
 from agent_sandbox.gates.providers.await_agent import AwaitAgentGateProvider
 from agent_sandbox.gates.providers.aggregate_gate import AggregateGateProvider
+from agent_sandbox.gates.providers.buffer_gate import BufferGateProvider
 from agent_sandbox.gates.providers.debounce_gate import DebounceGateProvider
 from agent_sandbox.gates.providers.deserialize_gate import DeserializeGateProvider
 from agent_sandbox.gates.providers.dedupe_gate import DedupeGateProvider
@@ -193,6 +194,7 @@ def register_providers() -> dict[str, dict[str, type]]:
         gate_providers={
             "gate:aggregate": AggregateGateProvider,
             "gate:await-agent": AwaitAgentGateProvider,
+            "gate:buffer": BufferGateProvider,
             "gate:debounce": DebounceGateProvider,
             "gate:deserialize": DeserializeGateProvider,
             "gate:dedupe": DedupeGateProvider,

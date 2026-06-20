@@ -139,6 +139,8 @@ export function deriveWorkflowOutputSchemas(
       schema = mapTemplateOutputSchema(node.template);
     } else if (node.type === "gate:aggregate" && isRecord(node.metrics)) {
       schema = aggregateMetricOutputSchema(node.metrics);
+    } else if (node.type === "gate:buffer") {
+      schema = bufferOutputSchema();
     } else {
       const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
       const nodeOutputs = isRecord(node.outputs) ? node.outputs : undefined;
@@ -311,6 +313,14 @@ export function selectedNodeOutputContract(
     return buildOutputContract(node, aggregateOutputs, {
       state: "derived",
       note: "Aggregate gate: outputs are count plus one output per configured metric.",
+      sourceNodeIds: [node.id],
+    });
+  }
+
+  if (node.type === "gate:buffer") {
+    return buildOutputContract(node, bufferOutputSchema(), {
+      state: "derived",
+      note: "Buffer gate: outputs are the released batch metadata.",
       sourceNodeIds: [node.id],
     });
   }
@@ -529,6 +539,14 @@ function aggregateMetricOutputSchema(metrics: Record<string, unknown>): Record<s
     }
   }
   return schema;
+}
+
+function bufferOutputSchema(): Record<string, unknown> {
+  return {
+    items: { type: "array" },
+    count: { type: "integer" },
+    release_reason: { type: "string" },
+  };
 }
 
 function inferSchemaFromTemplateValue(value: unknown): Record<string, unknown> {

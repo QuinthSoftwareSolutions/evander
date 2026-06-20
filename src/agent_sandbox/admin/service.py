@@ -169,6 +169,7 @@ from agent_sandbox.models import (
     SessionActionResult,
     SessionManifest,
     SessionSummary,
+    McpToolName,
     ToolName,
     VmActionResult,
     VmSummary,
@@ -176,7 +177,9 @@ from agent_sandbox.models import (
     WakeScheduleDefinition,
     WorkerActionResult,
     WorkerSummary,
+    normalize_tool_name,
     normalize_approval_tool_settings,
+    tool_name_value,
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.storage import JsonStore
@@ -195,6 +198,17 @@ from agent_sandbox.workflow.runtime_config import (
     _append_builtin_hidden_workflows,
     _compose_configured_workflow_ir,
     compile_worker_global_config_with_diagnostics,
+)
+from agent_sandbox.workflow.catalog import (
+    WorkflowEditorCatalogPayload,
+    WorkflowEditorFieldDefinition,
+    WorkflowEditorFieldOption,
+    WorkflowEditorNodeCatalogEntry,
+    WorkflowEditorNodePortDefinition,
+)
+from agent_sandbox.workflow.packs import (
+    compose_workflow_ir,
+    load_workflow_pack,
 )
 from agent_sandbox.worker.models import WorkerTelemetryPayload
 from agent_sandbox.repositories.triggers import (
@@ -557,12 +571,30 @@ class WorkflowEditorGraphMetadata(BaseModel):
         return [self.directory_path]
 
 
+class WorkflowEditorWorkflowPackDescriptor(BaseModel):
+    reference: str
+    path: str
+    layout_path: str
+    exists: bool
+    editable: bool = True
+    display_name: str
+    id: str | None = None
+    version: str | None = None
+    description: str | None = None
+    graph_count: int = 0
+    node_count: int = 0
+    selected: bool = False
+
+
 class WorkflowEditorDocumentPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     config_path: str
     layout_path: str
     config_exists: bool
     layout_exists: bool
+    document_scope: str = "inline"
+    workflow_packs: list[WorkflowEditorWorkflowPackDescriptor] = Field(default_factory=list)
+    selected_workflow_pack: WorkflowEditorWorkflowPackDescriptor | None = None
     config: dict[str, object]
     layout: dict[str, object]
     graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
@@ -584,6 +616,9 @@ class WorkflowEditorSavePayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     config_path: str
     layout_path: str
+    document_scope: str = "inline"
+    workflow_packs: list[WorkflowEditorWorkflowPackDescriptor] = Field(default_factory=list)
+    selected_workflow_pack: WorkflowEditorWorkflowPackDescriptor | None = None
     config: dict[str, object]
     layout: dict[str, object]
     graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
@@ -1349,51 +1384,6 @@ class WorkflowRunResumePayload(BaseModel):
     target_node_id: str
 
 
-class WorkflowEditorFieldOption(BaseModel):
-    value: str
-    label: str
-    description: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
-
-
-class WorkflowEditorFieldDefinition(BaseModel):
-    key: str
-    label: str
-    kind: str
-    required: bool = False
-    bindable: bool = False
-    read_only: bool = False
-    multiline: bool = False
-    description: str | None = None
-    placeholder: str | None = None
-    json_value_type: str | None = None
-    default_value: Any = None
-    options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
-    item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
-
-
-class WorkflowEditorNodePortDefinition(BaseModel):
-    key: str
-    label: str
-    description: str | None = None
-
-
-class WorkflowEditorNodeCatalogEntry(BaseModel):
-    kind: str
-    type: str
-    label: str
-    description: str | None = None
-    fields: list[WorkflowEditorFieldDefinition] = Field(default_factory=list)
-    input_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
-    output_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
-
-
-class WorkflowEditorCatalogPayload(BaseModel):
-    worker_id: str = "trigger-orchestrator"
-    nodes: list[WorkflowEditorNodeCatalogEntry]
-
-
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
@@ -1933,6 +1923,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:filter": "Allow only matching events to continue downstream.",
     "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
+    "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
     "gate:map": "Project upstream outputs into a new payload shape.",
     "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
     "gate:deserialize": (
@@ -2667,6 +2658,56 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 read_only=True,
                 description="Derived from the single upstream node and emitted from the latest activation in a burst.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:buffer",
+        label="Buffer",
+        fields=[
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Groups independent buffers. Supports workflow bindings.",
+                placeholder="buffer:${{system.execution.trace_id}}",
+            ),
+            _field(
+                "count",
+                "Count",
+                "number",
+                required=True,
+                bindable=True,
+                description="Release when this many activations have accumulated.",
+                default_value=10,
+                placeholder="10",
+            ),
+            _field(
+                "timeout",
+                "Timeout",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional ISO-8601 duration from the first buffered activation, "
+                    "for example PT10M. Omit for count-only buffering."
+                ),
+                default_value="PT10M",
+                placeholder="PT10M",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                default_value={
+                    "items": {"type": "array"},
+                    "count": {"type": "integer"},
+                    "release_reason": {"type": "string"},
+                },
+                description="Emits buffered items, released count, and release reason.",
             ),
         ],
     ),
@@ -3544,6 +3585,27 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                             "When disabled, fail if the destination already exists."
                         ),
                     ),
+                    _field(
+                        "merge_strategy",
+                        "Merge strategy",
+                        "enum",
+                        bindable=True,
+                        description=(
+                            "Optional write strategy. managed_section replaces only the marked "
+                            "section identified by Section ID and preserves the rest of the file."
+                        ),
+                        options=[_field_option("managed_section", "Managed section")],
+                    ),
+                    _field(
+                        "section_id",
+                        "Section ID",
+                        "string",
+                        bindable=True,
+                        description=(
+                            "Stable identifier for managed_section writes. Required when Merge "
+                            "strategy is managed_section."
+                        ),
+                    ),
                 ],
             ),
         ],
@@ -4108,6 +4170,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     ),
                     _field("mode", "Mode", "string", bindable=True),
                     _field("overwrite", "Overwrite", "boolean", bindable=True),
+                    _field(
+                        "merge_strategy",
+                        "Merge strategy",
+                        "enum",
+                        bindable=True,
+                        options=[_field_option("managed_section", "Managed section")],
+                    ),
+                    _field("section_id", "Section ID", "string", bindable=True),
                 ],
             ),
         ],
@@ -6651,7 +6721,7 @@ def _build_issue_session_manifest(
     communication_file_require_approval_for_send: bool | None = None,
     web_search_enabled: bool = False,
 ) -> SessionManifest:
-    resolved_allowed_tools: list[ToolName] = [
+    resolved_allowed_tools: list[McpToolName] = [
         ToolName.APPROVAL_SUBMIT,
         ToolName.APPROVAL_CHECK,
         ToolName.STAGE_ARTIFACT,
@@ -6696,18 +6766,19 @@ def _build_issue_session_manifest(
         metadata["agent_provider"] = "copilot"
 
     if extra_allowed_tools:
-        seen = set(resolved_allowed_tools)
+        seen = {tool_name_value(tool) for tool in resolved_allowed_tools}
         for tool in _normalize_allowed_tools(extra_allowed_tools):
-            if tool in seen:
+            tool_value = tool_name_value(tool)
+            if tool_value in seen:
                 continue
-            seen.add(tool)
+            seen.add(tool_value)
             resolved_allowed_tools.append(tool)
 
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
         directory_path=directory_path,
-        allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
+        allowed_tools=_normalize_allowed_tools([tool_name_value(tool) for tool in resolved_allowed_tools]),
         approval_required_tools=list(policy.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
@@ -6927,14 +6998,17 @@ def _admin_agent_communication_allowlists(
     }
 
 
-def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
-    normalized_tools: list[ToolName] = []
-    seen: set[ToolName] = set()
+def _normalize_allowed_tools(
+    value: list[str | ToolName], *, field_name: str = "allowed_tools"
+) -> list[McpToolName]:
+    normalized_tools: list[McpToolName] = []
+    seen: set[str] = set()
     for tool in value:
-        normalized_tool = tool if isinstance(tool, ToolName) else ToolName(str(tool).strip())
-        if normalized_tool in seen:
+        normalized_tool = normalize_tool_name(tool, field_name=field_name)
+        tool_value = tool_name_value(normalized_tool)
+        if tool_value in seen:
             continue
-        seen.add(normalized_tool)
+        seen.add(tool_value)
         normalized_tools.append(normalized_tool)
     return normalized_tools
 
@@ -7127,7 +7201,8 @@ def _session_policy_update_from_payload(
             _normalize_plain_string_list(
                 payload.get("approval_required_tools"),
                 field_name="approval_required_tools",
-            )
+            ),
+            field_name="approval_required_tools",
         )
     if "approval_tool_settings" in payload:
         normalized_settings = normalize_approval_tool_settings(
@@ -7495,6 +7570,9 @@ class AdminService:
                 read_worker_global_config=self._read_worker_global_config,
                 write_worker_global_config=self._write_worker_global_config,
                 read_workflow_editor_document=self._read_workflow_editor_document,
+                read_composed_workflow_editor_document=(
+                    self._read_composed_workflow_editor_document
+                ),
                 read_workflow_editor_catalog=self._read_workflow_editor_catalog,
                 validate_workflow_editor_document=self._validate_workflow_editor_document,
                 save_workflow_editor_document=self._save_workflow_editor_document,
@@ -10765,13 +10843,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "session_id": session.session_id,
             "model": session.model,
             "expires_at": session.expires_at,
-            "allowed_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.allowed_tools
-            ],
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "approval_required_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.approval_required_tools
+                tool_name_value(tool) for tool in session.approval_required_tools
             ],
             "approval_tool_settings": {
                 tool_name: settings.model_dump(mode="json")
@@ -10843,14 +10917,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()
         for tool in effective_policy.approval_required_tools:
-            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            value = tool_name_value(tool)
             if value in seen_tools:
                 continue
             seen_tools.add(value)
             inherited_approval_required_tools.append(value)
             approval_required_tools.append(value)
         for tool in session.approval_required_tools:
-            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            value = tool_name_value(tool)
             if value in seen_tools:
                 continue
             seen_tools.add(value)
@@ -10863,12 +10937,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
 
         approval_tool_settings = {
-            tool.value: self.runtime.policy.approval_grant_settings_for_tool(
+            tool_name_value(tool): self.runtime.policy.approval_grant_settings_for_tool(
                 session,
                 tool,
                 effective_policy=effective_policy,
             ).model_dump(mode="json")
-            for tool in ToolName
+            for tool in self.runtime.policy._iter_known_tool_names()
         }
         mcp_tool_policies = {
             tool_name: rule.model_dump(mode="json")
@@ -10876,10 +10950,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
 
         return {
-            "allowed_tools": [
-                tool.value if isinstance(tool, ToolName) else str(tool)
-                for tool in session.allowed_tools
-            ],
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "tool_summary": tool_summary,
             "inherited_approval_required_tools": inherited_approval_required_tools,
             "approval_required_tools": approval_required_tools,
@@ -14666,8 +14737,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             worker_id, payload, expected_revision=expected_revision
         )
 
-    def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        return self.workflow_config_admin.read_workflow_editor_document()
+    def read_workflow_editor_document(
+        self, workflow_pack: str | None = None
+    ) -> WorkflowEditorDocumentPayload:
+        return self.workflow_config_admin.read_workflow_editor_document(
+            workflow_pack=workflow_pack
+        )
+
+    def read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
+        return self.workflow_config_admin.read_composed_workflow_editor_document()
 
     def read_workflow_editor_catalog(
         self, directory_path: str | None = None
@@ -14718,9 +14796,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
         return self.workflow_config_admin.validate_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config,
+            layout=layout,
+            graphs=graphs,
+            workflow_pack=workflow_pack,
         )
 
     async def generate_workflow_editor_draft(
@@ -14766,9 +14848,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         expected_revision: str | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
         return self.workflow_config_admin.save_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs, expected_revision=expected_revision
+            config=config,
+            layout=layout,
+            graphs=graphs,
+            expected_revision=expected_revision,
+            workflow_pack=workflow_pack,
         )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
@@ -14924,6 +15011,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
         return self._read_worker_global_config_unlocked(worker_id)
 
+    def _read_worker_provider_loader_config(self, worker_id: str) -> dict[str, object]:
+        path = self._worker_global_config_path(worker_id)
+        if path is None:
+            raise ValueError(f"Unknown worker: {worker_id}")
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError(f"worker config file {path} must contain a JSON object")
+        else:
+            raw = self.config.model_dump(mode="json", exclude_none=True)
+        return {
+            key: raw[key]
+            for key in ("provider_loader", "addon_loader")
+            if key in raw
+        }
+
     def _write_worker_global_config_unlocked(
         self, worker_id: str, payload: dict[str, object]
     ) -> WorkerGlobalConfigWritePayload:
@@ -14982,17 +15085,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
 
-    def _load_workflow_provider_output_schemas(self, payload: dict[str, object]) -> None:
+    def _load_workflow_provider_catalog(self, payload: dict[str, object]):
         from agent_sandbox.provider_profiles import resolve_provider_module_names
         from agent_sandbox.workflow.plugins import load_provider_plugins
 
-        loader_payload = {
-            key: payload[key]
-            for key in ("provider_loader", "addon_loader")
-            if key in payload
-        }
-        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(loader_payload)
-        load_provider_plugins(
+        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
+        return load_provider_plugins(
             module_names=resolve_provider_module_names(
                 profile_name=worker_config.provider_profile,
                 extra_modules=worker_config.provider_loader.provider_modules,
@@ -15001,6 +15099,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             include_builtin=worker_config.provider_include_builtin,
             addon_loader=worker_config.addon_loader,
         )
+
+    def _load_workflow_provider_output_schemas(self, payload: dict[str, object]) -> None:
+        self._load_workflow_provider_catalog(payload)
 
     def assistant_settings_path(self) -> Path:
         return self.config.runtime_dir / "assistant-settings.json"
@@ -15119,6 +15220,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _workflow_editor_pack_layout_path(self, pack_reference: object) -> Path:
         return self._workflow_editor_pack_path(pack_reference).with_suffix(".layout.json")
 
+    def _workflow_editor_pack_reference(self, pack_reference: object) -> str:
+        text = str(pack_reference).strip()
+        if not text:
+            raise ValueError("workflow pack reference must be a non-empty string")
+        normalized = text if text.endswith(".json") else f"{text}.json"
+        relative = Path(normalized)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("workflow pack reference must stay under config/workflow-packs")
+        return normalized
+
     def _workflow_editor_layout_path(self, raw_config: dict[str, object]) -> Path:
         workflow_packs = raw_config.get("workflow_packs")
         inline_ir = raw_config.get("workflow_ir")
@@ -15149,14 +15260,117 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def _workflow_editor_pack_path(self, pack_reference: object) -> Path:
-        text = str(pack_reference).strip()
-        if not text:
-            raise ValueError("workflow pack reference must be a non-empty string")
-        normalized = text if text.endswith(".json") else f"{text}.json"
+        normalized = self._workflow_editor_pack_reference(pack_reference)
         relative = Path(normalized)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError("workflow pack reference must stay under config/workflow-packs")
         return self.project_dir / "config" / "workflow-packs" / relative
+
+    def _workflow_editor_configured_pack_references(
+        self, raw_config: dict[str, object]
+    ) -> list[str]:
+        workflow_packs = raw_config.get("workflow_packs")
+        if not isinstance(workflow_packs, list):
+            return []
+        return [self._workflow_editor_pack_reference(pack) for pack in workflow_packs]
+
+    def _workflow_editor_selected_pack_reference(
+        self,
+        raw_config: dict[str, object],
+        workflow_pack: str | None,
+    ) -> str | None:
+        pack_references = self._workflow_editor_configured_pack_references(raw_config)
+        if not pack_references:
+            if workflow_pack:
+                raise ValueError("Workflow pack selection requires workflow_packs in the worker config.")
+            return None
+        if workflow_pack is None or not str(workflow_pack).strip():
+            return None
+        selected = self._workflow_editor_pack_reference(workflow_pack)
+        if selected not in pack_references:
+            raise ValueError(f"Workflow pack is not configured: {selected}")
+        return selected
+
+    def _workflow_editor_pack_descriptors(
+        self,
+        raw_config: dict[str, object],
+        *,
+        selected_reference: str | None = None,
+    ) -> list[WorkflowEditorWorkflowPackDescriptor]:
+        descriptors: list[WorkflowEditorWorkflowPackDescriptor] = []
+        for reference in self._workflow_editor_configured_pack_references(raw_config):
+            pack_path = self._workflow_editor_pack_path(reference)
+            layout_path = self._workflow_editor_pack_layout_path(reference)
+            exists = pack_path.exists()
+            pack_id: str | None = None
+            pack_version: str | None = None
+            description: str | None = None
+            graph_count = 0
+            node_count = 0
+            display_name = reference
+            if exists:
+                pack = load_workflow_pack(self.project_dir, reference)
+                pack_id = pack.pack_id
+                pack_version = pack.pack_version
+                description = pack.description
+                graph_count = len(pack.graphs)
+                node_count = len(pack.ir.nodes)
+                display_name = pack.pack_id or reference
+                if pack.pack_version:
+                    display_name = f"{display_name} {pack.pack_version}"
+            descriptors.append(
+                WorkflowEditorWorkflowPackDescriptor(
+                    reference=reference,
+                    path=str(pack_path),
+                    layout_path=str(layout_path),
+                    exists=exists,
+                    editable=exists,
+                    display_name=display_name,
+                    id=pack_id,
+                    version=pack_version,
+                    description=description,
+                    graph_count=graph_count,
+                    node_count=node_count,
+                    selected=reference == selected_reference,
+                )
+            )
+        return descriptors
+
+    def _workflow_editor_config_for_pack_composition(
+        self,
+        *,
+        raw_config: dict[str, object],
+        composition: object,
+    ) -> dict[str, object]:
+        graph_keys = {
+            "triggers",
+            "gates",
+            "effects",
+            "queries",
+            "edges",
+            "workflow_ir",
+            "workflow_graphs",
+        }
+        config = {key: value for key, value in raw_config.items() if key not in graph_keys}
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            config[collection_name] = list(getattr(composition, collection_name))
+        config["edges"] = list(getattr(composition, "edges"))
+        return config
+
+    def _workflow_editor_pack_graphs(
+        self,
+        *,
+        raw_config: dict[str, object],
+        pack_reference: str,
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        composition = compose_workflow_ir(
+            project_dir=self.project_dir,
+            workflow_packs=[pack_reference],
+        )
+        config = self._workflow_editor_config_for_pack_composition(
+            raw_config=raw_config,
+            composition=composition,
+        )
+        graphs = [graph.model_dump(mode="json") for graph in composition.graphs]
+        return config, graphs
 
     def _workflow_editor_stored_graphs(
         self, raw_config: dict[str, object]
@@ -15474,6 +15688,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _workflow_editor_pack_backed_save_paths(
         self,
         raw_config: dict[str, object],
+        workflow_pack: str | None = None,
     ) -> tuple[Path, list[object]] | None:
         workflow_packs = raw_config.get("workflow_packs")
         inline_ir = raw_config.get("workflow_ir")
@@ -15484,21 +15699,28 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "Workflow editor cannot save configs that combine workflow_packs with inline workflow_ir; "
                 "edit the pack files directly."
             )
-        if len(workflow_packs) != 1:
-            raise ValueError(
-                "Workflow editor can only save a config backed by one workflow pack; edit multi-pack configs directly."
+        if workflow_pack is None or not str(workflow_pack).strip():
+            if len(workflow_packs) != 1:
+                raise ValueError(
+                    "Workflow editor save requires workflow_pack when multiple workflow packs are configured."
+                )
+            selected_reference = self._workflow_editor_pack_reference(workflow_packs[0])
+        else:
+            selected_reference = self._workflow_editor_selected_pack_reference(
+                raw_config,
+                workflow_pack,
             )
-        return self._workflow_editor_pack_path(workflow_packs[0]), workflow_packs
+        if selected_reference is None:
+            return None
+        return self._workflow_editor_pack_path(selected_reference), workflow_packs
 
-    def _write_workflow_editor_pack_config(
+    def _workflow_editor_pack_payload_to_persist(
         self,
         *,
-        config_path: Path,
         pack_path: Path,
-        workflow_packs: list[object],
         validated_config: dict[str, object],
         graph_payloads: list[dict[str, object]] | None,
-    ) -> None:
+    ) -> dict[str, object]:
         if pack_path.exists():
             pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
             if not isinstance(pack_payload, dict):
@@ -15522,6 +15744,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
         if graph_payloads is not None:
             pack_payload["graphs"] = graph_payloads
+        return pack_payload
+
+    def _write_workflow_editor_pack_config(
+        self,
+        *,
+        config_path: Path,
+        pack_path: Path,
+        workflow_packs: list[object],
+        validated_config: dict[str, object],
+        graph_payloads: list[dict[str, object]] | None,
+    ) -> None:
+        pack_payload = self._workflow_editor_pack_payload_to_persist(
+            pack_path=pack_path,
+            validated_config=validated_config,
+            graph_payloads=graph_payloads,
+        )
 
         graph_keys = {"triggers", "gates", "effects", "queries", "edges"}
         wrapper_config = {
@@ -15533,6 +15771,70 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         self._write_json_file_atomic(config_path, wrapper_config)
         self._write_json_file_atomic(pack_path, pack_payload)
+
+    def _validate_selected_workflow_pack_runtime_config(
+        self,
+        *,
+        raw_config: dict[str, object],
+        workflow_packs: list[object],
+        selected_reference: str,
+        selected_validation: WorkflowEditorValidationPayload,
+    ) -> None:
+        graph_keys = {
+            "triggers",
+            "gates",
+            "effects",
+            "queries",
+            "edges",
+            "workflow_ir",
+            "workflow_graphs",
+        }
+        full_config = {
+            key: value
+            for key, value in raw_config.items()
+            if key not in graph_keys
+        }
+        full_config["workflow_packs"] = workflow_packs
+        combined_graphs: list[dict[str, object]] = []
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            full_config[collection_name] = []
+        full_config["edges"] = []
+
+        for pack_reference in workflow_packs:
+            normalized_reference = self._workflow_editor_pack_reference(pack_reference)
+            if normalized_reference == selected_reference:
+                pack_config = selected_validation.config
+                for collection_name in ("triggers", "gates", "effects", "queries"):
+                    entries = pack_config.get(collection_name, [])
+                    if isinstance(entries, list):
+                        full_config[collection_name].extend(
+                            entry for entry in entries if isinstance(entry, dict)
+                        )
+                edges = pack_config.get("edges", [])
+                if isinstance(edges, list):
+                    full_config["edges"].extend(edge for edge in edges if isinstance(edge, dict))
+                combined_graphs.extend(
+                    graph.model_dump(mode="json") for graph in selected_validation.graphs
+                )
+                continue
+
+            composition = compose_workflow_ir(
+                project_dir=self.project_dir,
+                workflow_packs=[normalized_reference],
+            )
+            for collection_name in ("triggers", "gates", "effects", "queries"):
+                full_config[collection_name].extend(
+                    dict(entry) for entry in getattr(composition, collection_name)
+                )
+            full_config["edges"].extend(dict(edge) for edge in composition.edges)
+            combined_graphs.extend(graph.model_dump(mode="json") for graph in composition.graphs)
+
+        self._validate_workflow_editor_document(
+            config=full_config,
+            layout={},
+            graphs=combined_graphs,
+            base_config={},
+        )
 
     def _write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:
         encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -15846,7 +16148,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _workflow_generation_examples(self) -> list[dict[str, object]]:
         try:
-            document = self._read_workflow_editor_document()
+            document = self._read_composed_workflow_editor_document()
         except ValueError:
             return []
         nodes_by_id = self._workflow_editor_nodes_by_id(document.config)
@@ -16126,7 +16428,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             }
         return {"nodes": layout_nodes}
 
-    def _read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
+    def _read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         config_path = self._worker_global_config_path("trigger-orchestrator")
         if config_path is None:
             raise ValueError("Unknown worker: trigger-orchestrator")
@@ -16175,11 +16477,121 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             layout=layout,
             graphs=graphs,
         )
+        workflow_packs = self._workflow_editor_pack_descriptors(raw_config)
+        document_scope = "composed" if workflow_packs else "inline"
         return WorkflowEditorDocumentPayload(
             config_path=str(config_path),
             layout_path=str(layout_path),
             config_exists=config_exists,
             layout_exists=layout_exists,
+            document_scope=document_scope,
+            workflow_packs=workflow_packs,
+            selected_workflow_pack=None,
+            config=normalized_config,
+            layout=layout,
+            graphs=graphs,
+            output_schemas=output_schemas,
+            saved_at=saved_at,
+            revision=revision,
+        )
+
+    def _read_workflow_editor_document(
+        self,
+        workflow_pack: str | None = None,
+    ) -> WorkflowEditorDocumentPayload:
+        config_path = self._worker_global_config_path("trigger-orchestrator")
+        if config_path is None:
+            raise ValueError("Unknown worker: trigger-orchestrator")
+        config_exists = config_path.exists()
+        if config_exists:
+            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_config, dict):
+                raise ValueError(f"worker config file {config_path} must contain a JSON object")
+        else:
+            model = _WORKER_GLOBAL_CONFIG_MODELS["trigger-orchestrator"]
+            raw_config = model.model_validate(self.config.model_dump(mode="json")).model_dump(
+                mode="json", exclude_none=True
+            )
+
+        selected_reference = self._workflow_editor_selected_pack_reference(
+            raw_config,
+            workflow_pack,
+        )
+        if selected_reference is None:
+            return self._read_composed_workflow_editor_document()
+        if isinstance(raw_config.get("workflow_ir"), dict):
+            raise ValueError(
+                "Workflow editor cannot edit configs that combine workflow_packs with inline workflow_ir; "
+                "edit the pack files directly."
+            )
+
+        workflow_packs = self._workflow_editor_pack_descriptors(
+            raw_config,
+            selected_reference=selected_reference,
+        )
+        selected_pack = next(
+            (
+                descriptor
+                for descriptor in workflow_packs
+                if descriptor.reference == selected_reference
+            ),
+            None,
+        )
+        if selected_pack is None:
+            raise ValueError(f"Workflow pack is not configured: {selected_reference}")
+        if not selected_pack.exists:
+            raise ValueError(
+                f"workflow pack {selected_reference!r} does not exist at {selected_pack.path}"
+            )
+
+        pack_config, pack_graphs = self._workflow_editor_pack_graphs(
+            raw_config=raw_config,
+            pack_reference=selected_reference,
+        )
+        normalized_candidate = self._normalize_workflow_editor_config(pack_config)
+        normalized_config = self._validate_worker_global_config_payload(
+            "trigger-orchestrator", normalized_candidate
+        )
+        layout_path = Path(selected_pack.layout_path)
+        layout_exists = layout_path.exists()
+        raw_layout: dict[str, object]
+        if layout_exists:
+            loaded_layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded_layout, dict):
+                raise ValueError(f"workflow layout file {layout_path} must contain a JSON object")
+            raw_layout = loaded_layout
+        else:
+            raw_layout = {}
+        layout = self._validate_workflow_editor_layout(
+            raw_layout,
+            node_ids=self._collect_workflow_node_ids(normalized_config),
+            allow_unknown_nodes=True,
+        )
+        graphs = self._workflow_editor_graphs_for_config(
+            config=normalized_config,
+            graphs=pack_graphs,
+        )
+        self._load_workflow_provider_output_schemas(normalized_config)
+        output_schemas = derive_workflow_output_schemas(normalized_config)
+        pack_path = Path(selected_pack.path)
+        saved_at = (
+            datetime.fromtimestamp(pack_path.stat().st_mtime, tz=UTC)
+            if pack_path.exists()
+            else None
+        )
+        revision = self._workflow_editor_revision(
+            config=normalized_config,
+            layout=layout,
+            graphs=graphs,
+        )
+        return WorkflowEditorDocumentPayload(
+            config_path=str(config_path),
+            layout_path=str(layout_path),
+            config_exists=config_exists,
+            layout_exists=layout_exists,
+            document_scope="pack",
+            workflow_packs=workflow_packs,
+            selected_workflow_pack=selected_pack,
             config=normalized_config,
             layout=layout,
             graphs=graphs,
@@ -16295,6 +16707,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path
         )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
+        seen_node_types: set[str] = set()
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
                 deep=True,
@@ -16351,6 +16764,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     else field
                     for field in node.fields
                 ]
+            if node.type in seen_node_types:
+                raise ValueError(f"Duplicate workflow editor catalog entry: {node.type}")
+            seen_node_types.add(node.type)
+            nodes.append(node)
+        provider_catalog = self._load_workflow_provider_catalog(
+            self._read_worker_provider_loader_config("trigger-orchestrator")
+        )
+        for entry in provider_catalog.workflow_editor_catalog_entries:
+            node = entry.model_copy(deep=True)
+            if node.type in seen_node_types:
+                raise ValueError(
+                    f"Provider workflow editor catalog entry duplicates core node type: {node.type}"
+                )
+            seen_node_types.add(node.type)
             nodes.append(node)
         return WorkflowEditorCatalogPayload(nodes=nodes)
 
@@ -16361,6 +16788,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         base_config: dict[str, object] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
         merged_config = self._merge_system_managed_workflows(
             editable_config=config,
@@ -16402,7 +16830,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         agent_create_diagnostics = _workflow_agent_create_diagnostics(
             editable_normalized_config,
         )
-        return WorkflowEditorValidationPayload(
+        validation = WorkflowEditorValidationPayload(
             config=editable_normalized_config,
             layout=normalized_layout,
             graphs=normalized_graphs,
@@ -16419,6 +16847,31 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 for diagnostic in agent_create_diagnostics
             ],
         )
+        if workflow_pack is not None and str(workflow_pack).strip():
+            config_path = self._worker_global_config_path("trigger-orchestrator")
+            if config_path is None:
+                raise ValueError("Unknown worker: trigger-orchestrator")
+            raw_config: dict[str, object] = {}
+            if config_path.exists():
+                loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded_config, dict):
+                    raise ValueError(
+                        f"worker config file {config_path} must contain a JSON object"
+                    )
+                raw_config = loaded_config
+            selected_reference = self._workflow_editor_selected_pack_reference(
+                raw_config,
+                workflow_pack,
+            )
+            workflow_packs = raw_config.get("workflow_packs")
+            if selected_reference is not None and isinstance(workflow_packs, list):
+                self._validate_selected_workflow_pack_runtime_config(
+                    raw_config=raw_config,
+                    workflow_packs=workflow_packs,
+                    selected_reference=selected_reference,
+                    selected_validation=validation,
+                )
+        return validation
 
     def _save_workflow_editor_document_unlocked(
         self,
@@ -16426,6 +16879,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
         config_path = self._worker_global_config_path("trigger-orchestrator")
         if config_path is None:
@@ -16437,24 +16891,69 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 raise ValueError(f"worker config file {config_path} must contain a JSON object")
             raw_config = loaded_config
 
+        selected_reference = self._workflow_editor_selected_pack_reference(
+            raw_config,
+            workflow_pack,
+        )
+        pack_save = self._workflow_editor_pack_backed_save_paths(raw_config, workflow_pack)
+        if selected_reference is None and pack_save is not None:
+            _, configured_workflow_packs = pack_save
+            if configured_workflow_packs:
+                selected_reference = self._workflow_editor_pack_reference(
+                    configured_workflow_packs[0]
+                )
+        workflow_packs = self._workflow_editor_pack_descriptors(
+            raw_config,
+            selected_reference=selected_reference,
+        )
+        selected_pack = (
+            next(
+                (
+                    descriptor
+                    for descriptor in workflow_packs
+                    if descriptor.reference == selected_reference
+                ),
+                None,
+            )
+            if selected_reference is not None
+            else None
+        )
         validation = self._validate_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs, base_config=raw_config
+            config=config,
+            layout=layout,
+            graphs=graphs,
+            base_config=None if selected_reference is not None else raw_config,
         )
         merged_config = self._merge_system_managed_workflows(
             editable_config=validation.config,
             base_config=raw_config,
         )
-        existing_editable_config = self._strip_system_managed_workflows(
-            self._compose_workflow_editor_config(raw_config)
-        )
+        if selected_reference is not None:
+            existing_editable_config = self._read_workflow_editor_document(
+                workflow_pack=selected_reference,
+            ).config
+        else:
+            existing_editable_config = self._strip_system_managed_workflows(
+                self._compose_workflow_editor_config(raw_config)
+            )
         self._seed_new_ticket_created_trigger_cursors(
             previous_config=existing_editable_config,
             next_config=validation.config,
         )
-        layout_path = self._workflow_editor_layout_path(raw_config)
+        layout_path = (
+            self._workflow_editor_pack_layout_path(selected_reference)
+            if selected_reference is not None
+            else self._workflow_editor_layout_path(raw_config)
+        )
         config_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.parent.mkdir(parents=True, exist_ok=True)
-        stored_graphs = self._workflow_editor_stored_graphs(raw_config)
+        if selected_reference is not None:
+            _, stored_graphs = self._workflow_editor_pack_graphs(
+                raw_config=raw_config,
+                pack_reference=selected_reference,
+            )
+        else:
+            stored_graphs = self._workflow_editor_stored_graphs(raw_config)
         graphs_to_persist = validation.graphs if graphs is not None or stored_graphs else None
         graph_payloads_to_persist = (
             self._workflow_editor_graph_payloads_to_persist(
@@ -16464,7 +16963,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if graphs_to_persist is not None
             else None
         )
-        pack_save = self._workflow_editor_pack_backed_save_paths(raw_config)
         if pack_save is None:
             if graph_payloads_to_persist is not None:
                 merged_config["workflow_graphs"] = graph_payloads_to_persist
@@ -16474,23 +16972,47 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         else:
             pack_path, workflow_packs = pack_save
             pack_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_workflow_editor_pack_config(
-                config_path=config_path,
-                pack_path=pack_path,
+            if selected_reference is None:
+                selected_reference = self._workflow_editor_pack_reference(workflow_packs[0])
+            self._validate_selected_workflow_pack_runtime_config(
+                raw_config=raw_config,
                 workflow_packs=workflow_packs,
+                selected_reference=selected_reference,
+                selected_validation=validation,
+            )
+            pack_payload = self._workflow_editor_pack_payload_to_persist(
+                pack_path=pack_path,
                 validated_config=merged_config,
                 graph_payloads=graph_payloads_to_persist,
             )
+            self._write_json_file_atomic(pack_path, pack_payload)
         self._write_json_file_atomic(layout_path, validation.layout)
-        saved_at = datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
+        saved_path = pack_path if pack_save is not None else config_path
+        saved_at = datetime.fromtimestamp(saved_path.stat().st_mtime, tz=UTC)
         revision = self._workflow_editor_revision(
             config=validation.config,
             layout=validation.layout,
             graphs=validation.graphs,
         )
+        if selected_reference is not None:
+            workflow_packs = self._workflow_editor_pack_descriptors(
+                raw_config,
+                selected_reference=selected_reference,
+            )
+            selected_pack = next(
+                (
+                    descriptor
+                    for descriptor in workflow_packs
+                    if descriptor.reference == selected_reference
+                ),
+                selected_pack,
+            )
         return WorkflowEditorSavePayload(
             config_path=str(config_path),
             layout_path=str(layout_path),
+            document_scope="pack" if selected_reference is not None else "inline",
+            workflow_packs=workflow_packs if selected_reference is not None else [],
+            selected_workflow_pack=selected_pack,
             config=validation.config,
             layout=validation.layout,
             graphs=validation.graphs,
@@ -16507,10 +17029,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         expected_revision: str | None = None,
+        workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
         with self.admin_config_mutation_lock():
             if expected_revision is not None:
-                current = self._read_workflow_editor_document()
+                current = self._read_workflow_editor_document(workflow_pack=workflow_pack)
                 if current.revision != expected_revision:
                     raise AdminRevisionConflict(
                         "Workflow editor document changed before save. Reload the workflow before saving again.",
@@ -16523,6 +17046,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 config=config,
                 layout=layout,
                 graphs=graphs,
+                workflow_pack=workflow_pack,
             )
 
     def _seed_new_ticket_created_trigger_cursors(
@@ -16961,7 +17485,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         normalized_node_id = _coerce_optional_string(node_id)
         normalized_graph_id = _coerce_optional_string(graph_id)
         normalized_limit = max(1, min(100, int(limit or 25)))
-        document = self._read_workflow_editor_document()
+        document = self._read_composed_workflow_editor_document()
 
         target_node_ids: set[str] = set()
         graph_name: str | None = None
@@ -17833,7 +18357,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if start_at > end_at:
             raise ValueError("Workflow graph activity period_start must be before period_end.")
 
-        document = self._read_workflow_editor_document()
+        document = self._read_composed_workflow_editor_document()
         node_metadata: dict[str, dict[str, str | None]] = {}
         for collection_name in ("triggers", "gates", "effects", "queries"):
             nodes = document.config.get(collection_name)
@@ -18163,7 +18687,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         recent_threshold = timedelta(seconds=normalized_recent_threshold_seconds)
 
-        document = self._read_workflow_editor_document()
+        document = self._read_composed_workflow_editor_document()
         node_metadata: dict[str, dict[str, str | None]] = {}
         graph_metadata_by_id: dict[str, dict[str, str | None]] = {}
         node_to_graph_id: dict[str, str] = {}
@@ -19862,7 +20386,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             for revision in selected_group["config_revisions"]
             if isinstance(revision, str) and revision
         ]
-        document = self._read_workflow_editor_document()
+        document = self._read_composed_workflow_editor_document()
         document_config = document.config
         document_revision = document.revision or self._workflow_editor_revision(document_config)
         snapshot_repository = self._workflow_config_snapshot_repository(stores)
@@ -20934,6 +21458,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if gate_type in {
                 "gate:filter",
                 "gate:debounce",
+                "gate:buffer",
                 "gate:deserialize",
                 "gate:serialize",
                 "gate:map",
