@@ -3585,6 +3585,27 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                             "When disabled, fail if the destination already exists."
                         ),
                     ),
+                    _field(
+                        "merge_strategy",
+                        "Merge strategy",
+                        "enum",
+                        bindable=True,
+                        description=(
+                            "Optional write strategy. managed_section replaces only the marked "
+                            "section identified by Section ID and preserves the rest of the file."
+                        ),
+                        options=[_field_option("managed_section", "Managed section")],
+                    ),
+                    _field(
+                        "section_id",
+                        "Section ID",
+                        "string",
+                        bindable=True,
+                        description=(
+                            "Stable identifier for managed_section writes. Required when Merge "
+                            "strategy is managed_section."
+                        ),
+                    ),
                 ],
             ),
         ],
@@ -4149,6 +4170,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     ),
                     _field("mode", "Mode", "string", bindable=True),
                     _field("overwrite", "Overwrite", "boolean", bindable=True),
+                    _field(
+                        "merge_strategy",
+                        "Merge strategy",
+                        "enum",
+                        bindable=True,
+                        options=[_field_option("managed_section", "Managed section")],
+                    ),
+                    _field("section_id", "Section ID", "string", bindable=True),
                 ],
             ),
         ],

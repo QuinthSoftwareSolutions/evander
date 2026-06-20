@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Team Wake Guidance Seeding
+
+- Seeded static Team Add-on operating rules into a managed
+  `/home/agent/AGENTS.md` section during persistent wakes, leaving the repeated
+  wake prompt focused on dynamic dispatch context and action artifacts.
+- Moved the top-level task creation mandate into dynamic wake prompts based on
+  each agent role's `create_root_task` permission.
+- Added managed-section file writes for agent/VM copy-file effects and container
+  worker session file writes.
+
 ## 2026-06-20 - Bokio Add-on Safety Fixes
 
 - Made registered add-on MCP tools fail closed in the gateway before dispatch

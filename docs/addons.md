@@ -373,6 +373,9 @@ set:
   context. Repo preparation is reported in the wake node outputs as
   `prepared_project_repos` or `failed_project_repo_preparations`; it is not a
   separate workflow node because one wake tick can lease multiple agents.
+  Static Team operating rules are seeded as a managed Team Add-on section in
+  `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
+  dynamic dispatch context and action artifact reminder.
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.

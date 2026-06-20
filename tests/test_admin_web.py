@@ -641,6 +641,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "destination_path",
             "mode",
             "overwrite",
+            "merge_strategy",
+            "section_id",
         ]
     )
     assert agent_copy_file_fields["content"]["multiline"]

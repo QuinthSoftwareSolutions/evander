@@ -124,6 +124,10 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             "mode": entry.get("mode"),
             "overwrite": bool(entry.get("overwrite", True)),
         }
+        if entry.get("merge_strategy"):
+            payload["merge_strategy"] = entry["merge_strategy"]
+        if entry.get("section_id"):
+            payload["section_id"] = entry["section_id"]
         if content is None:
             source_path = normalize_optional_string(entry.get("source_path"))
             if not source_path:

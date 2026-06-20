@@ -33,7 +33,7 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
-from .models import team_state_payload
+from .models import RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
     TeamAgentActionArtifactQueryDefinition,
@@ -58,6 +58,9 @@ DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
 ACTION_CONTRACT_SCHEMA_VERSION = 9
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
+TEAM_AGENT_GUIDANCE_VERSION = 1
+TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
+TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
 
@@ -811,6 +814,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     agent=agent,
                     action_artifact_path=action_path,
                 )
+                guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
                     project_repo = _prepare_project_repo(context, state=state, agent=agent)
                 except Exception as exc:
@@ -861,6 +865,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "session_id": agent["session_id"],
                     "dispatch_id": lease["dispatch_id"],
                     "action_contract": seed_result,
+                    "agent_guidance": guidance_result,
                     "result": result_payload,
                 }
                 if project_repo is not None:
@@ -1925,6 +1930,68 @@ def register_providers() -> ProviderPluginRegistration:
     )
 
 
+def _team_agent_guidance_content() -> str:
+    return (
+        "# Team Add-on Guidance\n\n"
+        f"Guidance version: {TEAM_AGENT_GUIDANCE_VERSION}\n\n"
+        "Use the provided Team context and update only your own assigned tasks. "
+        "Questions and progress reports must go to your direct superior; "
+        "agents without a direct superior use operator_escalations. Use "
+        "task_creations only according to the task creation mandate in your wake "
+        "prompt. Use "
+        "status_requests only for direct subordinates. Use "
+        "review_requests/review_decisions for deliverable review, goal_updates "
+        "for project goals, git_* actions for review/feature/release branch "
+        "promotion, stand_downs/stand_down_revocations for direct-subordinate "
+        "hold control, and ephemeral_* actions for scoped worker delegation.\n\n"
+        "Each task carries derived graph context: dependency_status, "
+        "child_task_ids, blocked_by_task_ids, and subtask_counts. Do not start "
+        "tasks whose dependency_status is not 'satisfied'; wait until their "
+        "blocked_by_task_ids clear. Decompose large work by creating child tasks "
+        "via task_creations with parent_task_id instead of ad hoc checklists in "
+        "descriptions. Declare ordering between tasks with dependency_task_ids.\n\n"
+        "Action surface guide:\n"
+        "- Use task_updates for tasks you own. State, priority, title, and "
+        "description edits are owner-only. Do not accept or reject someone else's "
+        "task with task_updates.\n"
+        "- Use review_requests to ask a specific same-team agent to review a "
+        "deliverable. Include instructions when the reviewer needs a focused "
+        "check.\n"
+        "- For non-Git deliverables, stage files under /artifacts and list the "
+        "exact relative files or directories in deliverables[].artifact_paths. "
+        "The Team runtime publishes only those paths and records artifact refs "
+        "for reviewers.\n"
+        "- Use review_decisions only for review requests assigned to you. "
+        "Accepting a review is the action that cascades to deliverable/task "
+        "acceptance once all attached reviews are accepted.\n"
+        "- Before git_release_requests for Git work, make sure every deliverable "
+        "is accepted and already has git_refs.feature_branch. Raw agent or review "
+        "branches are not release sources; use git_review_promotions and "
+        "git_feature_updates first.\n"
+        "- If a deliverable should be reviewed by another agent, create a "
+        "review_requests item for that reviewer; do not mark the task accepted "
+        "yourself unless the task is actually yours.\n"
+        "- Inbox items with item_type operator_directive are durable operator "
+        "instructions that were relayed from an out-of-band channel. Handle them "
+        "through the Team dispatch by writing the appropriate task/status/review "
+        "actions to the configured Team action artifact, then include their ids "
+        "in handled_inbox_item_ids.\n"
+        "- Inbox items include response_requested. When response_requested is "
+        "false, do not send thank-you, acknowledgement, or other no-op replies; "
+        "either take the needed Team action or mark the item handled with "
+        "handled_inbox_item_ids. When response_requested is true, respond through "
+        "the normal allowed directional action surface if a response is needed.\n"
+        "- Inbox messages may include priority low, normal, or high. Use low for "
+        "FYI updates that can be batched, normal for ordinary coordination, and "
+        "high only for urgent blockers. Low-priority inbox may be delivered with "
+        "other work instead of waking the recipient immediately.\n"
+        "- Use stand_downs when you need a direct subordinate and that "
+        "subordinate's subtree to stop future Team work. Use "
+        "stand_down_revocations to clear a stand-down you set. Do not encode "
+        "stand-downs as prose-only status_requests.\n"
+    )
+
+
 def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str:
     agent = lease["agent"]
     context = {
@@ -1991,62 +2058,12 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
     example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
     return (
         "Continue your assigned team-agent work.\n"
-        "Use the provided team context and update only your own assigned tasks. "
-        "Questions and progress reports must go to your direct superior; top-level "
-        "managers use operator_escalations. Use task_creations only when you have "
-        "an active mandate: managers and project leads may create top-level tasks "
-        "when their role has create_root_task, while other agents must create child "
-        "tasks under their own active parent tasks. Use status_requests only "
-        "for direct subordinates. Use review_requests/review_decisions for deliverable "
-        "review, goal_updates for project goals, git_* actions for review/feature/release "
-        "branch promotion, stand_downs/stand_down_revocations for direct-subordinate "
-        "hold control, and ephemeral_* actions for scoped worker delegation.\n\n"
-        "Each task carries derived graph context: dependency_status, child_task_ids, "
-        "blocked_by_task_ids, and subtask_counts. Do not start tasks whose "
-        "dependency_status is not 'satisfied'; wait until their blocked_by_task_ids "
-        "clear. Decompose large work by creating child tasks via task_creations with "
-        "parent_task_id instead of ad hoc checklists in descriptions; non-lead "
-        "roles must include that active parent_task_id. Declare "
-        "ordering between tasks with dependency_task_ids.\n\n"
+        f"Follow the Team Add-on guidance in {TEAM_AGENT_GUIDANCE_PATH}, managed "
+        f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
+        f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below for this "
+        "dispatch and write the requested action artifact before finishing.\n\n"
+        f"{_task_creation_mandate_guidance(agent)}"
         f"{_project_repo_prompt_guidance(project_repo)}"
-        "Action surface guide:\n"
-        "- Use task_updates for tasks you own. State, priority, title, and "
-        "description edits are owner-only. Do not accept or reject someone else's "
-        "task with task_updates.\n"
-        "- Use review_requests to ask a specific same-team agent to review a "
-        "deliverable. Include instructions when the reviewer needs a focused "
-        "check.\n"
-        "- For non-Git deliverables, stage files under /artifacts and list the "
-        "exact relative files or directories in deliverables[].artifact_paths. "
-        "The Team runtime publishes only those paths and records artifact refs "
-        "for reviewers.\n"
-        "- Use review_decisions only for review requests assigned to you. Accepting "
-        "a review is the action that cascades to deliverable/task acceptance once "
-        "all attached reviews are accepted.\n"
-        "- Before git_release_requests for Git work, make sure every deliverable is "
-        "accepted and already has git_refs.feature_branch. Raw agent or review "
-        "branches are not release sources; use git_review_promotions and "
-        "git_feature_updates first.\n"
-        "- If a deliverable should be reviewed by another agent, create a "
-        "review_requests item for that reviewer; do not mark the task accepted "
-        "yourself unless the task is actually yours.\n"
-        "- Inbox items with item_type operator_directive are durable operator "
-        "instructions that were relayed from an out-of-band channel. Handle them "
-        "through this Team dispatch by writing the appropriate task/status/review "
-        "actions to team-action.json, then include their ids in "
-        "handled_inbox_item_ids.\n\n"
-        "- Inbox items include response_requested. When response_requested is false, "
-        "do not send thank-you, acknowledgement, or other no-op replies; either "
-        "take the needed Team action or mark the item handled with "
-        "handled_inbox_item_ids. When response_requested is true, respond through "
-        "the normal allowed directional action surface if a response is needed.\n\n"
-        "- Inbox messages may include priority low, normal, or high. Use low for "
-        "FYI updates that can be batched, normal for ordinary coordination, and "
-        "high only for urgent blockers. Low-priority inbox may be delivered with "
-        "other work instead of waking the recipient immediately.\n\n"
-        "- Use stand_downs when you need a direct subordinate and that subordinate's "
-        "subtree to stop future Team work. Use stand_down_revocations to clear a "
-        "stand-down you set. Do not encode stand-downs as prose-only status_requests.\n\n"
         f"{handoff_section}"
         f"{action_feedback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
@@ -2057,6 +2074,28 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
+    role_permissions = {
+        str(permission)
+        for permission in (agent.get("role_permissions") or [])
+        if permission is not None
+    }
+    if RolePermission.CREATE_ROOT_TASK.value in role_permissions:
+        return (
+            "Task creation mandate for this dispatch: your current role has "
+            f"{RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
+            "tasks by omitting parent_task_id when you otherwise have authority "
+            "to create the task. You may also create child tasks with "
+            "parent_task_id.\n\n"
+        )
+    return (
+        "Task creation mandate for this dispatch: your current role does not "
+        f"have {RolePermission.CREATE_ROOT_TASK.value}. You may NOT create "
+        "top-level tasks. Every task_creations item you submit must set "
+        "parent_task_id to one of your own active tasks.\n\n"
     )
 
 
@@ -2259,6 +2298,67 @@ def _seed_action_contract_files(
     }
 
 
+def _seed_team_agent_guidance(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+) -> dict[str, Any]:
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    metadata = _session_metadata(context, session_id=session_id)
+    known_vm_ip = _session_known_vm_ip(metadata)
+    if _metadata_has_current_agent_guidance(metadata):
+        return {
+            "seeded": False,
+            "reason": "already_seeded",
+            "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        }
+
+    provider = AgentCopyFilesEffectProvider()
+    provider.initialize(
+        AgentCopyFilesEffectDefinition(
+            id="team-seed-agent-guidance",
+            display_name="Seed Team agent guidance",
+            type="effect:agent:copy-files",
+            session_id=session_id,
+            vm_user="agent",
+            files=[
+                {
+                    "content": _team_agent_guidance_content(),
+                    "destination_path": TEAM_AGENT_GUIDANCE_PATH,
+                    "mode": "0644",
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                }
+            ],
+        ),
+        context,
+    )
+    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
+    copy_result = provider.execute(resolved_config=resolved_config)
+    if not bool(copy_result.get("success")):
+        message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
+        raise RuntimeError(message or "failed to seed Team agent guidance")
+
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    _mark_agent_guidance_seeded(
+        context,
+        session_id=session_id,
+        copy_result=copy_result,
+        vm_ip=copied_vm_ip,
+    )
+    return {
+        "seeded": True,
+        "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+        "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+        "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        "vm_ip": copied_vm_ip,
+        "copied_paths": list(copy_result.get("copied_paths") or []),
+    }
+
+
 def _session_has_current_action_contract(
     context: Any,
     *,
@@ -2273,6 +2373,21 @@ def _session_has_current_action_contract(
         schema_path=schema_path,
         example_path=example_path,
         action_artifact_path=action_artifact_path,
+    )
+
+
+def _metadata_has_current_agent_guidance(metadata: Mapping[str, Any]) -> bool:
+    team_addon = metadata.get("team_addon")
+    if not isinstance(team_addon, Mapping):
+        return False
+    guidance = team_addon.get("agent_guidance")
+    if not isinstance(guidance, Mapping):
+        return False
+    return (
+        int(guidance.get("guidance_version") or 0) == TEAM_AGENT_GUIDANCE_VERSION
+        and guidance.get("guidance_path") == TEAM_AGENT_GUIDANCE_PATH
+        and guidance.get("section_id") == TEAM_AGENT_GUIDANCE_SECTION_ID
+        and guidance.get("seeded") is True
     )
 
 
@@ -2352,6 +2467,34 @@ def _mark_action_contract_seeded(
             "schema_path": schema_path,
             "example_path": example_path,
             "action_artifact_path": action_artifact_path,
+            "copied_paths": list(copy_result.get("copied_paths") or []),
+        }
+    }
+    if vm_ip:
+        team_metadata["last_known_vm_ip"] = vm_ip
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": team_metadata},
+    )
+
+
+def _mark_agent_guidance_seeded(
+    context: Any,
+    *,
+    session_id: str,
+    copy_result: Mapping[str, Any],
+    vm_ip: str | None,
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    team_metadata: dict[str, Any] = {
+        "agent_guidance": {
+            "seeded": True,
+            "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }
