@@ -28,7 +28,13 @@ class SkatteverketClient:
             }
         missing_secret_refs = [
             str(self.connection[key])
-            for key in ("client_id_env", "client_secret_env", "api_key_env")
+            for key in (
+                "client_id_env",
+                "client_secret_env",
+                "apigw_client_id_env",
+                "apigw_client_secret_env",
+                "api_key_env",
+            )
             if self.connection.get(key) and not os.environ.get(str(self.connection[key]))
         ]
         return {
@@ -79,6 +85,12 @@ class SkatteverketClient:
         api_key_env = str(self.connection.get("api_key_env") or "").strip()
         if api_key_env and os.environ.get(api_key_env):
             headers["x-api-key"] = os.environ[api_key_env]
+        apigw_client_id_env = str(self.connection.get("apigw_client_id_env") or "").strip()
+        if apigw_client_id_env and os.environ.get(apigw_client_id_env):
+            headers["Client_Id"] = os.environ[apigw_client_id_env]
+        apigw_client_secret_env = str(self.connection.get("apigw_client_secret_env") or "").strip()
+        if apigw_client_secret_env and os.environ.get(apigw_client_secret_env):
+            headers["Client_Secret"] = os.environ[apigw_client_secret_env]
         request_payload = {
             "api_name": draft.api_name,
             "period": draft.period,

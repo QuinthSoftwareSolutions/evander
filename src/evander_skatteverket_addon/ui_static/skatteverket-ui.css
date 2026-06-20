@@ -144,11 +144,77 @@ article {
   gap: 6px;
 }
 
-.skv-field-row span,
+.skv-field-label,
 .skv-api-picker legend {
   color: var(--skv-muted);
   font-size: 12px;
   font-weight: 650;
+}
+
+.skv-field-label,
+.skv-api-picker legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skv-help {
+  position: relative;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid var(--skv-button-border);
+  border-radius: 50%;
+  color: var(--skv-muted);
+  cursor: help;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.skv-help::after {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: min(320px, 70vw);
+  padding: 8px 10px;
+  border: 1px solid var(--skv-panel-border);
+  border-radius: 6px;
+  background: var(--skv-code-bg);
+  box-shadow: var(--skv-shadow);
+  color: var(--skv-text);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  opacity: 0;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  text-align: left;
+  transform: translate(-50%, 4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+}
+
+.skv-help:hover,
+.skv-help:focus-visible {
+  border-color: var(--skv-focus);
+  color: var(--skv-text);
+}
+
+.skv-help:hover::after,
+.skv-help:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
+}
+
+.skv-help:focus-visible {
+  outline: 2px solid var(--skv-focus);
+  outline-offset: 2px;
 }
 
 .skv-check {

@@ -125,16 +125,23 @@ def test_skatteverket_static_ui_exposes_connection_editor() -> None:
         "submission_endpoint",
         "client_id_env",
         "client_secret_env",
+        "apigw_client_id_env",
+        "apigw_client_secret_env",
         "api_key_env",
         "certificate_subject",
         "redirect_uri",
     ):
         assert f'name="{field_name}"' in index_html
     assert 'id="api-picker"' in index_html
+    assert 'class="skv-help"' in index_html
+    assert "OAuth2 Client secret env help" in index_html
+    assert "APIgw Client secret env help" in index_html
+    assert "Skatteverket access tokens" in index_html
     assert 'fetch(`${apiBase}/connections`' in ui_js
     assert 'method: "POST"' in ui_js
     assert "enabled_api_names" in ui_js
     assert ".skv-api-picker" in ui_css
+    assert ".skv-help::after" in ui_css
 
 
 def test_skatteverket_admin_api_upserts_connection(tmp_path: Path) -> None:
@@ -155,6 +162,8 @@ def test_skatteverket_admin_api_upserts_connection(tmp_path: Path) -> None:
             "token_url": "https://login.example.test/token",
             "client_id_env": "SKV_CLIENT_ID",
             "client_secret_env": "SKV_CLIENT_SECRET",
+            "apigw_client_id_env": "SKV_APIGW_CLIENT_ID",
+            "apigw_client_secret_env": "SKV_APIGW_CLIENT_SECRET",
             "api_key_env": "SKV_API_KEY",
             "certificate_subject": "CN=test",
             "redirect_uri": "https://admin.example.test/skv/callback",
@@ -175,6 +184,8 @@ def test_skatteverket_admin_api_upserts_connection(tmp_path: Path) -> None:
     assert status["missing_secret_refs"] == [
         "SKV_CLIENT_ID",
         "SKV_CLIENT_SECRET",
+        "SKV_APIGW_CLIENT_ID",
+        "SKV_APIGW_CLIENT_SECRET",
         "SKV_API_KEY",
     ]
 

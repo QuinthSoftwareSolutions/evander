@@ -30,6 +30,9 @@ material. Newer entries are added incrementally as changes land.
 
 - Added editable Skatteverket Add-on Admin UI controls for connection metadata,
   secret environment-variable names, submission endpoint, and enabled APIs.
+- Added hover/focus help and explicit API-gateway client credential fields for
+  Skatteverket connections so operators can see what each setting expects
+  without leaving the page.
 - Report missing Skatteverket secret references as the configured environment
   variable names in connection status payloads.
 

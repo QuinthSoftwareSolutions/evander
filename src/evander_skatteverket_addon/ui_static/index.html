@@ -61,15 +61,45 @@
           <form id="connection-form" class="skv-form">
             <div class="skv-field-row">
               <label>
-                <span>Connection ID</span>
+                <span class="skv-field-label">
+                  <span>Connection ID</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Connection ID help"
+                    title="Stable local key for this saved Skatteverket connection. Use default unless you need multiple connections."
+                    data-tooltip="Stable local key for this saved Skatteverket connection. Use default unless you need multiple connections."
+                    >?</span>
+                </span>
                 <input name="connection_id" autocomplete="off" value="default" />
               </label>
               <label>
-                <span>Display name</span>
+                <span class="skv-field-label">
+                  <span>Display name</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Display name help"
+                    title="Operator-facing label for this connection in the Admin UI and status payloads."
+                    data-tooltip="Operator-facing label for this connection in the Admin UI and status payloads."
+                    >?</span>
+                </span>
                 <input name="display_name" autocomplete="off" />
               </label>
               <label>
-                <span>Environment</span>
+                <span class="skv-field-label">
+                  <span>Environment</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Environment help"
+                    title="Skatteverket target environment label, such as sandbox, komplett_testtjanst, or driftsatt_tjanst."
+                    data-tooltip="Skatteverket target environment label, such as sandbox, komplett_testtjanst, or driftsatt_tjanst."
+                    >?</span>
+                </span>
                 <input name="environment" autocomplete="off" list="environment-options" />
                 <datalist id="environment-options">
                   <option value="sandbox"></option>
@@ -79,49 +109,177 @@
               </label>
               <label class="skv-check">
                 <input name="enabled" type="checkbox" checked />
-                <span>Enabled</span>
+                <span class="skv-field-label">
+                  <span>Enabled</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Enabled help"
+                    title="When enabled, this connection can be selected as the default Skatteverket connection."
+                    data-tooltip="When enabled, this connection can be selected as the default Skatteverket connection."
+                    >?</span>
+                </span>
               </label>
             </div>
             <div class="skv-field-row">
               <label>
-                <span>Base URL</span>
+                <span class="skv-field-label">
+                  <span>Base URL</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Base URL help"
+                    title="Root API base URL supplied by Skatteverket after onboarding. Leave blank until an API adapter requires it."
+                    data-tooltip="Root API base URL supplied by Skatteverket after onboarding. Leave blank until an API adapter requires it."
+                    >?</span>
+                </span>
                 <input name="base_url" autocomplete="off" />
               </label>
               <label>
-                <span>Token URL</span>
+                <span class="skv-field-label">
+                  <span>Token URL</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Token URL help"
+                    title="OAuth token endpoint for this Skatteverket integration, if the enabled APIs require OAuth."
+                    data-tooltip="OAuth token endpoint for this Skatteverket integration, if the enabled APIs require OAuth."
+                    >?</span>
+                </span>
                 <input name="token_url" autocomplete="off" />
               </label>
               <label>
-                <span>Submission endpoint</span>
+                <span class="skv-field-label">
+                  <span>Submission endpoint</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Submission endpoint help"
+                    title="Endpoint used by approval-gated submit actions for validated drafts. Leave blank to make submissions fail closed."
+                    data-tooltip="Endpoint used by approval-gated submit actions for validated drafts. Leave blank to make submissions fail closed."
+                    >?</span>
+                </span>
                 <input name="submission_endpoint" autocomplete="off" />
               </label>
             </div>
             <div class="skv-field-row">
               <label>
-                <span>Client ID env</span>
+                <span class="skv-field-label">
+                  <span>OAuth2 Client ID env</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="OAuth2 Client ID env help"
+                    title="Name of the host environment variable containing the OAuth2 client ID used to request Skatteverket access tokens."
+                    data-tooltip="Name of the host environment variable containing the OAuth2 client ID used to request Skatteverket access tokens."
+                    >?</span>
+                </span>
                 <input name="client_id_env" autocomplete="off" />
               </label>
               <label>
-                <span>Client secret env</span>
+                <span class="skv-field-label">
+                  <span>OAuth2 Client secret env</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="OAuth2 Client secret env help"
+                    title="Name of the host environment variable containing the OAuth2 client secret. Leave blank only when the selected Skatteverket flow replaces it with certificate auth."
+                    data-tooltip="Name of the host environment variable containing the OAuth2 client secret. Leave blank only when the selected Skatteverket flow replaces it with certificate auth."
+                    >?</span>
+                </span>
                 <input name="client_secret_env" autocomplete="off" />
               </label>
               <label>
-                <span>API key env</span>
-                <input name="api_key_env" autocomplete="off" />
+                <span class="skv-field-label">
+                  <span>APIgw Client ID env</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="APIgw Client ID env help"
+                    title="Name of the host environment variable containing the API-gateway client ID sent when calling Skatteverket APIs."
+                    data-tooltip="Name of the host environment variable containing the API-gateway client ID sent when calling Skatteverket APIs."
+                    >?</span>
+                </span>
+                <input name="apigw_client_id_env" autocomplete="off" />
               </label>
             </div>
             <div class="skv-field-row">
               <label>
-                <span>Certificate subject</span>
+                <span class="skv-field-label">
+                  <span>APIgw Client secret env</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="APIgw Client secret env help"
+                    title="Name of the host environment variable containing the API-gateway client secret sent when calling Skatteverket APIs."
+                    data-tooltip="Name of the host environment variable containing the API-gateway client secret sent when calling Skatteverket APIs."
+                    >?</span>
+                </span>
+                <input name="apigw_client_secret_env" autocomplete="off" />
+              </label>
+              <label>
+                <span class="skv-field-label">
+                  <span>Extra API key env</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Extra API key env help"
+                    title="Optional host environment variable for adapters that need a single API key header in addition to Skatteverket client credentials."
+                    data-tooltip="Optional host environment variable for adapters that need a single API key header in addition to Skatteverket client credentials."
+                    >?</span>
+                </span>
+                <input name="api_key_env" autocomplete="off" />
+              </label>
+              <label>
+                <span class="skv-field-label">
+                  <span>Certificate subject</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Certificate subject help"
+                    title="Certificate or organisation identity subject expected by the Skatteverket API, when applicable."
+                    data-tooltip="Certificate or organisation identity subject expected by the Skatteverket API, when applicable."
+                    >?</span>
+                </span>
                 <input name="certificate_subject" autocomplete="off" />
               </label>
               <label>
-                <span>Redirect URI</span>
+                <span class="skv-field-label">
+                  <span>Redirect URI</span>
+                  <span
+                    class="skv-help"
+                    tabindex="0"
+                    role="img"
+                    aria-label="Redirect URI help"
+                    title="OAuth redirect URI registered for this integration, if Skatteverket onboarding requires one."
+                    data-tooltip="OAuth redirect URI registered for this integration, if Skatteverket onboarding requires one."
+                    >?</span>
+                </span>
                 <input name="redirect_uri" autocomplete="off" />
               </label>
             </div>
             <fieldset class="skv-api-picker">
-              <legend>Enabled APIs</legend>
+              <legend>
+                <span>Enabled APIs</span>
+                <span
+                  class="skv-help"
+                  tabindex="0"
+                  role="img"
+                  aria-label="Enabled APIs help"
+                  title="Skatteverket catalog APIs this connection is intended to cover for workflows and MCP tools."
+                  data-tooltip="Skatteverket catalog APIs this connection is intended to cover for workflows and MCP tools."
+                  >?</span>
+              </legend>
               <div id="api-picker" class="skv-api-options"></div>
             </fieldset>
             <div class="skv-form-actions">

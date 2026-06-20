@@ -87,6 +87,8 @@
     input("submission_endpoint").value = settings.submission_endpoint || "";
     input("client_id_env").value = settings.client_id_env || "";
     input("client_secret_env").value = settings.client_secret_env || "";
+    input("apigw_client_id_env").value = settings.apigw_client_id_env || "";
+    input("apigw_client_secret_env").value = settings.apigw_client_secret_env || "";
     input("api_key_env").value = settings.api_key_env || "";
     input("certificate_subject").value = settings.certificate_subject || "";
     input("redirect_uri").value = settings.redirect_uri || "";
@@ -108,6 +110,8 @@
       submission_endpoint: value("submission_endpoint"),
       client_id_env: value("client_id_env"),
       client_secret_env: value("client_secret_env"),
+      apigw_client_id_env: value("apigw_client_id_env"),
+      apigw_client_secret_env: value("apigw_client_secret_env"),
       api_key_env: value("api_key_env"),
       certificate_subject: value("certificate_subject"),
       redirect_uri: value("redirect_uri"),
