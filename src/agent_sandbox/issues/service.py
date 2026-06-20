@@ -230,6 +230,80 @@ def _format_ado_html_field(value: str | None) -> str | None:
     return render_markdownish_text_to_html(value)
 
 
+def _parse_ado_datetime_optional(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _datetime_in_range(value: datetime | None, *, since: datetime, until: datetime | None) -> bool:
+    if value is None:
+        return False
+    start = since.astimezone(UTC) if since.tzinfo is not None else since.replace(tzinfo=UTC)
+    normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if normalized < start:
+        return False
+    if until is not None:
+        end = until.astimezone(UTC) if until.tzinfo is not None else until.replace(tzinfo=UTC)
+        if normalized > end:
+            return False
+    return True
+
+
+def _ado_activity_iso(value: datetime) -> str:
+    normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.isoformat().replace("+00:00", "Z")
+
+
+def _ado_activity_identity_values(value: Any) -> set[str]:
+    values: set[str] = set()
+
+    def add(candidate: Any) -> None:
+        text = str(candidate or "").strip()
+        if text:
+            values.add(text.casefold())
+
+    if isinstance(value, dict):
+        for key in (
+            "id",
+            "descriptor",
+            "subjectDescriptor",
+            "displayName",
+            "display_name",
+            "uniqueName",
+            "unique_name",
+            "email",
+            "name",
+        ):
+            add(value.get(key))
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            for key in ("Account", "Mail", "SignInAddress"):
+                raw = properties.get(key)
+                if isinstance(raw, dict):
+                    raw = raw.get("$value")
+                add(raw)
+    else:
+        add(value)
+    return values
+
+
+def _ado_activity_identity_matches(query: str | None, value: Any) -> bool:
+    text = str(query or "").strip()
+    if not text:
+        return True
+    return text.casefold() in _ado_activity_identity_values(value)
+
+
 def _artifact_filename(artifact: dict[str, Any]) -> str:
     return str(
         artifact.get("normalized_safe_filename")
@@ -368,6 +442,22 @@ class IssueProviderAdapter(Protocol):
         top: int = 50,
         skip: int = 0,
         include_relations: bool = False,
+    ) -> dict[str, Any]: ...
+
+    def query_work_item_activity(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        actor: str | None = None,
+        since: datetime,
+        until: datetime | None = None,
+        activity_types: list[str] | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
     ) -> dict[str, Any]: ...
 
     def list_current_iteration_backlog_items(
@@ -939,6 +1029,7 @@ class AzureDevOpsIssueAdapter:
                                 str(entry.get("revisedDate") or "").strip()
                             ),
                             "revised_by": self._normalize_assigned_to(entry.get("revisedBy")),
+                            "revised_by_identity": self._json_safe(entry.get("revisedBy")),
                             "fields": self._json_safe(
                                 entry.get("fields") if isinstance(entry.get("fields"), dict) else {}
                             ),
@@ -1428,6 +1519,291 @@ class AzureDevOpsIssueAdapter:
                 include_relations=include_relations,
             )
 
+    def query_work_item_activity(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        actor: str | None = None,
+        since: datetime,
+        until: datetime | None = None,
+        activity_types: list[str] | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps work item activity queries.")
+        normalized_types = {str(item or "").strip().casefold() for item in (activity_types or [])}
+        if not normalized_types:
+            normalized_types = {"created", "changed", "commented"}
+        auth_header = self._auth_header(pat)
+        wiql = self._build_activity_wiql_query(
+            project=normalized_project,
+            since=since,
+            until=until,
+            activity_types=sorted(normalized_types),
+            states=states or [],
+            types=types or [],
+            tags_any=tags_any or [],
+        )
+        normalized_top = max(1, min(int(top), 200))
+        normalized_skip = max(0, int(skip))
+        candidate_page_size = 200
+        candidate_skip = 0
+        candidate_total_matches: int | None = None
+        candidate_scanned_count = 0
+        matched_items: list[dict[str, Any]] = []
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            while True:
+                candidates = self._query_backlog_items_core(
+                    client,
+                    organization_url=organization_url,
+                    project=normalized_project,
+                    auth_header=auth_header,
+                    wiql=wiql,
+                    top=candidate_page_size,
+                    skip=candidate_skip,
+                    include_relations=False,
+                )
+                candidate_paging = (
+                    candidates.get("paging") if isinstance(candidates.get("paging"), dict) else {}
+                )
+                raw_candidate_total = candidate_paging.get("total_matches")
+                if isinstance(raw_candidate_total, int):
+                    candidate_total_matches = raw_candidate_total
+                candidate_items = candidates.get("items") or []
+                candidate_scanned_count += len(candidate_items)
+                for candidate in candidate_items:
+                    item_id = str(candidate.get("id") or "").strip()
+                    if not item_id:
+                        continue
+                    detail = self.get_backlog_item_by_id(
+                        directory_path=directory_path,
+                        backlog_item_id=item_id,
+                        project=normalized_project,
+                        include_comments="commented" in normalized_types,
+                        include_relations=False,
+                        include_updates="changed" in normalized_types,
+                    )
+                    activities = self._work_item_activity_records(
+                        detail,
+                        actor=actor,
+                        since=since,
+                        until=until,
+                        activity_types=normalized_types,
+                    )
+                    if not activities:
+                        continue
+                    matched_items.append(
+                        {
+                            "provider": self.provider_name,
+                            "id": detail.get("id"),
+                            "project": detail.get("project") or normalized_project,
+                            "title": detail.get("title"),
+                            "state": detail.get("state"),
+                            "type": detail.get("type"),
+                            "url": detail.get("url"),
+                            "web_url": detail.get("web_url"),
+                            "activities": activities,
+                            "fields": detail.get("fields") or {},
+                        }
+                    )
+                raw_next_skip = candidate_paging.get("next_skip")
+                next_candidate_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
+                if next_candidate_skip is not None and next_candidate_skip > candidate_skip:
+                    candidate_skip = next_candidate_skip
+                    continue
+                if not candidate_paging.get("has_more") or not candidate_items:
+                    break
+                candidate_skip += len(candidate_items)
+        total_activity_matches = len(matched_items)
+        items = matched_items[normalized_skip : normalized_skip + normalized_top]
+        next_skip = (
+            normalized_skip + len(items)
+            if normalized_skip + len(items) < total_activity_matches
+            else None
+        )
+        paging = {
+            "skip": normalized_skip,
+            "top": normalized_top,
+            "returned_count": len(items),
+            "total_matches": total_activity_matches,
+            "total_activity_matches": total_activity_matches,
+            "candidate_total_matches": candidate_total_matches,
+            "candidate_scanned_count": candidate_scanned_count,
+            "has_more": next_skip is not None,
+            "next_skip": next_skip,
+            "activity_types": sorted(normalized_types),
+        }
+        return {
+            "provider": self.provider_name,
+            "project": normalized_project,
+            "items": items,
+            "count": len(items),
+            "paging": paging,
+        }
+
+    def _build_activity_wiql_query(
+        self,
+        *,
+        project: str,
+        since: datetime,
+        until: datetime | None,
+        activity_types: list[str],
+        states: list[str],
+        types: list[str],
+        tags_any: list[str],
+    ) -> str:
+        where_clauses: list[str] = [f"[System.TeamProject] = {self._wiql_quote(project)}"]
+        state_clause = self._wiql_in_clause("System.State", states)
+        if state_clause:
+            where_clauses.append(state_clause)
+        type_clause = self._wiql_in_clause("System.WorkItemType", types)
+        if type_clause:
+            where_clauses.append(type_clause)
+        if tags_any:
+            tag_clauses = [
+                f"[System.Tags] CONTAINS {self._wiql_quote(tag)}"
+                for tag in tags_any
+                if str(tag).strip()
+            ]
+            if tag_clauses:
+                where_clauses.append("(" + " OR ".join(tag_clauses) + ")")
+        since_text = self._wiql_quote(_ado_activity_iso(since))
+        until_text = self._wiql_quote(_ado_activity_iso(until)) if until is not None else None
+        date_clauses: list[str] = []
+        if "created" in activity_types:
+            clause = f"[System.CreatedDate] >= {since_text}"
+            if until_text:
+                clause = f"({clause} AND [System.CreatedDate] <= {until_text})"
+            date_clauses.append(clause)
+        if "changed" in activity_types or "commented" in activity_types:
+            clause = f"[System.ChangedDate] >= {since_text}"
+            if until_text:
+                clause = f"({clause} AND [System.ChangedDate] <= {until_text})"
+            date_clauses.append(clause)
+        if date_clauses:
+            where_clauses.append("(" + " OR ".join(date_clauses) + ")")
+        where = " AND ".join(where_clauses)
+        return (
+            "SELECT [System.Id] FROM WorkItems "
+            f"WHERE {where} "
+            "ORDER BY [System.ChangedDate] DESC, [System.Id] DESC"
+        )
+
+    def _work_item_activity_records(
+        self,
+        item: dict[str, Any],
+        *,
+        actor: str | None,
+        since: datetime,
+        until: datetime | None,
+        activity_types: set[str],
+    ) -> list[dict[str, Any]]:
+        fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+        records: list[dict[str, Any]] = []
+        if "created" in activity_types:
+            created_at = _parse_ado_datetime_optional(fields.get("System.CreatedDate"))
+            created_by = fields.get("System.CreatedBy")
+            if _datetime_in_range(created_at, since=since, until=until) and _ado_activity_identity_matches(
+                actor, created_by
+            ):
+                identity = assigned_to_identity(created_by) or {}
+                records.append(
+                    {
+                        "activity_type": "created",
+                        "provenance": "created_field",
+                        "occurred_at": created_at,
+                        "actor": self._normalize_assigned_to(created_by),
+                        "actor_identity": identity,
+                        "summary": "Work item created",
+                        "raw": {"field": "System.CreatedDate", "value": fields.get("System.CreatedDate")},
+                    }
+                )
+        if "changed" in activity_types:
+            changed_at = _parse_ado_datetime_optional(fields.get("System.ChangedDate"))
+            changed_by = fields.get("System.ChangedBy")
+            if _datetime_in_range(changed_at, since=since, until=until) and _ado_activity_identity_matches(
+                actor, changed_by
+            ):
+                identity = assigned_to_identity(changed_by) or {}
+                records.append(
+                    {
+                        "activity_type": "changed",
+                        "provenance": "changed_field",
+                        "occurred_at": changed_at,
+                        "actor": self._normalize_assigned_to(changed_by),
+                        "actor_identity": identity,
+                        "summary": "Work item latest change",
+                        "raw": {"field": "System.ChangedDate", "value": fields.get("System.ChangedDate")},
+                    }
+                )
+            for update in item.get("updates") or []:
+                if not isinstance(update, dict):
+                    continue
+                revised_at = _parse_ado_datetime_optional(update.get("revised_at"))
+                revised_by = update.get("revised_by")
+                revised_identity = (
+                    update.get("revised_by_identity")
+                    if isinstance(update.get("revised_by_identity"), dict)
+                    else {}
+                )
+                if not _datetime_in_range(revised_at, since=since, until=until):
+                    continue
+                if not _ado_activity_identity_matches(actor, revised_identity or revised_by):
+                    continue
+                changed_fields = (
+                    update.get("fields") if isinstance(update.get("fields"), dict) else {}
+                )
+                records.append(
+                    {
+                        "activity_type": "changed",
+                        "provenance": "update",
+                        "occurred_at": revised_at,
+                        "actor": str(revised_by or "").strip() or None,
+                        "actor_identity": revised_identity,
+                        "summary": "Updated fields: " + ", ".join(sorted(changed_fields.keys()))
+                        if changed_fields
+                        else "Work item update",
+                        "fields": changed_fields,
+                        "raw": update,
+                    }
+                )
+        if "commented" in activity_types:
+            for comment in item.get("comments") or []:
+                if not isinstance(comment, dict):
+                    continue
+                created_at = _parse_ado_datetime_optional(comment.get("created_date"))
+                identity = (
+                    comment.get("created_by_identity")
+                    if isinstance(comment.get("created_by_identity"), dict)
+                    else {}
+                )
+                actor_value: Any = identity or comment.get("created_by")
+                if not _datetime_in_range(created_at, since=since, until=until):
+                    continue
+                if not _ado_activity_identity_matches(actor, actor_value):
+                    continue
+                records.append(
+                    {
+                        "activity_type": "commented",
+                        "provenance": "comment",
+                        "occurred_at": created_at,
+                        "actor": comment.get("created_by"),
+                        "actor_identity": identity,
+                        "summary": " ".join(str(comment.get("text") or "").split())[:240] or None,
+                        "comment_id": comment.get("id"),
+                        "raw": comment,
+                    }
+                )
+        records.sort(key=lambda record: record["occurred_at"], reverse=True)
+        return records
+
     def list_current_iteration_backlog_items(
         self,
         *,
@@ -1696,11 +2072,14 @@ class AzureDevOpsIssueAdapter:
             "System.Description",
             "System.State",
             "System.WorkItemType",
+            "System.CreatedDate",
+            "System.CreatedBy",
             "System.IterationPath",
             "System.AreaPath",
             "System.AssignedTo",
             "System.Tags",
             "System.ChangedDate",
+            "System.ChangedBy",
             "Microsoft.VSTS.TCM.ReproSteps",
             "Microsoft.VSTS.TCM.SystemInfo",
             "Microsoft.VSTS.Common.AcceptanceCriteria",
@@ -2281,6 +2660,39 @@ class IssueService:
             top=top,
             skip=skip,
             include_relations=include_relations,
+        )
+
+    def query_remote_work_item_activity(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        project: str | None = None,
+        actor: str | None = None,
+        since: datetime,
+        until: datetime | None = None,
+        activity_types: list[str] | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.query_work_item_activity(
+            directory_path=directory_path,
+            project=project,
+            actor=actor,
+            since=since,
+            until=until,
+            activity_types=activity_types,
+            states=states,
+            types=types,
+            tags_any=tags_any,
+            top=top,
+            skip=skip,
         )
 
     def list_remote_current_iteration_backlog_items(

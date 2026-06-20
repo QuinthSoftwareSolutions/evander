@@ -23,13 +23,25 @@ from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepo
 
 class _UsageStream(httpx.AsyncByteStream):
     async def __aiter__(self):
-        yield (
-            b'data: {"type":"response.output_text.delta","delta":"secret completion text"}\n\n'
-        )
+        yield (b'data: {"type":"response.output_text.delta","delta":"secret completion text"}\n\n')
         yield (
             b'data: {"type":"response.completed","response":{"id":"resp-stream",'
             b'"type":"response","model":"gpt-5.2-codex","output_text":"secret completion text",'
             b'"usage":{"input_tokens":7,"output_tokens":8,"total_tokens":15}}}\n\n'
+        )
+        yield b"data: [DONE]\n\n"
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _LocalOpenAIUsageStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+        yield (
+            b'data: {"type":"response.completed","response":{"id":"resp-local-stream",'
+            b'"type":"response","model":"qwen3-coder:30b",'
+            b'"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13}}}\n\n'
         )
         yield b"data: [DONE]\n\n"
 
@@ -240,6 +252,82 @@ def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
     }
 
 
+def test_local_openai_relay_stream_records_usage_with_local_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    write_session(config, session_id="session-local")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-local",
+        dispatch_id="dispatch-local",
+        workflow_run_id="workflow-local",
+        effect_id="effect-local",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="qwen3-coder:30b",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_LocalOpenAIUsageStream(),
+        )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-local/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "qwen3-coder:30b", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"resp-local-stream" in body
+    assert captured["authorization"] == "Bearer ollama"
+    assert captured["url"] == "http://127.0.0.1:11435/v1/responses"
+    assert captured["payload"] == {"model": "qwen3-coder:30b", "input": "hello"}
+
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    events = store.list_events(session_id="session-local")
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_id == "resp-local-stream"
+    assert event.provider == "local_openai"
+    assert event.provider_endpoint_identifier == "responses"
+    assert event.model == "qwen3-coder:30b"
+    assert event.input_tokens == 9
+    assert event.output_tokens == 4
+    assert event.total_tokens == 13
+    assert event.dispatch_id == "dispatch-local"
+    assert event.execution_backend == "container_worker_vm"
+    assert event.raw_usage_metadata["request_metadata"] == {
+        "method": "POST",
+        "path": "/v1/responses",
+        "stream": True,
+    }
+
+
 def test_openai_relay_delivers_operator_steering_note_on_next_responses_call(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -420,6 +508,105 @@ def test_openai_relay_delivers_operator_steering_note_on_next_chat_completion_ca
     assert delivered is not None
     assert delivered.status == "delivered"
     assert delivered.provider_endpoint == "chat/completions"
+
+
+def test_local_openai_relay_delivers_operator_steering_to_responses_and_chat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    write_session(config, session_id="session-local")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-local",
+        dispatch_id="dispatch-local-steer",
+        directory_path="root/team-a",
+        model="qwen3-coder:30b",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    response_note = steering_store.create_note(
+        session_id="session-local",
+        dispatch_id="dispatch-local-steer",
+        message="Use the local model response path.",
+    )
+    captured_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content.decode("utf-8")))
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-local-steered",
+                    "object": "chat.completion",
+                    "model": "qwen3-coder:30b",
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-local-steered",
+                "type": "response",
+                "model": "qwen3-coder:30b",
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            },
+        )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-local/responses",
+        json={"model": "qwen3-coder:30b", "input": "hello"},
+    )
+
+    assert response.status_code == 200
+    response_payload = captured_payloads[0]
+    assert isinstance(response_payload["input"], list)
+    assert (
+        "Use the local model response path." in response_payload["input"][-1]["content"][0]["text"]
+    )
+    delivered_response_note = steering_store.get_note(response_note.note_id)
+    assert delivered_response_note is not None
+    assert delivered_response_note.status == "delivered"
+    assert delivered_response_note.provider == "local_openai"
+    assert delivered_response_note.provider_endpoint == "responses"
+
+    chat_note = steering_store.create_note(
+        session_id="session-local",
+        dispatch_id="dispatch-local-steer",
+        message="Use the local model chat path.",
+    )
+    chat_response = client.post(
+        "/v1/session/session-local/chat/completions",
+        json={
+            "model": "qwen3-coder:30b",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert chat_response.status_code == 200
+    chat_payload = captured_payloads[1]
+    assert isinstance(chat_payload["messages"], list)
+    assert "Use the local model chat path." in chat_payload["messages"][-1]["content"]
+    delivered_chat_note = steering_store.get_note(chat_note.note_id)
+    assert delivered_chat_note is not None
+    assert delivered_chat_note.status == "delivered"
+    assert delivered_chat_note.provider == "local_openai"
+    assert delivered_chat_note.provider_endpoint == "chat/completions"
 
 
 def test_openai_relay_returns_non_streaming_response_when_usage_recording_fails(
@@ -1212,9 +1399,7 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
     assert "secret completion text" not in event_json
 
 
-def test_openai_relay_records_websocket_usage_unavailable(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_openai_relay_records_websocket_usage_unavailable(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = make_config(runtime_dir)
     ensure_directory(config)
@@ -1256,9 +1441,7 @@ def test_openai_relay_records_websocket_usage_unavailable(
         asyncio.run(upstream.push(final_message))
         assert websocket.receive_text() == final_message
 
-    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event(
-        "resp-websocket-empty"
-    )
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("resp-websocket-empty")
     assert event is not None
     event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
     assert event.normalized_usage_status == "usage_unavailable"
@@ -1270,9 +1453,7 @@ def test_openai_relay_records_websocket_usage_unavailable(
     assert "secret completion text" not in event_json
 
 
-def test_openai_relay_websocket_duplicate_final_events_upsert(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_openai_relay_websocket_duplicate_final_events_upsert(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = make_config(runtime_dir)
     ensure_directory(config)
@@ -1316,9 +1497,7 @@ def test_openai_relay_websocket_duplicate_final_events_upsert(
         asyncio.run(upstream.push(final_message))
         assert websocket.receive_text() == final_message
 
-    events = ModelUsageStore(runtime_dir / "model-usage.db").list_events(
-        session_id="session-1"
-    )
+    events = ModelUsageStore(runtime_dir / "model-usage.db").list_events(session_id="session-1")
     assert [event.event_id for event in events] == ["resp-websocket-duplicate"]
 
 

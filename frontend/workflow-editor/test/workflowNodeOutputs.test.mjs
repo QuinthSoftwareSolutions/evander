@@ -228,6 +228,47 @@ test("aggregate gate derives flat metric output schemas", () => {
   assert.ok(contract.rows.some((row) => row.bindingExpression === "${{gate-aggregate-1.total_tokens}}"));
 });
 
+test("buffer gate exposes fixed batch output schema for bindings", () => {
+  const config = createWorkflowConfig();
+  config.gates.push({
+    id: "gate-buffer-1",
+    display_name: "Buffer tickets",
+    type: "gate:buffer",
+    key: "buffer:${{system.execution.trace_id}}",
+    count: 10,
+    timeout: "PT10M",
+  });
+  config.effects.push({
+    id: "effect-after-buffer",
+    display_name: "After buffer",
+    type: "effect:agent:prompt",
+  });
+  config.edges.push(
+    { source_id: "trigger-1", target_id: "gate-buffer-1" },
+    { source_id: "gate-buffer-1", target_id: "effect-after-buffer" },
+  );
+
+  const outputSchemas = deriveWorkflowOutputSchemas(config);
+
+  assert.deepEqual(outputSchemas["gate-buffer-1"], {
+    items: { type: "array" },
+    count: { type: "integer" },
+    release_reason: { type: "string" },
+  });
+  const contract = selectedNodeOutputContract(config, "gate-buffer-1", outputSchemas);
+  assert.equal(contract.note, "Buffer gate: outputs are the released batch metadata.");
+  assert.deepEqual(contract.rows.map((row) => row.bindingExpression), [
+    "${{gate-buffer-1.items}}",
+    "${{gate-buffer-1.count}}",
+    "${{gate-buffer-1.release_reason}}",
+  ]);
+
+  const options = upstreamBindingOptions(config, "effect-after-buffer", outputSchemas);
+  assert.ok(options.some((option) => option.value === "${{gate-buffer-1.items}}"));
+  assert.ok(options.some((option) => option.value === "${{gate-buffer-1.count}}"));
+  assert.ok(options.some((option) => option.value === "${{gate-buffer-1.release_reason}}"));
+});
+
 test("returns empty contract states for missing or undeclared outputs", () => {
   const config = {
     triggers: [

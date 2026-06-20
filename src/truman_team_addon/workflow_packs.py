@@ -207,6 +207,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "lease_seconds": 900,
                 "wake_interval_seconds": 900,
                 "max_no_progress_count": 3,
+                "low_priority_wake_after_cycles": 4,
                 "action_artifact_path": "team-action.json",
                 "resume_mode": "same_context",
             },

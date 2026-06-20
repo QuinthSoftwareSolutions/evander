@@ -28,6 +28,12 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 import uvicorn
 
+from agent_sandbox.addons import (
+    AddonContext,
+    addon_runtime_dir,
+    load_addons,
+    register_addon_mcp_tools,
+)
 from agent_sandbox.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
@@ -92,6 +98,10 @@ from agent_sandbox.models import (
     ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
+    AdoPrCommentActivityRequest,
+    AdoPrCommentActivityResponse,
+    AdoPrCommitActivityRequest,
+    AdoPrCommitActivityResponse,
     AdoBacklogCommentRequest,
     AdoBacklogDeleteRequest,
     AdoBacklogDeleteResponse,
@@ -105,6 +115,8 @@ from agent_sandbox.models import (
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
     AdoBacklogTitleUpdateRequest,
+    AdoWorkItemActivityRequest,
+    AdoWorkItemActivityResponse,
     ApprovalRequest,
     ApprovalStatus,
     AuditEvent,
@@ -148,6 +160,8 @@ from agent_sandbox.models import (
     PostPrInlineCommentRequest,
     PromptAgentRequest,
     PromptAgentResponse,
+    ResolveAdoIdentityRequest,
+    ResolveAdoIdentityResponse,
     RunScriptRequest,
     RunScriptResponse,
     RequestPrReviewRequest,
@@ -163,8 +177,10 @@ from agent_sandbox.models import (
     SubmitVoiceQueryResponseResponse,
     WakeScheduleDefinition,
     TeamsMessageEnvelope,
+    McpToolName,
     ToolName,
     digest_payload,
+    tool_name_value,
 )
 from agent_sandbox.policy import (
     PolicyError,
@@ -714,7 +730,7 @@ def _tool_call_duration_ms(current: _ToolCallAuditContext | None) -> int | None:
 def _tool_call_audit_fields(
     *,
     session: Any | None,
-    tool_name: ToolName | None,
+    tool_name: McpToolName | None,
     args: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, Any]:
@@ -728,8 +744,8 @@ def _tool_call_audit_fields(
             current.raw_args,
             ("approval_request_id",),
         )
-    tool_name_value = tool_name.value if isinstance(tool_name, ToolName) else str(tool_name or "").strip()
-    if approval_request_id is None and tool_name_value in _TOOL_CALL_APPROVAL_NAMES:
+    current_tool_name = tool_name_value(tool_name) if tool_name is not None else ""
+    if approval_request_id is None and current_tool_name in _TOOL_CALL_APPROVAL_NAMES:
         approval_request_id = _first_string_in_payload(args, ("request_id",))
         if approval_request_id is None:
             approval_request_id = _first_string_in_payload(result, ("request_id",))
@@ -986,7 +1002,7 @@ _ASSISTANT_MUTATION_TOOLS = frozenset(
 
 
 def _assistant_mutation_audit_result(
-    tool_name: ToolName | None,
+    tool_name: McpToolName | None,
     args: dict[str, Any],
     result: dict[str, Any],
     redacted_keys: set[str],
@@ -994,7 +1010,7 @@ def _assistant_mutation_audit_result(
     default_status: str,
 ) -> dict[str, Any]:
     audit_result = _redact_nested_value(redacted_keys, dict(result))
-    if tool_name is None or tool_name not in _ASSISTANT_MUTATION_TOOLS:
+    if not isinstance(tool_name, ToolName) or tool_name not in _ASSISTANT_MUTATION_TOOLS:
         return audit_result
 
     audit_result.setdefault("status", default_status)
@@ -1233,6 +1249,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 transport_session_map[transport_session_id] = bound_session_id
     setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
     semantic_adapter = GatewaySemanticAdapter(context)
+    addon_mcp_tool_names: list[str] = []
+    addon_catalog = load_addons(context.config.addon_loader)
+    for addon in addon_catalog.registrations:
+        addon_context = AddonContext(
+            addon_id=addon.addon_id,
+            runtime_dir=context.config.runtime_dir,
+            addon_runtime_dir=addon_runtime_dir(context.config.runtime_dir, addon.addon_id),
+            config=context.config,
+            service=context,
+        )
+        addon_mcp_tool_names.extend(
+            register_addon_mcp_tools(addon, server, addon_context)
+        )
+    if addon_mcp_tool_names:
+        context.policy.set_extra_mcp_tool_names(addon_mcp_tool_names)
 
     def _record_visible_tools(
         *,
@@ -1460,7 +1491,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     def audit_success(
         session_id: str,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         args: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
@@ -1482,7 +1513,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=None if session is None else session.vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_name_value(tool_name),
                 actor_user_id=actor_user_id,
                 **_tool_call_audit_fields(
                     session=session,
@@ -1498,13 +1529,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
-            tool_name.value,
+            tool_name_value(tool_name),
             session_id,
         )
 
     def audit_failure(
         session_id: str | None,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         args: dict[str, Any],
         error: str,
         *,
@@ -1530,7 +1561,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_name_value(tool_name),
                 actor_user_id=actor_user_id,
                 **_tool_call_audit_fields(
                     session=session,
@@ -1547,7 +1578,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         logger.info(
             "metric_mcp_tool_decision outcome=%s tool=%s session_id=%s reason=%s error_class=%s",
             decision,
-            tool_name.value,
+            tool_name_value(tool_name),
             session_id or "",
             error,
             error_class,
@@ -3470,21 +3501,32 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def assistant_create_workflow(
         config: dict[str, Any],
         layout: dict[str, Any] | None = None,
+        workflow_pack: str | None = None,
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
         )
-        args = {"session_id": resolved_session_id, "after": config}
+        args = {
+            "session_id": resolved_session_id,
+            "workflow_pack": workflow_pack,
+            "after": config,
+        }
         try:
             session = context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW
             )
             _assistant_require_writable_scope(session, "config/workflow")
             service = _admin_service()
-            before = service.read_workflow_editor_document().config
-            saved = service.save_workflow_editor_document(config=config, layout=layout)
+            before = service.read_workflow_editor_document(
+                workflow_pack=workflow_pack
+            ).config
+            saved = service.save_workflow_editor_document(
+                config=config,
+                layout=layout,
+                workflow_pack=workflow_pack,
+            )
             result = {
                 "status": "success",
                 "config_path": saved.config_path,
@@ -4881,6 +4923,85 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def query_ado_work_item_activity(
+        since: str,
+        project: str | None = None,
+        actor: str | None = None,
+        until: str | None = None,
+        activity_types: list[str] | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request = AdoWorkItemActivityRequest(
+            session_id=session_id,
+            project=project,
+            actor=actor,
+            since=since,
+            until=until,
+            activity_types=activity_types or ["created", "changed", "commented"],
+            states=states or [],
+            types=types or [],
+            tags_any=tags_any or [],
+            top=top,
+            skip=skip,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(
+                request.session_id, ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY
+            )
+            issue_service = IssueService(context.provider_config)
+            remote_payload = issue_service.query_remote_work_item_activity(
+                provider="azure_devops",
+                directory_path=session.directory_path,
+                project=request.project,
+                actor=request.actor,
+                since=request.since,
+                until=request.until,
+                activity_types=request.activity_types,
+                states=request.states,
+                types=[item_type.value for item_type in request.types],
+                tags_any=request.tags_any,
+                top=request.top,
+                skip=request.skip,
+            )
+            response_model = AdoWorkItemActivityResponse.model_validate(remote_payload)
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY,
+                args,
+                {
+                    "project": request.project,
+                    "count": payload.get("count", 0),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def list_ado_current_iteration_backlog_items(
         project: str | None = None,
         team: str | None = None,
@@ -6053,20 +6174,50 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str,
         provider: str,
         repo: str,
+        project: str | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
         creator_id: str | None = None,
         reviewer_id: str | None = None,
+        source_ref_name: str | None = None,
+        target_ref_name: str | None = None,
+        source_repository_id: str | None = None,
+        repository_id: str | None = None,
+        min_time: str | None = None,
+        max_time: str | None = None,
+        query_time_range_type: str | None = None,
+        include_links: bool | None = None,
+        max_comment_length: int | None = None,
+        tags: str | None = None,
         top: int | None = None,
+        skip: int | None = None,
         cursor: str | None = None,
     ) -> dict[str, Any]:
         request = ListPullRequestsRequest(
             session_id=session_id.strip(),
             provider=normalize_pr_feedback_provider(provider),
             repo=repo.strip(),
+            project=project.strip() if isinstance(project, str) else None,
             status=status.strip() if isinstance(status, str) else None,
+            statuses=statuses or [],
             creator_id=creator_id.strip() if isinstance(creator_id, str) else None,
             reviewer_id=reviewer_id.strip() if isinstance(reviewer_id, str) else None,
+            source_ref_name=source_ref_name.strip() if isinstance(source_ref_name, str) else None,
+            target_ref_name=target_ref_name.strip() if isinstance(target_ref_name, str) else None,
+            source_repository_id=source_repository_id.strip()
+            if isinstance(source_repository_id, str)
+            else None,
+            repository_id=repository_id.strip() if isinstance(repository_id, str) else None,
+            min_time=min_time.strip() if isinstance(min_time, str) else None,
+            max_time=max_time.strip() if isinstance(max_time, str) else None,
+            query_time_range_type=query_time_range_type.strip()
+            if isinstance(query_time_range_type, str)
+            else None,
+            include_links=include_links,
+            max_comment_length=max_comment_length,
+            tags=tags.strip() if isinstance(tags, str) else None,
             top=top,
+            skip=skip,
             cursor=cursor.strip() if isinstance(cursor, str) else None,
         )
         args = request.model_dump(mode="json")
@@ -6075,10 +6226,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
             response = context.pr_query_service_for_session(request.session_id).list_pull_requests(
                 provider=request.provider,
                 repo=request.repo,
+                project=request.project,
                 status=request.status,
+                statuses=request.statuses,
                 creator_id=request.creator_id,
                 reviewer_id=request.reviewer_id,
+                source_ref_name=request.source_ref_name,
+                target_ref_name=request.target_ref_name,
+                source_repository_id=request.source_repository_id,
+                repository_id=request.repository_id,
+                min_time=request.min_time,
+                max_time=request.max_time,
+                query_time_range_type=request.query_time_range_type,
+                include_links=request.include_links,
+                max_comment_length=request.max_comment_length,
+                tags=request.tags,
                 top=request.top,
+                skip=request.skip,
                 cursor=request.cursor,
             )
             result = response.model_dump(mode="json")
@@ -6165,6 +6329,212 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 request.session_id,
                 ToolName.GET_PULL_REQUEST,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def resolve_ado_identity(
+        session_id: str,
+        query: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        request = ResolveAdoIdentityRequest(
+            session_id=session_id.strip(),
+            query=query,
+            project=project,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(request.session_id, ToolName.RESOLVE_ADO_IDENTITY)
+            response = context.pr_query_service_for_session(
+                request.session_id
+            ).resolve_ado_identity(
+                query=request.query,
+                project=request.project,
+            )
+            result = ResolveAdoIdentityResponse.model_validate(response).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.RESOLVE_ADO_IDENTITY,
+                args,
+                {
+                    "confidence": result.get("confidence"),
+                    "match_count": len(result.get("matches") or []),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.RESOLVE_ADO_IDENTITY, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.RESOLVE_ADO_IDENTITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.RESOLVE_ADO_IDENTITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_ado_pr_comment_activity(
+        session_id: str,
+        repo: str,
+        since: str,
+        author: str | None = None,
+        until: str | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        include_system_comments: bool = False,
+        top: int = 100,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        request = AdoPrCommentActivityRequest(
+            session_id=session_id.strip(),
+            repo=repo,
+            author=author,
+            since=since,
+            until=until,
+            project=project,
+            statuses=statuses or [],
+            include_system_comments=include_system_comments,
+            top=top,
+            skip=skip,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(
+                request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY
+            )
+            response = context.pr_query_service_for_session(
+                request.session_id
+            ).list_ado_pr_comment_activity(
+                repo=request.repo,
+                author=request.author,
+                since=request.since,
+                until=request.until,
+                project=request.project,
+                statuses=request.statuses,
+                include_system_comments=request.include_system_comments,
+                top=request.top,
+                skip=request.skip,
+            )
+            result = AdoPrCommentActivityResponse.model_validate(response).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMENT_ACTIVITY,
+                args,
+                {"repo": request.repo, "count": result.get("count", 0)},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY, args, str(exc)
+            )
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMENT_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMENT_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_ado_pr_commit_activity(
+        session_id: str,
+        repo: str,
+        since: str,
+        author: str | None = None,
+        until: str | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        request = AdoPrCommitActivityRequest(
+            session_id=session_id.strip(),
+            repo=repo,
+            author=author,
+            since=since,
+            until=until,
+            project=project,
+            statuses=statuses or [],
+            top=top,
+            skip=skip,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(
+                request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY
+            )
+            response = context.pr_query_service_for_session(
+                request.session_id
+            ).list_ado_pr_commit_activity(
+                repo=request.repo,
+                author=request.author,
+                since=request.since,
+                until=request.until,
+                project=request.project,
+                statuses=request.statuses,
+                top=request.top,
+                skip=request.skip,
+            )
+            result = AdoPrCommitActivityResponse.model_validate(response).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMIT_ACTIVITY,
+                args,
+                {"repo": request.repo, "count": result.get("count", 0)},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY, args, str(exc)
+            )
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMIT_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMIT_ACTIVITY,
                 args,
                 str(exc),
                 decision="error",
@@ -9670,7 +10040,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return []
 
         visible_tool_names = {
-            visibility.tool.value
+            tool_name_value(visibility.tool)
             for visibility in context.policy.visible_tools_for_session(
                 session,
                 workflow_run_id=workflow_run_id,
@@ -9697,12 +10067,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         *,
         session_id: str,
         session: Any,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         raw_args: dict[str, Any],
         result: dict[str, Any],
         decision: str,
         reason: str | None = None,
     ) -> None:
+        tool_value = tool_name_value(tool_name)
         redacted_keys = redacted_keys_for_session_id(session_id)
         context.audit.log(
             AuditEvent(
@@ -9711,7 +10082,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=None if session is None else session.vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_value,
                 actor_user_id=_session_actor_user_id(session),
                 **_tool_call_audit_fields(
                     session=session,
@@ -9731,11 +10102,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         *,
         session_id: str,
         session: Any,
-        tool_name: ToolName,
+        tool_name: McpToolName,
         raw_args: dict[str, Any],
         sanitized_arguments: dict[str, Any],
         error: ToolArgumentPolicyError,
     ) -> None:
+        tool_value = tool_name_value(tool_name)
         redacted_keys = redacted_keys_for_session_id(session_id)
         denial_result = {
             "status": "denied",
@@ -9754,7 +10126,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=None if session is None else session.vm_id,
                 directory_path=None if session is None else session.directory_path,
                 agent_role=_session_actor_role(session),
-                tool_name=tool_name.value,
+                tool_name=tool_value,
                 actor_user_id=_session_actor_user_id(session),
                 **_tool_call_audit_fields(
                     session=session,
@@ -9771,7 +10143,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=denied tool=%s session_id=%s reason=%s error_class=%s",
-            tool_name.value,
+            tool_value,
             session_id,
             error,
             "tool_argument_policy_violation",
@@ -9784,23 +10156,28 @@ def create_server(context: RuntimeContext) -> FastMCP:
         sanitized_arguments: dict[str, Any],
         call_context: _ToolCallAuditContext,
     ) -> None:
-        tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-        if tool_enum is None:
+        tool_name: McpToolName = ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+        if not tool_name:
             return
         session_id = call_context.session_id
         if not session_id:
             return
         try:
-            session = context.policy.require_tool(session_id, tool_enum)
+            session = context.policy.require_tool(
+                session_id,
+                tool_name,
+                workflow_run_id=call_context.workflow_run_id,
+                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+            )
         except PolicyError:
             return
         try:
-            context.policy.require_tool_arguments(session, tool_enum, sanitized_arguments)
+            context.policy.require_tool_arguments(session, tool_name, sanitized_arguments)
         except ToolArgumentPolicyError as exc:
             audit_tool_argument_policy_denial(
                 session_id=session_id,
                 session=session,
-                tool_name=tool_enum,
+                tool_name=tool_name,
                 raw_args=raw_arguments,
                 sanitized_arguments=sanitized_arguments,
                 error=exc,
@@ -9814,26 +10191,34 @@ def create_server(context: RuntimeContext) -> FastMCP:
         sanitized_arguments: dict[str, Any],
         call_context: _ToolCallAuditContext,
     ) -> ApprovalRequest | None:
-        tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-        if tool_enum is None or raw_tool_name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
+        if raw_tool_name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
+            return None
+        tool_name: McpToolName = ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+        tool_value = tool_name_value(tool_name)
+        if not tool_value:
             return None
         session_id = call_context.session_id
         if not session_id:
             return None
         try:
-            session = context.policy.require_tool(session_id, tool_enum)
+            session = context.policy.require_tool(
+                session_id,
+                tool_name,
+                workflow_run_id=call_context.workflow_run_id,
+                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+            )
         except PolicyError:
             return None
-        if not context.policy.approval_required_for_tool(session, tool_enum):
+        if not context.policy.approval_required_for_tool(session, tool_name):
             return None
         redacted_keys = redacted_keys_for_session_id(session_id)
 
         approval_payload = _approval_gate_payload(
-            tool_name=tool_enum.value,
+            tool_name=tool_value,
             session_id=session_id,
             arguments=sanitized_arguments,
         )
-        grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_enum)
+        grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_name)
         payload_digest = digest_payload(approval_payload)
         supplied_request_id = str(raw_arguments.get("approval_request_id") or "").strip()
         if not supplied_request_id:
@@ -9841,9 +10226,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 session_id,
                 "mcp_tool_invocation",
                 approval_payload,
-                _approval_gate_human_summary(tool_enum.value, session_id),
-                tool_name=tool_enum.value,
-                intended_effect=_approval_gate_intended_effect(tool_enum.value, session_id),
+                _approval_gate_human_summary(tool_value, session_id),
+                tool_name=tool_value,
+                intended_effect=_approval_gate_intended_effect(tool_value, session_id),
                 approval_settings=grant_settings,
             )
             status = (
@@ -9861,7 +10246,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     redacted_keys=redacted_keys,
                     status=status,
                     reason=(
-                        f"Tool {tool_enum.value} requires approval before execution. "
+                        f"Tool {tool_value} requires approval before execution. "
                         f"Retry the exact same payload with approval_request_id={approval.request_id} "
                         "after a human approves it."
                     ),
@@ -9869,7 +10254,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "approval_settings": grant_settings.model_dump(mode="json"),
                 "used_count": approval.used_count,
                 "message": (
-                    f"Tool {tool_enum.value} requires approval before execution. "
+                    f"Tool {tool_value} requires approval before execution. "
                     f"Retry the exact same payload with approval_request_id={approval.request_id} "
                     "after a human approves it."
                 ),
@@ -9877,7 +10262,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_approval_gate(
                 session_id=session_id,
                 session=session,
-                tool_name=tool_enum,
+                tool_name=tool_name,
                 raw_args=raw_arguments,
                 result=result,
                 decision=status,
@@ -9895,10 +10280,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     f"Approval request {supplied_request_id} does not belong to session "
                     f"{session_id}"
                 )
-            if str(approval.tool_name or approval.action_type).strip() != tool_enum.value:
+            if str(approval.tool_name or approval.action_type).strip() != tool_value:
                 raise PolicyError(
                     f"Approval request {supplied_request_id} is not for tool "
-                    f"{tool_enum.value}"
+                    f"{tool_value}"
                 )
         except PolicyError as exc:
             approval_request_id = getattr(exc, "approval_request_id", None) or supplied_request_id
@@ -9918,7 +10303,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_approval_gate(
                 session_id=session_id,
                 session=session,
-                tool_name=tool_enum,
+                tool_name=tool_name,
                 raw_args=raw_arguments,
                 result=result,
                 decision="blocked",
@@ -9926,6 +10311,33 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             raise ToolError(f"approval_blocked: {exc}") from exc
         return approval
+
+    def maybe_require_registered_addon_tool(
+        *,
+        raw_tool_name: str,
+        sanitized_arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+    ) -> None:
+        tool_value = str(raw_tool_name or "").strip()
+        if not tool_value or tool_value in ToolName._value2member_map_:
+            return
+        registered_addon_tools = getattr(context.policy, "extra_mcp_tool_names", set())
+        if tool_value not in registered_addon_tools:
+            return
+        if not call_context.session_id:
+            message = "session_id is required"
+            audit_failure(None, tool_value, sanitized_arguments, message)
+            raise ToolError(message)
+        try:
+            context.policy.require_tool(
+                call_context.session_id,
+                tool_value,
+                workflow_run_id=call_context.workflow_run_id,
+                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+            )
+        except PolicyError as exc:
+            audit_failure(call_context.session_id, tool_value, sanitized_arguments, str(exc))
+            raise ToolError(str(exc)) from exc
 
     original_call_tool = server._tool_manager.call_tool
 
@@ -9978,12 +10390,19 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 dispatch_call_kwargs.pop("arguments", None)
             else:
                 dispatch_call_kwargs["arguments"] = dispatch_arguments
-            approval_context_token = set_tool_approval_context(
-                session_id=call_context.session_id,
-                workflow_run_id=call_context.workflow_run_id,
-                lease_id=call_context.mcp_tool_approval_lease_id,
-            )
+            approval_context_tokens = [
+                set_tool_approval_context(
+                    session_id=call_context.session_id,
+                    workflow_run_id=call_context.workflow_run_id,
+                    lease_id=call_context.mcp_tool_approval_lease_id,
+                )
+            ]
             try:
+                maybe_require_registered_addon_tool(
+                    raw_tool_name=raw_tool_name,
+                    sanitized_arguments=sanitized_arguments,
+                    call_context=call_context,
+                )
                 enforce_tool_argument_policy(
                     raw_tool_name=raw_tool_name,
                     raw_arguments=raw_arguments,
@@ -9996,23 +10415,81 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     sanitized_arguments=sanitized_arguments,
                     call_context=call_context,
                 )
-                tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-                if tool_enum is not None and consumed_approval is None:
+                tool_name: McpToolName = (
+                    ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+                )
+                if tool_name:
                     try:
-                        context.policy.consume_tool_approval_lease_use(
+                        lease_reserved = context.policy.consume_tool_approval_lease_use(
                             session_id=call_context.session_id,
-                            tool_name=tool_enum,
+                            tool_name=tool_name,
                             workflow_run_id=call_context.workflow_run_id,
                             mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+                            per_invocation_approval_consumed=consumed_approval is not None,
                         )
                     except PolicyError as exc:
                         raise ToolError(str(exc)) from exc
-                return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+                    if lease_reserved:
+                        approval_context_tokens.append(
+                            set_tool_approval_context(
+                                session_id=call_context.session_id,
+                                workflow_run_id=call_context.workflow_run_id,
+                                lease_id=call_context.mcp_tool_approval_lease_id,
+                                reserved_tool_name=tool_name,
+                            )
+                        )
+                result = await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+                if not call_context.audit_emitted:
+                    tool_value = tool_name_value(tool_name) if tool_name else raw_tool_name
+                    session = (
+                        context.session_repository.get_session(call_context.session_id)
+                        if call_context.session_id
+                        else None
+                    )
+                    redacted_keys = redacted_keys_for_session_id(call_context.session_id)
+                    result_payload = result if isinstance(result, dict) else {"result": result}
+                    audit_result = _assistant_mutation_audit_result(
+                        tool_name,
+                        raw_arguments,
+                        result_payload,
+                        redacted_keys,
+                        default_status="success",
+                    )
+                    context.audit.log(
+                        AuditEvent(
+                            event_type="tool_call",
+                            session_id=call_context.session_id,
+                            vm_id=None if session is None else session.vm_id,
+                            directory_path=None if session is None else session.directory_path,
+                            agent_role=_session_actor_role(session),
+                            tool_name=tool_value or None,
+                            actor_user_id=_session_actor_user_id(session),
+                            **_tool_call_audit_fields(
+                                session=session,
+                                tool_name=tool_name,
+                                args=raw_arguments,
+                                result=audit_result,
+                            ),
+                            decision="allowed",
+                            args=_redact_args(redacted_keys, raw_arguments),
+                            result=_redact_nested_value(redacted_keys, audit_result),
+                        )
+                    )
+                    _mark_tool_call_audited()
+                    logger.info(
+                        "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
+                        tool_value,
+                        call_context.session_id or "",
+                    )
+                return result
             finally:
-                reset_tool_approval_context(approval_context_token)
+                for approval_context_token in reversed(approval_context_tokens):
+                    reset_tool_approval_context(approval_context_token)
         except Exception as exc:
             if not call_context.audit_emitted:
-                tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+                tool_name: McpToolName | None = (
+                    ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name or None
+                )
                 session = (
                     context.session_repository.get_session(call_context.session_id)
                     if call_context.session_id
@@ -10021,7 +10498,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 redacted_keys = redacted_keys_for_session_id(call_context.session_id)
                 redacted_args = _redact_args(redacted_keys, raw_arguments)
                 error_result = _assistant_mutation_audit_result(
-                    tool_enum,
+                    tool_name,
                     raw_arguments,
                     {
                         "status": "error",
@@ -10042,7 +10519,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         actor_user_id=_session_actor_user_id(session),
                         **_tool_call_audit_fields(
                             session=session,
-                            tool_name=tool_enum,
+                            tool_name=tool_name,
                             args=raw_arguments,
                             result=error_result,
                         ),
@@ -10200,7 +10677,7 @@ def _install_mcp_http_logging(
                         if session is not None:
                             visible_tool_names = sorted(
                                 {
-                                    visibility.tool.value
+                                    tool_name_value(visibility.tool)
                                     for visibility in runtime_context.policy.visible_tools_for_session(
                                         session,
                                         workflow_run_id=workflow_run_id,

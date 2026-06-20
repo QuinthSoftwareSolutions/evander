@@ -25,7 +25,13 @@ from agent_sandbox.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
-from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.models import (
+    McpToolName,
+    SessionManifest,
+    ToolName,
+    normalize_tool_name,
+    tool_name_value,
+)
 from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     as_session_manifest_repository,
@@ -399,14 +405,15 @@ def read_all_sessions(context: EffectRuntimeContext) -> Mapping[str, Any]:
     return _read_all_sessions_canonical(context)
 
 
-def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
-    tools: list[ToolName] = []
-    seen = set(tools)
+def normalize_allowed_tools(value: list[str] | None) -> list[McpToolName]:
+    tools: list[McpToolName] = []
+    seen: set[str] = set()
     for raw_tool in value or []:
-        tool = ToolName(str(raw_tool).strip())
-        if tool in seen:
+        tool = normalize_tool_name(raw_tool, field_name="allowed_tools")
+        tool_value = tool_name_value(tool)
+        if tool_value in seen:
             continue
-        seen.add(tool)
+        seen.add(tool_value)
         tools.append(tool)
     return tools
 

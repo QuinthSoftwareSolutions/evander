@@ -4,6 +4,8 @@ import importlib
 import sys
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.workflow.plugins import load_provider_plugins
 
 
@@ -65,3 +67,135 @@ def test_load_provider_plugins_can_include_builtin_explicitly() -> None:
     assert "trigger:cron" in catalog.trigger_providers
     assert "effect:http:request" in catalog.effect_providers
     assert "agent_sandbox.providers.builtin" in catalog.loaded_plugins
+
+
+def test_load_provider_plugins_exposes_workflow_editor_catalog_entries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "catalog_plugin.py").write_text(
+        """
+from agent_sandbox.triggers.providers.base import TriggerProviderBase
+
+class CatalogTriggerProvider(TriggerProviderBase):
+    pass
+
+def register_providers():
+    return {
+        "trigger_providers": {"trigger:catalog:test": CatalogTriggerProvider},
+        "workflow_editor_catalog_entries": [
+            {
+                "kind": "trigger",
+                "type": "trigger:catalog:test",
+                "label": "Catalog test",
+                "description": "Catalog test trigger.",
+                "fields": [
+                    {
+                        "key": "message",
+                        "label": "Message",
+                        "kind": "string",
+                        "required": True,
+                        "description": "Message to emit.",
+                    }
+                ],
+            }
+        ],
+    }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("catalog_plugin", None)
+
+    catalog = load_provider_plugins(
+        module_names=["catalog_plugin"],
+        include_entry_points=False,
+        include_builtin=False,
+    )
+
+    assert [entry.type for entry in catalog.workflow_editor_catalog_entries] == [
+        "trigger:catalog:test"
+    ]
+    entry = catalog.workflow_editor_catalog_entries[0]
+    assert entry.label == "Catalog test"
+    assert entry.fields[0].description == "Message to emit."
+
+
+def test_load_provider_plugins_rejects_catalog_entry_without_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "bad_catalog_plugin.py").write_text(
+        """
+from agent_sandbox.triggers.providers.base import TriggerProviderBase
+
+class CatalogTriggerProvider(TriggerProviderBase):
+    pass
+
+def register_providers():
+    return {
+        "trigger_providers": {"trigger:catalog:test": CatalogTriggerProvider},
+        "workflow_editor_catalog_entries": [
+            {
+                "kind": "trigger",
+                "type": "trigger:catalog:missing",
+                "label": "Missing",
+            }
+        ],
+    }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("bad_catalog_plugin", None)
+
+    with pytest.raises(ValueError, match="does not match a registered trigger provider"):
+        load_provider_plugins(
+            module_names=["bad_catalog_plugin"],
+            include_entry_points=False,
+            include_builtin=False,
+        )
+
+
+def test_load_provider_plugins_rejects_duplicate_catalog_entries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    for module_name in ("catalog_one", "catalog_two"):
+        (module_root / f"{module_name}.py").write_text(
+            """
+from agent_sandbox.triggers.providers.base import TriggerProviderBase
+
+class CatalogTriggerProvider(TriggerProviderBase):
+    pass
+
+def register_providers():
+    return {
+        "trigger_providers": {"trigger:catalog:duplicate": CatalogTriggerProvider},
+        "workflow_editor_catalog_entries": [
+            {
+                "kind": "trigger",
+                "type": "trigger:catalog:duplicate",
+                "label": "Duplicate",
+            }
+        ],
+    }
+""",
+            encoding="utf-8",
+        )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("catalog_one", None)
+    sys.modules.pop("catalog_two", None)
+
+    with pytest.raises(ValueError, match="Duplicate workflow editor catalog entry"):
+        load_provider_plugins(
+            module_names=["catalog_one", "catalog_two"],
+            include_entry_points=False,
+            include_builtin=False,
+        )

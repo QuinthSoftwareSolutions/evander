@@ -18,7 +18,6 @@ from urllib.parse import unquote, urlparse
 
 from starlette.applications import Starlette
 
-from agent_sandbox.session_artifacts import resolve_artifact_file
 from agent_sandbox.capacity_health import (
     HealthState,
     SessionStorageSample,
@@ -28,6 +27,8 @@ from agent_sandbox.capacity_health import (
     collect_recursive_directory_size,
     top_session_storage,
 )
+from agent_sandbox.managed_sections import merge_managed_section
+from agent_sandbox.session_artifacts import resolve_artifact_file
 
 from .docker_runtime import DockerContainerRuntime
 from .models import (
@@ -621,7 +622,17 @@ class WorkerDaemon:
             if entry.content_base64 is not None:
                 desired_content = base64.b64decode(entry.content_base64)
             else:
-                desired_content = (entry.content or "").encode("utf-8")
+                content_text = entry.content or ""
+                if entry.merge_strategy == "managed_section":
+                    existing_text = (
+                        destination.read_text(encoding="utf-8") if destination.is_file() else ""
+                    )
+                    content_text = merge_managed_section(
+                        existing_text,
+                        section_id=str(entry.section_id or ""),
+                        content=content_text,
+                    )
+                desired_content = content_text.encode("utf-8")
             desired_mode = (
                 int(self._normalize_mode(entry.mode), 8) if entry.mode is not None else None
             )
@@ -640,7 +651,7 @@ class WorkerDaemon:
             if entry.content_base64 is not None:
                 destination.write_bytes(desired_content)
             else:
-                destination.write_text(entry.content or "", encoding="utf-8")
+                destination.write_text(desired_content.decode("utf-8"), encoding="utf-8")
             if desired_mode is not None:
                 destination.chmod(desired_mode)
             copied_paths.append(container_path)

@@ -453,9 +453,7 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
         },
     )
 
-    assert written == {
-        "azure_openai_model_deployments": {"gpt-5.4": "deployment-team"}
-    }
+    assert written == {"azure_openai_model_deployments": {"gpt-5.4": "deployment-team"}}
 
     resolution = resolver.resolve_domain(
         team.path,
@@ -503,6 +501,82 @@ def test_directory_config_provider_mode_legacy_alias_is_canonicalized(
     assert resolution.effective_config["model_provider_mode"] == "anthropic"
     assert "openai_provider_mode" not in resolution.effective_config
     assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_local_openai_provider_overlays(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11434/v1/",
+            "local_openai_api_key": "ollama",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "local_openai_api_base_url": "http://10.0.0.5:8000/v1",
+            "local_openai_provider_name": "lab_ollama",
+        },
+    )
+
+    assert written == {
+        "local_openai_api_base_url": "http://10.0.0.5:8000/v1",
+        "local_openai_provider_name": "lab_ollama",
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["model_provider_mode"] == "local_openai"
+    assert resolution.effective_config["local_openai_api_base_url"] == "http://10.0.0.5:8000/v1"
+    assert resolution.effective_config["local_openai_api_key"] == "ollama"
+    assert resolution.effective_config["local_openai_provider_name"] == "lab_ollama"
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_effective_local_openai_rejects_default_relay_loopback(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"model_provider_mode": "local_openai"},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert any(
+        "local_openai_api_base_url" in error for error in resolution.validation_errors
+    )
 
 
 def test_provider_config_resolver_uses_claude_agent_provider_as_session_override(

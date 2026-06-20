@@ -15,7 +15,12 @@ from agent_sandbox.container_worker_images import (
 )
 from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
 from agent_sandbox.events.models import materialize_node_definition
-from agent_sandbox.models import ApprovalRequest, SessionManifest, SessionToolApprovalLease, ToolName
+from agent_sandbox.models import (
+    ApprovalRequest,
+    SessionManifest,
+    SessionToolApprovalLease,
+    ToolName,
+)
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_anthropic_base_url,
@@ -281,15 +286,24 @@ def test_tool_argument_policies_round_trip_through_config_models() -> None:
         }
     )
 
-    assert gateway_config.model_dump(
-        mode="json", include={"tool_argument_policies"}, exclude_defaults=True
-    ) == payload
-    assert policy_config.model_dump(
-        mode="json", include={"tool_argument_policies"}, exclude_defaults=True
-    ) == payload
-    assert session_manifest.model_dump(
-        mode="json", include={"tool_argument_policies"}, exclude_defaults=True
-    ) == payload
+    assert (
+        gateway_config.model_dump(
+            mode="json", include={"tool_argument_policies"}, exclude_defaults=True
+        )
+        == payload
+    )
+    assert (
+        policy_config.model_dump(
+            mode="json", include={"tool_argument_policies"}, exclude_defaults=True
+        )
+        == payload
+    )
+    assert (
+        session_manifest.model_dump(
+            mode="json", include={"tool_argument_policies"}, exclude_defaults=True
+        )
+        == payload
+    )
 
 
 @pytest.mark.parametrize(
@@ -298,17 +312,15 @@ def test_tool_argument_policies_round_trip_through_config_models() -> None:
         (
             {
                 "tool_argument_policies": {
-                    "not_a_real_tool": [
+                    "not a real tool": [
                         {
                             "id": "rule",
-                            "constraints": [
-                                {"id": "path", "path": "x", "operator": "required"}
-                            ],
+                            "constraints": [{"id": "path", "path": "x", "operator": "required"}],
                         }
                     ]
                 }
             },
-            "unknown tool name",
+            "valid MCP tool name",
         ),
         (
             {
@@ -316,9 +328,7 @@ def test_tool_argument_policies_round_trip_through_config_models() -> None:
                     "create_ado_backlog_item": [
                         {
                             "id": "rule",
-                            "constraints": [
-                                {"id": "path", "path": "x", "operator": "bogus"}
-                            ],
+                            "constraints": [{"id": "path", "path": "x", "operator": "bogus"}],
                         }
                     ]
                 }
@@ -362,15 +372,11 @@ def test_tool_argument_policies_round_trip_through_config_models() -> None:
                     "create_ado_backlog_item": [
                         {
                             "id": "rule",
-                            "constraints": [
-                                {"id": "path", "path": "x", "operator": "required"}
-                            ],
+                            "constraints": [{"id": "path", "path": "x", "operator": "required"}],
                         },
                         {
                             "id": "rule",
-                            "constraints": [
-                                {"id": "other", "path": "y", "operator": "required"}
-                            ],
+                            "constraints": [{"id": "other", "path": "y", "operator": "required"}],
                         },
                     ]
                 }
@@ -489,6 +495,9 @@ def test_openai_provider_defaults_remain_public_mode() -> None:
     assert config.azure_openai_api_key_env is None
     assert config.azure_openai_api_version == "preview"
     assert config.azure_openai_model_deployments == {}
+    assert config.local_openai_api_base_url == "http://127.0.0.1:11434/v1"
+    assert config.local_openai_api_key == "ollama"
+    assert config.local_openai_provider_name == "local_openai"
     assert config.anthropic_api_base_url == "https://api.anthropic.com"
     assert config.anthropic_api_key_env == "ANTHROPIC_API_KEY"
     assert config.anthropic_api_version == "2023-06-01"
@@ -558,6 +567,7 @@ def test_model_provider_mode_accepts_legacy_openai_provider_mode_alias() -> None
         ),
         ("azure_openai_endpoint", " https://example-resource.openai.azure.com/v1/ "),
         ("openai_api_base_url", " https://api.openai.com/v1/ "),
+        ("local_openai_api_base_url", " http://127.0.0.1:11434/v1/ "),
         ("anthropic_api_base_url", " https://api.anthropic.com/ "),
         ("qdrant_base_url", " http://127.0.0.1:6333/ "),
         ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
@@ -598,6 +608,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_npm_registry_url", "http://facade.test\nfetch-retries=0"),
         ("azure_openai_endpoint", "not-a-url"),
         ("openai_api_base_url", "not-a-url"),
+        ("local_openai_api_base_url", "ollama.internal:11434/v1"),
         ("anthropic_api_base_url", "not-a-url"),
         ("qdrant_base_url", "qdrant.local:6333"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
@@ -708,10 +719,56 @@ def test_azure_openai_provider_config_rejects_missing_fields_and_unsupported_aut
         },
     ],
 )
-def test_azure_openai_model_deployments_reject_invalid_payloads(
-    payload: dict[str, object]
-) -> None:
+def test_azure_openai_model_deployments_reject_invalid_payloads(payload: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="azure_openai_model_deployments"):
+        GatewayConfig.model_validate(payload)
+
+
+def test_local_openai_provider_config_validates_and_normalizes_full_configuration() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "model_provider_mode": " local_openai ",
+            "openai_relay_host": "192.168.250.1",
+            "local_openai_api_base_url": " http://127.0.0.1:11434/v1/ ",
+            "local_openai_api_key": " ollama-local ",
+            "local_openai_provider_name": " local_truman ",
+        }
+    )
+
+    assert config.model_provider_mode == "local_openai"
+    assert config.openai_provider_mode == "local_openai"
+    assert config.local_openai_api_base_url == "http://127.0.0.1:11434/v1"
+    assert config.local_openai_api_key == "ollama-local"
+    assert config.local_openai_provider_name == "local_truman"
+
+
+def test_local_openai_provider_config_rejects_default_upstream_when_relay_binds_wildcard() -> None:
+    with pytest.raises(ValueError, match="local_openai_api_base_url"):
+        GatewayConfig.model_validate({"model_provider_mode": "local_openai"})
+
+
+def test_local_openai_provider_config_allows_non_conflicting_local_upstream() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+        }
+    )
+
+    assert config.local_openai_api_base_url == "http://127.0.0.1:11435/v1"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"local_openai_api_key": "   "}, "local_openai_api_key"),
+        ({"local_openai_provider_name": "   "}, "local_openai_provider_name"),
+    ],
+)
+def test_local_openai_provider_config_rejects_empty_required_fields(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
         GatewayConfig.model_validate(payload)
 
 
@@ -777,10 +834,7 @@ def test_container_worker_package_cache_urls_derive_from_gateway_host() -> None:
         }
     )
 
-    assert (
-        container_worker_guest_http_target_relay_base_url(config)
-        == "http://10.20.30.40:14000"
-    )
+    assert container_worker_guest_http_target_relay_base_url(config) == "http://10.20.30.40:14000"
     assert (
         container_worker_guest_pypi_index_url(config)
         == "http://10.20.30.40:8081/repository/pypi-all/simple"
@@ -1278,11 +1332,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                         {
                             "port": "ready",
                             "label": "Ready path",
-                            "when": {
-                                "all": [
-                                    {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                ]
-                            },
+                            "when": {"all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]},
                         },
                         {
                             "port": "ready",
@@ -1337,9 +1387,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                             {
                                 "port": "   ",
                                 "when": {
-                                    "all": [
-                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                    ]
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
                                 },
                             }
                         ],
@@ -1360,9 +1408,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                             {
                                 "port": None,
                                 "when": {
-                                    "all": [
-                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                    ]
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
                                 },
                             }
                         ],
@@ -1383,9 +1429,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                             {
                                 "port": 123,
                                 "when": {
-                                    "all": [
-                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                    ]
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
                                 },
                             }
                         ],
@@ -1407,9 +1451,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                             {
                                 "port": "ready",
                                 "when": {
-                                    "all": [
-                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                    ]
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
                                 },
                             }
                         ],
@@ -1431,9 +1473,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                             {
                                 "port": "ready",
                                 "when": {
-                                    "all": [
-                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                    ]
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
                                 },
                             }
                         ],
@@ -1454,9 +1494,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                             {
                                 "port": "ready",
                                 "when": {
-                                    "all": [
-                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
-                                    ]
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
                                 },
                                 "match": {"state": "ready"},
                             }
@@ -1665,7 +1703,9 @@ def test_trigger_orchestrator_for_gate_allows_missing_done_edge_in_core_validati
     assert config.gates[0].type == "gate:for"
 
 
-def test_trigger_orchestrator_while_gate_accepts_body_done_exhausted_ports_and_cycle_return() -> None:
+def test_trigger_orchestrator_while_gate_accepts_body_done_exhausted_ports_and_cycle_return() -> (
+    None
+):
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": "/tmp/agent-sandbox-runtime",

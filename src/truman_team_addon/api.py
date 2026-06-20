@@ -119,9 +119,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         state = repository.create_team(
-            team_id=_required(payload, "id", "team_id"),
+            team_id=_optional(payload, "id") or _optional(payload, "team_id"),
             name=_required(payload, "name"),
-            manager_agent_id=_required(payload, "manager_agent_id"),
+            manager_agent_id=_optional(payload, "manager_agent_id"),
             manager_session_id=_required(payload, "manager_session_id"),
             manager_display_name=_optional(payload, "manager_display_name"),
             manager_role_id=_optional(payload, "manager_role_id"),
@@ -153,12 +153,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        goals = [ProjectGoal.model_validate(item) for item in _optional_list(payload, "goals")]
+        goals = list(_optional_list(payload, "goals"))
         state = repository.create_project(
-            project_id=_required(payload, "id", "project_id"),
+            project_id=_optional(payload, "id") or _optional(payload, "project_id"),
             team_id=_required(payload, "team_id"),
             name=_required(payload, "name"),
-            lead_agent_id=_required(payload, "lead_agent_id"),
+            lead_agent_id=_optional(payload, "lead_agent_id"),
             lead_session_id=_required(payload, "lead_session_id"),
             lead_display_name=_optional(payload, "lead_display_name"),
             lead_role_id=_optional(payload, "lead_role_id"),
@@ -194,7 +194,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
         state = repository.create_role(
-            role_id=_required(payload, "id", "role_id"),
+            role_id=_optional(payload, "id") or _optional(payload, "role_id"),
             team_id=_required(payload, "team_id"),
             project_id=_optional(payload, "project_id"),
             name=_required(payload, "name"),
@@ -255,7 +255,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
         state = repository.register_agent(
-            agent_id=_required(payload, "id", "agent_id"),
+            agent_id=_optional(payload, "id") or _optional(payload, "agent_id"),
             team_id=_required(payload, "team_id"),
             project_id=_required(payload, "project_id"),
             role_id=_required(payload, "role_id"),
@@ -339,7 +339,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         raw_state = _optional(payload, "state")
         created_by_agent_id = _optional(payload, "created_by_agent_id")
         state = repository.create_or_reprioritize_task(
-            task_id=_required(payload, "id", "task_id"),
+            task_id=_optional(payload, "id") or _optional(payload, "task_id"),
             owner_agent_id=_required(payload, "owner_agent_id"),
             project_id=_required(payload, "project_id"),
             priority=_required_int(payload, "priority"),
@@ -379,7 +379,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
         state = repository.record_deliverable(
-            deliverable_id=_required(payload, "id", "deliverable_id"),
+            deliverable_id=_optional(payload, "id") or _optional(payload, "deliverable_id"),
             task_id=_required(payload, "task_id"),
             producer_agent_id=_required(payload, "producer_agent_id"),
             summary=_required(payload, "summary"),
@@ -394,7 +394,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         raw_state = _optional(payload, "state")
         raw_decision_at = _optional(payload, "decision_at")
         state = repository.record_review_request(
-            review_request_id=_required(payload, "id", "review_request_id"),
+            review_request_id=_optional(payload, "id") or _optional(payload, "review_request_id"),
             deliverable_id=_required(payload, "deliverable_id"),
             reviewer_agent_id=_required(payload, "reviewer_agent_id"),
             state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
@@ -460,7 +460,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             for item in _optional_list(payload, "criteria")
         ]
         state = repository.create_review_profile(
-            profile_id=_required(payload, "id", "review_profile_id"),
+            profile_id=_optional(payload, "id") or _optional(payload, "review_profile_id"),
             team_id=_required(payload, "team_id"),
             project_id=_optional(payload, "project_id"),
             name=_required(payload, "name"),

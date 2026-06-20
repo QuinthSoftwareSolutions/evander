@@ -93,7 +93,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "timing",
       label: "Timing",
       description: "Delay forwarding until timing conditions are met.",
-      types: ["gate:debounce"],
+      types: ["gate:buffer", "gate:debounce"],
     },
   ],
   effect: [

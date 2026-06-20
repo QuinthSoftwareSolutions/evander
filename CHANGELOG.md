@@ -10,6 +10,145 @@ material. Newer entries are added incrementally as changes land.
 - Split the focused People tab into a two-column desktop layout with selectable
   agent cards on the left and selected-agent details on the right.
 
+## 2026-06-20 - ADO Activity And Buffer Gate Fixes
+
+- Applied ADO work-item activity pagination after actor/activity filtering so
+  early non-matching WIQL candidates no longer create empty or shifted pages.
+- Based buffer-gate timeout windows on when an activation is buffered while
+  preserving each item's original upstream occurrence timestamp.
+
+## 2026-06-20 - Team Wake Guidance Seeding
+
+- Seeded static Team Add-on operating rules into a managed
+  `/home/agent/AGENTS.md` section during persistent wakes, leaving the repeated
+  wake prompt focused on dynamic dispatch context and action artifacts.
+- Moved the top-level task creation mandate into dynamic wake prompts based on
+  each agent role's `create_root_task` permission.
+- Added managed-section file writes for agent/VM copy-file effects and container
+  worker session file writes.
+
+## 2026-06-20 - Bokio Add-on Safety Fixes
+
+- Made registered add-on MCP tools fail closed in the gateway before dispatch
+  when the caller lacks a session, session allowlist entry, or valid workflow
+  tool-approval lease.
+- Consumed workflow tool-approval lease uses after separately approved
+  invocation-gated calls so lease `max_uses` is exhausted correctly.
+- Restricted Bokio document uploads to add-on-owned staging directories and
+  enforced PDF, JPEG, and PNG content checks before the control plane opens a
+  file for upload.
+- Namespaced Bokio upload staging by caller type so session IDs cannot collide
+  with reserved Admin API or workflow upload scopes.
+- Fixed Bokio workflow providers to resolve the full directory provider config
+  so `provider_state.bokio.*` environment overrides take effect.
+
+## 2026-06-19 - Bokio Add-on
+
+- Added the bundled `evander_bokio_addon` package with Admin API/UI routes,
+  optional workflow providers, host-side MCP tools, and prepared-action state
+  under `runtime/addons/bokio-addon/`.
+- Added Bokio private-integration client support for company info, chart of
+  accounts, journal entries, invoices, supplier invoices, uploads, SIE download,
+  and bank payments while keeping integration tokens in host environment
+  variables.
+- Allowed session, directory policy, and workflow-run MCP approval leases to
+  carry add-on MCP tool names without adding Bokio-specific tool names to core.
+
+## 2026-06-19 - Skatteverket Add-on
+
+- Added the bundled `evander_skatteverket_addon` package with add-on-owned
+  Admin API/UI routes, Skatteverket API catalog metadata, private SQLite state,
+  workflow providers, and host-side MCP tools.
+- Added a generic add-on MCP tool registration seam so enabled add-ons can
+  expose policy-gated tools without adding domain-specific tool names to core.
+- Implemented approval-bound Skatteverket draft submission flow that ties
+  operator approval to the exact stored draft revision.
+
+## 2026-06-19 - Workflow Catalog Loader Resilience
+
+- Kept the Admin Web workflow node catalog available when the saved
+  trigger-orchestrator workflow contains invalid nodes by reading only provider
+  and add-on loader settings for catalog discovery.
+
+## 2026-06-19 - Add-on Workflow Catalog Entries
+
+- Allowed workflow provider registrations, including add-on-owned providers, to
+  contribute Admin Web workflow-editor node catalog entries.
+- Added Team Add-on catalog entries for its `effect:team:*` and `query:team:*`
+  nodes so they appear in the workflow editor only when the add-on is enabled.
+
+## 2026-06-19 - Buffer Workflow Gate
+
+- Added `gate:buffer`, a stateful workflow gate that batches activations by
+  bindable key and releases `items`, `count`, and `release_reason` by count or
+  optional timeout.
+- Exposed Buffer in the Admin Web workflow catalog and editor Timing group with
+  fixed downstream binding outputs.
+
+## 2026-06-19 - Local OpenAI Model Backend
+
+- Added `local_openai` as a relay model provider mode for host-local
+  OpenAI-compatible endpoints such as Ollama, with configurable upstream URL,
+  placeholder API key, and usage provider name.
+- Kept Codex sessions on the existing session-scoped OpenAI relay while allowing
+  local traffic to avoid host API key env-var requirements and record usage as
+  `local_openai`.
+- Rejected `local_openai` effective configs whose upstream URL points back at
+  the relay listener, including the default `0.0.0.0:11434` relay bind with the
+  default Ollama URL.
+- Documented the Ollama `qwen3-coder:30b` setup path and local-provider
+  directory config fields.
+
+## 2026-06-19 - Workflow Pack Selection
+
+- Made Admin Web workflow editing pack-scoped when multiple workflow packs are
+  configured, with pack metadata returned by the document API and selected-pack
+  saves updating only that pack and its layout.
+- Kept runtime workflow run/report permission lookups on composed workflow
+  metadata so authoring pack selection does not narrow operational views.
+- Added a workflow-pack selector to the workflow editor save panels and sent the
+  selected pack on validate/save requests.
+- Used the selected workflow pack reference when generating read-only workflow
+  node IDs so multi-pack configs do not fall back to colliding generic IDs.
+- Preserved composed workflow reads for omitted-pack service callers, required
+  explicit pack saves for multi-pack configs, and validated selected-pack edits
+  against sibling packs.
+- Exposed workflow-pack selection on the `assistant_create_workflow` MCP tool so
+  public workflow saves can target a pack in multi-pack deployments.
+
+## 2026-06-19 - ADO Activity Pagination
+
+- Fixed ADO PR activity reporting pagination so closed/multi-status PR lists page after status
+  merging, and PR comment/commit activity tools page after scanning candidate pull requests.
+
+## 2026-06-19 - Generated Operator IDs
+
+- Generated stable Team Add-on IDs from names when operator create/template/API
+  payloads omit IDs, while preserving explicit API IDs for compatibility.
+- Removed editable Team Add-on and workflow-editor node ID fields from normal UI
+  flows, leaving generated IDs visible as read-only metadata.
+- Rejected workflow-pack node, graph, webhook slug, and cross-pack edge
+  collisions during workflow IR composition.
+
+## 2026-06-19 - Team Add-on Priority Batching
+
+- Added Team inbox priorities and low-priority wake-cycle batching so FYI-style
+  messages can wait for a configurable number of Team wake evaluations unless
+  another wake reason delivers them earlier.
+
+## 2026-06-19 - ADO Personal Activity Reporting
+
+- Added host-side Azure DevOps personal activity reporting tools for resolving ADO identities,
+  listing PR comment and commit activity by author/date, querying work-item created/changed/commented
+  activity, and listing closed PRs through a `closed` status alias.
+
+## 2026-06-19 - Team Add-on Reply Intent
+
+- Added durable `response_requested` metadata to Team Add-on inbox items so
+  agents can suppress unnecessary acknowledgements for FYI-style messages while
+  still requesting replies for questions, status requests, and action-oriented
+  notices.
+
 ## 2026-06-17 - Team Add-on Boundary Cleanup
 
 - Removed the Team-specific manager directive MCP tool, Team metadata policy

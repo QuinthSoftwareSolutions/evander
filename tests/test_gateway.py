@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import importlib
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +13,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
+from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService
@@ -35,6 +38,7 @@ from agent_sandbox.models import (
     AgentPromptQueueRecord,
     AgentPromptQueueSummary,
     AgentRecord,
+    ApprovalGrantSettings,
     ApprovalStatus,
     DiscordCommandEnvelope,
     ListPullRequestsResponse,
@@ -511,6 +515,19 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "resolve_ado_identity" for tool in server._tool_manager.list_tools())
+    assert any(
+        tool.name == "list_ado_pr_comment_activity"
+        for tool in server._tool_manager.list_tools()
+    )
+    assert any(
+        tool.name == "list_ado_pr_commit_activity"
+        for tool in server._tool_manager.list_tools()
+    )
+    assert any(
+        tool.name == "query_ado_work_item_activity"
+        for tool in server._tool_manager.list_tools()
+    )
     assert any(tool.name == "get_workflow_snapshot" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_contacts" for tool in server._tool_manager.list_tools())
@@ -774,6 +791,79 @@ def test_tool_approval_lease_from_request_context_allows_only_matching_run(
         )
 
 
+def test_workflow_tool_approval_lease_consumes_max_use_after_invocation_approval(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    DirectoryConfigStore(context.directories, runtime_dir=context.config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload={"approval_required_tools": [ToolName.GET_WORKFLOW_SNAPSHOT.value]},
+    )
+    lease = context.tool_approval_leases.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_settings={
+            ToolName.GET_WORKFLOW_SNAPSHOT.value: ApprovalGrantSettings(max_uses=1),
+        },
+    )
+    server = create_server(context)
+    request_context = _make_request_context(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+
+    with pytest.raises(ToolError, match="requires approval"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            request_context,
+        )
+    stored_lease = context.tool_approval_leases.get_lease(lease.lease_id)
+    assert stored_lease is not None
+    assert stored_lease.used_counts == {}
+
+    approvals = context.approvals.read_all()
+    assert len(approvals) == 1
+    approval = next(iter(approvals.values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    result = _call_tool_with_context(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1", "approval_request_id": approval.request_id},
+        request_context,
+    )
+
+    assert result["worker_id"] == "trigger-orchestrator"
+    stored_lease = context.tool_approval_leases.get_lease(lease.lease_id)
+    assert stored_lease is not None
+    assert stored_lease.used_counts == {ToolName.GET_WORKFLOW_SNAPSHOT.value: 1}
+    assert not context.tool_approval_leases.is_tool_approved(
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tool_name=ToolName.GET_WORKFLOW_SNAPSHOT,
+    )
+
+    with pytest.raises(ToolError, match="not usable"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            request_context,
+        )
+    assert set(context.approvals.read_all()) == {approval.request_id}
+
+
 def test_tool_approval_lease_from_request_context_rejects_revoked_lease(
     tmp_path: Path,
 ) -> None:
@@ -803,6 +893,75 @@ def test_tool_approval_lease_from_request_context_rejects_revoked_lease(
                 mcp_tool_approval_lease_id=lease.lease_id,
             ),
         )
+
+
+def test_registered_addon_tool_call_requires_session_permission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "policy_addon.py").write_text(
+        """
+CALLS = []
+
+def register_addon():
+    def register_mcp_tools(server, context):
+        @server.tool(name="custom_addon_tool")
+        def custom_addon_tool(session_id: str | None = None):
+            CALLS.append(session_id)
+            return {"ok": True, "session_id": session_id}
+        return ("custom_addon_tool",)
+
+    return {
+        "addon_id": "policy-addon",
+        "display_name": "Policy Add-on",
+        "mcp_tools": register_mcp_tools,
+    }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("policy_addon", None)
+    addon_module = importlib.import_module("policy_addon")
+
+    runtime_dir = tmp_path / "runtime"
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=runtime_dir,
+            audit_log_path=runtime_dir / "audit.jsonl",
+            session_store_path=runtime_dir / "sessions.json",
+            approval_store_path=runtime_dir / "approvals.json",
+            draft_store_path=runtime_dir / "drafts.json",
+            email_store_path=runtime_dir / "emails.json",
+            discord_command_store_path=runtime_dir / "discord.json",
+            addon_loader=AddonLoaderConfig(
+                modules=["policy_addon"],
+                enabled_entry_points=False,
+                enabled_addon_ids=["policy-addon"],
+            ),
+        )
+    )
+    manifest = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        directory_path="root",
+    )
+    context.session_repository.upsert_session(manifest)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        _call_tool(server, "custom_addon_tool", {"session_id": "session-1"})
+
+    assert addon_module.CALLS == []
+
+    manifest.allowed_tools = ["custom_addon_tool"]
+    context.session_repository.upsert_session(manifest)
+    _call_tool(server, "custom_addon_tool", {"session_id": "session-1"})
+
+    assert addon_module.CALLS == ["session-1"]
 
 
 def test_approval_required_tool_creates_pending_request_without_execution(
@@ -1170,6 +1329,123 @@ def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path
     assert len(tool_events) == 2
     assert tool_events[0]["result"]["revision"] == result["revision"]
     assert "config" not in tool_events[0]["result"]
+
+
+def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.ASSISTANT_CREATE_WORKFLOW],
+    )
+    manifest = context.session_repository.get_session("session-1")
+    assert manifest is not None
+    context.session_repository.upsert_session(
+        manifest.model_copy(
+            update={
+                "metadata": {
+                    "capability_profile": "operator-limited",
+                    "assistant_mutation_policy": {
+                        "writable_scopes": ["config/workflow"],
+                    }
+                }
+            }
+        )
+    )
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_a_path = packs_dir / "pack-a.v1.json"
+    pack_b_path = packs_dir / "pack-b.v1.json"
+    pack_a_payload = {
+        "pack_id": "pack-a",
+        "pack_version": "v1",
+        "ir": {
+            "version": "v1",
+            "nodes": [
+                {
+                    "id": "trigger-a",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    pack_a_path.write_text(json.dumps(pack_a_payload), encoding="utf-8")
+    pack_b_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-b",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-b",
+                        "name": "Graph B",
+                        "directory_path": "root",
+                        "node_ids": ["effect-b"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "effect-b",
+                            "display_name": "Emit event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "pack-b"},
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrapper_payload = {
+        "runtime_dir": str(context.config.runtime_dir),
+        "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+    }
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
+    document = AdminService(context.config.runtime_dir).read_workflow_editor_document(
+        workflow_pack="pack-b.v1.json"
+    )
+    edited_config = dict(document.config)
+    edited_effects = [dict(effect) for effect in edited_config["effects"]]
+    edited_effects[0]["display_name"] = "Emit updated event"
+    edited_config["effects"] = edited_effects
+    server = create_server(context)
+    create_workflow_tool = next(
+        tool
+        for tool in server._tool_manager.list_tools()
+        if tool.name == "assistant_create_workflow"
+    )
+
+    result = _call_tool(
+        server,
+        "assistant_create_workflow",
+        {
+            "session_id": "session-1",
+            "workflow_pack": "pack-b.v1.json",
+            "config": edited_config,
+            "layout": {"nodes": {"effect-b": {"x": 320, "y": 180}}},
+        },
+    )
+
+    assert "workflow_pack" in create_workflow_tool.parameters["properties"]
+    assert result["status"] == "success"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == wrapper_payload
+    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == pack_a_payload
+    pack_b_payload = json.loads(pack_b_path.read_text(encoding="utf-8"))
+    assert pack_b_payload["ir"]["nodes"][0]["display_name"] == "Emit updated event"
+    audit_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.ASSISTANT_CREATE_WORKFLOW.value
+    ]
+    assert audit_events[-1]["args"]["workflow_pack"] == "pack-b.v1.json"
 
 
 def test_get_workflow_snapshot_requires_allowed_tool(tmp_path: Path) -> None:

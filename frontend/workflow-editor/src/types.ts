@@ -50,11 +50,29 @@ export type WorkflowGraphMetadata = {
 
 export type WorkflowOutputSchemas = Record<string, Record<string, unknown>>;
 
+export type WorkflowPackDescriptor = {
+  reference: string;
+  path: string;
+  layout_path: string;
+  exists: boolean;
+  editable: boolean;
+  display_name: string;
+  id?: string | null;
+  version?: string | null;
+  description?: string | null;
+  graph_count: number;
+  node_count: number;
+  selected?: boolean;
+};
+
 export type WorkflowEditorDocument = {
   config_path: string;
   layout_path: string;
   config_exists: boolean;
   layout_exists: boolean;
+  document_scope?: "pack" | "inline" | "composed" | string;
+  workflow_packs?: WorkflowPackDescriptor[];
+  selected_workflow_pack?: WorkflowPackDescriptor | null;
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
@@ -72,6 +90,9 @@ export type WorkflowEditorValidation = {
 };
 
 export type WorkflowEditorSave = {
+  document_scope?: "pack" | "inline" | "composed" | string;
+  workflow_packs?: WorkflowPackDescriptor[];
+  selected_workflow_pack?: WorkflowPackDescriptor | null;
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];

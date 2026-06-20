@@ -168,6 +168,27 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
+For the bundled Skatteverket Add-on, use explicit module loading with
+`addon_loader.modules: ["evander_skatteverket_addon"]` and
+`addon_loader.enabled_addon_ids: ["skatteverket-addon"]`. Configure this in the
+host config to expose the Skatteverket Admin Web tab and MCP tools, and in
+`config/trigger-orchestrator/config.json` to make `query:skatteverket:*` and
+`effect:skatteverket:*` workflow providers available. Its state is stored under
+`runtime/addons/skatteverket-addon/state.db`; production API credentials remain
+host-side and are referenced by environment variable names in add-on connection
+metadata.
+
+For the bundled Bokio Add-on, use explicit module loading with
+`addon_loader.modules: ["evander_bokio_addon"]` and
+`addon_loader.enabled_addon_ids: ["bokio-addon"]`. Configure this in the host
+config to expose the Bokio Admin Web tab and MCP tools, and in
+`config/trigger-orchestrator/config.json` to make `query:bokio:*` and
+`effect:bokio:*` workflow providers available. Set `BOKIO_COMPANY_ID` and
+`BOKIO_INTEGRATION_TOKEN` in the host service environment; optional
+`provider_state.bokio.company_id_env` and
+`provider_state.bokio.integration_token_env` can point the add-on at different
+environment variable names without storing the token value in config.
+
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
 path derived from `effect_lock_path` with `.wake.sock`.
@@ -387,7 +408,7 @@ Each gate entry requires the shared envelope keys:
 - `id` (string, required, unique across all gates)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `dedupe`, `switch`)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `buffer`, `dedupe`, `switch`)
 
 Type-specific keys:
 
@@ -403,6 +424,7 @@ Type-specific keys:
 | `gate:serialize` | `value` | `format`, `outputs` |
 | `gate:merge` | _none beyond envelope_ | `outputs` |
 | `gate:debounce` | `key`, `quiet_period`, `max_delay` | `outputs` |
+| `gate:buffer` | `key`, `count` | `timeout`, `outputs` |
 | `gate:dedupe` | `key`, `ttl` | `outputs` |
 
 `gate:dedupe` resolves `key` with the same `${{node.output}}` binding syntax used by other
@@ -453,6 +475,12 @@ activation for that key has arrived for the ISO-8601 `quiet_period`, and caps ea
 ISO-8601 `max_delay`. It forwards the latest payload in the burst and records debounce
 diagnostics including key, first/last seen times, scheduled release time, and release reason.
 Delayed debounce releases preserve the inherited workflow binding context.
+
+`gate:buffer` groups inbound activations by its bindable `key` and stores forwardable upstream
+payloads in arrival order. It releases one batch when `count` activations have accumulated, or
+when optional ISO-8601 `timeout` has elapsed since the first buffered activation. Each release
+emits `items`, `count`, and `release_reason`; delayed timeout releases preserve inherited workflow
+binding context.
 
 Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
 `upstream_id` field.
@@ -1169,7 +1197,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root or directory `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
-| `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
+| `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public download links for staged communication artifacts, used by `teams_post_file` when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. The secret env var must be loaded by both gateway and Admin Web; the link TTL is also capped by the staged artifact expiry. |
 | `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
@@ -1183,6 +1211,9 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
+| `local_openai_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`; effective `local_openai` config is rejected when that URL targets the relay listener, such as the default `0.0.0.0:11434` relay bind. |
+| `local_openai_api_key` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` placeholder bearer token sent to the local OpenAI-compatible upstream in `local_openai` mode. Defaults to `ollama`. |
+| `local_openai_provider_name` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` provider name stored in model-usage rows for local OpenAI-compatible traffic. Defaults to `local_openai`. |
 | `anthropic_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` Anthropic upstream URL base. |
 | `anthropic_api_key_env` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` env-var name lookup for Anthropic API key. |
 | `anthropic_api_version` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` default `anthropic-version` header. |

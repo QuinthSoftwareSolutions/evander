@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from truman_team_addon.models import (
+    AgentInboxItem,
     AgentRuntime,
     AgentStandDownSource,
     AgentStatus,
@@ -20,6 +21,8 @@ from truman_team_addon.models import (
     ProjectStatus,
     ReviewProfileCriterion,
     RolePermission,
+    TeamInboxItemState,
+    TeamInboxPriority,
     TeamInboxItemType,
     TeamRecordState,
     TeamTaskState,
@@ -170,7 +173,9 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
 
 
-def test_repository_migrates_action_feedback_columns(tmp_path: Path) -> None:
+def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "addons" / "team-addon" / "state.db"
     db_path.parent.mkdir(parents=True)
     with sqlite3.connect(db_path) as connection:
@@ -201,16 +206,29 @@ def test_repository_migrates_action_feedback_columns(tmp_path: Path) -> None:
 
     assert repo.read().action_records == {}
     with sqlite3.connect(db_path) as connection:
-        columns = {
+        action_columns = {
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_action_records)")
+        }
+        inbox_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_inbox)")
+        }
+        runtime_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_agent_runtimes)")
         }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
-    assert "feedback_delivered_at" in columns
-    assert "feedback_delivered_by_dispatch_id" in columns
-    assert metadata["sqlite_schema_version"] == "3"
+    assert "feedback_delivered_at" in action_columns
+    assert "feedback_delivered_by_dispatch_id" in action_columns
+    assert "response_requested" in inbox_columns
+    assert "priority" in inbox_columns
+    assert "low_priority_batch_started_at" in runtime_columns
+    assert "low_priority_batch_cycle_count" in runtime_columns
+    assert "low_priority_batch_due_after_cycles" in runtime_columns
+    assert metadata["sqlite_schema_version"] == "5"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
@@ -319,6 +337,131 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
     assert state.agents["backend"].display_name == "Backend Agent"
+
+
+def test_repository_generates_missing_operator_ids_with_collision_suffixes(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state = repo.create_team(
+        team_id=None,
+        name="Platform Team",
+        manager_agent_id=None,
+        manager_session_id="session-manager",
+        manager_display_name="Platform Manager",
+    )
+    assert "team-platform-team" in state.teams
+    assert "team-platform-team__manager" in state.roles
+    assert "agent-team-platform-team-platform-manager" in state.agents
+
+    state = repo.create_project(
+        project_id=None,
+        team_id="team-platform-team",
+        name="Runtime Upgrade",
+        lead_agent_id=None,
+        lead_session_id="session-lead",
+        lead_display_name="Project Lead",
+        goals=[{"description": "Ship runtime upgrade"}],
+        expected_revision=state.revision,
+    )
+    project_id = "project-team-platform-team-runtime-upgrade"
+    assert project_id in state.projects
+    assert state.projects[project_id].lead_agent_id == (
+        "agent-project-team-platform-team-runtime-upgrade-project-lead"
+    )
+    assert state.projects[project_id].goals[0].id == (
+        "goal-project-team-platform-team-runtime-upgrade-ship-runtime-upgrade"
+    )
+
+    state = repo.create_role(
+        role_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        name="Backend",
+        expected_revision=state.revision,
+    )
+    state = repo.create_role(
+        role_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        name="Backend",
+        expected_revision=state.revision,
+    )
+    assert "role-project-team-platform-team-runtime-upgrade-backend" in state.roles
+    assert "role-project-team-platform-team-runtime-upgrade-backend-2" in state.roles
+
+    state = repo.register_agent(
+        agent_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        role_id="role-project-team-platform-team-runtime-upgrade-backend",
+        session_id="session-backend",
+        reports_to_agent_id="agent-project-team-platform-team-runtime-upgrade-project-lead",
+        display_name="Backend Engineer",
+        expected_revision=state.revision,
+    )
+    agent_id = "agent-project-team-platform-team-runtime-upgrade-backend-engineer"
+    assert agent_id in state.agents
+
+    state = repo.create_or_reprioritize_task(
+        task_id=None,
+        owner_agent_id=agent_id,
+        project_id=project_id,
+        priority=10,
+        title="Implement API",
+        description="Implement the runtime API.",
+        created_by_agent_id=state.projects[project_id].lead_agent_id,
+        expected_revision=state.revision,
+    )
+    task_id = "task-project-team-platform-team-runtime-upgrade-implement-api"
+    assert task_id in state.tasks
+
+    state = repo.record_deliverable(
+        deliverable_id=None,
+        task_id=task_id,
+        producer_agent_id=agent_id,
+        summary="API patch",
+        expected_revision=state.revision,
+    )
+    deliverable_id = f"deliverable-{task_id}-api-patch"
+    assert deliverable_id in state.deliverables
+
+    state = repo.create_review_profile(
+        profile_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        name="Standard review",
+        expected_revision=state.revision,
+    )
+    profile_id = "profile-project-team-platform-team-runtime-upgrade-standard-review"
+    assert profile_id in state.review_profiles
+
+    state = repo.record_review_request(
+        review_request_id=None,
+        deliverable_id=deliverable_id,
+        reviewer_agent_id=state.projects[project_id].lead_agent_id,
+        review_profile_id=profile_id,
+        expected_revision=state.revision,
+    )
+    assert any(review_id.startswith(f"review-{deliverable_id}") for review_id in state.review_requests)
+
+
+def test_repository_preserves_explicit_operator_ids(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state = repo.create_team(
+        team_id="explicit-team",
+        name="Display Name",
+        manager_agent_id="explicit-manager",
+        manager_session_id="session-manager",
+        manager_role_id="explicit-manager-role",
+    )
+
+    assert "explicit-team" in state.teams
+    assert "explicit-manager" in state.agents
+    assert "explicit-manager-role" in state.roles
+    assert "team-display-name" not in state.teams
 
 
 def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> None:
@@ -1257,7 +1400,137 @@ def test_apply_agent_action_creates_status_request_for_subordinate(tmp_path: Pat
     assert item.recipient_agent_id == "backend"
     assert item.sender_agent_id == "lead"
     assert item.item_type == TeamInboxItemType.STATUS_REQUEST
+    assert item.response_requested is True
+    assert item.priority == TeamInboxPriority.NORMAL
     assert item.payload["question"] == "Status on the backend slice?"
+    assert "response_requested" not in item.payload
+    assert "priority" not in item.payload
+
+
+def test_apply_agent_action_sets_reply_intent_defaults_and_overrides(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "questions": [
+                {
+                    "recipient_agent_id": "lead",
+                    "question": "This is just confirming direction.",
+                    "response_requested": False,
+                    "priority": "high",
+                }
+            ],
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "summary": "Done with the FYI check.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    items = [state.inbox[item_id] for item_id in result["created_inbox_item_ids"]]
+    question = next(item for item in items if item.item_type == TeamInboxItemType.QUESTION)
+    report = next(
+        item for item in items if item.item_type == TeamInboxItemType.PROGRESS_REPORT
+    )
+    assert question.response_requested is False
+    assert report.response_requested is False
+    assert question.priority == TeamInboxPriority.HIGH
+    assert report.priority == TeamInboxPriority.LOW
+    assert "response_requested" not in question.payload
+    assert "response_requested" not in report.payload
+    assert "priority" not in question.payload
+    assert "priority" not in report.payload
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "summary": "Please confirm this plan.",
+                    "response_requested": True,
+                    "priority": "normal",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    report = state.inbox[result["created_inbox_item_ids"][0]]
+    assert report.response_requested is True
+    assert report.priority == TeamInboxPriority.NORMAL
+
+
+def test_apply_agent_action_rejects_non_boolean_reply_intent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "questions": [
+                {
+                    "recipient_agent_id": "lead",
+                    "question": "Can I use a string here?",
+                    "response_requested": "false",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.inbox == {}
+    assert any("response_requested must be a boolean" in error for error in result["errors"])
+
+
+def test_apply_agent_action_rejects_invalid_inbox_priority(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "questions": [
+                {
+                    "recipient_agent_id": "lead",
+                    "question": "Can I invent a priority?",
+                    "priority": "eventually",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.inbox == {}
+    assert any("priority must be one of: low, normal, high" in error for error in result["errors"])
+
+
+def test_repository_round_trips_inbox_reply_intent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "summary": "No reply needed.",
+                    "priority": "low",
+                }
+            ],
+        },
+    )
+
+    item_id = result["created_inbox_item_ids"][0]
+    assert state.inbox[item_id].response_requested is False
+    assert state.inbox[item_id].priority == TeamInboxPriority.LOW
+    reloaded = TeamStateRepository(tmp_path).read()
+    assert reloaded.inbox[item_id].response_requested is False
+    assert reloaded.inbox[item_id].priority == TeamInboxPriority.LOW
 
 
 def test_apply_agent_action_rejects_status_request_to_non_subordinate(tmp_path: Path) -> None:
@@ -1500,6 +1773,158 @@ def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
     runtime = state.agent_runtimes["backend"]
     assert runtime.auto_context_clearing_enabled is True
     assert runtime.context_rotation_pending is False
+
+
+def test_low_priority_inbox_wakes_after_configured_wake_cycles(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _add_low_inbox(state):
+        state.inbox["low-1"] = AgentInboxItem(
+            id="low-1",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_low_inbox)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time,
+        low_priority_wake_after_cycles=3,
+    )
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at == base_time
+    assert runtime.low_priority_batch_cycle_count == 1
+    assert runtime.low_priority_batch_due_after_cycles == 3
+
+    def _add_second_low_inbox(state):
+        state.inbox["low-2"] = AgentInboxItem(
+            id="low-2",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_second_low_inbox)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time.replace(minute=15),
+        low_priority_wake_after_cycles=3,
+    )
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at == base_time
+    assert runtime.low_priority_batch_cycle_count == 2
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time.replace(minute=30),
+        low_priority_wake_after_cycles=3,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "low_priority_inbox"
+    assert [item["id"] for item in leases[0]["inbox"]] == ["low-1", "low-2"]
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at is None
+    assert runtime.low_priority_batch_cycle_count == 0
+    assert runtime.low_priority_batch_due_after_cycles is None
+
+
+def test_normal_inbox_cancels_low_priority_batch_countdown(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _add_low_inbox(state):
+        state.inbox["low-1"] = AgentInboxItem(
+            id="low-1",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_low_inbox)
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time,
+        low_priority_wake_after_cycles=4,
+    )
+    assert leases == []
+    assert state.agent_runtimes["backend"].low_priority_batch_cycle_count == 1
+
+    def _add_normal_inbox(state):
+        state.inbox["normal-1"] = AgentInboxItem(
+            id="normal-1",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_normal_inbox)
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time.replace(minute=15),
+        low_priority_wake_after_cycles=4,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "inbox"
+    assert [item["id"] for item in leases[0]["inbox"]] == ["low-1", "normal-1"]
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at is None
+    assert runtime.low_priority_batch_cycle_count == 0
+
+
+def test_handled_low_priority_inbox_clears_batch_countdown(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _add_low_inbox(state):
+        state.inbox["low-1"] = AgentInboxItem(
+            id="low-1",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_low_inbox)
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time,
+        low_priority_wake_after_cycles=2,
+    )
+    assert leases == []
+    assert state.agent_runtimes["backend"].low_priority_batch_cycle_count == 1
+
+    def _handle_low_inbox(state):
+        state.inbox["low-1"].state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_low_inbox)
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time.replace(minute=15),
+        low_priority_wake_after_cycles=2,
+    )
+
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at is None
+    assert runtime.low_priority_batch_cycle_count == 0
 
 
 def test_operator_task_creation_resets_no_progress_and_wakes_owner(tmp_path: Path) -> None:

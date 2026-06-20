@@ -2017,6 +2017,11 @@ button.people-agent-select:focus-visible {
   color: var(--accent-strong);
 }
 
+.state-pill.neutral {
+  background: rgba(95, 103, 114, 0.12);
+  color: var(--muted);
+}
+
 .state-pill.rejected {
   border: 1px solid rgba(163, 61, 61, 0.3);
   background: rgba(163, 61, 61, 0.18);

@@ -22,6 +22,7 @@ from agent_sandbox.repositories.skills_library import (
     SkillLibraryRepository,
     normalize_skill_names,
 )
+from agent_sandbox.managed_sections import normalize_managed_section_id
 from agent_sandbox.vm.power_state import normalize_power_state
 
 
@@ -1216,6 +1217,54 @@ def _libvirt_shutdown_vm(target: str, *, timeout_seconds: int = 60) -> VmActionR
     )
 
 
+def _normalize_copy_merge_strategy(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text != "managed_section":
+        raise ValueError("merge_strategy must be one of: managed_section")
+    return text
+
+
+def _remote_managed_section_python(
+    *,
+    destination_path: str,
+    section_id: str,
+    encoded_content: str,
+) -> str:
+    normalized_section_id = normalize_managed_section_id(section_id)
+    return "\n".join(
+        [
+            "python3 - <<'PY'",
+            "import base64",
+            "import re",
+            "from pathlib import Path",
+            f"path = Path({destination_path!r})",
+            f"section_id = {normalized_section_id!r}",
+            f"content = base64.b64decode({encoded_content!r}).decode('utf-8')",
+            "begin_marker = f'<!-- agent-sandbox-managed-section:{section_id}:begin -->'",
+            "end_marker = f'<!-- agent-sandbox-managed-section:{section_id}:end -->'",
+            "body = content.rstrip() + '\\n'",
+            "section = f'{begin_marker}\\n{body}{end_marker}\\n'",
+            "existing = path.read_text(encoding='utf-8') if path.exists() else ''",
+            "pattern = re.compile(rf'(?ms)^{re.escape(begin_marker)}\\n.*?^{re.escape(end_marker)}\\n?')",
+            "if pattern.search(existing):",
+            "    merged = pattern.sub(section, existing, count=1)",
+            "elif not existing:",
+            "    merged = section",
+            "else:",
+            "    prefix = existing if existing.endswith('\\n') else existing + '\\n'",
+            "    if not prefix.endswith('\\n\\n'):",
+            "        prefix += '\\n'",
+            "    merged = prefix + section",
+            "path.write_text(merged, encoding='utf-8')",
+            "PY",
+        ]
+    )
+
+
 def _libvirt_vm_exec(
     target: str,
     *,
@@ -1279,6 +1328,12 @@ def _libvirt_vm_copy_files(
         content_raw = file_spec.get("content")
         if bool(source_path_raw) == bool(content_raw):
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
+        merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
+        section_id = str(file_spec.get("section_id") or "").strip()
+        if merge_strategy == "managed_section":
+            if source_path_raw:
+                raise ValueError(f"files[{index}] managed_section requires inline content")
+            section_id = normalize_managed_section_id(section_id)
         overwrite = bool(file_spec.get("overwrite", True))
         mode = str(file_spec.get("mode") or "").strip()
         parent_path = str(Path(destination_path).parent)
@@ -1346,12 +1401,24 @@ def _libvirt_vm_copy_files(
         else:
             content_text = str(content_raw if content_raw is not None else "")
             encoded_content = base64.b64encode(content_text.encode("utf-8")).decode("ascii")
+            if merge_strategy == "managed_section":
+                write_command = _remote_managed_section_python(
+                    destination_path=destination_path,
+                    section_id=section_id,
+                    encoded_content=encoded_content,
+                )
+            else:
+                write_command = (
+                    "python3 - <<'PY'\n"
+                    "import base64\n"
+                    "from pathlib import Path\n"
+                    f"Path({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\n"
+                    "PY"
+                )
             remote_script = (
                 "\n".join(
                     prelude
-                    + [
-                        f"python3 - <<'PY'\nimport base64\nfrom pathlib import Path\nPath({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\nPY"
-                    ]
+                    + [write_command]
                     + (
                         [f"chmod {shlex.quote(mode)} {shlex.quote(destination_path)}"]
                         if mode
@@ -1565,6 +1632,12 @@ def _ssh_copy_files(
         content_raw = file_spec.get("content")
         if bool(source_path_raw) == bool(content_raw):
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
+        merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
+        section_id = str(file_spec.get("section_id") or "").strip()
+        if merge_strategy == "managed_section":
+            if source_path_raw:
+                raise ValueError(f"files[{index}] managed_section requires inline content")
+            section_id = normalize_managed_section_id(section_id)
         overwrite = bool(file_spec.get("overwrite", True))
         mode = str(file_spec.get("mode") or "").strip()
         parent_path = str(Path(destination_path).parent)
@@ -1632,12 +1705,24 @@ def _ssh_copy_files(
         else:
             content_text = str(content_raw if content_raw is not None else "")
             encoded_content = base64.b64encode(content_text.encode("utf-8")).decode("ascii")
+            if merge_strategy == "managed_section":
+                write_command = _remote_managed_section_python(
+                    destination_path=destination_path,
+                    section_id=section_id,
+                    encoded_content=encoded_content,
+                )
+            else:
+                write_command = (
+                    "python3 - <<'PY'\n"
+                    "import base64\n"
+                    "from pathlib import Path\n"
+                    f"Path({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\n"
+                    "PY"
+                )
             remote_script = (
                 "\n".join(
                     prelude
-                    + [
-                        f"python3 - <<'PY'\nimport base64\nfrom pathlib import Path\nPath({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\nPY"
-                    ]
+                    + [write_command]
                     + (
                         [f"chmod {shlex.quote(mode)} {shlex.quote(destination_path)}"]
                         if mode

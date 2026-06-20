@@ -121,6 +121,10 @@ class ToolName(str, Enum):
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
     LIST_PULL_REQUESTS = "list_pull_requests"
     GET_PULL_REQUEST = "get_pull_request"
+    RESOLVE_ADO_IDENTITY = "resolve_ado_identity"
+    LIST_ADO_PR_COMMENT_ACTIVITY = "list_ado_pr_comment_activity"
+    LIST_ADO_PR_COMMIT_ACTIVITY = "list_ado_pr_commit_activity"
+    QUERY_ADO_WORK_ITEM_ACTIVITY = "query_ado_work_item_activity"
     REQUEST_PR_REVIEW = "request_pr_review"
     POST_PR_COMMENT = "post_pr_comment"
     POST_PR_INLINE_COMMENT = "post_pr_inline_comment"
@@ -145,23 +149,46 @@ class ToolName(str, Enum):
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
 
-def normalize_tool_names(value: object, *, field_name: str) -> list[ToolName]:
+McpToolName = ToolName | str
+_MCP_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$")
+
+
+def tool_name_value(value: McpToolName) -> str:
+    return value.value if isinstance(value, ToolName) else str(value).strip()
+
+
+def normalize_tool_name(value: object, *, field_name: str = "tool_name") -> McpToolName:
+    candidate = value.value if isinstance(value, ToolName) else str(value).strip()
+    if not candidate:
+        raise ValueError(f"{field_name} must be a non-empty MCP tool name")
+    builtin = ToolName._value2member_map_.get(candidate)
+    if builtin is not None:
+        return builtin
+    if not _MCP_TOOL_NAME_PATTERN.fullmatch(candidate):
+        raise ValueError(
+            f"{field_name} must be a valid MCP tool name using letters, numbers, "
+            "underscore, dot, colon, or hyphen"
+        )
+    return candidate
+
+
+def normalize_tool_names(value: object, *, field_name: str) -> list[McpToolName]:
     if value is None:
         return []
     if isinstance(value, (str, ToolName)):
         value = [value]
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{field_name} must be a JSON array of tool names")
-    normalized: list[ToolName] = []
-    seen: set[ToolName] = set()
+    normalized: list[McpToolName] = []
+    seen: set[str] = set()
     for item in value:
-        candidate = item.value if isinstance(item, ToolName) else str(item).strip()
-        if not candidate:
+        if (item.value if isinstance(item, ToolName) else str(item).strip()) == "":
             continue
-        tool = ToolName(candidate)
-        if tool in seen:
+        tool = normalize_tool_name(item, field_name=field_name)
+        tool_value = tool_name_value(tool)
+        if tool_value in seen:
             continue
-        seen.add(tool)
+        seen.add(tool_value)
         normalized.append(tool)
     return normalized
 
@@ -185,13 +212,9 @@ def normalize_tool_argument_policies(
     normalized: dict[str, list[object]] = {}
     seen_tools: set[str] = set()
     for raw_tool_name, raw_rules in value.items():
-        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
-        if not candidate:
-            raise ValueError(f"{field_name} tool names must be non-empty")
-        try:
-            tool_name = ToolName(candidate).value
-        except ValueError as exc:
-            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        tool_name = tool_name_value(
+            normalize_tool_name(raw_tool_name, field_name=f"{field_name} tool name")
+        )
         if tool_name in seen_tools:
             raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
         seen_tools.add(tool_name)
@@ -455,13 +478,9 @@ def normalize_approval_tool_settings(
     normalized: dict[str, object] = {}
     seen_tools: set[str] = set()
     for raw_tool_name, raw_settings in value.items():
-        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
-        if not candidate:
-            raise ValueError(f"{field_name} tool names must be non-empty")
-        try:
-            tool_name = ToolName(candidate).value
-        except ValueError as exc:
-            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        tool_name = tool_name_value(
+            normalize_tool_name(raw_tool_name, field_name=f"{field_name} tool name")
+        )
         if tool_name in seen_tools:
             raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
         seen_tools.add(tool_name)
@@ -477,13 +496,9 @@ def normalize_mcp_tool_policies(value: object, *, field_name: str) -> dict[str, 
     normalized: dict[str, object] = {}
     seen_tools: set[str] = set()
     for raw_tool_name, raw_policy in value.items():
-        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
-        if not candidate:
-            raise ValueError(f"{field_name} tool names must be non-empty")
-        try:
-            tool_name = ToolName(candidate).value
-        except ValueError as exc:
-            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        tool_name = tool_name_value(
+            normalize_tool_name(raw_tool_name, field_name=f"{field_name} tool name")
+        )
         if tool_name in seen_tools:
             raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
         seen_tools.add(tool_name)
@@ -511,8 +526,8 @@ class SessionManifest(BaseModel):
     vm_provider_id: str | None = None
     model: str | None = None
     directory_path: str = "root"
-    allowed_tools: list[ToolName]
-    approval_required_tools: list[ToolName] = Field(default_factory=list)
+    allowed_tools: list[McpToolName]
+    approval_required_tools: list[McpToolName] = Field(default_factory=list)
     approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
     allowed_contact_ids: list[str] | None = None
@@ -567,8 +582,13 @@ class SessionManifest(BaseModel):
 
     @field_validator("approval_required_tools", mode="before")
     @classmethod
-    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+    def normalize_approval_required_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("allowed_tools", mode="before")
+    @classmethod
+    def normalize_allowed_tools(cls, value: object) -> list[McpToolName]:
+        return normalize_tool_names(value, field_name="allowed_tools")
 
     @field_validator("approval_tool_settings", mode="before")
     @classmethod
@@ -654,7 +674,7 @@ class SessionToolApprovalLease(BaseModel):
     lease_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     workflow_run_id: str = Field(min_length=1)
-    tools: list[ToolName]
+    tools: list[McpToolName]
     effect_execution_id: str | None = None
     approval_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
@@ -666,7 +686,7 @@ class SessionToolApprovalLease(BaseModel):
 
     @field_validator("tools", mode="before")
     @classmethod
-    def normalize_tools(cls, value: object) -> list[ToolName]:
+    def normalize_tools(cls, value: object) -> list[McpToolName]:
         return normalize_tool_names(value, field_name="tools")
 
     @field_validator("approval_settings", mode="before")
@@ -694,7 +714,9 @@ class SessionToolApprovalLease(BaseModel):
             raise ValueError("used_counts must be a JSON object")
         normalized: dict[str, int] = {}
         for raw_tool_name, raw_count in value.items():
-            tool_name = ToolName(str(raw_tool_name).strip()).value
+            tool_name = tool_name_value(
+                normalize_tool_name(raw_tool_name, field_name="used_counts tool name")
+            )
             count = int(raw_count)
             if count < 0:
                 raise ValueError("used_counts values must be non-negative")
@@ -1692,6 +1714,7 @@ class ListPullRequestsRequest(BaseModel):
     organization_url: str | None = None
     project: str | None = None
     status: str | None = None
+    statuses: list[str] = Field(default_factory=list)
     creator_id: str | None = None
     reviewer_id: str | None = None
     source_ref_name: str | None = None
@@ -1707,6 +1730,28 @@ class ListPullRequestsRequest(BaseModel):
     top: int | None = Field(default=None, ge=1)
     skip: int | None = Field(default=None, ge=0)
     cursor: str | None = None
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("statuses must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text)
+        return normalized
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -1783,6 +1828,156 @@ class GetPullRequestResponse(BaseModel):
     reviewers: list[PullRequestReviewer] = Field(default_factory=list)
     commits: list[PullRequestCommit] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoIdentitySummary(BaseModel):
+    id: str | None = None
+    descriptor: str | None = None
+    display_name: str | None = None
+    unique_name: str | None = None
+    email: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResolveAdoIdentityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    project: str | None = None
+
+    @field_validator("query", "project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object, info: Any) -> str | None:
+        if value is None:
+            if info.field_name == "query":
+                raise ValueError("query is required")
+            return None
+        normalized = str(value).strip()
+        if not normalized and info.field_name == "query":
+            raise ValueError("query is required")
+        return normalized or None
+
+
+class ResolveAdoIdentityResponse(BaseModel):
+    provider: str = "azure_devops"
+    query: str
+    confidence: str
+    id: str | None = None
+    descriptor: str | None = None
+    display_name: str | None = None
+    unique_name: str | None = None
+    email: str | None = None
+    matches: list[AdoIdentitySummary] = Field(default_factory=list)
+
+
+class AdoPrCommentActivityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    author: str | None = None
+    since: datetime
+    until: datetime | None = None
+    project: str | None = None
+    statuses: list[str] = Field(default_factory=list)
+    include_system_comments: bool = False
+    top: int = Field(default=100, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("repo", "author", "project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object, info: Any) -> str | None:
+        if value is None:
+            if info.field_name == "repo":
+                raise ValueError("repo is required")
+            return None
+        normalized = str(value).strip()
+        if not normalized and info.field_name == "repo":
+            raise ValueError("repo is required")
+        return normalized or None
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> list[str]:
+        return ListPullRequestsRequest.normalize_statuses(value)
+
+
+class AdoPrCommentActivityItem(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    pr_id: str
+    pr_title: str | None = None
+    pr_status: str | None = None
+    pr_url: str | None = None
+    thread_id: str | None = None
+    comment_id: str | None = None
+    author: str | None = None
+    author_identity: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    body: str | None = None
+    body_snippet: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    resolved: bool | None = None
+    url: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoPrCommentActivityResponse(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    comments: list[AdoPrCommentActivityItem] = Field(default_factory=list)
+    count: int = 0
+    paging: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoPrCommitActivityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    author: str | None = None
+    since: datetime
+    until: datetime | None = None
+    project: str | None = None
+    statuses: list[str] = Field(default_factory=list)
+    top: int = Field(default=100, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("repo", "author", "project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object, info: Any) -> str | None:
+        return AdoPrCommentActivityRequest.trim_optional_strings(value, info)
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> list[str]:
+        return ListPullRequestsRequest.normalize_statuses(value)
+
+
+class AdoPrCommitActivityItem(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    pr_id: str
+    pr_title: str | None = None
+    pr_status: str | None = None
+    pr_url: str | None = None
+    commit_id: str
+    comment: str | None = None
+    url: str | None = None
+    author: dict[str, Any] = Field(default_factory=dict)
+    committer: dict[str, Any] = Field(default_factory=dict)
+    authored_at: datetime | None = None
+    committed_at: datetime | None = None
+    unverified_date: bool = False
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoPrCommitActivityResponse(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    commits: list[AdoPrCommitActivityItem] = Field(default_factory=list)
+    count: int = 0
+    paging: dict[str, Any] = Field(default_factory=dict)
 
 
 class AdoBacklogCreateRequest(BaseModel):
@@ -2432,6 +2627,95 @@ class AdoBacklogGetResponse(BaseModel):
     updates: list[dict[str, Any]] = Field(default_factory=list)
     inline_media: list[InlineMediaRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoWorkItemActivityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    project: str | None = None
+    actor: str | None = None
+    since: datetime
+    until: datetime | None = None
+    activity_types: list[str] = Field(default_factory=lambda: ["created", "changed", "commented"])
+    states: list[str] = Field(default_factory=list)
+    types: list[AdoBacklogItemType] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    top: int = Field(default=100, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("project", "actor", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("activity_types", mode="before")
+    @classmethod
+    def normalize_activity_types(cls, value: object) -> list[str]:
+        if value is None:
+            return ["created", "changed", "commented"]
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("activity_types must be a list of strings")
+        allowed = {"created", "changed", "commented"}
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item).strip().casefold()
+            if not text:
+                continue
+            if text not in allowed:
+                raise ValueError("activity_types values must be one of: created, changed, commented")
+            if text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized or ["created", "changed", "commented"]
+
+    @field_validator("states", "tags_any", mode="before")
+    @classmethod
+    def normalize_string_filters(cls, value: object) -> list[str]:
+        return AdoBacklogQueryRequest.normalize_string_filters(value)
+
+    @field_validator("types", mode="before")
+    @classmethod
+    def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
+        return AdoBacklogQueryRequest.normalize_types(value)
+
+
+class AdoWorkItemActivityRecord(BaseModel):
+    activity_type: str
+    provenance: str
+    occurred_at: datetime
+    actor: str | None = None
+    actor_identity: dict[str, Any] = Field(default_factory=dict)
+    summary: str | None = None
+    comment_id: str | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoWorkItemActivityItem(BaseModel):
+    provider: str = "azure_devops"
+    id: str
+    project: str | None = None
+    title: str | None = None
+    state: str | None = None
+    type: str | None = None
+    url: str | None = None
+    web_url: str | None = None
+    activities: list[AdoWorkItemActivityRecord] = Field(default_factory=list)
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoWorkItemActivityResponse(BaseModel):
+    provider: str = "azure_devops"
+    project: str | None = None
+    items: list[AdoWorkItemActivityItem] = Field(default_factory=list)
+    count: int = 0
+    paging: dict[str, Any] = Field(default_factory=dict)
 
 
 class AdoBacklogDeleteRequest(BaseModel):

@@ -175,6 +175,66 @@ def test_vm_copy_files_provider_resolves_vm_by_session_id(tmp_path: Path) -> Non
     ]
 
 
+def test_vm_copy_files_provider_accepts_managed_section_entries(tmp_path: Path) -> None:
+    admin_service = _AdminServiceStub(
+        [
+            VmSummary(
+                vm_name="lab-vm-2",
+                session_ids=["session-abc"],
+                directory_paths=["root/team-a"],
+                libvirt_state="running",
+                ip_address="192.0.2.22",
+                agent_state="omitted",
+            )
+        ],
+        vm_copy_files_result={
+            "success": True,
+            "vm_name": "lab-vm-2",
+            "action": "vm_copy_files",
+            "message": "Copied 1 path(s) into lab-vm-2",
+            "copied_count": 1,
+            "copied_paths": ["/home/agent/AGENTS.md"],
+        },
+    )
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(effect_definition=SimpleNamespace(id="copy-files"), runtime_context=context)
+
+    result = provider.execute(
+        resolved_config={
+            "session_id": "session-abc",
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "Team guidance",
+                    "merge_strategy": "managed_section",
+                    "section_id": "truman-team-addon",
+                }
+            ],
+        }
+    )
+
+    assert result["copied_paths"] == ["/home/agent/AGENTS.md"]
+    assert admin_service.calls == [
+        {
+            "target": "session-abc",
+            "files": [
+                {
+                    "source_path": None,
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "Team guidance",
+                    "content_format": None,
+                    "mode": None,
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": "truman-team-addon",
+                }
+            ],
+            "vm_user": "agent",
+        }
+    ]
+
+
 def test_vm_copy_files_provider_serializes_object_content_as_yaml(tmp_path: Path) -> None:
     admin_service = _AdminServiceStub(
         [

@@ -879,6 +879,69 @@ def test_aggregate_gate_derives_metric_outputs() -> None:
     }
 
 
+def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> None:
+    adapter = TypeAdapter(GateDefinitionDiscriminated)
+
+    gate = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "g-buffer",
+                "display_name": "Buffer",
+                "type": "gate:buffer",
+                "key": "buffer:${{system.execution.trace_id}}",
+                "count": 10,
+                "timeout": "PT10M",
+            }
+        )
+    )
+
+    assert gate.outputs == {
+        "items": {"type": "array"},
+        "count": {"type": "integer"},
+        "release_reason": {"type": "string"},
+    }
+    empty_timeout_gate = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "g-buffer-count-only",
+                "display_name": "Buffer count only",
+                "type": "gate:buffer",
+                "key": "buffer:${{system.execution.trace_id}}",
+                "count": 10,
+                "timeout": "",
+            }
+        )
+    )
+    assert empty_timeout_gate.timeout is None
+
+    with pytest.raises(ValueError, match="gate:buffer count must be a positive integer"):
+        materialize_node_definition(
+            adapter.validate_python(
+                {
+                    "id": "g-buffer-bad-count",
+                    "display_name": "Buffer",
+                    "type": "gate:buffer",
+                    "key": "buffer:1",
+                    "count": 0,
+                }
+            )
+        )
+
+    with pytest.raises(ValueError, match="gate:buffer timeout must be an ISO-8601 duration"):
+        materialize_node_definition(
+            adapter.validate_python(
+                {
+                    "id": "g-buffer-bad-timeout",
+                    "display_name": "Buffer",
+                    "type": "gate:buffer",
+                    "key": "buffer:1",
+                    "count": 2,
+                    "timeout": "later",
+                }
+            )
+        )
+
+
 def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     event = TriggerEvent.model_validate(
         {

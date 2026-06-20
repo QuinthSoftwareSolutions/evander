@@ -256,7 +256,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "model_provider_mode": (
         "Default provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
-        "azure_openai for Azure OpenAI, or anthropic for Claude Messages API routing. "
+        "local_openai for a host-local OpenAI-compatible endpoint, azure_openai for Azure OpenAI, "
+        "or anthropic for Claude Messages API routing. "
         "Individual sessions can override this default through their agent provider."
     ),
     "openai_api_base_url": (
@@ -266,6 +267,15 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Name of the host environment variable that holds the upstream OpenAI API key in public OpenAI mode."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
+    "local_openai_api_base_url": (
+        "Host-local OpenAI-compatible API base URL used by the relay in local_openai mode."
+    ),
+    "local_openai_api_key": (
+        "Placeholder API key sent to the local OpenAI-compatible endpoint in local_openai mode."
+    ),
+    "local_openai_provider_name": (
+        "Provider name stored in model-usage records for local_openai relay traffic."
+    ),
     "anthropic_api_base_url": (
         "Upstream Anthropic-compatible API base URL used by the host relay in anthropic mode."
     ),

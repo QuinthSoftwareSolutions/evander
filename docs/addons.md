@@ -14,6 +14,10 @@ Add-ons may register generic integration points:
 - Admin Web navigation metadata and optional UI routes under `/addons/<addon_id>/...`
 - Workflow providers using the same trigger/gate/effect/query provider shape as
   `agent_sandbox.providers`
+- Workflow editor catalog metadata through those workflow provider registrations
+- Host-side MCP tools registered through the add-on MCP registrar and governed
+  by the same session, directory policy, approval, and audit machinery as core
+  tools
 - Private runtime state under `runtime/addons/<addon_id>/`
 
 Add-ons must not add domain-specific fields to core models such as
@@ -61,6 +65,15 @@ def register_addon():
             "effect_providers": {
                 "effect:team:example": ExampleEffectProvider,
             },
+            "workflow_editor_catalog_entries": [
+                {
+                    "kind": "effect",
+                    "type": "effect:team:example",
+                    "label": "Team example",
+                    "description": "Run the add-on owned Team example effect.",
+                    "fields": [],
+                },
+            ],
         },
     }
 ```
@@ -78,6 +91,94 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
+
+## Skatteverket Add-on Guidance
+
+The bundled `evander_skatteverket_addon` package provides an optional
+Skatteverket accounting and filing surface. Enable it with:
+
+```json
+{
+  "addon_loader": {
+    "modules": ["evander_skatteverket_addon"],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": ["skatteverket-addon"]
+  }
+}
+```
+
+When enabled, Admin Web shows a `Skatteverket` tab backed by
+`/api/addons/skatteverket-addon/...` and `/addons/skatteverket-addon/`. The
+add-on keeps canonical state in `runtime/addons/skatteverket-addon/state.db`.
+It exposes add-on-owned workflow nodes under `query:skatteverket:*` and
+`effect:skatteverket:*`, plus host-side MCP tools named `skatteverket_*`.
+
+The add-on is intentionally host-side:
+
+- Skatteverket credentials, API keys, certificates, and OAuth metadata stay on
+  the control plane.
+- Agents only receive MCP/workflow results, never raw secrets.
+- Submission tools require an exact draft-revision approval request before a
+  stored draft can be submitted.
+- APIs that are represented in the catalog but lack a configured adapter fail
+  closed with `not_implemented_for_v1` or `blocked` status.
+
+Skatteverket production access still requires external onboarding, agreements,
+API keys, OAuth2 setup, and in some cases e-legitimation or
+organisationslegitimation. Configure connection metadata through the add-on API
+after that onboarding is complete.
+
+## Bokio Add-on Guidance
+
+The bundled `evander_bokio_addon` package provides an optional assisted
+bookkeeping surface for Bokio private integrations. Enable it with:
+
+```json
+{
+  "addon_loader": {
+    "modules": ["evander_bokio_addon"],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": ["bokio-addon"]
+  }
+}
+```
+
+When enabled, Admin Web shows a `Bokio` tab backed by
+`/api/addons/bokio-addon/...` and `/addons/bokio-addon/`. The add-on stores
+prepared bookkeeping actions under `runtime/addons/bokio-addon/` and exposes
+workflow nodes under `query:bokio:*` and `effect:bokio:*`, plus host-side MCP
+tools named `bokio_*`.
+
+Configure the private integration on the host:
+
+```bash
+export BOKIO_COMPANY_ID=<company-guid>
+export BOKIO_INTEGRATION_TOKEN=<private-integration-token>
+```
+
+Optional provider config can override the token and company-id environment
+variable names with `provider_state.bokio.integration_token_env` and
+`provider_state.bokio.company_id_env`; do not store the token value in config,
+runtime state, guest images, or session manifests.
+
+The Bokio add-on is intentionally an assisted-bookkeeping layer:
+
+- Agents can inspect company information, accounts, journal entries, invoices,
+  supplier invoices, uploads, and prepared actions.
+- Agents can prepare journal entries, supplier invoices, and bank payments as
+  local add-on actions for operator approval.
+- Document uploads read only from add-on-owned staging directories under
+  `runtime/addons/bokio-addon/uploads/`; MCP uploads use
+  `uploads/sessions/<session-id>`, workflow uploads use
+  `uploads/scopes/workflows` unless a `session_id` is supplied, and Admin API
+  uploads use `uploads/scopes/admin`.
+- Creation tools execute only approved prepared actions and should also be
+  policy-gated with MCP invocation approval for production sessions.
+- Bank payments created through Bokio still require a signatory to log in to
+  Bokio and sign with BankID before submission to the bank.
+- Supplier invoice support uses Bokio's preview API surface and should be
+  treated as less stable than company, account, journal-entry, invoice, upload,
+  and SIE reads.
 
 ## Team Module Guidance
 
@@ -272,6 +373,12 @@ set:
   context. Repo preparation is reported in the wake node outputs as
   `prepared_project_repos` or `failed_project_repo_preparations`; it is not a
   separate workflow node because one wake tick can lease multiple agents.
+  Static Team operating rules are seeded as a managed Team Add-on section in
+  `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
+  dynamic dispatch context and action artifact reminder.
+  `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
+  count Team wake evaluations and are batched until the threshold is reached
+  unless another wake reason delivers them earlier.
 - `query:team:agent-action-artifact` reads the structured JSON action artifact
   that a prompted persistent agent must write to `/artifacts/team-action.json`.
 - `effect:team:apply-agent-action` validates the action, updates add-on state,
@@ -303,7 +410,8 @@ set:
 - `query:team:state` returns filtered add-on state for workflows or UI.
 
 These node types are add-on-owned. They are not present unless the add-on is
-loaded, and they must not be moved into Truman core. The packaged
+loaded, and their workflow-editor catalog entries are registered by the add-on's
+provider registration rather than hard-coded into Truman core. The packaged
 `truman_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
 workflow pack for the intended cron plus agent-completion loop. Operators can
 write that definition into an operator-owned pack file when they want this
@@ -342,16 +450,21 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   `review_decisions[]` so the deliverable/task cascade is applied. Updated ids
   are returned in `updated_task_ids`.
 - `status_requests[]` — ask a direct subordinate for an update (downward).
-  Shape: `{"recipient_agent_id", "task_id"?, "question"?}`. The recipient must be
-  a direct subordinate; otherwise the item is rejected. A `STATUS_REQUEST` inbox
-  item is created for the subordinate and surfaced through the normal pending-inbox
-  wake. Returned in `created_status_request_ids`.
+  Shape: `{"recipient_agent_id", "task_id"?, "question"?,
+  "response_requested"?, "priority"?}`. The recipient must be a direct
+  subordinate; otherwise the item is rejected. `response_requested` defaults to
+  `true` and `priority` defaults to `"normal"`. A `STATUS_REQUEST` inbox item is
+  created for the subordinate and surfaced through the normal pending-inbox wake.
+  Returned in
+  `created_status_request_ids`.
 - `questions[]` and `status_reports[]` — talk upward only. Shape:
-  `{"recipient_agent_id"?, "task_id"?, ...}`; the recipient defaults to the
-  actor's `reports_to_agent_id` and must equal it. A top-level manager
-  (`reports_to_agent_id` is `None`) receives a clear per-item error directing it
-  to `operator_escalations` instead. These create `QUESTION` and
-  `PROGRESS_REPORT` inbox items.
+  `{"recipient_agent_id"?, "task_id"?, "response_requested"?, "priority"?, ...}`; the
+  recipient defaults to the actor's `reports_to_agent_id` and must equal it. A
+  top-level manager (`reports_to_agent_id` is `None`) receives a clear per-item
+  error directing it to `operator_escalations` instead. `questions` default
+  `response_requested` to `true` and `priority` to `"normal"`; `status_reports`
+  default `response_requested` to `false` and `priority` to `"low"`. These create
+  `QUESTION` and `PROGRESS_REPORT` inbox items.
 - `operator_escalations[]` — manager-to-operator escalation. Shape:
   `{"title", "message", "urgency"?, "project_id"?, "task_id"?}` (`urgency`
   defaults to `"normal"`). Only the team's top-level manager may escalate. If the
@@ -430,6 +543,11 @@ Team communication is directional and enforced by the repository, not by prose:
 - **Upward** — `questions` and `status_reports` may only target the actor's
   direct superior. There is no skip-level messaging.
 - **Downward** — `status_requests` may only target a direct subordinate.
+- **Reply intent** — inbox items carry `response_requested`. When it is `false`,
+  the recipient should mark the item handled after reading or acting on it, but
+  should not send thank-you, acknowledgement, or other no-op replies. This
+  metadata does not delay delivery; priority and batching are separate runtime
+  features.
 - **Manager to operator** — only the top-level manager escalates, and only when
   `Team.operator_communication_target_id` is set. The repository emits
   `team.operator.escalation_requested`; the packaged `TEAM_RUNTIME_V1` pack routes
@@ -453,6 +571,14 @@ Team communication is directional and enforced by the repository, not by prose:
   action instead of being applied. Operator holds are durable state and can only
   be cleared through `POST /agents/{agent_id}/stand-down/revoke`; agent actions
   cannot revoke or override them.
+
+Inbox priority controls wake timing, not visibility or permission. `high` and
+`normal` pending inbox items wake recipients immediately on the next Team wake
+evaluation. `low` items are visible in Team state immediately but do not wake an
+otherwise idle recipient until `low_priority_wake_after_cycles` evaluations have
+seen that low-priority work. Additional low-priority items do not reset an active
+countdown. Any other wake reason cancels the countdown and includes all pending
+low-priority inbox in that dispatch.
 
 ### Action-Driven Reviews And Decision Cascade
 
@@ -617,5 +743,5 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
 5. Restart Admin Web and the trigger/effect orchestrator services.
 6. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
    returns the built-in catalog, `/addons/team-addon/` serves the add-on UI,
-   and workflow validation recognizes the `effect:team:*` and `query:team:*`
-   node types only after the add-on is enabled.
+   and `/api/workflow-editor/catalog` plus workflow validation recognize the
+   `effect:team:*` and `query:team:*` node types only after the add-on is enabled.
