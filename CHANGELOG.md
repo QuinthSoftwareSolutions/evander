@@ -21,6 +21,20 @@ material. Newer entries are added incrementally as changes land.
 
 - Split the focused People tab into a two-column desktop layout with selectable
   agent cards on the left and selected-agent details on the right.
+- Kept selected-agent inbox hover popovers clamped inside the viewport on the
+  People tab.
+- Kept scrollable selected-agent inbox popovers reachable while moving from the
+  icon into the popover body.
+- Removed the redundant selected-agent panel title so the selected agent name is
+  the detail heading.
+- Stopped showing the successful-load revision status card because the header
+  revision badge already carries that state.
+- Let People-list inbox popovers overflow their agent row instead of being
+  clipped by the compact card.
+- Clamped inbox popovers with real layout positioning so edge-aligned detail
+  tooltips no longer introduce horizontal page scrolling.
+- Applied the same clamp offset to the tooltip hover bridge so the bridge itself
+  cannot create horizontal overflow.
 
 ## 2026-06-20 - ADO Activity And Buffer Gate Fixes
 
