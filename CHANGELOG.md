@@ -17,6 +17,16 @@ material. Newer entries are added incrementally as changes land.
 - Allowed session, directory policy, and workflow-run MCP approval leases to
   carry add-on MCP tool names without adding Bokio-specific tool names to core.
 
+## 2026-06-19 - Skatteverket Add-on
+
+- Added the bundled `evander_skatteverket_addon` package with add-on-owned
+  Admin API/UI routes, Skatteverket API catalog metadata, private SQLite state,
+  workflow providers, and host-side MCP tools.
+- Added a generic add-on MCP tool registration seam so enabled add-ons can
+  expose policy-gated tools without adding domain-specific tool names to core.
+- Implemented approval-bound Skatteverket draft submission flow that ties
+  operator approval to the exact stored draft revision.
+
 ## 2026-06-19 - Workflow Catalog Loader Resilience
 
 - Kept the Admin Web workflow node catalog available when the saved

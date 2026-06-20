@@ -92,6 +92,42 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
 
+## Skatteverket Add-on Guidance
+
+The bundled `evander_skatteverket_addon` package provides an optional
+Skatteverket accounting and filing surface. Enable it with:
+
+```json
+{
+  "addon_loader": {
+    "modules": ["evander_skatteverket_addon"],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": ["skatteverket-addon"]
+  }
+}
+```
+
+When enabled, Admin Web shows a `Skatteverket` tab backed by
+`/api/addons/skatteverket-addon/...` and `/addons/skatteverket-addon/`. The
+add-on keeps canonical state in `runtime/addons/skatteverket-addon/state.db`.
+It exposes add-on-owned workflow nodes under `query:skatteverket:*` and
+`effect:skatteverket:*`, plus host-side MCP tools named `skatteverket_*`.
+
+The add-on is intentionally host-side:
+
+- Skatteverket credentials, API keys, certificates, and OAuth metadata stay on
+  the control plane.
+- Agents only receive MCP/workflow results, never raw secrets.
+- Submission tools require an exact draft-revision approval request before a
+  stored draft can be submitted.
+- APIs that are represented in the catalog but lack a configured adapter fail
+  closed with `not_implemented_for_v1` or `blocked` status.
+
+Skatteverket production access still requires external onboarding, agreements,
+API keys, OAuth2 setup, and in some cases e-legitimation or
+organisationslegitimation. Configure connection metadata through the add-on API
+after that onboarding is complete.
+
 ## Bokio Add-on Guidance
 
 The bundled `evander_bokio_addon` package provides an optional assisted

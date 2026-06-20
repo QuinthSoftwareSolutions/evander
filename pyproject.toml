@@ -34,6 +34,7 @@ builtin = "agent_sandbox.providers.builtin:register_providers"
 [project.entry-points."agent_sandbox.addons"]
 team = "truman_team_addon:register_addon"
 bokio = "evander_bokio_addon:register_addon"
+skatteverket = "evander_skatteverket_addon:register_addon"
 
 [project.scripts]
 agent-sandbox-gateway = "agent_sandbox.gateway:main"
@@ -63,6 +64,7 @@ where = ["src"]
 agent_sandbox = ["templates/*.md", "workflow/builtin_packs/*.json"]
 truman_team_addon = ["ui_static/*"]
 evander_bokio_addon = ["ui_static/*"]
+evander_skatteverket_addon = ["ui_static/*"]
 
 [tool.ruff]
 line-length = 100

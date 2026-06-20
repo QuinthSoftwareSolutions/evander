@@ -168,6 +168,16 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
+For the bundled Skatteverket Add-on, use explicit module loading with
+`addon_loader.modules: ["evander_skatteverket_addon"]` and
+`addon_loader.enabled_addon_ids: ["skatteverket-addon"]`. Configure this in the
+host config to expose the Skatteverket Admin Web tab and MCP tools, and in
+`config/trigger-orchestrator/config.json` to make `query:skatteverket:*` and
+`effect:skatteverket:*` workflow providers available. Its state is stored under
+`runtime/addons/skatteverket-addon/state.db`; production API credentials remain
+host-side and are referenced by environment variable names in add-on connection
+metadata.
+
 For the bundled Bokio Add-on, use explicit module loading with
 `addon_loader.modules: ["evander_bokio_addon"]` and
 `addon_loader.enabled_addon_ids: ["bokio-addon"]`. Configure this in the host
