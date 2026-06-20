@@ -10390,11 +10390,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 dispatch_call_kwargs.pop("arguments", None)
             else:
                 dispatch_call_kwargs["arguments"] = dispatch_arguments
-            approval_context_token = set_tool_approval_context(
-                session_id=call_context.session_id,
-                workflow_run_id=call_context.workflow_run_id,
-                lease_id=call_context.mcp_tool_approval_lease_id,
-            )
+            approval_context_tokens = [
+                set_tool_approval_context(
+                    session_id=call_context.session_id,
+                    workflow_run_id=call_context.workflow_run_id,
+                    lease_id=call_context.mcp_tool_approval_lease_id,
+                )
+            ]
             try:
                 maybe_require_registered_addon_tool(
                     raw_tool_name=raw_tool_name,
@@ -10416,16 +10418,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 tool_name: McpToolName = (
                     ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
                 )
-                if tool_name and consumed_approval is None:
+                if tool_name:
                     try:
-                        context.policy.consume_tool_approval_lease_use(
+                        lease_reserved = context.policy.consume_tool_approval_lease_use(
                             session_id=call_context.session_id,
                             tool_name=tool_name,
                             workflow_run_id=call_context.workflow_run_id,
                             mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+                            per_invocation_approval_consumed=consumed_approval is not None,
                         )
                     except PolicyError as exc:
                         raise ToolError(str(exc)) from exc
+                    if lease_reserved:
+                        approval_context_tokens.append(
+                            set_tool_approval_context(
+                                session_id=call_context.session_id,
+                                workflow_run_id=call_context.workflow_run_id,
+                                lease_id=call_context.mcp_tool_approval_lease_id,
+                                reserved_tool_name=tool_name,
+                            )
+                        )
                 result = await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
                 if not call_context.audit_emitted:
                     tool_value = tool_name_value(tool_name) if tool_name else raw_tool_name
@@ -10471,7 +10483,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     )
                 return result
             finally:
-                reset_tool_approval_context(approval_context_token)
+                for approval_context_token in reversed(approval_context_tokens):
+                    reset_tool_approval_context(approval_context_token)
         except Exception as exc:
             if not call_context.audit_emitted:
                 tool_name: McpToolName | None = (

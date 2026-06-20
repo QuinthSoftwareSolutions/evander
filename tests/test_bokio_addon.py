@@ -104,6 +104,25 @@ def test_bokio_upload_document_requires_staged_pdf_jpeg_or_png(
         )
 
 
+def test_bokio_upload_staging_separates_session_and_reserved_scopes(tmp_path) -> None:
+    admin_scope = upload_staging_dir(tmp_path, scope="admin")
+    workflow_scope = upload_staging_dir(tmp_path, scope="workflows")
+    admin_session = upload_staging_dir(tmp_path, session_id="admin")
+    workflow_session = upload_staging_dir(tmp_path, session_id="workflows")
+
+    assert admin_scope == tmp_path / "addons" / "bokio-addon" / "uploads" / "scopes" / "admin"
+    assert workflow_scope == (
+        tmp_path / "addons" / "bokio-addon" / "uploads" / "scopes" / "workflows"
+    )
+    assert admin_session == (
+        tmp_path / "addons" / "bokio-addon" / "uploads" / "sessions" / "admin"
+    )
+    assert workflow_session == (
+        tmp_path / "addons" / "bokio-addon" / "uploads" / "sessions" / "workflows"
+    )
+    assert len({admin_scope, workflow_scope, admin_session, workflow_session}) == 4
+
+
 def test_bokio_workflow_provider_uses_full_gateway_provider_state(
     tmp_path,
     monkeypatch,

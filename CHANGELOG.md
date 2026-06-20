@@ -10,9 +10,13 @@ material. Newer entries are added incrementally as changes land.
 - Made registered add-on MCP tools fail closed in the gateway before dispatch
   when the caller lacks a session, session allowlist entry, or valid workflow
   tool-approval lease.
+- Consumed workflow tool-approval lease uses after separately approved
+  invocation-gated calls so lease `max_uses` is exhausted correctly.
 - Restricted Bokio document uploads to add-on-owned staging directories and
   enforced PDF, JPEG, and PNG content checks before the control plane opens a
   file for upload.
+- Namespaced Bokio upload staging by caller type so session IDs cannot collide
+  with reserved Admin API or workflow upload scopes.
 - Fixed Bokio workflow providers to resolve the full directory provider config
   so `provider_state.bokio.*` environment overrides take effect.
 

@@ -38,6 +38,7 @@ from agent_sandbox.models import (
     AgentPromptQueueRecord,
     AgentPromptQueueSummary,
     AgentRecord,
+    ApprovalGrantSettings,
     ApprovalStatus,
     DiscordCommandEnvelope,
     ListPullRequestsResponse,
@@ -788,6 +789,79 @@ def test_tool_approval_lease_from_request_context_allows_only_matching_run(
                 mcp_tool_approval_lease_id=lease.lease_id,
             ),
         )
+
+
+def test_workflow_tool_approval_lease_consumes_max_use_after_invocation_approval(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    DirectoryConfigStore(context.directories, runtime_dir=context.config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload={"approval_required_tools": [ToolName.GET_WORKFLOW_SNAPSHOT.value]},
+    )
+    lease = context.tool_approval_leases.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_settings={
+            ToolName.GET_WORKFLOW_SNAPSHOT.value: ApprovalGrantSettings(max_uses=1),
+        },
+    )
+    server = create_server(context)
+    request_context = _make_request_context(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+
+    with pytest.raises(ToolError, match="requires approval"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            request_context,
+        )
+    stored_lease = context.tool_approval_leases.get_lease(lease.lease_id)
+    assert stored_lease is not None
+    assert stored_lease.used_counts == {}
+
+    approvals = context.approvals.read_all()
+    assert len(approvals) == 1
+    approval = next(iter(approvals.values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    result = _call_tool_with_context(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1", "approval_request_id": approval.request_id},
+        request_context,
+    )
+
+    assert result["worker_id"] == "trigger-orchestrator"
+    stored_lease = context.tool_approval_leases.get_lease(lease.lease_id)
+    assert stored_lease is not None
+    assert stored_lease.used_counts == {ToolName.GET_WORKFLOW_SNAPSHOT.value: 1}
+    assert not context.tool_approval_leases.is_tool_approved(
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tool_name=ToolName.GET_WORKFLOW_SNAPSHOT,
+    )
+
+    with pytest.raises(ToolError, match="not usable"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            request_context,
+        )
+    assert set(context.approvals.read_all()) == {approval.request_id}
 
 
 def test_tool_approval_lease_from_request_context_rejects_revoked_lease(

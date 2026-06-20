@@ -143,7 +143,10 @@ class JsonSessionToolApprovalLeaseRepository:
             return False
         if lease.workflow_run_id != str(workflow_run_id or "").strip():
             return False
-        return tool_name_value(tool_name) in {tool_name_value(tool) for tool in lease.tools}
+        tool_value = tool_name_value(tool_name)
+        if tool_value not in {tool_name_value(tool) for tool in lease.tools}:
+            return False
+        return _lease_has_remaining_tool_use(lease, tool_value)
 
     def consume_tool_use(
         self,
@@ -181,7 +184,7 @@ class JsonSessionToolApprovalLeaseRepository:
                 return True
             used_counts = dict(lease.used_counts)
             used_count = int(used_counts.get(tool_value, 0))
-            if used_count >= settings.max_uses:
+            if not _lease_has_remaining_tool_use(lease, tool_value):
                 return False
             used_counts[tool_value] = used_count + 1
             items[normalized_lease_id] = lease.model_copy(update={"used_counts": used_counts})
@@ -254,6 +257,13 @@ def _normalize_approval_settings(
             continue
         normalized[normalized_tool] = ApprovalGrantSettings.model_validate(value)
     return normalized
+
+
+def _lease_has_remaining_tool_use(lease: SessionToolApprovalLease, tool_value: str) -> bool:
+    settings = lease.approval_settings.get(tool_value)
+    if settings is None or settings.max_uses is None:
+        return True
+    return int(lease.used_counts.get(tool_value, 0)) < settings.max_uses
 
 
 def _required_text(value: str, field_name: str) -> str:

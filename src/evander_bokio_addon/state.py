@@ -22,8 +22,21 @@ def upload_staging_dir(
     session_id: str | None = None,
     scope: str = "admin",
 ) -> Path:
-    owner = _safe_upload_scope(session_id or scope)
-    return addon_storage_path(runtime_dir, ADDON_ID, UPLOADS_DIR, owner)
+    if session_id is not None:
+        return addon_storage_path(
+            runtime_dir,
+            ADDON_ID,
+            UPLOADS_DIR,
+            "sessions",
+            _safe_upload_scope(session_id),
+        )
+    return addon_storage_path(
+        runtime_dir,
+        ADDON_ID,
+        UPLOADS_DIR,
+        "scopes",
+        _safe_upload_scope(scope),
+    )
 
 
 class PreparedActionStore:

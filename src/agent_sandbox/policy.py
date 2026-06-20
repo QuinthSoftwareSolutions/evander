@@ -80,6 +80,7 @@ class ToolApprovalContext:
     session_id: str | None = None
     workflow_run_id: str | None = None
     lease_id: str | None = None
+    reserved_tool_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,11 +128,15 @@ def set_tool_approval_context(
     session_id: str | None,
     workflow_run_id: str | None,
     lease_id: str | None,
+    reserved_tool_name: McpToolName | None = None,
 ) -> Token[ToolApprovalContext | None]:
     context = ToolApprovalContext(
         session_id=str(session_id or "").strip() or None,
         workflow_run_id=str(workflow_run_id or "").strip() or None,
         lease_id=str(lease_id or "").strip() or None,
+        reserved_tool_name=tool_name_value(reserved_tool_name)
+        if reserved_tool_name is not None
+        else None,
     )
     return _TOOL_APPROVAL_CONTEXT.set(context)
 
@@ -647,6 +652,23 @@ class PolicyEngine:
             resolved_lease_id = resolved_lease_id or context.lease_id
         if not resolved_workflow_run_id or not resolved_lease_id:
             return False
+        if (
+            context is not None
+            and context.session_id == normalized_session_id
+            and context.reserved_tool_name == tool_name_value(tool_name)
+            and context.workflow_run_id == resolved_workflow_run_id
+            and context.lease_id == resolved_lease_id
+        ):
+            lease = self.tool_approval_leases.get_lease(resolved_lease_id)
+            if (
+                lease is not None
+                and lease.session_id == normalized_session_id
+                and lease.workflow_run_id == resolved_workflow_run_id
+                and lease.revoked_at is None
+                and lease.expires_at > datetime.now(UTC)
+                and context.reserved_tool_name in {tool_name_value(tool) for tool in lease.tools}
+            ):
+                return True
         return self.tool_approval_leases.is_tool_approved(
             lease_id=resolved_lease_id,
             session_id=normalized_session_id,
@@ -661,25 +683,41 @@ class PolicyEngine:
         tool_name: McpToolName,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
-    ) -> None:
+        per_invocation_approval_consumed: bool = False,
+    ) -> bool:
         if self.tool_approval_leases is None:
-            return
+            return False
         normalized_session_id = str(session_id or "").strip()
         normalized_workflow_run_id = str(workflow_run_id or "").strip()
         normalized_lease_id = str(mcp_tool_approval_lease_id or "").strip()
         if not normalized_session_id or not normalized_workflow_run_id or not normalized_lease_id:
-            return
+            return False
         session = self.get_session(normalized_session_id)
         tool_value = tool_name_value(tool_name)
         if tool_value in {tool_name_value(tool) for tool in session.allowed_tools}:
-            return
+            return False
         self.require_tool_not_denied(session, tool_name)
+        lease_is_usable = self.tool_approval_leases.is_tool_approved(
+            lease_id=normalized_lease_id,
+            session_id=normalized_session_id,
+            workflow_run_id=normalized_workflow_run_id,
+            tool_name=tool_name,
+        )
+        if not lease_is_usable:
+            raise PolicyError(
+                f"Tool {tool_value} is not allowed for session {normalized_session_id}: "
+                f"approval lease {normalized_lease_id} is not usable"
+            )
         rule = self.mcp_tool_policy_for_session(session, tool_name)
-        if rule is not None and rule.require_approval:
+        if rule is not None and rule.require_approval and not per_invocation_approval_consumed:
             raise PolicyError(
                 f"Tool {tool_value} requires per-invocation approval in this directory"
             )
-        if rule is not None and rule.require_exact_payload:
+        if (
+            rule is not None
+            and rule.require_exact_payload
+            and not per_invocation_approval_consumed
+        ):
             raise PolicyError(
                 f"Tool {tool_value} requires exact-payload approval in this directory"
             )
@@ -694,6 +732,7 @@ class PolicyEngine:
                 f"Tool {tool_value} is not allowed for session {normalized_session_id}: "
                 f"approval lease {normalized_lease_id} is not usable"
             )
+        return True
 
     def approval_required_for_tool(self, session: SessionManifest, tool_name: McpToolName) -> bool:
         if tool_name_value(tool_name) in {
