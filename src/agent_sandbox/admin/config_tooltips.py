@@ -258,7 +258,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Default provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
         "local_openai for a host-local OpenAI-compatible endpoint, azure_openai for Azure OpenAI, "
         "or anthropic for Claude Messages API routing. "
-        "Individual sessions can override this default through their agent provider."
+        "Individual sessions can override this default with session metadata model_provider_mode."
     ),
     "openai_api_base_url": (
         "Upstream OpenAI API base URL used by the host relay in public OpenAI mode."

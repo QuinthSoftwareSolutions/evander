@@ -9,6 +9,10 @@ from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_di
 from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
 from agent_sandbox.messaging.targets import load_communication_targets_config
+from agent_sandbox.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+)
 from agent_sandbox.services import parse_teams_target
 from agent_sandbox.vm.templates import resolve_libvirt_vm_template_selector
 
@@ -52,6 +56,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "existing_agent_behavior": effect.existing_agent_behavior,
             "labels": effect.labels,
             "model": effect.model,
+            "model_provider_mode": effect.model_provider_mode,
             "vm_user": effect.vm_user,
             "vm_image": effect.vm_image,
             "ttl_hours": effect.ttl_hours,
@@ -184,6 +189,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
         agent_provider = normalize_optional_string(payload.get("agent_provider"))
         if agent_provider:
             metadata = _deep_merge_metadata(metadata, {"agent_provider": agent_provider})
+        model_provider_mode = normalize_model_provider_mode_override(
+            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+        )
+        if model_provider_mode:
+            metadata = _deep_merge_metadata(
+                metadata, {MODEL_PROVIDER_MODE_METADATA_KEY: model_provider_mode}
+            )
         if record_vm_image_selection and vm_image_selection is not None:
             metadata = _deep_merge_metadata(
                 metadata,
@@ -342,6 +354,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             existing_agent_provider is None and agent_provider == "claude"
         ):
             metadata["agent_provider"] = agent_provider
+        model_provider_mode = normalize_model_provider_mode_override(
+            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+        )
+        if model_provider_mode:
+            metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         requested_tools = as_string_list(payload.get("allowed_tools"))
         if requested_tools:
             resolved_allowed_tools = requested_tools

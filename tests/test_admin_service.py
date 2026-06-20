@@ -2128,6 +2128,7 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
             "backend": "libvirt_vm",
             "vm_name": "lab-vm",
             "vm_image": "gpu",
+            "model_provider_mode": "local_openai",
         }
     )
 
@@ -2135,6 +2136,7 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
     assert result["vm_image"] == "ubuntu-24.04-gpu.img"
     assert result["vm_image_alias"] == "gpu"
     assert captured["metadata"] == {
+        "model_provider_mode": "local_openai",
         "libvirt_vm_template": {
             "image_ref": "ubuntu-24.04-gpu.img",
             "template_alias": "gpu",
@@ -12154,6 +12156,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         session_id="lab-session",
         labels={"workflow": "issue-worker", "agent_role": "issue"},
         metadata={"workflow": {"state": "active"}, "labels": {"priority": "high"}},
+        model_provider_mode="local_openai",
         dotnet=True,
         nuget=True,
         playwright=True,
@@ -12189,6 +12192,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
     assert manifest.metadata == {
+        "model_provider_mode": "local_openai",
         "workflow": {"state": "active"},
         "labels": {
             "workflow": "issue-worker",

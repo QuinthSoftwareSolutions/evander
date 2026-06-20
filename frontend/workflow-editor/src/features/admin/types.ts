@@ -184,6 +184,7 @@ export type AgentCreateRequest = {
   target_name?: string | null;
   container_image?: string | null;
   agent_provider?: string | null;
+  model_provider_mode?: string | null;
   vm_image?: string | null;
 };
 
@@ -191,6 +192,11 @@ export type AgentCreateProviderOption = {
   value: string;
   label: string;
   execution_backends: AgentBackend[];
+};
+
+export type AgentCreateModelProviderModeOption = {
+  value: string;
+  label: string;
 };
 
 export type AgentCreateImageOption = {
@@ -209,6 +215,7 @@ export type AgentCreateOptionsResponse = {
   directory_path: string;
   backends: AgentBackend[];
   agent_providers: AgentCreateProviderOption[];
+  model_provider_modes: AgentCreateModelProviderModeOption[];
   communication_targets: AgentCreateCommunicationTargetOption[];
   libvirt: {
     default_template: string | null;

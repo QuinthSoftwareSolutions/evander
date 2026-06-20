@@ -638,6 +638,84 @@ def test_provider_config_resolver_keeps_directory_mode_for_non_claude_sessions(
     assert resolved.model_provider_mode == "openai_public"
 
 
+def test_provider_config_resolver_uses_session_model_provider_mode_override(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "openai_public",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-local",
+            "local_openai_provider_name": "local_lab",
+        },
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="local-codex-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "local_openai"
+    assert resolved.local_openai_api_base_url == "http://127.0.0.1:11435/v1"
+    assert resolved.local_openai_api_key == "ollama-local"
+    assert resolved.local_openai_provider_name == "local_lab"
+
+
+def test_provider_config_resolver_session_override_can_select_public_openai_in_local_directory(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+        },
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="public-codex-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "codex", "model_provider_mode": "openai_public"},
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "openai_public"
+    assert resolved.openai_api_base_url == "https://api.openai.com/v1"
+
+
+def test_provider_config_resolver_rejects_invalid_session_model_provider_mode(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="bad-provider-mode-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"model_provider_mode": "ollama"},
+    )
+
+    with pytest.raises(ValueError, match="model_provider_mode"):
+        resolver.resolve_for_session_manifest(session)
+
+
 def test_directory_config_store_merges_container_worker_image_catalogs(
     tmp_path: Path,
 ) -> None:

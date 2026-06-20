@@ -1203,6 +1203,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
           directory_path: url.searchParams.get("directory_path") ?? "",
           backends: ["libvirt_vm", "container_worker_vm"],
           agent_providers: [],
+          model_provider_modes: [],
           communication_targets: [],
           libvirt: {
             default_template: null,

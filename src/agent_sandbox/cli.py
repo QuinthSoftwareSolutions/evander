@@ -35,6 +35,10 @@ from agent_sandbox.bootstrap import (
     resolve_runtime_dir,
 )
 from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+)
 from agent_sandbox.messaging.discord_wake import build_discord_wake_worker
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
@@ -3347,6 +3351,16 @@ def create_vm(
         str | None,
         typer.Option("--model", help="Agent model override for the created session."),
     ] = None,
+    model_provider_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--model-provider-mode",
+            help=(
+                "Session relay mode override: openai_public, local_openai, "
+                "azure_openai, or anthropic."
+            ),
+        ),
+    ] = None,
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
@@ -3367,6 +3381,7 @@ def create_vm(
         codex_skills=codex_skill,
         directory_path=directory_path,
         model=model,
+        model_provider_mode=model_provider_mode,
     )
     _echo_action_result_or_exit(result)
 
@@ -3557,6 +3572,16 @@ def create_issue_vm(
         str | None,
         typer.Option("--model", help="Agent model override for the created session."),
     ] = None,
+    model_provider_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--model-provider-mode",
+            help=(
+                "Session relay mode override: openai_public, local_openai, "
+                "azure_openai, or anthropic."
+            ),
+        ),
+    ] = None,
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
@@ -3576,6 +3601,7 @@ def create_issue_vm(
         playwright=playwright,
         codex_skills=codex_skill,
         model=model,
+        model_provider_mode=model_provider_mode,
     )
     _echo_action_result_or_exit(result)
 
@@ -3616,6 +3642,46 @@ def set_session_model(
         typer.echo(f"Cleared model override for session {session_id}")
         return
     typer.echo(f"Set model override for session {session_id} to {manifest.model}")
+
+
+@app.command(
+    "set-session-model-provider-mode",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Set or clear a session relay-mode override.",
+)
+def set_session_model_provider_mode(
+    target: str,
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help="Relay mode to persist: openai_public, local_openai, azure_openai, or anthropic.",
+        ),
+    ] = "",
+    clear: Annotated[
+        bool,
+        typer.Option("--clear", help="Clear the session override so directory defaults apply."),
+    ] = False,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    if not clear and not mode.strip():
+        raise typer.BadParameter("Provide --mode with a non-empty value, or pass --clear.")
+    if clear and mode.strip():
+        raise typer.BadParameter("Use either --mode or --clear, not both.")
+    cfg = _load_runtime_config_from_option(config)
+    runtime = build_runtime(cfg)
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
+    session_id, manifest = _resolve_session_target(target, sessions)
+    value = "" if clear else normalize_model_provider_mode_override(mode)
+    metadata = dict(manifest.metadata)
+    metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = value
+    manifest.metadata = metadata
+    session_repository.upsert_session(manifest)
+    if clear:
+        typer.echo(f"Cleared model provider mode override for session {session_id}")
+        return
+    typer.echo(f"Set model provider mode override for session {session_id} to {value}")
 
 
 @app.command(

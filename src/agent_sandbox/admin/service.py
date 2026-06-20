@@ -114,7 +114,11 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.ownership import DirectoryOwnershipQueries
 from agent_sandbox.policy_config import EffectivePolicyConfig
-from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+    ProviderConfigResolver,
+)
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
@@ -3174,6 +3178,22 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Model name the agent should use. Leave blank to inherit the directory default.",
+            ),
+            _field(
+                "model_provider_mode",
+                "Model relay",
+                "enum",
+                bindable=True,
+                description=(
+                    "Optional OpenAI-compatible relay mode override. Leave blank to use "
+                    "the directory provider default; choose Claude as the agent provider "
+                    "for Anthropic routing."
+                ),
+                options=[
+                    _field_option("openai_public", "Public OpenAI"),
+                    _field_option("local_openai", "Local OpenAI"),
+                    _field_option("azure_openai", "Azure OpenAI"),
+                ],
             ),
             _field(
                 "npm_registry_url",
@@ -11706,6 +11726,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             }
             if agent_provider:
                 create_metadata["agent_provider"] = agent_provider
+            model_provider_mode = normalize_model_provider_mode_override(
+                payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+            )
+            if model_provider_mode:
+                create_metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
             resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
                 self.runtime,
                 session_id=self._agent_optional_string(payload, "session_id") or vm_name,
@@ -11849,6 +11874,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
         if requested_agent_provider or agent_provider == "claude":
             metadata["agent_provider"] = agent_provider
+        model_provider_mode = normalize_model_provider_mode_override(
+            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+        )
+        if model_provider_mode:
+            metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         if labels:
             metadata["labels"] = labels
         worker_url = self._container_worker_backend_url(backend)
@@ -22075,6 +22105,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         issue: str,
         session_id: str | None = None,
         model: str | None = None,
+        model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_contact_ids: list[str] | None = None,
@@ -22093,6 +22124,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             issue=issue,
             session_id=session_id,
             model=model,
+            model_provider_mode=model_provider_mode,
             vm_user=vm_user,
             ttl_hours=ttl_hours,
             allowed_contact_ids=allowed_contact_ids,
@@ -22113,6 +22145,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         issue_identifier: str,
         *,
         model: str | None = None,
+        model_provider_mode: str | None = None,
         vm_user: str = "agent",
         dotnet: bool = False,
         nuget: str | None = None,
@@ -22124,6 +22157,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return self.vm_agent_admin.create_issue_vm_from_local_issue(
             issue_identifier,
             model=model,
+            model_provider_mode=model_provider_mode,
             vm_user=vm_user,
             dotnet=dotnet,
             nuget=nuget,
@@ -22141,6 +22175,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         session_id: str | None = None,
         labels: dict[str, str] | None = None,
         model: str | None = None,
+        model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
@@ -22191,6 +22226,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["web_search_enabled"] = web_search_enabled
         if metadata is not None:
             payload["metadata"] = metadata
+        resolved_model_provider_mode = normalize_model_provider_mode_override(
+            model_provider_mode
+        )
+        if resolved_model_provider_mode is not None:
+            payload["metadata"] = _deep_merge_mapping(
+                payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                {MODEL_PROVIDER_MODE_METADATA_KEY: resolved_model_provider_mode},
+            )
         resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
             self.runtime,
             session_id=session_id or vm_name,
@@ -22256,6 +22299,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "label": "Copilot",
                     "execution_backends": ["libvirt_vm"],
                 },
+            ],
+            "model_provider_modes": [
+                {"value": "openai_public", "label": "Public OpenAI"},
+                {"value": "local_openai", "label": "Local OpenAI"},
+                {"value": "azure_openai", "label": "Azure OpenAI"},
             ],
             "communication_targets": [
                 option.model_dump(mode="json")
