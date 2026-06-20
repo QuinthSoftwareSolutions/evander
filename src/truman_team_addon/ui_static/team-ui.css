@@ -846,6 +846,7 @@ button.org-focus-team-tab strong {
   background: var(--panel);
   box-shadow: 0 16px 36px var(--shadow);
   color: var(--text);
+  transform: translateX(var(--agent-inbox-popover-offset-x, 0px));
 }
 
 .agent-inbox-indicator:hover .agent-inbox-popover,

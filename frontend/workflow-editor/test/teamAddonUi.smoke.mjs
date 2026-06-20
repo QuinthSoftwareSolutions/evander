@@ -2908,6 +2908,24 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page
     .locator("#people-agent-detail-view .agent-detail-work-line strong", { hasText: "Draft pending delivery" })
     .waitFor({ state: "visible" });
+  const peopleStatusIndicator = page.locator(
+    "#people-agent-detail-view .agent-detail-badges .agent-inbox-indicator--status_request",
+  );
+  await peopleStatusIndicator.hover();
+  const peopleStatusPopover = peopleStatusIndicator.locator(".agent-inbox-popover");
+  await peopleStatusPopover.waitFor({ state: "visible" });
+  const peopleStatusPopoverBox = await peopleStatusPopover.boundingBox();
+  const viewport = page.viewportSize();
+  assert.ok(peopleStatusPopoverBox, "expected People inbox popover to have a bounding box");
+  assert.ok(viewport, "expected browser viewport size");
+  assert.ok(
+    peopleStatusPopoverBox.x >= 0 &&
+      peopleStatusPopoverBox.x + peopleStatusPopoverBox.width <= viewport.width,
+    `People inbox popover should stay inside the viewport: ${JSON.stringify({
+      popover: peopleStatusPopoverBox,
+      viewport,
+    })}`,
+  );
 
   await page.getByRole("tab", { name: "Planning" }).click();
   await page.locator("#team-planning-page").waitFor({ state: "visible" });

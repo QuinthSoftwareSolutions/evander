@@ -279,6 +279,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPlanningFilters();
   bindOrgFocusTabs();
   bindArchivedVisibilityToggle();
+  bindInboxPopoverPositioning();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplatePreview();
   });
@@ -413,6 +414,57 @@ function renderIntoActiveTargets(selector, html) {
     }
   });
   return targets.filter(targetIsActive).length;
+}
+
+function bindInboxPopoverPositioning() {
+  document.addEventListener("pointerover", (event) => {
+    scheduleInboxPopoverPosition(event.target);
+  });
+  document.addEventListener("focusin", (event) => {
+    scheduleInboxPopoverPosition(event.target);
+  });
+  window.addEventListener("resize", () => {
+    document.querySelectorAll(".agent-inbox-indicator").forEach((indicator) => {
+      scheduleInboxPopoverPosition(indicator);
+    });
+  });
+}
+
+function scheduleInboxPopoverPosition(target) {
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const indicator = target.closest(".agent-inbox-indicator");
+  const popover = indicator?.querySelector(".agent-inbox-popover");
+  if (!indicator || !popover) {
+    return;
+  }
+
+  popover.style.setProperty("--agent-inbox-popover-offset-x", "0px");
+  window.requestAnimationFrame(() => {
+    clampInboxPopoverToViewport(indicator, popover);
+  });
+}
+
+function clampInboxPopoverToViewport(indicator, popover) {
+  if (!indicator.isConnected || !popover.isConnected) {
+    return;
+  }
+
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportPadding = 12;
+  const rect = popover.getBoundingClientRect();
+  let offsetX = 0;
+  const maxRight = viewportWidth - viewportPadding;
+
+  if (rect.right > maxRight) {
+    offsetX -= rect.right - maxRight;
+  }
+  if (rect.left + offsetX < viewportPadding) {
+    offsetX += viewportPadding - (rect.left + offsetX);
+  }
+
+  popover.style.setProperty("--agent-inbox-popover-offset-x", `${Math.round(offsetX)}px`);
 }
 
 function placeSetupFormsPanel() {

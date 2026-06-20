@@ -21,6 +21,8 @@ material. Newer entries are added incrementally as changes land.
 
 - Split the focused People tab into a two-column desktop layout with selectable
   agent cards on the left and selected-agent details on the right.
+- Kept selected-agent inbox hover popovers clamped inside the viewport on the
+  People tab.
 
 ## 2026-06-20 - ADO Activity And Buffer Gate Fixes
 
