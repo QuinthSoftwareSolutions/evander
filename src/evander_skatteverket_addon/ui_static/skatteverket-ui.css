@@ -9,8 +9,11 @@
   --skv-button-bg: #ffffff;
   --skv-button-border: #aeb6c2;
   --skv-button-hover-bg: #eef2f6;
+  --skv-input-bg: #ffffff;
   --skv-code-bg: #f7f9fb;
   --skv-code-border: #e7ebf0;
+  --skv-success: #226d3b;
+  --skv-error: #9f2f1d;
   --skv-focus: #367995;
   --skv-shadow: none;
 }
@@ -26,8 +29,11 @@
   --skv-button-bg: #142d38;
   --skv-button-border: rgba(127, 174, 197, 0.32);
   --skv-button-hover-bg: #1b3946;
+  --skv-input-bg: #071116;
   --skv-code-bg: #071116;
   --skv-code-border: rgba(127, 174, 197, 0.16);
+  --skv-success: #8cd9a8;
+  --skv-error: #f19a86;
   --skv-focus: #8fc7de;
   --skv-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
 }
@@ -104,6 +110,10 @@ button:focus-visible {
   gap: 14px;
 }
 
+.skv-wide {
+  grid-column: 1 / -1;
+}
+
 article {
   background: var(--skv-panel-bg);
   border: 1px solid var(--skv-panel-border);
@@ -111,6 +121,127 @@ article {
   box-shadow: var(--skv-shadow);
   padding: 14px;
   min-width: 0;
+}
+
+.skv-form {
+  display: grid;
+  gap: 14px;
+}
+
+.skv-field-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.skv-field-row label,
+.skv-api-picker {
+  min-width: 0;
+}
+
+.skv-field-row label {
+  display: grid;
+  gap: 6px;
+}
+
+.skv-field-row span,
+.skv-api-picker legend {
+  color: var(--skv-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.skv-check {
+  align-content: end;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.skv-check input {
+  align-self: center;
+}
+
+input,
+select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--skv-button-border);
+  border-radius: 6px;
+  background: var(--skv-input-bg);
+  color: var(--skv-text);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+input[type="checkbox"] {
+  width: auto;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--skv-focus);
+  outline-offset: 1px;
+}
+
+.skv-api-picker {
+  margin: 0;
+  border: 1px solid var(--skv-panel-border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.skv-api-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.skv-api-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--skv-row-border);
+  border-radius: 6px;
+  background: var(--skv-code-bg);
+  padding: 8px;
+}
+
+.skv-api-option span,
+.skv-api-option small {
+  display: block;
+}
+
+.skv-api-option strong {
+  color: var(--skv-text);
+  font-size: 12px;
+}
+
+.skv-api-option small {
+  color: var(--skv-muted);
+  font-size: 11px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.skv-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skv-message {
+  color: var(--skv-muted);
+  font-size: 13px;
+}
+
+.skv-message[data-state="success"] {
+  color: var(--skv-success);
+}
+
+.skv-message[data-state="error"] {
+  color: var(--skv-error);
 }
 
 pre {
@@ -159,6 +290,11 @@ pre {
   }
 
   .skv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .skv-field-row,
+  .skv-api-options {
     grid-template-columns: 1fr;
   }
 }

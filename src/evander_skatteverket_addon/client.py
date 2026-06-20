@@ -27,7 +27,7 @@ class SkatteverketClient:
                 "reason": "No enabled Skatteverket connection is configured.",
             }
         missing_secret_refs = [
-            key
+            str(self.connection[key])
             for key in ("client_id_env", "client_secret_env", "api_key_env")
             if self.connection.get(key) and not os.environ.get(str(self.connection[key]))
         ]
@@ -41,6 +41,7 @@ class SkatteverketClient:
             "missing_secret_refs": missing_secret_refs,
             "enabled_api_names": list(self.connection.get("enabled_api_names") or []),
         }
+
     def query_placeholder(self, api_name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if api_name not in CATALOG_BY_NAME:
             raise SkatteverketStateError(f"unknown Skatteverket API: {api_name}")

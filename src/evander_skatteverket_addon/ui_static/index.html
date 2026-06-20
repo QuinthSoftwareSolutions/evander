@@ -56,8 +56,82 @@
         <button id="refresh" type="button">Refresh</button>
       </header>
       <section class="skv-grid" aria-live="polite">
+        <article class="skv-wide">
+          <h2>Connection settings</h2>
+          <form id="connection-form" class="skv-form">
+            <div class="skv-field-row">
+              <label>
+                <span>Connection ID</span>
+                <input name="connection_id" autocomplete="off" value="default" />
+              </label>
+              <label>
+                <span>Display name</span>
+                <input name="display_name" autocomplete="off" />
+              </label>
+              <label>
+                <span>Environment</span>
+                <input name="environment" autocomplete="off" list="environment-options" />
+                <datalist id="environment-options">
+                  <option value="sandbox"></option>
+                  <option value="komplett_testtjanst"></option>
+                  <option value="driftsatt_tjanst"></option>
+                </datalist>
+              </label>
+              <label class="skv-check">
+                <input name="enabled" type="checkbox" checked />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div class="skv-field-row">
+              <label>
+                <span>Base URL</span>
+                <input name="base_url" autocomplete="off" />
+              </label>
+              <label>
+                <span>Token URL</span>
+                <input name="token_url" autocomplete="off" />
+              </label>
+              <label>
+                <span>Submission endpoint</span>
+                <input name="submission_endpoint" autocomplete="off" />
+              </label>
+            </div>
+            <div class="skv-field-row">
+              <label>
+                <span>Client ID env</span>
+                <input name="client_id_env" autocomplete="off" />
+              </label>
+              <label>
+                <span>Client secret env</span>
+                <input name="client_secret_env" autocomplete="off" />
+              </label>
+              <label>
+                <span>API key env</span>
+                <input name="api_key_env" autocomplete="off" />
+              </label>
+            </div>
+            <div class="skv-field-row">
+              <label>
+                <span>Certificate subject</span>
+                <input name="certificate_subject" autocomplete="off" />
+              </label>
+              <label>
+                <span>Redirect URI</span>
+                <input name="redirect_uri" autocomplete="off" />
+              </label>
+            </div>
+            <fieldset class="skv-api-picker">
+              <legend>Enabled APIs</legend>
+              <div id="api-picker" class="skv-api-options"></div>
+            </fieldset>
+            <div class="skv-form-actions">
+              <button id="save-connection" type="submit">Save connection</button>
+              <span id="connection-form-status" class="skv-message" role="status"></span>
+            </div>
+          </form>
+        </article>
         <article>
-          <h2>Connection</h2>
+          <h2>Connection status</h2>
           <pre id="connection">Loading...</pre>
         </article>
         <article>

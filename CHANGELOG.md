@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Skatteverket Connection Editor
+
+- Added editable Skatteverket Add-on Admin UI controls for connection metadata,
+  secret environment-variable names, submission endpoint, and enabled APIs.
+- Report missing Skatteverket secret references as the configured environment
+  variable names in connection status payloads.
+
 ## 2026-06-20 - Add-on Dark Mode Polish
 
 - Matched the bundled Bokio and Skatteverket add-on iframe UIs to the Admin Web
