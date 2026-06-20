@@ -3082,6 +3082,12 @@ test("team add-on People inbox popover stays reachable and scrollable", async (t
   const popoverBox = await peopleStatusPopover.boundingBox();
   assert.ok(indicatorBox, "expected People inbox indicator to have a bounding box");
   assert.ok(popoverBox, "expected People inbox popover to have a bounding box");
+  assert.equal(
+    await page.evaluate(() => {
+      return document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+    }),
+    true,
+  );
 
   await page.mouse.move(
     indicatorBox.x + indicatorBox.width / 2,

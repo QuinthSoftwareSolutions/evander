@@ -31,6 +31,8 @@ material. Newer entries are added incrementally as changes land.
   revision badge already carries that state.
 - Let People-list inbox popovers overflow their agent row instead of being
   clipped by the compact card.
+- Clamped inbox popovers with real layout positioning so edge-aligned detail
+  tooltips no longer introduce horizontal page scrolling.
 
 ## 2026-06-20 - ADO Activity And Buffer Gate Fixes
 

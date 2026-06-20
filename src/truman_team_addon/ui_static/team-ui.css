@@ -810,12 +810,11 @@ button.org-focus-team-tab strong {
   content: "";
   position: absolute;
   top: 100%;
-  left: 0;
+  left: var(--agent-inbox-popover-offset-x, 0px);
   z-index: 39;
   display: none;
   width: min(23rem, calc(100vw - 2rem));
   height: var(--agent-inbox-popover-gap, 0.4rem);
-  transform: translateX(var(--agent-inbox-popover-offset-x, 0px));
 }
 
 .agent-inbox-icon {
@@ -844,7 +843,7 @@ button.org-focus-team-tab strong {
 .agent-inbox-popover {
   position: absolute;
   top: calc(100% + var(--agent-inbox-popover-gap, 0.4rem));
-  left: 0;
+  left: var(--agent-inbox-popover-offset-x, 0px);
   z-index: 40;
   display: none;
   width: min(23rem, calc(100vw - 2rem));
@@ -857,7 +856,6 @@ button.org-focus-team-tab strong {
   background: var(--panel);
   box-shadow: 0 16px 36px var(--shadow);
   color: var(--text);
-  transform: translateX(var(--agent-inbox-popover-offset-x, 0px));
 }
 
 .agent-inbox-indicator:hover::after,
