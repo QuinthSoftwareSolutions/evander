@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Add-on Dark Mode Polish
+
+- Matched the bundled Bokio and Skatteverket add-on iframe UIs to the Admin Web
+  dark theme so their pages no longer render as bright light panels in dark mode.
+
 ## 2026-06-20 - Per-Agent Model Relay Overrides
 
 - Added session-level `model_provider_mode` overrides so Codex agents in the

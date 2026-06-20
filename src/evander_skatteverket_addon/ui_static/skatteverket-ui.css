@@ -1,11 +1,48 @@
+:root {
+  color-scheme: light;
+  --skv-bg: #f6f7f9;
+  --skv-text: #20242a;
+  --skv-muted: #5a6270;
+  --skv-panel-bg: #ffffff;
+  --skv-panel-border: #d8dde5;
+  --skv-row-border: #edf0f4;
+  --skv-button-bg: #ffffff;
+  --skv-button-border: #aeb6c2;
+  --skv-button-hover-bg: #eef2f6;
+  --skv-code-bg: #f7f9fb;
+  --skv-code-border: #e7ebf0;
+  --skv-focus: #367995;
+  --skv-shadow: none;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --skv-bg: #08151b;
+  --skv-text: #e7f1f6;
+  --skv-muted: #a8bdc8;
+  --skv-panel-bg: #102630;
+  --skv-panel-border: rgba(127, 174, 197, 0.2);
+  --skv-row-border: rgba(127, 174, 197, 0.14);
+  --skv-button-bg: #142d38;
+  --skv-button-border: rgba(127, 174, 197, 0.32);
+  --skv-button-hover-bg: #1b3946;
+  --skv-code-bg: #071116;
+  --skv-code-border: rgba(127, 174, 197, 0.16);
+  --skv-focus: #8fc7de;
+  --skv-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+}
+
 html {
-  color: #20242a;
-  background: #f6f7f9;
+  min-height: 100%;
+  color: var(--skv-text);
+  background: var(--skv-bg);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 body {
   margin: 0;
+  background: var(--skv-bg);
+  color: var(--skv-text);
 }
 
 .skv-shell {
@@ -38,16 +75,27 @@ h2 {
 }
 
 p {
-  color: #5a6270;
+  color: var(--skv-muted);
   margin-top: 4px;
 }
 
 button {
-  border: 1px solid #aeb6c2;
-  background: #ffffff;
+  border: 1px solid var(--skv-button-border);
+  background: var(--skv-button-bg);
   border-radius: 6px;
+  color: var(--skv-text);
   padding: 8px 12px;
   cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  background: var(--skv-button-hover-bg);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--skv-focus);
+  outline-offset: 2px;
 }
 
 .skv-grid {
@@ -57,9 +105,10 @@ button {
 }
 
 article {
-  background: #ffffff;
-  border: 1px solid #d8dde5;
+  background: var(--skv-panel-bg);
+  border: 1px solid var(--skv-panel-border);
   border-radius: 8px;
+  box-shadow: var(--skv-shadow);
   padding: 14px;
   min-width: 0;
 }
@@ -68,7 +117,13 @@ pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin: 0;
+  border: 1px solid var(--skv-code-border);
+  border-radius: 6px;
+  background: var(--skv-code-bg);
+  color: var(--skv-text);
   font-size: 12px;
+  line-height: 1.45;
+  padding: 10px;
 }
 
 .skv-list {
@@ -77,7 +132,7 @@ pre {
 }
 
 .skv-row {
-  border-top: 1px solid #edf0f4;
+  border-top: 1px solid var(--skv-row-border);
   padding-top: 8px;
 }
 
@@ -87,7 +142,7 @@ pre {
 }
 
 .skv-row span {
-  color: #5a6270;
+  color: var(--skv-muted);
   display: block;
   font-size: 12px;
   margin-top: 2px;
