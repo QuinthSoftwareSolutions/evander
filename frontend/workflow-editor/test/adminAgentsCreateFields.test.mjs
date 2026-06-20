@@ -65,16 +65,18 @@ function zIndexForSelector(selector) {
 
 test("create form state carries backend-aware provider and image selections", () => {
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?agentProvider: string;[\s\S]*?\};/);
+  assert.match(page, /type AgentCreateFormState = \{[\s\S]*?modelProviderMode: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?model: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?vmImage: string;[\s\S]*?\};/);
   // emptyCreateForm must seed both image/provider fields so the modal opens with defaults.
-  assert.match(page, /function emptyCreateForm\([\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
+  assert.match(page, /function emptyCreateForm\([\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?modelProviderMode: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
 });
 
 test("buildCreatePayload gates provider and image fields by backend", () => {
   const source = buildCreatePayloadSource();
   // agent_provider is emitted for both backends, but only when set.
   assert.match(source, /if \(agentProvider\) payload\.agent_provider = agentProvider;/);
+  assert.match(source, /if \(modelProviderMode\) payload\.model_provider_mode = modelProviderMode;/);
   // model is emitted for both backends, but only when set.
   assert.match(source, /const model = optionalText\(form\.model\);\s*if \(model\) payload\.model = model;/);
   // vm_image is emitted only inside the libvirt branch (before the `else`),
@@ -165,8 +167,9 @@ test("provider options are filtered by execution_backends against the selected b
   // Switching backend must drop a now-illegal provider (e.g. copilot on container).
   assert.match(
     page,
-    /option\.execution_backends\.includes\(nextBackend\)[\s\S]*?agentProvider:\s*[\s\S]*?stillValid \? current\.agentProvider : "",/,
+    /const nextAgentProvider =[\s\S]*?current\.agentProvider && stillValid \? current\.agentProvider : ""[\s\S]*?agentProvider: nextAgentProvider,/,
   );
+  assert.match(page, /nextAgentProvider && nextAgentProvider !== "codex"[\s\S]*?\? ""[\s\S]*?: current\.modelProviderMode/);
 });
 
 test("VM image select lives in the libvirt block; container image select in the container block", () => {
@@ -196,6 +199,7 @@ test("create modal exposes model override and structured initial policy controls
     "Communication targets",
     "Web search",
     "Model",
+    "Model relay",
   ]) {
     assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -239,6 +243,7 @@ test("create modal explains provider and bootstrap fields with tooltips", () => 
   for (const helpText of [
     "Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.",
     "Agent CLI to bootstrap and run in the target. Claude bootstraps Claude Code for VM agents; Directory default uses the configured provider default.",
+    "Relay mode for Codex model requests. Leave blank to use the directory default; choose Local OpenAI for host-local Ollama.",
     "Model stored on the session for runtime prompts and resumes. Leave blank to use the selected agent provider or directory default.",
     "VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.",
     "Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.",
@@ -248,6 +253,7 @@ test("create modal explains provider and bootstrap fields with tooltips", () => 
     assert.match(createModal, new RegExp(helpText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(createModal, /<CreateFieldLabel[\s\S]*?Agent provider[\s\S]*?<\/CreateFieldLabel>/);
+  assert.match(createModal, /showCreateModelProviderMode \? \(/);
   assert.match(createModal, /<CreateFieldLabel[\s\S]*?Provider[\s\S]*?<\/CreateFieldLabel>/);
 });
 
@@ -270,11 +276,13 @@ test("the create modal never reintroduces upsert semantics", () => {
 
 test("request and options types expose the new create fields", () => {
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?agent_provider\?: string \| null;[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateRequest = \{[\s\S]*?model_provider_mode\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?model\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?vm_image\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?communication_target_ids\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?teams_channel_allowlist\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateProviderOption = \{[\s\S]*?execution_backends: AgentBackend\[\];[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateModelProviderModeOption = \{[\s\S]*?value: string;[\s\S]*?label: string;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateCommunicationTargetOption = \{[\s\S]*?metadata\?: Record<string, unknown>;[\s\S]*?\};/);
-  assert.match(types, /type AgentCreateOptionsResponse = \{[\s\S]*?agent_providers: AgentCreateProviderOption\[\];[\s\S]*?communication_targets: AgentCreateCommunicationTargetOption\[\];[\s\S]*?libvirt: \{[\s\S]*?container_worker: \{[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateOptionsResponse = \{[\s\S]*?agent_providers: AgentCreateProviderOption\[\];[\s\S]*?model_provider_modes: AgentCreateModelProviderModeOption\[\];[\s\S]*?communication_targets: AgentCreateCommunicationTargetOption\[\];[\s\S]*?libvirt: \{[\s\S]*?container_worker: \{[\s\S]*?\};/);
 });

@@ -104,6 +104,7 @@ type AgentCreateFormState = {
   provider: string;
   vmUser: string;
   agentProvider: string;
+  modelProviderMode: string;
   vmImage: string;
   containerImage: string;
   dotnet: boolean;
@@ -190,6 +191,7 @@ function emptyCreateForm(): AgentCreateFormState {
     provider: "",
     vmUser: "agent",
     agentProvider: "",
+    modelProviderMode: "",
     vmImage: "",
     containerImage: "",
     dotnet: false,
@@ -797,6 +799,8 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
   if (model) payload.model = model;
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;
+  const modelProviderMode = optionalText(form.modelProviderMode);
+  if (modelProviderMode) payload.model_provider_mode = modelProviderMode;
   if (form.backend === "libvirt_vm") {
     const provider = optionalText(form.provider);
     payload.vm_name = optionalText(form.vmName);
@@ -1907,6 +1911,8 @@ export function AgentsPage() {
   const createProviderOptions = (createOptions?.agent_providers ?? []).filter((option) =>
     option.execution_backends.includes(createForm.backend),
   );
+  const showCreateModelProviderMode =
+    !createForm.agentProvider || createForm.agentProvider === "codex";
   const createCommunicationTargetOptions = createOptions?.communication_targets ?? [];
   const operatorSteeringCanSubmit = Boolean(
     operatorSteeringContext &&
@@ -2332,11 +2338,16 @@ export function AgentsPage() {
                                 option.value === current.agentProvider &&
                                 option.execution_backends.includes(nextBackend),
                             );
+                            const nextAgentProvider =
+                              current.agentProvider && stillValid ? current.agentProvider : "";
                             return {
                               ...current,
                               backend: nextBackend,
-                              agentProvider:
-                                current.agentProvider && stillValid ? current.agentProvider : "",
+                              agentProvider: nextAgentProvider,
+                              modelProviderMode:
+                                nextAgentProvider && nextAgentProvider !== "codex"
+                                  ? ""
+                                  : current.modelProviderMode,
                             };
                           });
                         }}
@@ -2354,7 +2365,17 @@ export function AgentsPage() {
                       <select
                         value={createForm.agentProvider}
                         onChange={(event) =>
-                          setCreateForm((current) => ({ ...current, agentProvider: event.target.value }))
+                          setCreateForm((current) => {
+                            const nextAgentProvider = event.target.value;
+                            return {
+                              ...current,
+                              agentProvider: nextAgentProvider,
+                              modelProviderMode:
+                                nextAgentProvider && nextAgentProvider !== "codex"
+                                  ? ""
+                                  : current.modelProviderMode,
+                            };
+                          })
                         }
                       >
                         <option value="">Directory default</option>
@@ -2366,6 +2387,31 @@ export function AgentsPage() {
                       </select>
                     </span>
                   </label>
+                  {showCreateModelProviderMode ? (
+                    <label className="field-stack">
+                      <CreateFieldLabel tooltip="Relay mode for Codex model requests. Leave blank to use the directory default; choose Local OpenAI for host-local Ollama.">
+                        Model relay
+                      </CreateFieldLabel>
+                      <span className="select-field-control">
+                        <select
+                          value={createForm.modelProviderMode}
+                          onChange={(event) =>
+                            setCreateForm((current) => ({
+                              ...current,
+                              modelProviderMode: event.target.value,
+                            }))
+                          }
+                        >
+                          <option value="">Directory default</option>
+                          {(createOptions?.model_provider_modes ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </span>
+                    </label>
+                  ) : null}
                   <label className="field-stack">
                     <CreateFieldLabel tooltip="Host-side session id for policy, logs, model routing, and resume state. Required for container workers; VM agents can derive one from the VM name.">
                       Session

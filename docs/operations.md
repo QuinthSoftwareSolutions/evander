@@ -667,6 +667,16 @@ Storage layout for directory config:
   }
   ```
 
+- To mix public OpenAI and local OpenAI Codex agents in the same directory, keep
+  the directory `providers.json` populated with both the public OpenAI settings
+  and the local OpenAI endpoint settings, then set `model_provider_mode` on the
+  individual agent/session. A session with no override uses the directory
+  default; a session with metadata `{"model_provider_mode": "local_openai"}`
+  routes through the local endpoint; a session with
+  `{"model_provider_mode": "openai_public"}` routes through public OpenAI. The
+  Admin Web Create Agent dialog exposes this as **Model relay** for Codex or
+  directory-default agents, and CLI-created agents can pass
+  `--model-provider-mode local_openai`.
 - Restart `agent-sandbox-openai-relay.service` after changing provider config that the relay process has already loaded.
 - Public OpenAI remains the default when `model_provider_mode` is omitted.
 - For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.

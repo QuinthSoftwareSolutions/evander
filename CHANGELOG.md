@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Per-Agent Model Relay Overrides
+
+- Added session-level `model_provider_mode` overrides so Codex agents in the
+  same directory can choose public OpenAI, local OpenAI-compatible, Azure
+  OpenAI, or Anthropic relay routing without splitting directory scopes.
+- Exposed the override in Create Agent as a Codex-focused **Model relay** field,
+  added CLI/workflow creation support, and documented same-directory public vs
+  local OpenAI routing.
+
 ## 2026-06-20 - Team Add-on People Agent Details
 
 - Split the focused People tab into a two-column desktop layout with selectable

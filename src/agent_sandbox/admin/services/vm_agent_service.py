@@ -19,6 +19,10 @@ from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult, VmSummary
+from agent_sandbox.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+)
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository, normalize_skill_names
@@ -2108,6 +2112,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         issue: str,
         session_id: str | None = None,
         model: str | None = None,
+        model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_contact_ids: list[str] | None = None,
@@ -2185,6 +2190,14 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
         )
+        resolved_model_provider_mode = normalize_model_provider_mode_override(
+            model_provider_mode
+        )
+        if resolved_model_provider_mode is not None:
+            manifest.metadata = dict(manifest.metadata)
+            manifest.metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = (
+                resolved_model_provider_mode
+            )
         normalized_model = (model or "").strip() or None
         if normalized_model is not None:
             manifest.model = normalized_model
@@ -2358,6 +2371,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         issue_identifier: str,
         *,
         model: str | None = None,
+        model_provider_mode: str | None = None,
         vm_user: str = "agent",
         dotnet: bool = False,
         nuget: str | None = None,
@@ -2378,6 +2392,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         return self.create_issue_vm(
             issue=issue.issue_id,
             model=model,
+            model_provider_mode=model_provider_mode,
             vm_user=vm_user,
             dotnet=dotnet,
             nuget=nuget,

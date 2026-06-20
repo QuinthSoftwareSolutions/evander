@@ -798,6 +798,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         execution_backend="libvirt_vm",
         vm_name="lab-vm",
         session_id="lab-session",
+        model_provider_mode="local_openai",
         teams_channel_allowlist=["team-a/channel-1", "chat:chat-1"],
         teams_chat_allowlist=[" chat:chat-2 ", "chat:chat-2"],
         communication_file_receive_enabled=True,
@@ -833,6 +834,10 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+    assert (
+        admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"]
+        == "local_openai"
+    )
 
 
 def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_path: Path) -> None:
@@ -4350,6 +4355,7 @@ def test_agent_create_container_upserts_when_session_exists(
             existing_agent_behavior="upsert",
             labels={"new": "label"},
             model="gpt-5.5",
+            model_provider_mode="local_openai",
             allowed_tools=["set_issue_plan"],
             metadata={
                 "explicit": "set",
@@ -4385,6 +4391,7 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated.metadata["nested"] == {"keep": "value", "replace": "new"}
     assert updated.metadata["labels"] == {"new": "label"}
     assert updated.metadata["model"] == "gpt-5.5"
+    assert updated.metadata["model_provider_mode"] == "local_openai"
     assert updated.metadata["container_worker"] == {
         "image": "runner-special:2026-06-05",
         "image_alias": "special",

@@ -110,6 +110,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
+    model_provider_mode: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
     allowed_tools: list[str] | None = None

@@ -1550,6 +1550,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "existing_agent_behavior",
         "labels",
         "model",
+        "model_provider_mode",
         "vm_user",
         "vm_image",
         "ttl_hours",
@@ -1595,6 +1596,12 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "label": "Copilot",
             "metadata": {"execution_backends": ["libvirt_vm"]},
         },
+    ]
+    assert agent_create_fields["model_provider_mode"]["options"] == [
+        {"value": "openai_public", "label": "Public OpenAI"},
+        {"value": "local_openai", "label": "Local OpenAI"},
+        {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "anthropic", "label": "Anthropic"},
     ]
     assert agent_create_fields["provider"]["label"] == "VM provider"
     assert agent_create_fields["provider"]["metadata"] == {"execution_backends": ["libvirt_vm"]}
@@ -11498,6 +11505,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             "session_id": "lab-session",
             "directory_path": "root/team-a",
             "model": "gpt-5.2-codex",
+            "model_provider_mode": "local_openai",
             "ttl_hours": 12,
             "labels": {"team": "a"},
             "allowed_tools": ["run_script"],
@@ -11554,6 +11562,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "directory_path": "root/team-a",
         "metadata": {
             "agent_provider": "claude",
+            "model_provider_mode": "local_openai",
             "libvirt_vm_template": {
                 "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
                 "template_alias": "default",
@@ -11643,6 +11652,12 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
         "container_worker_vm",
     ]
     assert providers["copilot"]["execution_backends"] == ["libvirt_vm"]
+    assert body["model_provider_modes"] == [
+        {"value": "openai_public", "label": "Public OpenAI"},
+        {"value": "local_openai", "label": "Local OpenAI"},
+        {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "anthropic", "label": "Anthropic"},
+    ]
     assert body["libvirt"]["default_template"] == "default"
     assert body["libvirt"]["templates"] == [
         {"alias": "default", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"}

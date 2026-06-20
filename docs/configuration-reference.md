@@ -1219,6 +1219,12 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `anthropic_api_version` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` default `anthropic-version` header. |
 | `anthropic_relay_timeout_seconds` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` upstream Anthropic request timeout. |
 
+Session metadata key `model_provider_mode` overrides the effective directory
+provider mode for that session while still inheriting the directory's endpoint
+and credential fields. This allows a single directory to host both public
+OpenAI Codex sessions and local OpenAI-compatible Codex sessions by setting
+session metadata to `openai_public` or `local_openai` per agent.
+
 ### Semantic store keys
 
 | Key | Found in | Consumed by |

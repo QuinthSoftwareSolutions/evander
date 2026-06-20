@@ -24,6 +24,25 @@ from agent_sandbox.repositories.session_manifests import (
 )
 from agent_sandbox.storage import JsonStore
 
+MODEL_PROVIDER_MODE_METADATA_KEY = "model_provider_mode"
+MODEL_PROVIDER_MODE_VALUES = frozenset(
+    {"openai_public", "azure_openai", "anthropic", "local_openai"}
+)
+
+
+def normalize_model_provider_mode_override(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text not in MODEL_PROVIDER_MODE_VALUES:
+        allowed = ", ".join(sorted(MODEL_PROVIDER_MODE_VALUES))
+        raise ValueError(
+            f"{MODEL_PROVIDER_MODE_METADATA_KEY} must be one of: {allowed}"
+        )
+    return text
+
 
 class TriggerProviderConfig(BaseModel):
     runtime_dir: Path
@@ -250,12 +269,18 @@ class ProviderConfigResolver:
         )
         resolved = self.resolve_for_directory(normalized_path)
         if isinstance(session, SessionManifest):
-            agent_provider = (
-                str(session.metadata.get("agent_provider") or "").strip().lower()
+            metadata = session.metadata if isinstance(session.metadata, dict) else {}
+            requested_mode = normalize_model_provider_mode_override(
+                metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
             )
+            if requested_mode is not None:
+                payload = resolved.model_dump(mode="json")
+                payload["model_provider_mode"] = requested_mode
+                return GatewayConfig.model_validate(payload)
+            agent_provider = str(metadata.get("agent_provider") or "").strip().lower()
             if agent_provider == "claude":
                 payload = resolved.model_dump(mode="json")
-                payload["model_provider_mode"] = "anthropic"
+                payload[MODEL_PROVIDER_MODE_METADATA_KEY] = "anthropic"
                 return GatewayConfig.model_validate(payload)
         return resolved
 
