@@ -11,6 +11,11 @@ const taskStates = [
 ];
 const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
 const agentStatuses = ["active", "paused", "archived"];
+const avatarStylePresets = [
+  ["professional", "Professional"],
+  ["playful", "Playful"],
+  ["minimal", "Minimal"],
+];
 const projectStatuses = ["active", "blocked", "completed", "archived"];
 const gitProviders = [
   ["github", "GitHub"],
@@ -554,6 +559,34 @@ function bindRecordEditing() {
         dismissActionButton,
         dismissActionButton.dataset.dismissActionId,
       );
+      return;
+    }
+
+    const avatarGenerateButton = event.target.closest("[data-avatar-generate-agent-id]");
+    if (avatarGenerateButton) {
+      event.preventDefault();
+      void generateAvatarPreview(avatarGenerateButton);
+      return;
+    }
+
+    const avatarAcceptButton = event.target.closest("[data-avatar-accept-agent-id]");
+    if (avatarAcceptButton) {
+      event.preventDefault();
+      void acceptAvatarPreview(avatarAcceptButton);
+      return;
+    }
+
+    const avatarUploadButton = event.target.closest("[data-avatar-upload-agent-id]");
+    if (avatarUploadButton) {
+      event.preventDefault();
+      void uploadAgentAvatar(avatarUploadButton);
+      return;
+    }
+
+    const avatarRemoveButton = event.target.closest("[data-avatar-remove-agent-id]");
+    if (avatarRemoveButton) {
+      event.preventDefault();
+      void removeAgentAvatar(avatarRemoveButton);
       return;
     }
 
@@ -1827,6 +1860,7 @@ function renderHierarchyNode(node, options = {}) {
       <li class="hierarchy-branch">
         <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
           <div class="hierarchy-node-summary">
+            ${renderAgentAvatar(node.agentData)}
             <div class="hierarchy-node-title">
               <strong>${escapeHtml(node.agentData.label)}</strong>
               ${
@@ -1906,7 +1940,10 @@ function renderAgents() {
           return `
               <li class="agent-item">
                 <div class="agent-line">
-                  <strong>${escapeHtml(details.label)}</strong>
+                  <div class="agent-title-with-avatar">
+                    ${renderAgentAvatar(details)}
+                    <strong>${escapeHtml(details.label)}</strong>
+                  </div>
                   <div class="record-actions">
                     <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
                     ${renderAgentStandDownControls(details.id, details)}
@@ -1982,6 +2019,7 @@ function renderSelectableAgent(agent) {
         aria-controls="people-agent-detail-view"
         aria-pressed="${selected ? "true" : "false"}"
       >
+          ${renderAgentAvatar(details)}
           <span class="compact-record-main">
             <strong>${escapeHtml(details.label)}</strong>
             <span>${escapeHtml(details.role)} - ${escapeHtml(details.id)}</span>
@@ -2021,6 +2059,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
   return `
     <div class="agent-detail">
       <div class="agent-detail-header">
+        ${renderAgentAvatar(details, "agent-avatar-large")}
         <div class="agent-detail-title">
           <h3>${escapeHtml(details.label)}</h3>
           <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
@@ -2214,6 +2253,7 @@ function agentCardData(agent) {
     label: agentLabel(agent),
     role: agentRoleLabel(agent),
     roleId: text(agent?.role_id),
+    avatar: agent?.avatar || null,
     status: agentStatus(agent),
     sessionId: text(agent?.session_id),
     projectId: projectId || null,
@@ -4712,6 +4752,151 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
     }
 }
 
+async function uploadAgentAvatar(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarUploadAgentId);
+  const file = form?.elements.avatar_file?.files?.[0] || null;
+  if (!form || !agentId || !file) {
+    setStatus("Choose an avatar image to upload.", "error");
+    return;
+  }
+  const body = new FormData();
+  body.append("expected_revision", String(state.revision));
+  body.append("file", file);
+  await submitAvatarFormData(form, `/agents/${encodeURIComponent(agentId)}/avatar/upload`, body);
+}
+
+async function generateAvatarPreview(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarGenerateAgentId);
+  if (!form || !agentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const data = formData(form);
+  setFormBusy(form, true);
+  setStatus("Generating avatar preview.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/avatar/previews`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        style_preset: text(data.avatar_style_preset) || "professional",
+        prompt_note: text(data.avatar_prompt_note) || null,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    const preview = payload.preview || {};
+    const slot = form.querySelector("[data-avatar-preview-slot]");
+    if (slot) {
+      slot.innerHTML = `
+        <div class="avatar-preview-card">
+          <img src="${escapeAttr(preview.url)}" alt="Generated avatar preview" />
+          <div class="meta-line">Preview ready - ${escapeHtml(preview.style_preset || "generated")}</div>
+        </div>
+      `;
+    }
+    const acceptButton = form.querySelector("[data-avatar-accept-agent-id]");
+    if (acceptButton) {
+      acceptButton.disabled = false;
+      acceptButton.dataset.avatarPreviewId = preview.preview_id || "";
+    }
+    setStatus("Avatar preview generated.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Avatar generation failed.", "error");
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function acceptAvatarPreview(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarAcceptAgentId);
+  const previewId = text(button.dataset.avatarPreviewId);
+  if (!form || !agentId || !previewId) {
+    setStatus("Generate a preview before accepting it.", "error");
+    return;
+  }
+  await submitAvatarJson(
+    form,
+    `/agents/${encodeURIComponent(agentId)}/avatar/accept-preview`,
+    "POST",
+    { preview_id: previewId },
+    agentId,
+  );
+}
+
+async function removeAgentAvatar(button) {
+  const form = button.closest("form");
+  const agentId = text(button.dataset.avatarRemoveAgentId);
+  if (!form || !agentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  await submitAvatarJson(
+    form,
+    `/agents/${encodeURIComponent(agentId)}/avatar`,
+    "DELETE",
+    {},
+    agentId,
+  );
+}
+
+async function submitAvatarFormData(form, endpoint, body) {
+  const drafts = captureFormDrafts();
+  setFormBusy(form, true);
+  setStatus("Saving avatar.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body,
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
+      return false;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    state = normalizeState(await response.json());
+    render();
+    openEditDialog("agent", text(form.dataset.editId));
+    void loadTimeline();
+    setStatus(`Saved avatar at revision ${state.revision}.`, "ok");
+    return true;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Avatar save failed.", "error");
+    return false;
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function submitAvatarJson(form, endpoint, method, payload, agentId) {
+  const saved = await submitMutation(
+    form,
+    endpoint,
+    method,
+    payload,
+    { resetOnSuccess: false },
+  );
+  if (saved && agentId) {
+    openEditDialog("agent", agentId);
+  }
+  return saved;
+}
+
 async function requestContextRotation(button, agentId) {
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
@@ -5304,6 +5489,7 @@ function renderEditFields(type, record) {
       ${selectField("Role", "role_id", "roles", record.role_id || "", { required: true })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
+      ${renderAvatarEditControls(record)}
       ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
@@ -5351,6 +5537,42 @@ function renderEditFields(type, record) {
     `;
   }
   return "";
+}
+
+function renderAvatarEditControls(record) {
+  const hasAvatar = Boolean(record?.avatar?.asset_id);
+  const styleOptions = avatarStylePresets
+    .map(([value, label]) => `<option value="${escapeAttr(value)}"${value === "professional" ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+  return `
+    <fieldset class="avatar-editor">
+      <legend>Avatar</legend>
+      <div class="avatar-editor-current">
+        ${renderAgentAvatar(record, "agent-avatar-large")}
+        <div>
+          <div class="meta-line">${hasAvatar ? `Current avatar - ${escapeHtml(record.avatar.source || "custom")}` : "No avatar set"}</div>
+          <div class="record-actions avatar-editor-actions">
+            <input type="file" name="avatar_file" accept="image/png,image/jpeg,image/webp" />
+            <button class="record-action" type="button" data-avatar-upload-agent-id="${escapeAttr(record.id)}">Upload</button>
+            ${hasAvatar ? `<button class="record-action" type="button" data-avatar-remove-agent-id="${escapeAttr(record.id)}">Remove</button>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="avatar-generation-grid">
+        <label>Style preset
+          <select name="avatar_style_preset">${styleOptions}</select>
+        </label>
+        <label>Generation notes
+          <textarea name="avatar_prompt_note" rows="2" placeholder="Optional visual hints"></textarea>
+        </label>
+      </div>
+      <div class="record-actions avatar-editor-actions">
+        <button class="record-action" type="button" data-avatar-generate-agent-id="${escapeAttr(record.id)}">Generate preview</button>
+        <button class="record-action" type="button" data-avatar-accept-agent-id="${escapeAttr(record.id)}" disabled>Accept preview</button>
+      </div>
+      <div class="avatar-preview-slot" data-avatar-preview-slot></div>
+    </fieldset>
+  `;
 }
 
 function editPayloadForForm(type, form) {
@@ -5694,7 +5916,35 @@ function text(value) {
 }
 
 function agentLabel(agent) {
-  return text(agent?.display_name) || text(agent?.name) || text(agent?.id);
+  return text(agent?.display_name) || text(agent?.name) || text(agent?.label) || text(agent?.id);
+}
+
+function avatarUrl(agentOrDetails) {
+  const avatar = agentOrDetails?.avatar;
+  const assetId = text(avatar?.asset_id);
+  if (!assetId) {
+    return "";
+  }
+  return text(avatar.url) || `${API_BASE}/avatars/${encodeURIComponent(assetId)}`;
+}
+
+function agentInitials(agentOrDetails) {
+  const label = agentLabel(agentOrDetails);
+  const parts = label.split(/[\s._-]+/).filter(Boolean);
+  const letters = parts.length > 1
+    ? `${parts[0][0] || ""}${parts[1][0] || ""}`
+    : label.slice(0, 2);
+  return (letters || "A").toUpperCase();
+}
+
+function renderAgentAvatar(agentOrDetails, extraClass = "") {
+  const src = avatarUrl(agentOrDetails);
+  const label = agentLabel(agentOrDetails);
+  const className = `agent-avatar ${extraClass}`.trim();
+  if (src) {
+    return `<span class="${escapeAttr(className)}"><img src="${escapeAttr(src)}" alt="${escapeAttr(`${label} avatar`)}" loading="lazy" /></span>`;
+  }
+  return `<span class="${escapeAttr(`${className} agent-avatar-fallback`)}" aria-hidden="true">${escapeHtml(agentInitials(agentOrDetails))}</span>`;
 }
 
 function roleLabel(roleOrId) {

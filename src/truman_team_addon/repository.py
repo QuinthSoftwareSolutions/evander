@@ -22,6 +22,7 @@ from .git_naming import (
     validate_branch_name,
 )
 from .models import (
+    AgentAvatar,
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
@@ -689,6 +690,37 @@ class TeamStateRepository:
                     superior.subordinate_agent_ids = _append_unique(
                         superior.subordinate_agent_ids, agent.id
                     )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def set_agent_avatar(
+        self,
+        *,
+        agent_id: str,
+        avatar: AgentAvatar,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            agent.avatar = avatar
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def clear_agent_avatar(
+        self,
+        *,
+        agent_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            agent.avatar = None
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)

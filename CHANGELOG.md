@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-20 - Team Add-on Agent Avatars
+
+- Added optional Team Add-on agent avatars with add-on-private WebP storage,
+  upload normalization, generated-preview acceptance, and removal routes.
+- Added OpenAI-backed generated avatar previews for persistent Team agents
+  without exposing avatar metadata to agent runtime prompts or core Truman
+  session identity.
+- Rendered avatars with initials fallbacks in Team agent lists, People details,
+  org-chart nodes, and agent edit dialogs.
+
 ## 2026-06-20 - Skatteverket Connection Editor
 
 - Added editable Skatteverket Add-on Admin UI controls for connection metadata,

@@ -5,8 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
@@ -16,6 +17,15 @@ from agent_sandbox.events.internal import (
     internal_event_store_path,
 )
 
+from .avatars import (
+    AVATAR_MIME_TYPE,
+    MAX_AVATAR_UPLOAD_BYTES,
+    AvatarStorage,
+    build_avatar_prompt,
+    normalize_prompt_note,
+    normalize_style_preset,
+    openai_avatar_generator_from_config,
+)
 from .models import (
     AgentStatus,
     EphemeralAgentPolicy,
@@ -35,6 +45,7 @@ from .repository import TeamStateConflictError, TeamStateRepository
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
+    avatar_storage = AvatarStorage(context.runtime_dir)
 
     async def get_state(_request: Request) -> JSONResponse:
         return JSONResponse(team_state_payload(repository.read()))
@@ -301,6 +312,133 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
+
+    async def create_avatar_preview(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.read()
+        agent_id = request.path_params["agent_id"]
+        agent = state.agents.get(agent_id)
+        if agent is None:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
+        role = state.roles.get(agent.role_id)
+        team = state.teams.get(agent.team_id)
+        style_preset = normalize_style_preset(payload.get("style_preset"))
+        prompt_note = normalize_prompt_note(payload.get("prompt_note"))
+        prompt = build_avatar_prompt(
+            agent=agent,
+            role_name=role.name if role is not None else None,
+            team_name=team.name if team is not None else None,
+            style_preset=style_preset,
+            prompt_note=prompt_note,
+        )
+        generator = openai_avatar_generator_from_config(context.config)
+        try:
+            content = await generator.generate(prompt=prompt)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        try:
+            preview = avatar_storage.store_generated_preview(
+                agent_id=agent.id,
+                content=content,
+                style_preset=style_preset,
+                prompt_note=prompt_note,
+                model=generator.model,
+            )
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse({"preview": preview.payload()}, status_code=201)
+
+    async def upload_agent_avatar(request: Request) -> JSONResponse:
+        try:
+            form = await request.form()
+        except Exception as exc:
+            raise ValueError("Request body must be multipart form data") from exc
+        expected_revision = _coerce_int(form.get("expected_revision"), "expected_revision")
+        file_value = form.get("file")
+        if not isinstance(file_value, UploadFile):
+            raise ValueError("file is required")
+        content = await file_value.read(MAX_AVATAR_UPLOAD_BYTES + 1)
+        try:
+            avatar = avatar_storage.store_upload(content)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        old_asset_id = _current_agent_avatar_asset_id(
+            repository.read(),
+            request.path_params["agent_id"],
+        )
+        try:
+            state = repository.set_agent_avatar(
+                agent_id=request.path_params["agent_id"],
+                avatar=avatar,
+                expected_revision=expected_revision,
+            )
+        except Exception:
+            avatar_storage.delete_asset_if_unreferenced(
+                asset_id=avatar.asset_id,
+                state=repository.read(),
+            )
+            raise
+        avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
+        return JSONResponse(team_state_payload(state))
+
+    async def accept_agent_avatar_preview(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        expected_revision = _expected_revision(payload)
+        agent_id = request.path_params["agent_id"]
+        before = repository.read()
+        if agent_id not in before.agents:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
+        if before.revision != expected_revision:
+            raise TeamStateConflictError(
+                expected_revision=expected_revision,
+                current_revision=before.revision,
+            )
+        old_asset_id = _current_agent_avatar_asset_id(before, agent_id)
+        try:
+            avatar = avatar_storage.accept_preview(
+                preview_id=_required(payload, "preview_id"),
+                agent_id=agent_id,
+            )
+        except FileNotFoundError:
+            return JSONResponse({"error": "avatar preview not found"}, status_code=404)
+        state = repository.set_agent_avatar(
+            agent_id=agent_id,
+            avatar=avatar,
+            expected_revision=expected_revision,
+        )
+        avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
+        return JSONResponse(team_state_payload(state))
+
+    async def delete_agent_avatar(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        old_asset_id = _current_agent_avatar_asset_id(
+            repository.read(),
+            request.path_params["agent_id"],
+        )
+        state = repository.clear_agent_avatar(
+            agent_id=request.path_params["agent_id"],
+            expected_revision=_expected_revision(payload),
+        )
+        avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
+        return JSONResponse(team_state_payload(state))
+
+    async def get_avatar_asset(request: Request) -> FileResponse | JSONResponse:
+        try:
+            path = avatar_storage.asset_path(request.path_params["asset_id"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if not path.is_file():
+            return JSONResponse({"error": "avatar not found"}, status_code=404)
+        return FileResponse(path, media_type=AVATAR_MIME_TYPE)
+
+    async def get_avatar_preview(request: Request) -> FileResponse | JSONResponse:
+        try:
+            path = avatar_storage.preview_path(request.path_params["preview_id"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if not path.is_file():
+            return JSONResponse({"error": "avatar preview not found"}, status_code=404)
+        return FileResponse(path, media_type=AVATAR_MIME_TYPE)
 
     async def request_agent_context_rotation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -600,6 +738,36 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
         Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
         Route(
+            "/agents/{agent_id}/avatar/previews",
+            _with_errors(create_avatar_preview),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar/upload",
+            _with_errors(upload_agent_avatar),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar/accept-preview",
+            _with_errors(accept_agent_avatar_preview),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/avatar",
+            _with_errors(delete_agent_avatar),
+            methods=["DELETE"],
+        ),
+        Route(
+            "/avatars/{asset_id}",
+            _with_errors(get_avatar_asset),
+            methods=["GET"],
+        ),
+        Route(
+            "/avatar-previews/{preview_id}",
+            _with_errors(get_avatar_preview),
+            methods=["GET"],
+        ),
+        Route(
             "/agents/{agent_id}/context-rotation",
             _with_errors(request_agent_context_rotation),
             methods=["POST"],
@@ -847,6 +1015,14 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
         else:
             normalized["bare_repo_name"] = bare_repo
     return ProjectGitConfig.model_validate(normalized)
+
+
+def _current_agent_avatar_asset_id(state: Any, agent_id: str) -> str | None:
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return None
+    avatar = getattr(agent, "avatar", None)
+    return getattr(avatar, "asset_id", None)
 
 
 def _expected_revision(payload: Mapping[str, Any]) -> int:

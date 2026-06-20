@@ -216,6 +216,14 @@ or keyboard focus on an agent node reveals operational details from the add-on
 state payload, including session, project, reports-to, task, inbox, runtime
 wake, and ephemeral-capacity information when those records are available.
 
+Persistent agents may also have an optional Team Add-on avatar. Avatars are
+operator-facing UI metadata only: they are stored in Team Add-on state and
+add-on-private image files under `runtime/addons/team-addon/avatars/`, and are
+not mirrored into session metadata, prompts, wake context, or core Truman agent
+identity. Operators can upload PNG/JPEG/WebP images, which the add-on normalizes
+to square WebP assets, or generate an OpenAI-backed preview and explicitly
+accept it before it becomes the saved avatar.
+
 Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for

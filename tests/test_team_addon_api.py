@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from PIL import Image
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
@@ -25,6 +27,12 @@ from truman_team_addon.models import (
     TeamTaskState,
 )
 from truman_team_addon.repository import TeamStateRepository
+
+
+def _png_avatar_bytes(color: tuple[int, int, int] = (23, 111, 122)) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (32, 24), color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
@@ -248,6 +256,137 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
 
     repo.update(_mutate)
     return repo
+
+
+class _FakeAvatarGenerator:
+    model = "gpt-image-2"
+
+    async def generate(self, *, prompt: str) -> bytes:
+        assert "Backend" in prompt
+        return _png_avatar_bytes((140, 60, 170))
+
+
+def test_agent_avatar_upload_normalizes_and_serves_image(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.png", _png_avatar_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    avatar = payload["agents"]["backend"]["avatar"]
+    assert avatar["source"] == "uploaded"
+    assert avatar["mime_type"] == "image/webp"
+    assert avatar["asset_id"].startswith("av_")
+    assert len(avatar["sha256"]) == 64
+
+    image_response = client.get(f"/api/addons/team-addon/avatars/{avatar['asset_id']}")
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"].startswith("image/webp")
+    assert image_response.content.startswith(b"RIFF")
+
+
+def test_agent_avatar_upload_rejects_non_image(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.txt", b"not an image", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert "valid PNG, JPEG, or WebP" in response.json()["error"]
+
+
+def test_generated_agent_avatar_preview_is_accepted_with_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    monkeypatch.setattr(
+        "truman_team_addon.api.openai_avatar_generator_from_config",
+        lambda _config: _FakeAvatarGenerator(),
+    )
+    client = _client(tmp_path)
+
+    preview_response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/previews",
+        json={"style_preset": "minimal", "prompt_note": "teal accent"},
+    )
+
+    assert preview_response.status_code == 201
+    preview = preview_response.json()["preview"]
+    assert preview["preview_id"].startswith("av_")
+    assert preview["style_preset"] == "minimal"
+    assert repo.read().agents["backend"].avatar is None
+    assert client.get(preview["url"]).status_code == 200
+
+    accept_response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/accept-preview",
+        json={
+            "expected_revision": repo.read().revision,
+            "preview_id": preview["preview_id"],
+        },
+    )
+
+    assert accept_response.status_code == 200
+    avatar = accept_response.json()["agents"]["backend"]["avatar"]
+    assert avatar["source"] == "generated"
+    assert avatar["asset_id"] == preview["preview_id"]
+    assert avatar["style_preset"] == "minimal"
+    assert client.get(f"/api/addons/team-addon/avatars/{avatar['asset_id']}").status_code == 200
+
+
+def test_agent_avatar_accept_preview_requires_current_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    monkeypatch.setattr(
+        "truman_team_addon.api.openai_avatar_generator_from_config",
+        lambda _config: _FakeAvatarGenerator(),
+    )
+    client = _client(tmp_path)
+    preview = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/previews",
+        json={},
+    ).json()["preview"]
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/accept-preview",
+        json={"expected_revision": repo.read().revision - 1, "preview_id": preview["preview_id"]},
+    )
+
+    assert response.status_code == 409
+    assert repo.read().agents["backend"].avatar is None
+    assert client.get(preview["url"]).status_code == 200
+
+
+def test_agent_avatar_delete_clears_state_and_asset(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    upload = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.png", _png_avatar_bytes(), "image/png")},
+    ).json()
+    asset_id = upload["agents"]["backend"]["avatar"]["asset_id"]
+
+    response = client.request(
+        "DELETE",
+        "/api/addons/team-addon/agents/backend/avatar",
+        json={"expected_revision": upload["revision"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agents"]["backend"]["avatar"] is None
+    assert client.get(f"/api/addons/team-addon/avatars/{asset_id}").status_code == 404
 
 
 def _auto_dev_squad_materialization_payload(
