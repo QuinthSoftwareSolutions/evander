@@ -1398,11 +1398,19 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
     return payload
 
 
-def team_state_payload(state: TeamState) -> dict[str, Any]:
+def team_state_payload(
+    state: TeamState,
+    *,
+    include_agent_avatars: bool = True,
+) -> dict[str, Any]:
     payload = state.model_dump(mode="json")
     payload["available_role_permissions"] = [permission.value for permission in RolePermission]
     payload["agents"] = {
-        agent_id: _agent_payload_with_role(state, agent)
+        agent_id: _agent_payload_with_role(
+            state,
+            agent,
+            include_avatar=include_agent_avatars,
+        )
         for agent_id, agent in state.agents.items()
     }
     payload["tasks"] = {
@@ -1413,8 +1421,15 @@ def team_state_payload(state: TeamState) -> dict[str, Any]:
     return payload
 
 
-def _agent_payload_with_role(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
+def _agent_payload_with_role(
+    state: TeamState,
+    agent: PersistentAgent,
+    *,
+    include_avatar: bool = True,
+) -> dict[str, Any]:
     payload = agent.model_dump(mode="json")
+    if not include_avatar:
+        payload.pop("avatar", None)
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (

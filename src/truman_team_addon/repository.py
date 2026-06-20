@@ -3165,7 +3165,7 @@ def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) 
 
 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
-    payload = agent.model_dump(mode="json")
+    payload = agent.model_dump(mode="json", exclude={"avatar"})
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (
@@ -5841,7 +5841,7 @@ def _build_ephemeral_prompt(
 ) -> str:
     context = {
         "assignment": assignment.model_dump(mode="json"),
-        "parent_agent": parent.model_dump(mode="json"),
+        "parent_agent": parent.model_dump(mode="json", exclude={"avatar"}),
         "task": task.model_dump(mode="json"),
         "action_artifact_path": "/artifacts/team-action.json",
     }

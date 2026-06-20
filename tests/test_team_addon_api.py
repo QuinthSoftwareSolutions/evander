@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 from PIL import Image
 from starlette.testclient import TestClient
 
@@ -266,6 +268,13 @@ class _FakeAvatarGenerator:
         return _png_avatar_bytes((140, 60, 170))
 
 
+class _FailingAvatarGenerator:
+    model = "gpt-image-2"
+
+    async def generate(self, *, prompt: str) -> bytes:
+        raise RuntimeError("OpenAI image generation request failed: timeout")
+
+
 def test_agent_avatar_upload_normalizes_and_serves_image(tmp_path: Path) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     client = _client(tmp_path)
@@ -302,6 +311,41 @@ def test_agent_avatar_upload_rejects_non_image(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "valid PNG, JPEG, or WebP" in response.json()["error"]
+
+
+def test_agent_avatar_upload_rejects_corrupt_recognized_image(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    corrupt_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/upload",
+        data={"expected_revision": str(repo.read().revision)},
+        files={"file": ("avatar.png", corrupt_png, "image/png")},
+    )
+
+    assert response.status_code == 400
+    assert "valid PNG, JPEG, or WebP" in response.json()["error"]
+
+
+def test_generated_agent_avatar_preview_wraps_transport_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _seed_runtime_operations_state(tmp_path / "runtime")
+    monkeypatch.setattr(
+        "truman_team_addon.api.openai_avatar_generator_from_config",
+        lambda _config: _FailingAvatarGenerator(),
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/avatar/previews",
+        json={},
+    )
+
+    assert response.status_code == 503
+    assert "OpenAI image generation request failed" in response.json()["error"]
 
 
 def test_generated_agent_avatar_preview_is_accepted_with_revision(
@@ -366,6 +410,26 @@ def test_agent_avatar_accept_preview_requires_current_revision(
     assert response.status_code == 409
     assert repo.read().agents["backend"].avatar is None
     assert client.get(preview["url"]).status_code == 200
+
+
+def test_openai_avatar_generator_wraps_http_transport_errors() -> None:
+    from truman_team_addon.avatars import OpenAIAvatarGenerator
+
+    async def _handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failed")
+
+    generator = OpenAIAvatarGenerator(
+        api_key="token",
+        api_key_source="OPENAI_API_KEY",
+        transport=httpx.MockTransport(_handler),
+    )
+
+    try:
+        asyncio.run(generator.generate(prompt="avatar"))
+    except RuntimeError as exc:
+        assert "OpenAI image generation request failed" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
 
 
 def test_agent_avatar_delete_clears_state_and_asset(tmp_path: Path) -> None:

@@ -98,7 +98,7 @@ class AvatarStorage:
                 )
                 output = BytesIO()
                 normalized.save(output, format="WEBP", quality=86, method=6)
-        except UnidentifiedImageError as exc:
+        except (UnidentifiedImageError, OSError) as exc:
             raise ValueError("avatar image is not a valid PNG, JPEG, or WebP file") from exc
         normalized_bytes = output.getvalue()
         return normalized_bytes, hashlib.sha256(normalized_bytes).hexdigest()
@@ -153,6 +153,11 @@ class AvatarStorage:
         )
 
     def accept_preview(self, *, preview_id: str, agent_id: str) -> AgentAvatar:
+        avatar = self.avatar_from_preview(preview_id=preview_id, agent_id=agent_id)
+        self.promote_preview(preview_id=preview_id)
+        return avatar
+
+    def avatar_from_preview(self, *, preview_id: str, agent_id: str) -> AgentAvatar:
         safe_preview_id = validate_avatar_id(preview_id, "preview_id")
         preview_path = self.preview_path(safe_preview_id)
         metadata_path = self.preview_metadata_path(safe_preview_id)
@@ -161,12 +166,8 @@ class AvatarStorage:
         metadata = self._read_json(metadata_path)
         if str(metadata.get("agent_id") or "") != agent_id:
             raise ValueError("avatar preview does not belong to this agent")
-        asset_id = safe_preview_id
-        self.assets_dir.mkdir(parents=True, exist_ok=True)
-        preview_path.replace(self.asset_path(asset_id))
-        metadata_path.unlink(missing_ok=True)
         return AgentAvatar(
-            asset_id=asset_id,
+            asset_id=safe_preview_id,
             source="generated",
             mime_type=AVATAR_MIME_TYPE,
             sha256=str(metadata["sha256"]),
@@ -176,6 +177,16 @@ class AvatarStorage:
             model=_optional_text(metadata.get("model")),
             preview_id=safe_preview_id,
         )
+
+    def promote_preview(self, *, preview_id: str) -> None:
+        safe_preview_id = validate_avatar_id(preview_id, "preview_id")
+        preview_path = self.preview_path(safe_preview_id)
+        metadata_path = self.preview_metadata_path(safe_preview_id)
+        if not preview_path.is_file() or not metadata_path.is_file():
+            raise FileNotFoundError("avatar preview not found")
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
+        preview_path.replace(self.asset_path(safe_preview_id))
+        metadata_path.unlink(missing_ok=True)
 
     def asset_path(self, asset_id: str) -> Path:
         return self.assets_dir / f"{validate_avatar_id(asset_id, 'asset_id')}.webp"
@@ -232,26 +243,29 @@ class OpenAIAvatarGenerator:
             raise RuntimeError(
                 f"Host environment variable {self.api_key_source} is not set."
             )
-        async with httpx.AsyncClient(
-            timeout=self.timeout_seconds,
-            transport=self.transport,
-        ) as client:
-            response = await client.post(
-                f"{self.base_url}/images/generations",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": "1024x1024",
-                    "quality": DEFAULT_AVATAR_QUALITY,
-                    "output_format": "webp",
-                    "output_compression": 85,
-                },
-            )
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = await client.post(
+                    f"{self.base_url}/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "n": 1,
+                        "size": "1024x1024",
+                        "quality": DEFAULT_AVATAR_QUALITY,
+                        "output_format": "webp",
+                        "output_compression": 85,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"OpenAI image generation request failed: {exc}") from exc
         if response.status_code >= 400:
             raise RuntimeError(_openai_error_message(response))
         payload = response.json()

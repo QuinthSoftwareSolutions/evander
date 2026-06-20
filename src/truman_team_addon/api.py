@@ -395,7 +395,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             )
         old_asset_id = _current_agent_avatar_asset_id(before, agent_id)
         try:
-            avatar = avatar_storage.accept_preview(
+            avatar = avatar_storage.avatar_from_preview(
                 preview_id=_required(payload, "preview_id"),
                 agent_id=agent_id,
             )
@@ -406,6 +406,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             avatar=avatar,
             expected_revision=expected_revision,
         )
+        avatar_storage.promote_preview(preview_id=avatar.preview_id or avatar.asset_id)
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
         return JSONResponse(team_state_payload(state))
 
