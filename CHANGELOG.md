@@ -33,6 +33,8 @@ material. Newer entries are added incrementally as changes land.
   clipped by the compact card.
 - Clamped inbox popovers with real layout positioning so edge-aligned detail
   tooltips no longer introduce horizontal page scrolling.
+- Applied the same clamp offset to the tooltip hover bridge so the bridge itself
+  cannot create horizontal overflow.
 
 ## 2026-06-20 - ADO Activity And Buffer Gate Fixes
 

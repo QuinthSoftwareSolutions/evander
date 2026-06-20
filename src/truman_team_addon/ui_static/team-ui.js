@@ -440,6 +440,7 @@ function scheduleInboxPopoverPosition(target) {
     return;
   }
 
+  indicator.style.setProperty("--agent-inbox-popover-offset-x", "0px");
   popover.style.setProperty("--agent-inbox-popover-offset-x", "0px");
   window.requestAnimationFrame(() => {
     clampInboxPopoverToViewport(indicator, popover);
@@ -464,7 +465,9 @@ function clampInboxPopoverToViewport(indicator, popover) {
     offsetX += viewportPadding - (rect.left + offsetX);
   }
 
-  popover.style.setProperty("--agent-inbox-popover-offset-x", `${Math.round(offsetX)}px`);
+  const offsetValue = `${Math.round(offsetX)}px`;
+  indicator.style.setProperty("--agent-inbox-popover-offset-x", offsetValue);
+  popover.style.setProperty("--agent-inbox-popover-offset-x", offsetValue);
 }
 
 function placeSetupFormsPanel() {

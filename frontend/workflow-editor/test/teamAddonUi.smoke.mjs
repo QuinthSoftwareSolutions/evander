@@ -3032,7 +3032,7 @@ test("team add-on People inbox popover stays reachable and scrollable", async (t
     initialState: seededScrollablePeopleTooltipState(),
   });
   const page = await openBrowserPage(t, port, {
-    viewport: { width: 1024, height: 720 },
+    viewport: { width: 760, height: 720 },
   });
 
   await waitForRevision(page, 4);
@@ -3078,6 +3078,11 @@ test("team add-on People inbox popover stays reachable and scrollable", async (t
   await peopleStatusIndicator.hover();
   const peopleStatusPopover = peopleStatusIndicator.locator(".agent-inbox-popover");
   await peopleStatusPopover.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    null,
+    { timeout: 2000 },
+  );
   const indicatorBox = await peopleStatusIndicator.boundingBox();
   const popoverBox = await peopleStatusPopover.boundingBox();
   assert.ok(indicatorBox, "expected People inbox indicator to have a bounding box");
