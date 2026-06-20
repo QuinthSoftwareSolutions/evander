@@ -797,7 +797,7 @@ async function loadState({ preserveForms = false } = {}) {
     } else {
       renderTemplatePreview();
     }
-    setStatus(`Loaded revision ${state.revision}.`, "ok");
+    setStatus("", "");
     void loadCosts();
     void loadTimeline();
   } catch (error) {
@@ -5535,7 +5535,9 @@ function setFormBusy(form, busy) {
 }
 
 function setStatus(message, level) {
-  elements.statusMessage.textContent = message;
+  const normalizedMessage = text(message);
+  elements.statusMessage.hidden = !normalizedMessage;
+  elements.statusMessage.textContent = normalizedMessage;
   elements.statusMessage.className = `status-message ${level || ""}`.trim();
 }
 

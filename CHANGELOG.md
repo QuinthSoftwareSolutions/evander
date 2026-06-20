@@ -23,6 +23,12 @@ material. Newer entries are added incrementally as changes land.
   agent cards on the left and selected-agent details on the right.
 - Kept selected-agent inbox hover popovers clamped inside the viewport on the
   People tab.
+- Kept scrollable selected-agent inbox popovers reachable while moving from the
+  icon into the popover body.
+- Removed the redundant selected-agent panel title so the selected agent name is
+  the detail heading.
+- Stopped showing the successful-load revision status card because the header
+  revision badge already carries that state.
 
 ## 2026-06-20 - ADO Activity And Buffer Gate Fixes
 

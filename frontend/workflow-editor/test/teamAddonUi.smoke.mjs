@@ -1549,6 +1549,12 @@ async function openBrowserPage(t, port, contextOptions = {}) {
   return page;
 }
 
+async function waitForRevision(page, revision) {
+  await page.locator("#revision-badge", { hasText: `Revision ${revision}` }).waitFor({
+    state: "visible",
+  });
+}
+
 async function waitForSelectOption(page, selector, value) {
   await page.locator(`${selector} option[value="${value}"]`).waitFor({ state: "attached" });
 }
@@ -1819,7 +1825,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   });
   const page = await openBrowserPage(t, port);
 
-  await page.getByText("Loaded revision 8.").waitFor({ state: "visible" });
+  await waitForRevision(page, 8);
 
   assert.equal(await page.locator(".hierarchy-team").count(), 1);
   assert.equal(await page.locator(".hierarchy-children").count(), 3);
@@ -1947,7 +1953,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
   const { port } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
-  await page.getByText("Loaded revision 8.").waitFor({ state: "visible" });
+  await waitForRevision(page, 8);
   await page.locator("#hierarchy-view").getByText("No active team.").waitFor({
     state: "visible",
   });
@@ -1997,7 +2003,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
   });
   const page = await openBrowserPage(t, port);
 
-  await page.getByText("Loaded revision 3.").waitFor({ state: "visible" });
+  await waitForRevision(page, 3);
 
   await page.getByText("Missing manager ghost-manager").waitFor({ state: "visible" });
   await page.getByText("Cycle detected at alpha").waitFor({ state: "visible" });
@@ -2546,6 +2552,24 @@ function seededGitState() {
   };
 }
 
+function seededScrollablePeopleTooltipState() {
+  const state = seededGitState();
+  for (let index = 2; index <= 18; index += 1) {
+    state.inbox[`inbox-scroll-${index}`] = {
+      id: `inbox-scroll-${index}`,
+      recipient_agent_id: "alpha-lead",
+      item_type: "status_request",
+      sender_agent_id: "alpha-manager",
+      task_id: "task-waiting",
+      payload: {
+        question: `Follow-up ${index}: confirm the release blocker status, current owner, next decision point, and whether the operator needs to intervene before the next wake cycle.`,
+      },
+      state: "pending",
+    };
+  }
+  return state;
+}
+
 function seededOrgChartState() {
   return {
     revision: 8,
@@ -2829,7 +2853,9 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   });
   const page = await openBrowserPage(t, port);
 
-  await page.getByText("Loaded revision 4.").waitFor({ state: "visible" });
+  await waitForRevision(page, 4);
+  await page.locator("#status-message").waitFor({ state: "hidden" });
+  assert.equal(await page.getByText("Loaded revision 4.").count(), 0);
 
   for (const tabName of [
     "Workspace",
@@ -2884,6 +2910,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   assert.equal(await page.locator(".agent-item").count(), 4);
   assert.equal(await page.locator("#team-people-page .hierarchy-view").count(), 0);
   assert.equal(await page.locator("#team-people-page .people-agent-detail-panel").count(), 1);
+  assert.equal(await page.locator("#team-people-page").getByRole("heading", { name: "Agent details" }).count(), 0);
   assert.equal(
     await page.locator("#team-people-page .people-layout").evaluate((element) => {
       return getComputedStyle(element).gridTemplateColumns.split(" ").length;
@@ -3000,13 +3027,69 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
 });
 
+test("team add-on People inbox popover stays reachable and scrollable", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededScrollablePeopleTooltipState(),
+  });
+  const page = await openBrowserPage(t, port, {
+    viewport: { width: 1024, height: 720 },
+  });
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "People" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+  const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  await alphaLeadCard.getByRole("button").click();
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "alpha-lead" }).waitFor({
+    state: "visible",
+  });
+
+  const peopleStatusIndicator = page.locator(
+    "#people-agent-detail-view .agent-detail-badges .agent-inbox-indicator--status_request",
+  );
+  await peopleStatusIndicator.hover();
+  const peopleStatusPopover = peopleStatusIndicator.locator(".agent-inbox-popover");
+  await peopleStatusPopover.waitFor({ state: "visible" });
+  const indicatorBox = await peopleStatusIndicator.boundingBox();
+  const popoverBox = await peopleStatusPopover.boundingBox();
+  assert.ok(indicatorBox, "expected People inbox indicator to have a bounding box");
+  assert.ok(popoverBox, "expected People inbox popover to have a bounding box");
+
+  await page.mouse.move(
+    indicatorBox.x + indicatorBox.width / 2,
+    indicatorBox.y + indicatorBox.height / 2,
+  );
+  await page.mouse.move(popoverBox.x + 24, popoverBox.y + 24, { steps: 12 });
+  assert.equal(await peopleStatusPopover.isVisible(), true);
+  assert.equal(
+    await peopleStatusPopover.evaluate((element) => element.scrollHeight > element.clientHeight),
+    true,
+  );
+
+  await peopleStatusPopover.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.mouse.wheel(0, 600);
+  await page.waitForFunction(
+    () => {
+      const popover = document.querySelector(
+        "#people-agent-detail-view .agent-detail-badges .agent-inbox-indicator--status_request .agent-inbox-popover",
+      );
+      return popover instanceof HTMLElement && popover.scrollTop > 0;
+    },
+    null,
+    { timeout: 2000 },
+  );
+  assert.equal(await peopleStatusPopover.isVisible(), true);
+});
+
 test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
   const { port, requests, state, timelineRequests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
   const page = await openBrowserPage(t, port);
 
-  await page.getByText("Loaded revision 4.").waitFor({ state: "visible" });
+  await waitForRevision(page, 4);
   await page
     .getByLabel("Workspace", { exact: true })
     .getByText("Derived from the current TeamState snapshot, not a persisted audit log.")
