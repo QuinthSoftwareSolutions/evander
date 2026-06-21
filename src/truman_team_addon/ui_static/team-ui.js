@@ -6460,6 +6460,9 @@ function captureFormDrafts() {
     const formId = formIdentifier(form);
     if (formId) {
       const values = formData(form);
+      form.querySelectorAll('input[type="file"][name]').forEach((field) => {
+        delete values[field.name];
+      });
       form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
         values[field.name] = field.checked ? "true" : "false";
       });
@@ -6478,6 +6481,9 @@ function restoreFormDrafts(drafts) {
     Object.entries(values).forEach(([name, value]) => {
       const field = form.elements[name];
       if (!field) {
+        return;
+      }
+      if (field instanceof HTMLInputElement && field.type === "file") {
         return;
       }
       if (field instanceof HTMLInputElement && field.type === "checkbox") {

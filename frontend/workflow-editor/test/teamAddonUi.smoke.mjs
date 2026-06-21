@@ -936,10 +936,18 @@ async function serveStatic(response, assetName, contentType) {
 
 async function createTeamAddonServer(
   t,
-  { conflictOnFirstTeamCreate = false, initialState = null, timelinePayload = null } = {},
+  {
+    conflictOnFirstTeamCreate = false,
+    costsBeforeResponse = null,
+    costsDelayMs = 0,
+    costsPayload = null,
+    initialState = null,
+    timelinePayload = null,
+  } = {},
 ) {
   const state = initialState ? { ...emptyState(), ...initialState } : emptyState();
   const requests = [];
+  const costResponses = [];
   const timelineRequests = [];
   let conflictSent = false;
   const template = autoDevSquadTemplate();
@@ -966,7 +974,13 @@ async function createTeamAddonServer(
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/costs") {
-        jsonResponse(response, {
+        if (costsBeforeResponse) {
+          await costsBeforeResponse;
+        }
+        if (costsDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, costsDelayMs));
+        }
+        jsonResponse(response, costsPayload || {
           generated_at: "2026-06-09T00:00:00Z",
           coverage_status: "complete",
           coverage_reasons: [],
@@ -979,6 +993,7 @@ async function createTeamAddonServer(
           unpriced_events_count: 0,
           backfill: null,
         });
+        costResponses.push(url.search);
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/templates") {
@@ -1086,7 +1101,7 @@ async function createTeamAddonServer(
   });
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
-  return { port: address.port, requests, state, timelineRequests };
+  return { port: address.port, requests, state, timelineRequests, costResponses };
 }
 
 function materializationDuplicateError(state, payload, template) {
@@ -1935,6 +1950,89 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
   });
+});
+
+test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
+  let releaseCosts = () => {};
+  const costsGate = new Promise((resolve) => {
+    releaseCosts = resolve;
+  });
+  t.after(() => {
+    releaseCosts();
+  });
+  const { port, costResponses } = await createTeamAddonServer(t, {
+    costsBeforeResponse: costsGate,
+    costsPayload: {
+      generated_at: "2026-06-09T00:00:00Z",
+      coverage_status: "complete",
+      coverage_reasons: [],
+      team_costs: {
+        team: {
+          team_id: "team",
+          estimated_cost: 0,
+          max_cost_usd: null,
+          remaining_cost_usd: null,
+          cost_limit_reached: false,
+          coverage_status: "complete",
+          events_count: 1,
+          unpriced_events_count: 0,
+          source_counts: { openai: 1 },
+        },
+      },
+      project_costs: {},
+      unattributed_costs: null,
+      source_counts: { openai: 1 },
+      events_count: 1,
+      priced_events_count: 1,
+      unpriced_events_count: 0,
+      backfill: null,
+    },
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+  const pageErrors = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+
+  await waitForRevision(page, 8);
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  await page.locator("#team-org-page").waitFor({ state: "visible" });
+  const focusedBackendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await focusedBackendCard.click();
+  await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
+    state: "visible",
+  });
+  await page.locator('#edit-record-form input[name="display_name"]').fill("Backend draft");
+  await page.setInputFiles('#edit-record-form input[name="avatar_file"]', {
+    name: "avatar.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  });
+
+  releaseCosts();
+  await waitForCondition(
+    () => costResponses.length >= 1,
+    "expected the delayed costs response to complete",
+  );
+  await page.locator(".cost-counter", { hasText: "$0.00" }).first().waitFor({
+    state: "visible",
+  });
+
+  assert.equal(
+    await page.locator(".cost-counter--warning", { hasText: "HTMLInputElement" }).count(),
+    0,
+  );
+  assert.deepEqual(
+    pageErrors.filter((message) => message.includes("HTMLInputElement")),
+    [],
+  );
+  assert.equal(
+    await page.locator('#edit-record-form input[name="display_name"]').inputValue(),
+    "Backend draft",
+  );
 });
 
 test("team add-on UI hides archived entities by default and reveals them on request", async (t) => {

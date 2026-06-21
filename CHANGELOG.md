@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Cost Warning Fix
+
+- Fixed Team Add-on draft restoration so avatar upload file inputs no longer
+  surface browser file-input security exceptions as estimated cost warnings.
+
 ## 2026-06-21 - Team Add-on People Row Alignment
 
 - Left-aligned Team Add-on People tab agent names, roles, and IDs directly
