@@ -388,6 +388,7 @@ class TeamStateRepository:
                 _require_present(state.agents, manager_agent_id, "governance manager")
                 group.manager_agent_id = manager_agent_id
             if set_member_team_ids:
+                previous_member_team_ids = set(group.member_team_ids)
                 normalized_member_team_ids = _unique_text_list(
                     member_team_ids or [],
                     "member_team_ids",
@@ -395,6 +396,19 @@ class TeamStateRepository:
                 for team_id in normalized_member_team_ids:
                     _require_present(state.teams, team_id, "member team")
                 group.member_team_ids = normalized_member_team_ids
+                removed_team_ids = previous_member_team_ids - set(normalized_member_team_ids)
+                if removed_team_ids:
+                    now = utc_now()
+                    for item in state.governance_agenda.values():
+                        if (
+                            item.governance_group_id != group.id
+                            or item.state == GovernanceAgendaItemState.HANDLED
+                        ):
+                            continue
+                        item_team_id = _governance_agenda_effective_team_id(state, item)
+                        if item_team_id in removed_team_ids:
+                            item.state = GovernanceAgendaItemState.HANDLED
+                            item.updated_at = now
             if goals is not None:
                 group.goals = goals
             if set_max_cost_usd:
@@ -446,21 +460,29 @@ class TeamStateRepository:
                 normalized_group_id,
                 "governance group",
             )
-            if normalized_team_id is not None:
-                _require_present(state.teams, normalized_team_id, "team")
-                if normalized_team_id not in group.member_team_ids:
-                    raise ValueError(
-                        f"team {normalized_team_id} is not in governance group {group.id}"
-                    )
+            effective_team_id = normalized_team_id
             if normalized_project_id is not None:
                 project = _require_present(state.projects, normalized_project_id, "project")
-                if normalized_team_id is not None and project.team_id != normalized_team_id:
+                if effective_team_id is not None and project.team_id != effective_team_id:
                     raise ValueError(
                         f"project {normalized_project_id} does not belong to team "
-                        f"{normalized_team_id}"
+                        f"{effective_team_id}"
                     )
+                effective_team_id = effective_team_id or project.team_id
             if normalized_agent_id is not None:
-                _require_present(state.agents, normalized_agent_id, "agent")
+                agent = _require_present(state.agents, normalized_agent_id, "agent")
+                if effective_team_id is not None and agent.team_id != effective_team_id:
+                    raise ValueError(
+                        f"agent {normalized_agent_id} does not belong to team "
+                        f"{effective_team_id}"
+                    )
+                effective_team_id = effective_team_id or agent.team_id
+            if effective_team_id is not None:
+                _require_present(state.teams, effective_team_id, "team")
+                if effective_team_id not in group.member_team_ids:
+                    raise ValueError(
+                        f"team {effective_team_id} is not in governance group {group.id}"
+                    )
             effective_item_id = normalized_item_id or _generated_id(
                 prefix="governance-agenda",
                 labels=[normalized_group_id, normalized_item_type.value, normalized_title],
@@ -474,7 +496,7 @@ class TeamStateRepository:
                 item_type=normalized_item_type,
                 title=normalized_title,
                 summary=normalized_summary,
-                team_id=normalized_team_id,
+                team_id=effective_team_id,
                 project_id=normalized_project_id,
                 agent_id=normalized_agent_id,
                 payload=normalized_payload,
@@ -482,6 +504,10 @@ class TeamStateRepository:
                 created_at=now,
                 updated_at=now,
             )
+            runtime = state.governance_runtimes.get(normalized_group_id)
+            if runtime is not None:
+                runtime.next_wake_at = None
+                runtime.updated_at = now
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -2395,6 +2421,13 @@ class TeamStateRepository:
                 manager = state_model.agents.get(group.manager_agent_id)
                 if manager is None or manager.status != AgentStatus.ACTIVE:
                     continue
+                manager_runtime = state_model.agent_runtimes.get(manager.id)
+                if (
+                    manager_runtime is not None
+                    and manager_runtime.wake_leased_until is not None
+                    and _ensure_utc(manager_runtime.wake_leased_until) > effective_now
+                ):
+                    continue
                 runtime = state_model.governance_runtimes.setdefault(
                     group.id,
                     GovernanceRuntime(governance_group_id=group.id),
@@ -2419,21 +2452,46 @@ class TeamStateRepository:
                     state_model,
                     group=group,
                 )
-                scheduled_checkin_due = (
-                    runtime.next_wake_at is not None
-                    and _ensure_utc(runtime.next_wake_at) <= effective_now
+                cost_signal_fingerprints = _governance_cost_signal_fingerprints(
+                    cost_signals
                 )
-                if not pending_agenda and not cost_signals and not blocked_team_signals and not scheduled_checkin_due:
+                blocked_signal_fingerprints = _governance_blocked_signal_fingerprints(
+                    blocked_team_signals
+                )
+                cost_signals_changed = (
+                    cost_signal_fingerprints != runtime.last_cost_signal_fingerprints
+                )
+                blocked_signals_changed = (
+                    blocked_signal_fingerprints != runtime.last_blocked_signal_fingerprints
+                )
+                changed_cost_signals = cost_signals if cost_signals and cost_signals_changed else []
+                changed_blocked_team_signals = (
+                    blocked_team_signals
+                    if blocked_team_signals and blocked_signals_changed
+                    else []
+                )
+                due_by_interval = (
+                    runtime.next_wake_at is None
+                    or _ensure_utc(runtime.next_wake_at) <= effective_now
+                )
+                pending_agenda_ready = bool(pending_agenda) and due_by_interval
+                if (
+                    not pending_agenda_ready
+                    and not changed_cost_signals
+                    and not changed_blocked_team_signals
+                ):
+                    if cost_signals_changed or blocked_signals_changed:
+                        runtime.last_cost_signal_fingerprints = cost_signal_fingerprints
+                        runtime.last_blocked_signal_fingerprints = blocked_signal_fingerprints
+                        runtime.updated_at = effective_now
                     continue
 
-                if pending_agenda:
+                if pending_agenda_ready:
                     reason = pending_agenda[0].item_type.value
-                elif cost_signals:
-                    reason = cost_signals[0]["type"]
-                elif blocked_team_signals:
-                    reason = blocked_team_signals[0]["type"]
+                elif changed_cost_signals:
+                    reason = changed_cost_signals[0]["type"]
                 else:
-                    reason = GovernanceAgendaItemType.SCHEDULED_CHECKIN.value
+                    reason = changed_blocked_team_signals[0]["type"]
 
                 dispatch_id = f"team-governance-dispatch-{uuid4().hex}"
                 runtime.active_dispatch_id = dispatch_id
@@ -2441,6 +2499,8 @@ class TeamStateRepository:
                 runtime.last_wake_at = effective_now
                 runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
+                runtime.last_cost_signal_fingerprints = cost_signal_fingerprints
+                runtime.last_blocked_signal_fingerprints = blocked_signal_fingerprints
                 runtime.updated_at = effective_now
                 leases.append(
                     {
@@ -2462,8 +2522,8 @@ class TeamStateRepository:
                             for team_id in group.member_team_ids
                             if team_id in state_model.teams
                         ],
-                        "cost_signals": cost_signals,
-                        "blocked_team_signals": blocked_team_signals,
+                        "cost_signals": changed_cost_signals,
+                        "blocked_team_signals": changed_blocked_team_signals,
                     }
                 )
             return state_model
@@ -3589,6 +3649,23 @@ def _pending_governance_agenda_for_group(
     return items
 
 
+def _governance_agenda_effective_team_id(
+    state: TeamState,
+    item: GovernanceAgendaItem,
+) -> str | None:
+    if item.team_id is not None:
+        return item.team_id
+    if item.project_id is not None:
+        project = state.projects.get(item.project_id)
+        if project is not None:
+            return project.team_id
+    if item.agent_id is not None:
+        agent = state.agents.get(item.agent_id)
+        if agent is not None:
+            return agent.team_id
+    return None
+
+
 def _governance_cost_signals(
     state: TeamState,
     *,
@@ -3634,6 +3711,13 @@ def _governance_cost_signals(
     return signals
 
 
+def _governance_cost_signal_fingerprints(signals: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        f"{_optional_text(signal.get('team_id')) or ''}:{_optional_text(signal.get('type')) or ''}"
+        for signal in signals
+    )
+
+
 def _governance_blocked_team_signals(
     state: TeamState,
     *,
@@ -3669,6 +3753,22 @@ def _governance_blocked_team_signals(
         )
     signals.sort(key=lambda item: item["team_id"])
     return signals
+
+
+def _governance_blocked_signal_fingerprints(signals: list[dict[str, Any]]) -> list[str]:
+    fingerprints: list[str] = []
+    for signal in signals:
+        blocked_projects = ",".join(
+            sorted(str(project_id) for project_id in signal.get("blocked_project_ids") or [])
+        )
+        blocked_tasks = ",".join(
+            sorted(str(task_id) for task_id in signal.get("blocked_task_ids") or [])
+        )
+        fingerprints.append(
+            f"{_optional_text(signal.get('team_id')) or ''}:"
+            f"projects={blocked_projects}:tasks={blocked_tasks}"
+        )
+    return sorted(fingerprints)
 
 
 def _mapping_or_empty(value: object) -> Mapping[str, Any]:

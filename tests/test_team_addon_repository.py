@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,7 @@ from truman_team_addon.models import (
     AgentVoiceProfile,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
+    GovernanceAgendaItemState,
     ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
@@ -30,6 +31,7 @@ from truman_team_addon.models import (
     TeamTaskState,
 )
 from truman_team_addon.repository import TeamStateConflictError, TeamStateRepository
+from truman_team_addon.sqlite_store import SQLITE_SCHEMA_VERSION
 
 
 def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
@@ -278,6 +280,10 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_agents)")
         }
+        governance_runtime_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_governance_runtimes)")
+        }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
@@ -289,7 +295,9 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
     assert "voice_profile_json" in agent_columns
-    assert metadata["sqlite_schema_version"] == "8"
+    assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
+    assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
+    assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
@@ -1235,6 +1243,273 @@ def test_governance_group_persists_without_relaxing_same_team_reporting(
             set_reports_to_agent_id=True,
             expected_revision=repo.read().revision,
         )
+
+
+def test_governance_agenda_derives_and_validates_reference_team_membership(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_project(
+        project_id="other-project",
+        team_id="other",
+        name="Other Project",
+        lead_agent_id="other-lead",
+        lead_session_id="session-other-lead",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.create_governance_agenda_item(
+        agenda_item_id="project-agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review project",
+        summary="Review project state.",
+        project_id="project",
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.governance_agenda["project-agenda"].team_id == "team"
+
+    with pytest.raises(ValueError, match="team other is not in governance group portfolio"):
+        repo.create_governance_agenda_item(
+            agenda_item_id="bad-project-agenda",
+            governance_group_id="portfolio",
+            item_type="operator_directive",
+            title="Bad project",
+            summary="This project is outside the group.",
+            project_id="other-project",
+            expected_revision=repo.read().revision,
+        )
+
+    with pytest.raises(ValueError, match="agent other-lead does not belong to team team"):
+        repo.create_governance_agenda_item(
+            agenda_item_id="bad-agent-agenda",
+            governance_group_id="portfolio",
+            item_type="operator_directive",
+            title="Bad agent",
+            summary="This agent is outside the team.",
+            team_id="team",
+            agent_id="other-lead",
+            expected_revision=repo.read().revision,
+        )
+
+
+def test_governance_group_member_removal_handles_removed_team_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="other-agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review other team",
+        summary="Review other team status.",
+        team_id="other",
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["team"],
+        set_member_team_ids=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.governance_groups["portfolio"].member_team_ids == ["team"]
+    assert (
+        state.governance_agenda["other-agenda"].state
+        == GovernanceAgendaItemState.HANDLED
+    )
+
+
+def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Review team status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    def _lease_manager(state):
+        state.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            wake_leased_until=now + timedelta(minutes=10),
+            active_dispatch_id="team-dispatch-manager",
+        )
+        return state
+
+    repo.update(_lease_manager)
+
+    _state, leases = repo.lease_due_governance_managers(now=now)
+
+    assert leases == []
+
+
+def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    over_cap_costs = {
+        "team_costs": {
+            "team": {
+                "estimated_cost": 12,
+                "max_cost_usd": 10,
+                "cost_limit_reached": True,
+            }
+        }
+    }
+    clear_costs = {
+        "team_costs": {
+            "team": {
+                "estimated_cost": 2,
+                "max_cost_usd": 10,
+                "cost_limit_reached": False,
+            }
+        }
+    }
+
+    _state, leases = repo.lease_due_governance_managers(
+        now=now,
+        cost_payload=over_cap_costs,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "cost_cap_reached"
+    assert leases[0]["cost_signals"][0]["team_id"] == "team"
+    repo.complete_governance_dispatch(
+        governance_group_id="portfolio",
+        dispatch_id=leases[0]["dispatch_id"],
+    )
+
+    state, leases = repo.lease_due_governance_managers(
+        now=now + timedelta(hours=2),
+        cost_payload=over_cap_costs,
+    )
+
+    assert leases == []
+    assert state.governance_runtimes["portfolio"].last_cost_signal_fingerprints == [
+        "team:cost_cap_reached"
+    ]
+
+    state, leases = repo.lease_due_governance_managers(
+        now=now + timedelta(hours=3),
+        cost_payload=clear_costs,
+    )
+
+    assert leases == []
+    assert state.governance_runtimes["portfolio"].last_cost_signal_fingerprints == []
+
+    _state, leases = repo.lease_due_governance_managers(
+        now=now + timedelta(hours=4),
+        cost_payload=over_cap_costs,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "cost_cap_reached"
+
+
+def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="blocked-a",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Blocked A",
+        description="Blocked work.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.BLOCKED,
+        expected_revision=repo.read().revision,
+    )
+
+    _state, leases = repo.lease_due_governance_managers(now=now)
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "blocked_team"
+    assert leases[0]["blocked_team_signals"][0]["blocked_task_ids"] == ["blocked-a"]
+    repo.complete_governance_dispatch(
+        governance_group_id="portfolio",
+        dispatch_id=leases[0]["dispatch_id"],
+    )
+
+    _state, leases = repo.lease_due_governance_managers(now=now + timedelta(hours=2))
+
+    assert leases == []
+
+    repo.create_or_reprioritize_task(
+        task_id="blocked-b",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Blocked B",
+        description="More blocked work.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.BLOCKED,
+        expected_revision=repo.read().revision,
+    )
+
+    _state, leases = repo.lease_due_governance_managers(now=now + timedelta(hours=3))
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "blocked_team"
+    assert leases[0]["blocked_team_signals"][0]["blocked_task_ids"] == [
+        "blocked-a",
+        "blocked-b",
+    ]
 
 
 def test_superior_action_stand_downs_and_revokes_direct_subordinate(

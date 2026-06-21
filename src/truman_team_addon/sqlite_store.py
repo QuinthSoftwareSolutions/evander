@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 8
+SQLITE_SCHEMA_VERSION = 9
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -116,6 +116,18 @@ class TeamStateSqliteStore:
                     table_name="team_agents",
                     column_name="voice_profile_json",
                     definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="last_cost_signal_fingerprints_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="last_blocked_signal_fingerprints_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 connection.execute(
                     """
@@ -479,6 +491,16 @@ class TeamStateSqliteStore:
                 "wake_reason": row["wake_reason"],
                 "last_wake_at": row["last_wake_at"],
                 "next_wake_at": row["next_wake_at"],
+                "last_cost_signal_fingerprints": (
+                    _json_loads(row["last_cost_signal_fingerprints_json"])
+                    if row["last_cost_signal_fingerprints_json"]
+                    else []
+                ),
+                "last_blocked_signal_fingerprints": (
+                    _json_loads(row["last_blocked_signal_fingerprints_json"])
+                    if row["last_blocked_signal_fingerprints_json"]
+                    else []
+                ),
                 "updated_at": row["updated_at"],
             }
 
@@ -492,9 +514,12 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_governance_runtimes(
                     governance_group_id, wake_leased_until, active_dispatch_id,
-                    wake_reason, last_wake_at, next_wake_at, updated_at
+                    wake_reason, last_wake_at, next_wake_at,
+                    last_cost_signal_fingerprints_json,
+                    last_blocked_signal_fingerprints_json,
+                    updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["governance_group_id"],
@@ -503,6 +528,8 @@ class TeamStateSqliteStore:
                     runtime.get("wake_reason"),
                     runtime.get("last_wake_at"),
                     runtime.get("next_wake_at"),
+                    _json_dumps(runtime.get("last_cost_signal_fingerprints") or []),
+                    _json_dumps(runtime.get("last_blocked_signal_fingerprints") or []),
                     runtime["updated_at"],
                 ),
             )
@@ -1684,6 +1711,8 @@ CREATE TABLE IF NOT EXISTS team_governance_runtimes (
     wake_reason TEXT,
     last_wake_at TEXT,
     next_wake_at TEXT,
+    last_cost_signal_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+    last_blocked_signal_fingerprints_json TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
 );
 

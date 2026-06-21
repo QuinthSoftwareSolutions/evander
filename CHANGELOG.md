@@ -15,6 +15,15 @@ material. Newer entries are added incrementally as changes land.
 - Added Governance UI forms and a focused Governance tab with member-team,
   agenda, goal, and cost-rollup views.
 
+## 2026-06-21 - Team Add-on Governance Review Fixes
+
+- Fixed governance manager leasing to avoid double-dispatching managers that
+  already have active agent runtime leases.
+- Changed governance cost-cap and blocked-team signals to wake only on status
+  changes instead of repeatedly waking for unchanged conditions.
+- Tightened governance agenda scoping so project and agent references must
+  resolve to member teams, and removing a member team handles affected agenda.
+
 ## 2026-06-21 - Team Add-on People List Cleanup
 
 - Simplified the Team Add-on People tab list to show each agent's avatar,

@@ -333,6 +333,8 @@ class GovernanceRuntime(TeamModel):
     wake_reason: str | None = None
     last_wake_at: datetime | None = None
     next_wake_at: datetime | None = None
+    last_cost_signal_fingerprints: list[str] = Field(default_factory=list)
+    last_blocked_signal_fingerprints: list[str] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=utc_now)
 
     @property
@@ -348,6 +350,15 @@ class GovernanceRuntime(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator(
+        "last_cost_signal_fingerprints",
+        "last_blocked_signal_fingerprints",
+        mode="before",
+    )
+    @classmethod
+    def _fingerprints(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
 
 
 class Team(TeamModel):
@@ -1118,7 +1129,11 @@ class TeamState(TeamModel):
                     errors.append(
                         f"governance agenda item {item.id} references missing team {item.team_id}"
                     )
-                elif group is not None and item.team_id not in group.member_team_ids:
+                elif (
+                    group is not None
+                    and item.state != GovernanceAgendaItemState.HANDLED
+                    and item.team_id not in group.member_team_ids
+                ):
                     errors.append(
                         f"governance agenda item {item.id} team {item.team_id} is not in "
                         f"group {group.id}"
@@ -1135,10 +1150,35 @@ class TeamState(TeamModel):
                         f"governance agenda item {item.id} project {project.id} belongs "
                         f"to team {project.team_id}"
                     )
-            if item.agent_id is not None and item.agent_id not in self.agents:
-                errors.append(
-                    f"governance agenda item {item.id} references missing agent {item.agent_id}"
-                )
+                elif (
+                    group is not None
+                    and item.state != GovernanceAgendaItemState.HANDLED
+                    and project.team_id not in group.member_team_ids
+                ):
+                    errors.append(
+                        f"governance agenda item {item.id} project {project.id} team "
+                        f"{project.team_id} is not in group {group.id}"
+                    )
+            if item.agent_id is not None:
+                agent = self.agents.get(item.agent_id)
+                if agent is None:
+                    errors.append(
+                        f"governance agenda item {item.id} references missing agent {item.agent_id}"
+                    )
+                elif item.team_id is not None and agent.team_id != item.team_id:
+                    errors.append(
+                        f"governance agenda item {item.id} agent {agent.id} belongs "
+                        f"to team {agent.team_id}"
+                    )
+                elif (
+                    group is not None
+                    and item.state != GovernanceAgendaItemState.HANDLED
+                    and agent.team_id not in group.member_team_ids
+                ):
+                    errors.append(
+                        f"governance agenda item {item.id} agent {agent.id} team "
+                        f"{agent.team_id} is not in group {group.id}"
+                    )
 
     def _validate_governance_runtimes(self, errors: list[str]) -> None:
         for group_id, runtime in self.governance_runtimes.items():
