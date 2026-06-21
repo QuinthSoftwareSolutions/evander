@@ -18,6 +18,7 @@ from agent_sandbox.models import utc_now
 from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
 
 SCHEMA_VERSION = 2
+AGENT_OPERATOR_ONLY_FIELDS = {"avatar", "voice_profile"}
 REALTIME_BUILT_IN_VOICE_IDS = (
     "alloy",
     "ash",
@@ -1441,7 +1442,10 @@ def team_state_payload(
     state: TeamState,
     *,
     include_agent_avatars: bool = True,
+    include_agent_voice_profiles: bool | None = None,
 ) -> dict[str, Any]:
+    if include_agent_voice_profiles is None:
+        include_agent_voice_profiles = include_agent_avatars
     payload = state.model_dump(mode="json")
     payload["available_role_permissions"] = [permission.value for permission in RolePermission]
     payload["agents"] = {
@@ -1449,6 +1453,7 @@ def team_state_payload(
             state,
             agent,
             include_avatar=include_agent_avatars,
+            include_voice_profile=include_agent_voice_profiles,
         )
         for agent_id, agent in state.agents.items()
     }
@@ -1465,10 +1470,14 @@ def _agent_payload_with_role(
     agent: PersistentAgent,
     *,
     include_avatar: bool = True,
+    include_voice_profile: bool = True,
 ) -> dict[str, Any]:
-    payload = agent.model_dump(mode="json")
+    exclude: set[str] = set()
     if not include_avatar:
-        payload.pop("avatar", None)
+        exclude.add("avatar")
+    if not include_voice_profile:
+        exclude.add("voice_profile")
+    payload = agent.model_dump(mode="json", exclude=exclude)
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (

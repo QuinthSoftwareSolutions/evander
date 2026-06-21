@@ -22,9 +22,10 @@ from .git_naming import (
     validate_branch_name,
 )
 from .models import (
+    AGENT_OPERATOR_ONLY_FIELDS,
+    AgentActionRecord,
     AgentAvatar,
     AgentVoiceProfile,
-    AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
     AgentStandDown,
@@ -3174,7 +3175,7 @@ def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) 
 
 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
-    payload = agent.model_dump(mode="json", exclude={"avatar"})
+    payload = agent.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (
@@ -5850,7 +5851,10 @@ def _build_ephemeral_prompt(
 ) -> str:
     context = {
         "assignment": assignment.model_dump(mode="json"),
-        "parent_agent": parent.model_dump(mode="json", exclude={"avatar"}),
+        "parent_agent": parent.model_dump(
+            mode="json",
+            exclude=AGENT_OPERATOR_ONLY_FIELDS,
+        ),
         "task": task.model_dump(mode="json"),
         "action_artifact_path": "/artifacts/team-action.json",
     }

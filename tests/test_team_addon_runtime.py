@@ -18,11 +18,12 @@ from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from truman_team_addon.models import (
-    AgentAvatar,
     AgentActionRecord,
+    AgentAvatar,
     AgentInboxItem,
     AgentRuntime,
     AgentTask,
+    AgentVoiceProfile,
     Deliverable,
     EphemeralAgentPolicy,
     EphemeralAssignment,
@@ -681,6 +682,15 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         ),
         expected_revision=repo.read().revision,
     )
+    repo.update_agent(
+        agent_id="backend",
+        voice_profile=AgentVoiceProfile(
+            voice="cedar",
+            speaking_style="private runtime voice direction",
+        ),
+        set_voice_profile=True,
+        expected_revision=repo.read().revision,
+    )
     resumer = FakeResumer()
     session_store = FakeSessionStore()
     file_copier = FakeFileCopier()
@@ -827,6 +837,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "wakeprivate" not in prompt
     assert "private runtime prompt note" not in prompt
     assert '"avatar"' not in prompt
+    assert "private runtime voice direction" not in prompt
+    assert '"voice_profile"' not in prompt
     assert "team-action.json" in prompt
     assert "team-action.schema.json" in prompt
     assert "team-action.example.json" in prompt
@@ -2222,6 +2234,15 @@ def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
         ),
         expected_revision=repo.read().revision,
     )
+    repo.update_agent(
+        agent_id="backend",
+        voice_profile=AgentVoiceProfile(
+            voice="sage",
+            speaking_style="ephemeral private voice direction",
+        ),
+        set_voice_profile=True,
+        expected_revision=repo.read().revision,
+    )
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
     dispatch_id = leases[0]["dispatch_id"]
     provider = TeamApplyAgentActionEffectProvider()
@@ -2267,6 +2288,8 @@ def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
     assert "ephemeralprivate" not in prompt
     assert "ephemeral private note" not in prompt
     assert '"avatar"' not in prompt
+    assert "ephemeral private voice direction" not in prompt
+    assert '"voice_profile"' not in prompt
 
 
 def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) -> None:
@@ -2523,7 +2546,12 @@ def test_mark_ephemeral_spawned_records_create_failure(tmp_path: Path) -> None:
 
 def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
-    repo.store.write_object(_multi_team_state().model_dump(mode="json"))
+    state = _multi_team_state()
+    state.agents["alpha-dev"].voice_profile = AgentVoiceProfile(
+        voice="cedar",
+        speaking_style="agent-visible state should not include this",
+    )
+    repo.store.write_object(state.model_dump(mode="json"))
     project_query = TeamStateQueryProvider()
     project_query.initialize(
         TeamStateQueryDefinition(
@@ -2540,6 +2568,7 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["teams"]) == {"alpha-team"}
     assert set(project_state["projects"]) == {"alpha-project"}
     assert set(project_state["agents"]) == {"alpha-lead", "alpha-dev", "alpha-reviewer"}
+    assert "voice_profile" not in project_state["agents"]["alpha-dev"]
     assert set(project_state["agent_runtimes"]) == {"alpha-dev"}
     assert set(project_state["tasks"]) == {"alpha-task", "alpha-helper"}
     # Parent/dependency stay intact when both tasks are within scope.
@@ -2594,6 +2623,7 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["teams"]) == {"alpha-team"}
     assert set(agent_state["projects"]) == {"alpha-project"}
     assert set(agent_state["agents"]) == {"alpha-dev"}
+    assert "voice_profile" not in agent_state["agents"]["alpha-dev"]
     assert set(agent_state["agent_runtimes"]) == {"alpha-dev"}
     assert set(agent_state["tasks"]) == {"alpha-task"}
     # alpha-helper is out of this agent's scope, so its edges are filtered out,

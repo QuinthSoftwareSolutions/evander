@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Voice Profile Review Fixes
+
+- Kept Team agent voice profiles out of regular wake, ephemeral, and agent-visible
+  Team state payloads while leaving them available in Admin/browser-call metadata.
+- Fixed the People tab voice panel so configured agent voices and speaking styles
+  are shown instead of always falling back to the default label.
+
 ## 2026-06-21 - Team Add-on Cost Warning Fix
 
 - Fixed Team Add-on draft restoration so avatar upload file inputs no longer

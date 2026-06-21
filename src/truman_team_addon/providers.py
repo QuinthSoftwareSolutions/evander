@@ -33,7 +33,7 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
-from .models import RolePermission, team_state_payload
+from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
     TeamAgentActionArtifactQueryDefinition,
@@ -1678,7 +1678,10 @@ def _prepare_deliverable_artifacts(
             deliverable["id"] = deliverable_id
             artifact_record = _publish_deliverable_artifact_bundle(
                 context,
-                agent=agent.model_dump(mode="json", exclude={"avatar"}),
+                agent=agent.model_dump(
+                    mode="json",
+                    exclude=AGENT_OPERATOR_ONLY_FIELDS,
+                ),
                 team_id=agent.team_id,
                 project_id=task.project_id,
                 deliverable_id=deliverable_id,

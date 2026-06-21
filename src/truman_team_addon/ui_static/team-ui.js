@@ -2382,6 +2382,7 @@ function agentCardData(agent) {
     role: agentRoleLabel(agent),
     roleId: text(agent?.role_id),
     avatar: agent?.avatar || null,
+    voice_profile: agent?.voice_profile || null,
     status: agentStatus(agent),
     sessionId: text(agent?.session_id),
     projectId: projectId || null,

@@ -19,6 +19,7 @@ from truman_team_addon.models import (
     AgentInboxItem,
     AgentRuntime,
     AgentTask,
+    AgentVoiceProfile,
     Deliverable,
     EphemeralAssignment,
     EphemeralAssignmentState,
@@ -795,6 +796,25 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         row["kind"] == "waiting_dependency_task" and row["id"] == "task"
         for row in runtime_operations["attention"]
     )
+
+
+def test_team_state_payload_can_exclude_operator_only_agent_fields() -> None:
+    state = _valid_state()
+    state.agents["ui"].avatar = None
+    state.agents["ui"].voice_profile = AgentVoiceProfile(
+        voice="cedar",
+        speaking_style="private voice direction",
+    )
+
+    admin_payload = team_state_payload(state)
+    agent_visible_payload = team_state_payload(state, include_agent_avatars=False)
+
+    assert admin_payload["agents"]["ui"]["voice_profile"] == {
+        "voice": "cedar",
+        "speaking_style": "private voice direction",
+    }
+    assert "voice_profile" not in agent_visible_payload["agents"]["ui"]
+    assert "avatar" not in agent_visible_payload["agents"]["ui"]
 
 
 def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
