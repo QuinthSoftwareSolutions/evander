@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on People Row Alignment
+
+- Left-aligned Team Add-on People tab agent names, roles, and IDs directly
+  after their avatar column so rows no longer appear staggered by badge width.
+
 ## 2026-06-20 - Team Add-on Direct Agent Voice Calls
 
 - Added browser WebRTC voice calls from the Team Add-on People tab to selected

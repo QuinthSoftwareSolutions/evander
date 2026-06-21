@@ -1886,6 +1886,9 @@ button.record-action:hover {
 }
 
 button.people-agent-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: stretch;
   width: 100%;
   min-height: 3.2rem;
   border: 0;
@@ -1893,6 +1896,14 @@ button.people-agent-select {
   background: transparent;
   color: var(--ink);
   text-align: left;
+}
+
+.people-agent-select .compact-record-main {
+  justify-self: stretch;
+}
+
+.people-agent-select .agent-summary-meta {
+  justify-self: end;
 }
 
 button.people-agent-select:hover,
@@ -2545,6 +2556,20 @@ label textarea {
   .agent-detail-badges,
   .planning-filters {
     justify-content: flex-start;
+  }
+
+  button.people-agent-select {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  button.people-agent-select .agent-avatar {
+    grid-row: 1 / span 2;
+    align-self: start;
+  }
+
+  .people-agent-select .agent-summary-meta {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .timeline-entry-summary .timeline-summary-text,

@@ -13,6 +13,7 @@ const staticRoot = path.resolve(
 
 test("team add-on static UI exposes runtime control hooks", async () => {
   const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
+  const stylesheet = await readFile(path.join(staticRoot, "team-ui.css"), "utf8");
 
   assert.match(script, /auto_context_clearing_enabled/);
   assert.match(script, /data-context-rotation-agent-id/);
@@ -31,6 +32,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderPeopleAgentDetail/);
   assert.match(script, /renderCompactRuntimeAgentRow/);
   assert.match(script, /agentAwakeState/);
+  assert.match(
+    stylesheet,
+    /button\.people-agent-select\s*{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto;/,
+  );
+  assert.match(stylesheet, /\.people-agent-select \.agent-summary-meta\s*{[\s\S]*justify-self: end;/);
 });
 
 function emptyState() {
@@ -2917,6 +2923,31 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     }),
     2,
   );
+  const peopleIdentityRects = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
+    return buttons
+      .map((button) => {
+        const avatar = button.querySelector(".agent-avatar")?.getBoundingClientRect();
+        const identity = button.querySelector(".compact-record-main")?.getBoundingClientRect();
+        if (!avatar || !identity) {
+          return null;
+        }
+        return {
+          avatarRight: avatar.right,
+          identityLeft: identity.left,
+        };
+      })
+      .filter(Boolean);
+  });
+  assert.ok(peopleIdentityRects.length >= 2, "expected multiple People agent rows");
+  const peopleIdentityLefts = peopleIdentityRects.map((rect) => Math.round(rect.identityLeft));
+  assert.ok(
+    Math.max(...peopleIdentityLefts) - Math.min(...peopleIdentityLefts) <= 1,
+    `expected People agent identity columns to align, got ${peopleIdentityLefts.join(", ")}`,
+  );
+  for (const rect of peopleIdentityRects) {
+    const avatarGap = rect.identityLeft - rect.avatarRight;
+    assert.ok(avatarGap >= 0 && avatarGap <= 16, `expected People identity to start near avatar, got ${avatarGap}px`);
+  }
   await page.locator("#people-agent-detail-view").getByText("No agent selected.").waitFor({
     state: "visible",
   });
