@@ -73,6 +73,9 @@ let chatRequestId = 0;
 let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
 let chatSending = false;
+let chatStream = null;
+let chatStreamConversationId = null;
+let chatStreamErrorRefreshPending = false;
 let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
@@ -355,6 +358,9 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTimelinePagination();
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
+  });
+  window.addEventListener("beforeunload", () => {
+    closeChatStream();
   });
   decorateFieldTooltips(document);
   void loadState();
@@ -659,6 +665,7 @@ function bindRecordEditing() {
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
       renderChat();
       if (selectedChatConversationId) {
+        ensureChatStream(selectedChatConversationId);
         void loadConversationDetail(selectedChatConversationId);
       }
       return;
@@ -1156,7 +1163,10 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
     selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
     renderChat();
     if (selectedChatConversationId) {
+      ensureChatStream(selectedChatConversationId);
       void loadConversationDetail(selectedChatConversationId, requestId);
+    } else {
+      closeChatStream();
     }
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -1227,6 +1237,73 @@ function replaceChatConversation(conversation) {
   chatState = { ...chatState, conversations: nextConversations };
 }
 
+function ensureChatStream(conversationId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId || typeof EventSource === "undefined") {
+    return;
+  }
+  if (chatStream && chatStreamConversationId === normalizedConversationId) {
+    return;
+  }
+  closeChatStream();
+  chatStreamConversationId = normalizedConversationId;
+  chatStreamErrorRefreshPending = false;
+  const stream = new EventSource(
+    `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/stream`,
+  );
+  chatStream = stream;
+  stream.addEventListener("snapshot", (event) => {
+    if (chatStream !== stream || chatStreamConversationId !== normalizedConversationId) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      applyChatSnapshot(payload, normalizedConversationId);
+    } catch {
+      // Ignore malformed stream events; EventSource will keep the connection alive.
+    }
+  });
+  stream.onerror = () => {
+    if (chatStream !== stream || chatStreamConversationId !== normalizedConversationId) {
+      return;
+    }
+    if (chatStreamErrorRefreshPending) {
+      return;
+    }
+    chatStreamErrorRefreshPending = true;
+    void loadConversationDetail(normalizedConversationId).finally(() => {
+      if (chatStream === stream) {
+        chatStreamErrorRefreshPending = false;
+      }
+    });
+  };
+}
+
+function closeChatStream() {
+  if (chatStream) {
+    chatStream.close();
+  }
+  chatStream = null;
+  chatStreamConversationId = null;
+  chatStreamErrorRefreshPending = false;
+}
+
+function applyChatSnapshot(payload, expectedConversationId) {
+  const conversation = payload?.conversation;
+  if (!conversation?.id || text(conversation.id) !== text(expectedConversationId)) {
+    return;
+  }
+  syncTeamStateFromChatPayload(payload);
+  replaceChatConversation(conversation);
+  chatState = {
+    ...chatState,
+    loading: false,
+    error: null,
+    revision: payload.revision ?? chatState.revision,
+  };
+  renderChat();
+}
+
 async function createOrFocusChat(agentId) {
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
@@ -1255,6 +1332,7 @@ async function createOrFocusChat(agentId) {
     chatNewPickerOpen = false;
     renderChat();
     if (selectedChatConversationId) {
+      ensureChatStream(selectedChatConversationId);
       await loadConversationDetail(selectedChatConversationId);
     }
     setStatus("", "");
@@ -1297,6 +1375,9 @@ async function submitChatMessage(form) {
     replaceChatConversation(payload.conversation);
     selectedChatConversationId = payload.conversation?.id || selectedChatConversationId;
     chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
+    if (selectedChatConversationId) {
+      ensureChatStream(selectedChatConversationId);
+    }
     form.reset();
     setStatus(
       payload.dispatch?.success === false

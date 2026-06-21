@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
@@ -547,6 +548,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     include_messages=True,
                 ),
             }
+        )
+
+    async def stream_conversation(request: Request) -> StreamingResponse | JSONResponse:
+        conversation_id = request.path_params["conversation_id"]
+        try:
+            _conversation_snapshot_payload(repository, conversation_id)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return StreamingResponse(
+            _conversation_snapshot_events(repository, request, conversation_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     async def send_conversation_message(request: Request) -> JSONResponse:
@@ -1366,6 +1379,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["GET"],
         ),
         Route(
+            "/conversations/{conversation_id}/stream",
+            _with_errors(stream_conversation),
+            methods=["GET"],
+        ),
+        Route(
             "/conversations/{conversation_id}/messages",
             _with_errors(send_conversation_message),
             methods=["POST"],
@@ -1595,6 +1613,54 @@ def _conversation_payload(
     if include_messages:
         payload["messages"] = [_conversation_message_payload(message) for message in messages]
     return payload
+
+
+def _conversation_snapshot_payload(
+    repository: TeamStateRepository,
+    conversation_id: str,
+) -> dict[str, Any]:
+    state = repository.read()
+    conversation = state.conversations.get(conversation_id)
+    if conversation is None:
+        raise ValueError("conversation not found")
+    return {
+        "revision": state.revision,
+        "conversation": _conversation_payload(
+            state,
+            conversation,
+            include_messages=True,
+        ),
+    }
+
+
+async def _conversation_snapshot_events(
+    repository: TeamStateRepository,
+    request: Request,
+    conversation_id: str,
+    *,
+    poll_interval_seconds: float = 1.0,
+) -> AsyncIterator[str]:
+    last_serialized = ""
+    try:
+        snapshot = _conversation_snapshot_payload(repository, conversation_id)
+    except ValueError:
+        return
+    last_serialized = json.dumps(snapshot, sort_keys=True)
+    yield f"event: snapshot\ndata: {last_serialized}\n\n"
+    while True:
+        if await request.is_disconnected():
+            break
+        await asyncio.sleep(max(0.0, poll_interval_seconds))
+        try:
+            snapshot = _conversation_snapshot_payload(repository, conversation_id)
+        except ValueError:
+            break
+        serialized = json.dumps(snapshot, sort_keys=True)
+        if serialized == last_serialized:
+            yield ": keepalive\n\n"
+            continue
+        last_serialized = serialized
+        yield f"event: snapshot\ndata: {serialized}\n\n"
 
 
 def _conversation_message_payload(message: Any) -> dict[str, Any]:

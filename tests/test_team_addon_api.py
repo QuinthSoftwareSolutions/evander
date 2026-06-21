@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
+from truman_team_addon.api import _conversation_snapshot_events
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -579,6 +581,81 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     assert messages[1]["body"] == "The dependency task is still open."
 
 
+def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    def _clear_backend_runtime(state):
+        state.agent_runtimes.pop("backend", None)
+        return state
+
+    repo.update(_clear_backend_runtime)
+    _state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator",
+    )
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    def _payload_from_event(event: str) -> dict:
+        line = next(line for line in event.splitlines() if line.startswith("data: "))
+        return json.loads(line.removeprefix("data: "))
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _conversation_snapshot_events(
+            repo,
+            RequestStub(),  # type: ignore[arg-type]
+            conversation.id,
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            _, message = repo.record_operator_chat_message(
+                conversation_id=conversation.id,
+                body="Can you summarize the blocker?",
+                expected_revision=repo.read().revision,
+            )
+            dispatch_id = f"team-chat:{message.id}"
+            repo.begin_chat_message_dispatch(
+                message_id=message.id,
+                dispatch_id=dispatch_id,
+            )
+            repo.apply_agent_action(
+                action={
+                    "agent_id": "backend",
+                    "dispatch_id": dispatch_id,
+                    "chat_replies": [
+                        {
+                            "conversation_id": conversation.id,
+                            "message_id": message.id,
+                            "body": "The dependency task is still open.",
+                        }
+                    ],
+                },
+                dispatch_id=dispatch_id,
+                expected_revision=repo.read().revision,
+            )
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+    first_payload = _payload_from_event(first_event)
+    second_payload = _payload_from_event(second_event)
+
+    assert first_event.startswith("event: snapshot\n")
+    assert first_payload["conversation"]["messages"] == []
+    assert [item["sender"] for item in second_payload["conversation"]["messages"]] == [
+        "operator",
+        "agent",
+    ]
+    assert second_payload["conversation"]["messages"][1]["body"] == (
+        "The dependency task is still open."
+    )
+
+
 def test_agent_voice_session_create_query_and_end(
     tmp_path: Path,
     monkeypatch,
@@ -1034,6 +1111,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'closest?.("[data-chat-message-form]")' in script.text
     assert "data-agent-call-conversation-id" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
+    assert "new EventSource" in script.text
+    assert "ensureChatStream" in script.text
+    assert "/stream" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
