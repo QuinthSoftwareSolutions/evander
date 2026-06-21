@@ -297,6 +297,83 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
     assert state.agent_runtimes["backend"].wake_leased_until is None
 
 
+def test_repository_fails_active_team_chat_message_when_reply_item_is_invalid(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you summarize the blocker?",
+        expected_revision=state.revision,
+    )
+    dispatch_id = "team-chat:test"
+    state, message = repo.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        lease_seconds=60,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": dispatch_id,
+            "chat_replies": [
+                {
+                    "conversation_id": conversation.id,
+                    "message_id": message.id,
+                }
+            ],
+        },
+        dispatch_id=dispatch_id,
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert result["created_chat_reply_message_ids"] == []
+    failed_message = state.conversation_messages[message.id]
+    assert failed_message.status == "failed"
+    assert "chat_replies[0]" in (failed_message.error or "")
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    assert state.conversations[conversation.id].last_message_preview.startswith("Reply failed:")
+
+
+def test_repository_records_conversation_voice_call_idempotently(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    state, first_message = repo.record_conversation_voice_call(
+        conversation_id=conversation.id,
+        voice_session_id="voice-1",
+        status="running",
+        summary="Voice call with Backend Agent",
+    )
+    revision = state.revision
+
+    state, second_message = repo.record_conversation_voice_call(
+        conversation_id=conversation.id,
+        voice_session_id="voice-1",
+        status="running",
+        summary="Voice call with Backend Agent",
+    )
+
+    assert second_message.id == first_message.id
+    assert state.revision == revision
+    assert [
+        message.id
+        for message in state.conversation_messages.values()
+        if message.voice_session_id == "voice-1"
+    ] == [first_message.id]
+
+
 def test_repository_gets_existing_team_chat_conversation_without_revision_bump(
     tmp_path: Path,
 ) -> None:

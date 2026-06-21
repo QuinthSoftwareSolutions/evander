@@ -1166,8 +1166,17 @@ class TeamStateRepository:
         normalized_status = _optional_text(status) or "running"
         message_id: str | None = None
 
+        current_state = self.read()
+        for message in current_state.conversation_messages.values():
+            if message.voice_session_id == normalized_voice_session_id:
+                return current_state, message
+
         def _mutate(state: TeamState) -> TeamState:
             nonlocal message_id
+            for message in state.conversation_messages.values():
+                if message.voice_session_id == normalized_voice_session_id:
+                    message_id = message.id
+                    return state
             conversation = _require_present(
                 state.conversations,
                 normalized_conversation_id,
@@ -3326,7 +3335,13 @@ class TeamStateRepository:
                         result=result,
                     )
                 except ValueError as exc:
+                    error_detail = f"chat_replies[{index}]: {exc}"
                     _append_action_item_error(result, "chat_replies", index, exc)
+                    _mark_chat_dispatch_message_failed(
+                        state_model,
+                        dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
+                        error=error_detail,
+                    )
                     continue
                 result["created_chat_reply_message_ids"].append(created_id)
                 _mark_progress()
@@ -4879,6 +4894,7 @@ def _apply_chat_reply(
         raise ValueError(f"message {source_message_id} is not an operator message")
     now = utc_now()
     source_message.status = "replied"
+    source_message.error = None
     source_message.updated_at = now
     reply_id = f"chatmsg-{uuid4().hex}"
     metadata: dict[str, Any] = {}
@@ -4900,6 +4916,41 @@ def _apply_chat_reply(
     _touch_conversation(conversation, now=now, preview=_chat_preview(body))
     result["replied_chat_message_ids"].append(source_message.id)
     return reply_id
+
+
+def _mark_chat_dispatch_message_failed(
+    state: TeamState,
+    *,
+    dispatch_id: str | None,
+    error: str,
+) -> str | None:
+    normalized_dispatch_id = _optional_text(dispatch_id)
+    if normalized_dispatch_id is None or not normalized_dispatch_id.startswith("team-chat:"):
+        return None
+    source_message = next(
+        (
+            message
+            for message in state.conversation_messages.values()
+            if message.dispatch_id == normalized_dispatch_id
+            and message.sender == "operator"
+            and message.status != "replied"
+        ),
+        None,
+    )
+    if source_message is None:
+        return None
+    conversation = state.conversations.get(source_message.conversation_id)
+    now = utc_now()
+    source_message.status = "failed"
+    source_message.error = error
+    source_message.updated_at = now
+    if conversation is not None:
+        _touch_conversation(
+            conversation,
+            now=now,
+            preview=f"Reply failed: {_chat_preview(error)}",
+        )
+    return source_message.id
 
 
 def _agent_has_role_permission_for_project(

@@ -728,11 +728,14 @@ def test_agent_voice_session_records_chat_conversation_message(
 
     created = client.post(
         "/api/addons/team-addon/agents/backend/voice-sessions",
-        json={"conversation_id": conversation.id},
+        json={"conversation_id": conversation.id, "request_id": "chat-call-request-1"},
     )
 
     assert created.status_code == 201
     payload = created.json()
+    assert payload["created"] is True
+    assert payload["revision"] > state.revision
+    assert payload["conversation"]["id"] == conversation.id
     assert payload["conversation_message"]["message_type"] == "voice_call"
     assert payload["conversation_message"]["status"] == "running"
     assert payload["conversation_message"]["voice_session_id"] == payload["voice_session_id"]
@@ -742,6 +745,24 @@ def test_agent_voice_session_records_chat_conversation_message(
     assert record is not None
     assert record.caller_metadata["call_surface"] == "team_chat_tab"
     assert record.caller_metadata["conversation_id"] == conversation.id
+
+    retry = client.post(
+        "/api/addons/team-addon/agents/backend/voice-sessions",
+        json={"conversation_id": conversation.id, "request_id": "chat-call-request-1"},
+    )
+
+    assert retry.status_code == 200
+    retry_payload = retry.json()
+    assert retry_payload["created"] is False
+    assert retry_payload["voice_session_id"] == payload["voice_session_id"]
+    assert retry_payload["conversation_message"]["id"] == payload["conversation_message"]["id"]
+    assert retry_payload["revision"] == payload["revision"]
+    reread_before_end = TeamStateRepository(tmp_path / "runtime").read()
+    assert [
+        message.id
+        for message in reread_before_end.conversation_messages.values()
+        if message.voice_session_id == payload["voice_session_id"]
+    ] == [payload["conversation_message"]["id"]]
 
     ended = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
@@ -754,6 +775,11 @@ def test_agent_voice_session_records_chat_conversation_message(
     assert chat_message.status == "ended"
     assert chat_message.metadata["summary"] == "Operator asked about blockers."
     assert reread.conversations[conversation.id].last_message_preview == "Voice call ended"
+    assert [
+        message.id
+        for message in reread.conversation_messages.values()
+        if message.voice_session_id == payload["voice_session_id"]
+    ] == [payload["conversation_message"]["id"]]
 
 
 def test_agent_voice_session_can_end_by_request_id(
@@ -1007,6 +1033,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'document.addEventListener("submit"' in script.text
     assert 'closest?.("[data-chat-message-form]")' in script.text
     assert "data-agent-call-conversation-id" in script.text
+    assert "syncTeamStateFromChatPayload(payload)" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200

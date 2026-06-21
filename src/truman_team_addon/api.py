@@ -645,6 +645,117 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if _session_is_expired(session):
             return JSONResponse({"error": "agent session is expired"}, status_code=403)
         resolved_config = runtime.resolve_provider_config_for_session(session.session_id)
+        request_id = _optional(payload, "request_id")
+        existing_record = (
+            runtime.voice_session_store.get_by_request_id(request_id)
+            if request_id is not None
+            else None
+        )
+        voice_profile = _agent_voice_profile_payload(agent)
+        if existing_record is not None:
+            if (
+                existing_record.origin_session_id != session.session_id
+                or existing_record.directory_path != session.directory_path
+                or existing_record.channel != "browser_agent_call"
+                or existing_record.contact_id != agent.id
+                or existing_record.caller_metadata.get("conversation_id") != conversation_id
+            ):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Voice session request_id was already used with different inputs"
+                        )
+                    },
+                    status_code=400,
+                )
+            existing_voice_profile = existing_record.prompt_metadata.get("voice_profile")
+            if not isinstance(existing_voice_profile, Mapping):
+                existing_voice_profile = voice_profile
+            existing_prompt = str(existing_record.projection.get("prompt") or "")
+            effective_prompt = _agent_voice_effective_prompt(
+                existing_prompt,
+                voice_profile=existing_voice_profile,
+            )
+            try:
+                client_secret = OpenAIRealtimeClientSecretService(
+                    config=resolved_config,
+                ).create_client_secret(
+                    instructions=effective_prompt,
+                    safety_identifier=f"team-addon:{agent.id}",
+                    include_query_origin_agent=payload.get("include_query_origin_agent") is not False,
+                    voice=existing_voice_profile.get("voice"),
+                )
+            except (RuntimeError, ProviderRequestError) as exc:
+                runtime.voice_session_store.complete_session(
+                    existing_record.voice_session_id,
+                    status="failed",
+                    error=str(exc),
+                )
+                return JSONResponse({"error": str(exc)}, status_code=503)
+            if existing_record.status == "created":
+                existing_record = runtime.voice_session_store.attach_bridge_session(
+                    existing_record.voice_session_id,
+                    bridge_session_id=None,
+                    status="connecting",
+                    realtime_metadata={
+                        "provider": "openai_realtime",
+                        "transport": "webrtc_browser",
+                        "model": getattr(
+                            resolved_config,
+                            "openai_realtime_model",
+                            "gpt-realtime-2",
+                        ),
+                        "call_surface": (
+                            "team_chat_tab" if conversation is not None else "team_people_tab"
+                        ),
+                        "voice": existing_voice_profile.get("voice"),
+                        "speaking_style": existing_voice_profile.get("speaking_style"),
+                    },
+                )
+            conversation_message = None
+            if conversation is not None:
+                state, conversation_message = repository.record_conversation_voice_call(
+                    conversation_id=conversation.id,
+                    voice_session_id=existing_record.voice_session_id,
+                    status="running",
+                    summary=f"Voice call with {_agent_display_name(agent)}",
+                )
+            return JSONResponse(
+                {
+                    "revision": state.revision,
+                    **_team_voice_session_payload(existing_record),
+                    "created": False,
+                    "projection": existing_record.projection,
+                    "conversation": (
+                        _conversation_payload(
+                            state,
+                            state.conversations[conversation.id],
+                            include_messages=True,
+                        )
+                        if conversation is not None
+                        else None
+                    ),
+                    "conversation_message": (
+                        _conversation_message_payload(conversation_message)
+                        if conversation_message is not None
+                        else None
+                    ),
+                    "client_secret": client_secret,
+                    "realtime": {
+                        "provider": "openai_realtime",
+                        "transport": "webrtc_browser",
+                        "calls_url": _realtime_calls_url(resolved_config),
+                        "model": getattr(
+                            resolved_config,
+                            "openai_realtime_model",
+                            "gpt-realtime-2",
+                        ),
+                        "voice": existing_voice_profile.get("voice"),
+                        "speaking_style": existing_voice_profile.get("speaking_style"),
+                    },
+                },
+                status_code=200,
+            )
         try:
             tool_summary = runtime.policy.allowed_tool_summary_for_session(session)
         except Exception:
@@ -656,7 +767,6 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             tool_summary=tool_summary,
         )
         prompt = str(projection["prompt"])
-        voice_profile = _agent_voice_profile_payload(agent)
         effective_prompt = _agent_voice_effective_prompt(
             prompt,
             voice_profile=voice_profile,
@@ -673,7 +783,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             origin_session_id=session.session_id,
             directory_path=session.directory_path,
             channel="browser_agent_call",
-            request_id=_optional(payload, "request_id"),
+            request_id=request_id,
             prompt_metadata=prompt_metadata,
             projection=projection,
             caller_metadata={
@@ -726,9 +836,19 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             )
         return JSONResponse(
             {
+                "revision": state.revision,
                 **_team_voice_session_payload(record),
                 "created": created,
                 "projection": projection,
+                "conversation": (
+                    _conversation_payload(
+                        state,
+                        state.conversations[conversation.id],
+                        include_messages=True,
+                    )
+                    if conversation is not None
+                    else None
+                ),
                 "conversation_message": (
                     _conversation_message_payload(conversation_message)
                     if conversation_message is not None

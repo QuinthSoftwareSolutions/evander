@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Chat Lifecycle Fixes
+
+- Fixed Team Chat reply-application errors so the source operator message is
+  marked failed instead of staying running after the dispatch lease is cleared.
+- Made chat-linked browser voice-call history idempotent for retried
+  `request_id` values, and synced Team UI revisions after chat mutations.
+
 ## 2026-06-21 - Team Add-on Teams Tab Archived Counts
 
 - Fixed Teams tab record counts so active projects, roles, or agents owned by

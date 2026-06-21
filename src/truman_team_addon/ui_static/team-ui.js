@@ -1088,6 +1088,54 @@ function normalizeChat(payload) {
   return normalized;
 }
 
+function syncTeamStateFromChatPayload(payload) {
+  if (!payload || payload.revision === undefined || payload.revision === null) {
+    return;
+  }
+  const conversations = { ...(state.conversations || {}) };
+  const conversationMessages = { ...(state.conversation_messages || {}) };
+  const mergeConversation = (conversation) => {
+    if (!conversation?.id) {
+      return;
+    }
+    const { messages, agent: _agent, ...conversationPayload } = conversation;
+    conversations[conversation.id] = {
+      ...(conversations[conversation.id] || {}),
+      ...conversationPayload,
+    };
+    if (Array.isArray(messages)) {
+      messages.forEach((message) => {
+        if (message?.id) {
+          conversationMessages[message.id] = {
+            ...(conversationMessages[message.id] || {}),
+            ...message,
+          };
+        }
+      });
+    }
+  };
+  if (Array.isArray(payload.conversations)) {
+    payload.conversations.forEach(mergeConversation);
+  }
+  mergeConversation(payload.conversation);
+  const messagePayload = payload.message || payload.conversation_message;
+  if (messagePayload?.id) {
+    conversationMessages[messagePayload.id] = {
+      ...(conversationMessages[messagePayload.id] || {}),
+      ...messagePayload,
+    };
+  }
+  state = normalizeState({
+    ...state,
+    revision: payload.revision,
+    conversations,
+    conversation_messages: conversationMessages,
+  });
+  if (elements.revisionBadge) {
+    elements.revisionBadge.textContent = `Revision ${state.revision}`;
+  }
+}
+
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
   const requestId = ++chatRequestId;
   chatState = { ...chatState, loading: true, error: null };
@@ -1201,6 +1249,7 @@ async function createOrFocusChat(agentId) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    syncTeamStateFromChatPayload(payload);
     chatState = normalizeChat(payload);
     selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
     chatNewPickerOpen = false;
@@ -1244,6 +1293,7 @@ async function submitChatMessage(form) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    syncTeamStateFromChatPayload(payload);
     replaceChatConversation(payload.conversation);
     selectedChatConversationId = payload.conversation?.id || selectedChatConversationId;
     chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
@@ -6419,6 +6469,7 @@ async function startAgentVoiceCall(button, agentId) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    syncTeamStateFromChatPayload(payload);
     if (!agentVoiceCallIsCurrent(call)) {
       call.voiceSessionId = text(payload.voice_session_id);
       call.requestId = text(payload.request_id) || call.requestId;
