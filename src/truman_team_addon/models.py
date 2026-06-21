@@ -556,6 +556,7 @@ class AgentTask(TeamModel):
     project_id: str
     priority: int = Field(ge=0)
     state: TeamTaskState = TeamTaskState.PENDING
+    state_entered_at: datetime = Field(default_factory=utc_now)
     title: str
     description: str
     created_by_agent_id: str | None = None
@@ -565,6 +566,14 @@ class AgentTask(TeamModel):
     deliverable_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_state_entered_at(cls, data: object) -> object:
+        if isinstance(data, dict) and not data.get("state_entered_at"):
+            data = dict(data)
+            data["state_entered_at"] = data.get("updated_at") or data.get("created_at") or utc_now()
+        return data
 
     @field_validator(
         "id",

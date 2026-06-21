@@ -9,6 +9,15 @@ const taskStates = [
   "accepted",
   "rejected",
 ];
+const taskBoardLanes = [
+  { id: "planned", label: "Planned", states: ["pending"] },
+  { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
+  { id: "reviewing", label: "Reviewing", states: ["waiting_for_review"] },
+  { id: "done", label: "Done", states: ["finished", "accepted"] },
+];
+const taskBoardStateToLane = new Map(
+  taskBoardLanes.flatMap((lane) => lane.states.map((state) => [state, lane.id])),
+);
 const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
 const agentStatuses = ["active", "paused", "archived"];
 const avatarStylePresets = [
@@ -70,6 +79,8 @@ let selectedOrgTeamId = "all";
 let selectedPeopleTeamId = "all";
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
+let selectedTaskBoardTeamId = "";
+let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
 let chatState = emptyChatState();
 let chatRequestId = 0;
@@ -82,6 +93,7 @@ const teamViewIds = new Set([
   "overview",
   "operations",
   "delivery",
+  "task-board",
   "people",
   "chat",
   "governance",
@@ -332,6 +344,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
+  bindTaskBoardSelectors();
   bindOrgFocusTabs();
   bindArchivedVisibilityToggle();
   bindInboxPopoverPositioning();
@@ -935,6 +948,24 @@ function bindPlanningFilters() {
   updatePlanningFilterControls();
 }
 
+function bindTaskBoardSelectors() {
+  const teamSelect = document.querySelector("[data-task-board-team]");
+  const projectSelect = document.querySelector("[data-task-board-project]");
+  const updateTeam = () => {
+    selectedTaskBoardTeamId = text(teamSelect.value);
+    selectedTaskBoardProjectId = "";
+    renderTaskBoard();
+  };
+  const updateProject = () => {
+    selectedTaskBoardProjectId = text(projectSelect.value);
+    renderTaskBoard();
+  };
+  teamSelect?.addEventListener("input", updateTeam);
+  teamSelect?.addEventListener("change", updateTeam);
+  projectSelect?.addEventListener("input", updateProject);
+  projectSelect?.addEventListener("change", updateProject);
+}
+
 function bindOrgFocusTabs() {
   elements.orgFocusTeamTabs?.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-org-team-id]");
@@ -1246,6 +1277,7 @@ function render() {
   renderChat();
   renderRoles();
   renderProjects();
+  renderTaskBoard();
   renderReviewProfiles();
   renderReleases();
   renderTemplateSetup();
@@ -4129,6 +4161,192 @@ function renderProjects() {
       })
       .join(""),
   );
+}
+
+function renderTaskBoard() {
+  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const selectedTeam = visibleTeams.find((team) => text(team.id) === text(selectedTaskBoardTeamId)) || null;
+  if (selectedTaskBoardTeamId && !selectedTeam) {
+    selectedTaskBoardTeamId = "";
+  }
+  const visibleProjectsForTeam = selectedTaskBoardTeamId
+    ? values(state.projects)
+        .filter((project) => isVisibleProject(project) && text(project.team_id) === text(selectedTaskBoardTeamId))
+        .sort(compareTeamProjects)
+    : [];
+  const selectedProject =
+    visibleProjectsForTeam.find((project) => text(project.id) === text(selectedTaskBoardProjectId)) || null;
+  if (selectedTaskBoardProjectId && !selectedProject) {
+    selectedTaskBoardProjectId = "";
+  }
+  syncTaskBoardSelectors(visibleTeams, visibleProjectsForTeam);
+
+  if (!visibleTeams.length) {
+    renderIntoActiveTargets("[data-task-board-view]", `<p class="empty-state">No visible teams.</p>`);
+    return;
+  }
+  if (!selectedTaskBoardTeamId) {
+    renderIntoActiveTargets(
+      "[data-task-board-view]",
+      `<p class="empty-state">Select a team and project to view its task board.</p>`,
+    );
+    return;
+  }
+  if (!visibleProjectsForTeam.length) {
+    renderIntoActiveTargets(
+      "[data-task-board-view]",
+      `<p class="empty-state">No visible projects for the selected team.</p>`,
+    );
+    return;
+  }
+  if (!selectedTaskBoardProjectId) {
+    renderIntoActiveTargets(
+      "[data-task-board-view]",
+      `<p class="empty-state">Select a project to view its task board.</p>`,
+    );
+    return;
+  }
+
+  const projectTasks = values(state.tasks)
+    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
+    .filter((task) => taskBoardLaneForTask(task) !== null);
+  const lanes = taskBoardLanes.map((lane) => {
+    const tasks = projectTasks
+      .filter((task) => taskBoardLaneForTask(task) === lane.id)
+      .sort(compareTaskBoardTasks);
+    return { ...lane, tasks };
+  });
+  const boardMeta = [
+    `${projectTasks.length} task${projectTasks.length === 1 ? "" : "s"}`,
+    `${lanes.reduce((count, lane) => count + lane.tasks.filter(isTaskBoardBlocked).length, 0)} blocked`,
+  ];
+  renderIntoActiveTargets(
+    "[data-task-board-view]",
+    `
+      <div class="task-board-context">
+        <strong>${escapeHtml(selectedProject.name || selectedProject.id)}</strong>
+        <span>${escapeHtml(selectedTeam.name || selectedTeam.id)} - ${escapeHtml(boardMeta.join(" - "))}</span>
+      </div>
+      <div class="task-board-lanes" aria-label="Task board lanes">
+        ${lanes.map(renderTaskBoardLane).join("")}
+      </div>
+    `,
+  );
+}
+
+function syncTaskBoardSelectors(teams, projects) {
+  const teamSelect = document.querySelector("[data-task-board-team]");
+  const projectSelect = document.querySelector("[data-task-board-project]");
+  if (teamSelect) {
+    teamSelect.dataset.currentValue = selectedTaskBoardTeamId;
+    teamSelect.dataset.placeholder = "Select team";
+    fillSelect(
+      teamSelect,
+      teams.map((team) => [team.id, `${team.name || team.id} (${team.id})`]),
+    );
+  }
+  if (projectSelect) {
+    projectSelect.dataset.currentValue = selectedTaskBoardProjectId;
+    projectSelect.dataset.placeholder = selectedTaskBoardTeamId ? "Select project" : "Select team first";
+    projectSelect.disabled = !selectedTaskBoardTeamId;
+    fillSelect(
+      projectSelect,
+      projects.map((project) => [project.id, `${project.name || project.id} (${project.id})`]),
+    );
+  }
+}
+
+function renderTaskBoardLane(lane) {
+  return `
+    <section class="task-board-lane task-board-lane-${escapeAttr(lane.id)}" aria-label="${escapeAttr(lane.label)}">
+      <div class="task-board-lane-header">
+        <h3>${escapeHtml(lane.label)}</h3>
+        <span>${lane.tasks.length}</span>
+      </div>
+      ${
+        lane.tasks.length
+          ? `<ul class="task-board-card-list">${lane.tasks.map(renderTaskBoardCard).join("")}</ul>`
+          : `<p class="empty-state task-board-empty">No tasks.</p>`
+      }
+    </section>
+  `;
+}
+
+function renderTaskBoardCard(task) {
+  const owner = state.agents[task.owner_agent_id] || null;
+  const assignedTo = owner ? agentLabel(owner) : text(task.owner_agent_id);
+  const blocked = isTaskBoardBlocked(task);
+  const stateLabel = blocked ? "Blocked" : humanizeToken(task.state);
+  const laneEntered = taskBoardLaneEnteredText(task);
+  return `
+    <li class="task-board-card${blocked ? " task-board-card-blocked" : ""}">
+      <div class="task-board-card-title-row">
+        <strong>${escapeHtml(task.title)}</strong>
+        <span class="state-pill ${blocked ? "blocked" : escapeAttr(task.state)}">${escapeHtml(stateLabel)}</span>
+      </div>
+      <div class="task-board-card-meta">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)}</div>
+      <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
+      <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
+      ${renderTaskBoardBlockerLine(task)}
+    </li>
+  `;
+}
+
+function taskBoardLaneForTask(task) {
+  return taskBoardStateToLane.get(task.state) || null;
+}
+
+function compareTaskBoardTasks(left, right) {
+  const leftPriority = Number(left.priority ?? 0);
+  const rightPriority = Number(right.priority ?? 0);
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+  const leftEntered = taskBoardSortTime(left);
+  const rightEntered = taskBoardSortTime(right);
+  if (leftEntered !== rightEntered) {
+    return rightEntered - leftEntered;
+  }
+  return (
+    String(left.title || "").localeCompare(String(right.title || "")) ||
+    byId(left, right)
+  );
+}
+
+function taskBoardSortTime(task) {
+  const timestamp = task.state_entered_at || task.updated_at || task.created_at;
+  if (!timestamp) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = Date.parse(normalizeTimelineTimestampForSort(timestamp));
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function taskBoardLaneEnteredText(task) {
+  const timestamp = task.state_entered_at || task.updated_at || task.created_at;
+  return timestamp ? formatTimelineTimestamp(timestamp) : "Unknown";
+}
+
+function isTaskBoardBlocked(task) {
+  return (
+    task.state === "blocked" ||
+    task.dependency_status === "blocked" ||
+    Boolean((task.blocked_by_task_ids || []).length)
+  );
+}
+
+function renderTaskBoardBlockerLine(task) {
+  const blockers = [];
+  if ((task.blocked_by_task_ids || []).length) {
+    blockers.push(`blocked by ${task.blocked_by_task_ids.join(", ")}`);
+  }
+  if (task.dependency_status === "blocked") {
+    blockers.push("dependency blocked");
+  }
+  if (!blockers.length) {
+    return "";
+  }
+  return `<div class="task-board-card-blockers">${escapeHtml(blockers.join(" - "))}</div>`;
 }
 
 function planningTasksForProject(projectTasks) {

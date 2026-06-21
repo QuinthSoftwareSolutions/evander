@@ -72,6 +72,17 @@
           Delivery
         </button>
         <button
+          id="team-view-task-board-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-task-board-page"
+          data-team-view="task-board"
+        >
+          Task board
+        </button>
+        <button
           id="team-view-people-tab"
           class="team-view-tab"
           type="button"
@@ -768,6 +779,35 @@
         </aside>
         <section class="content-panel chat-main" aria-label="Selected conversation">
           <div id="chat-thread-view" class="chat-thread-view" data-chat-thread-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-task-board-page"
+        class="focused-team-page task-board-page"
+        role="tabpanel"
+        aria-labelledby="team-view-task-board-tab"
+        data-team-view-panel="task-board"
+        hidden
+      >
+        <section class="content-panel task-board-panel" aria-labelledby="task-board-heading">
+          <div class="task-board-header">
+            <div>
+              <p class="section-label">Task board</p>
+              <h2 id="task-board-heading">Project work</h2>
+            </div>
+            <div class="task-board-selectors" aria-label="Task board filters">
+              <label>
+                Team
+                <select id="task-board-team-select" data-task-board-team></select>
+              </label>
+              <label>
+                Project
+                <select id="task-board-project-select" data-task-board-project></select>
+              </label>
+            </div>
+          </div>
+          <div id="task-board-view" class="task-board-view" data-task-board-view></div>
         </section>
       </main>
 

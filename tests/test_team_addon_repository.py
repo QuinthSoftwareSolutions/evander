@@ -382,6 +382,10 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_governance_runtimes)")
         }
+        task_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_tasks)")
+        }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
@@ -395,6 +399,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "voice_profile_json" in agent_columns
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
+    assert "state_entered_at" in task_columns
     assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
 
 
@@ -420,6 +425,58 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
         )
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
+
+
+def test_task_state_entered_at_changes_only_on_state_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    moments = iter(
+        [
+            datetime(2026, 6, 21, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 21, 10, 0, 1, tzinfo=UTC),
+            datetime(2026, 6, 21, 10, 1, tzinfo=UTC),
+            datetime(2026, 6, 21, 10, 1, 1, tzinfo=UTC),
+            datetime(2026, 6, 21, 10, 2, tzinfo=UTC),
+            datetime(2026, 6, 21, 10, 2, 1, tzinfo=UTC),
+        ]
+    )
+    monkeypatch.setattr("truman_team_addon.repository.utc_now", lambda: next(moments))
+
+    state = repo.create_or_reprioritize_task(
+        task_id="board-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Build board",
+        description="Add a task board.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+    original_entered_at = state.tasks["board-task"].state_entered_at
+    assert original_entered_at == datetime(2026, 6, 21, 10, 0, tzinfo=UTC)
+
+    state = repo.update_task(
+        task_id="board-task",
+        title="Build project board",
+        expected_revision=state.revision,
+    )
+    assert state.tasks["board-task"].state_entered_at == original_entered_at
+
+    state = repo.update_task(
+        task_id="board-task",
+        state=TeamTaskState.WAITING_FOR_REVIEW,
+        expected_revision=state.revision,
+    )
+    assert state.tasks["board-task"].state_entered_at == datetime(
+        2026,
+        6,
+        21,
+        10,
+        2,
+        tzinfo=UTC,
+    )
 
 
 def test_repository_prefers_sqlite_when_legacy_json_also_exists(tmp_path: Path) -> None:

@@ -129,6 +129,19 @@ class TeamStateSqliteStore:
                     column_name="last_blocked_signal_fingerprints_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_tasks",
+                    column_name="state_entered_at",
+                    definition="TEXT",
+                )
+                connection.execute(
+                    """
+                    UPDATE team_tasks
+                    SET state_entered_at = COALESCE(NULLIF(state_entered_at, ''), updated_at, created_at)
+                    WHERE state_entered_at IS NULL OR state_entered_at = ''
+                    """
+                )
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -857,6 +870,7 @@ class TeamStateSqliteStore:
                 "project_id": row["project_id"],
                 "priority": row["priority"],
                 "state": row["state"],
+                "state_entered_at": row["state_entered_at"] or row["updated_at"] or row["created_at"],
                 "title": row["title"],
                 "description": row["description"],
                 "created_by_agent_id": row["created_by_agent_id"],
@@ -875,9 +889,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, priority, state, title, description,
-                    created_by_agent_id, created_by_actor, parent_task_id, created_at, updated_at
+                    state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -887,6 +902,7 @@ class TeamStateSqliteStore:
                     task.get("state", "pending"),
                     task["title"],
                     task["description"],
+                    task.get("state_entered_at") or task.get("updated_at") or task["created_at"],
                     task.get("created_by_agent_id"),
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
@@ -1929,6 +1945,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     project_id TEXT NOT NULL,
     priority INTEGER NOT NULL,
     state TEXT NOT NULL,
+    state_entered_at TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     created_by_agent_id TEXT,

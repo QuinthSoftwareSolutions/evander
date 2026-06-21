@@ -89,6 +89,15 @@ _NON_TERMINAL_TASK_STATES = frozenset(
 )
 
 
+def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:
+    if task.state == state:
+        return False
+    effective_now = now or utc_now()
+    task.state = state
+    task.state_entered_at = effective_now
+    return True
+
+
 @dataclass(frozen=True)
 class _TaskCreationPlan:
     task_id: str
@@ -939,6 +948,20 @@ class TeamStateRepository:
     ) -> tuple[TeamState, TeamConversation, bool]:
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_created_by = _optional_text(created_by)
+
+        current_state = self.read()
+        if expected_revision is not None and current_state.revision != expected_revision:
+            raise TeamStateConflictError(
+                expected_revision=expected_revision,
+                current_revision=current_state.revision,
+            )
+        current_agent = _require_present(current_state.agents, normalized_agent_id, "agent")
+        if current_agent.status == AgentStatus.ARCHIVED:
+            raise ValueError(f"agent {current_agent.id} is archived")
+        for conversation in current_state.conversations.values():
+            if conversation.agent_id == current_agent.id:
+                return current_state, conversation, False
+
         conversation_id: str | None = None
         created = False
 
@@ -1454,6 +1477,7 @@ class TeamStateRepository:
                 project_id=normalized_project_id,
                 priority=priority,
                 state=state,
+                state_entered_at=now,
                 title=normalized_title,
                 description=normalized_description,
                 created_by_agent_id=created_by_agent_id,
@@ -1490,10 +1514,11 @@ class TeamStateRepository:
     ) -> TeamState:
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, task_id, "task")
+            now = utc_now()
             if priority is not None:
                 task.priority = priority
             if state is not None:
-                task.state = state
+                _set_task_state(task, state, now=now)
             if title is not None:
                 task.title = title
             if description is not None:
@@ -1502,7 +1527,7 @@ class TeamStateRepository:
                 task.parent_task_id = parent_task_id
             if dependency_task_ids is not None:
                 task.dependency_task_ids = dependency_task_ids
-            task.updated_at = utc_now()
+            task.updated_at = now
             if task.state in _NON_TERMINAL_TASK_STATES:
                 _mark_agent_work_due(
                     state_model,
@@ -3082,8 +3107,9 @@ class TeamStateRepository:
                             result["errors"].append(graph_error)
                             continue
                     changed = False
+                    now = utc_now()
                     if raw_state is not None:
-                        task.state = TeamTaskState(raw_state)
+                        _set_task_state(task, TeamTaskState(raw_state), now=now)
                         projects_to_recalc.add(task.project_id)
                         changed = True
                     if priority is not None:
@@ -3099,7 +3125,7 @@ class TeamStateRepository:
                         task.dependency_task_ids = new_dependency_task_ids
                         changed = True
                     if changed:
-                        task.updated_at = utc_now()
+                        task.updated_at = now
                         _mark_progress()
                         result["updated_task_ids"].append(task.id)
                 except ValueError as exc:
@@ -3350,8 +3376,9 @@ class TeamStateRepository:
                     )
                     state_model.deliverables[deliverable.id] = deliverable
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
-                    task.state = TeamTaskState.WAITING_FOR_REVIEW
-                    task.updated_at = utc_now()
+                    now = utc_now()
+                    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+                    task.updated_at = now
                     projects_to_recalc.add(task.project_id)
                     result["created_deliverable_ids"].append(deliverable.id)
                     if agent.reports_to_agent_id is not None:
@@ -5771,15 +5798,15 @@ def _cascade_review_decision(
             if task_deliverables and all(
                 item.state == TeamRecordState.ACCEPTED for item in task_deliverables
             ):
-                task.state = TeamTaskState.ACCEPTED
+                _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
                 task.updated_at = now
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
-        task.state = TeamTaskState.BLOCKED
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         task.updated_at = now
     else:  # blocked
         deliverable.state = TeamRecordState.BLOCKED
-        task.state = TeamTaskState.BLOCKED
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         task.updated_at = now
     projects_to_recalc.add(task.project_id)
 
@@ -6764,8 +6791,9 @@ def _apply_ephemeral_acceptance(
         )
         state.deliverables[deliverable.id] = deliverable
         task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
-        task.state = TeamTaskState.WAITING_FOR_REVIEW
-        task.updated_at = utc_now()
+        now = utc_now()
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        task.updated_at = now
         assignment.state = EphemeralAssignmentState.ACCEPTED
         assignment.error = None
         assignment.updated_at = utc_now()

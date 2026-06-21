@@ -27,6 +27,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
   assert.match(script, /data-planning-task-status/);
+  assert.match(script, /data-task-board-team/);
+  assert.match(script, /renderTaskBoard/);
+  assert.match(script, /taskBoardLanes/);
   assert.match(script, /data-select-agent-id/);
   assert.match(script, /data-select-project-id/);
   assert.match(script, /data-select-role-id/);
@@ -44,6 +47,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
     stylesheet,
     /button\.people-agent-select\s*{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);/,
   );
+  assert.match(stylesheet, /\.task-board-lanes/);
+  assert.match(stylesheet, /\.task-board-card-blocked/);
   assert.match(script, /comparePeopleAgents/);
   assert.doesNotMatch(script, /class="agent-summary-meta"/);
   assert.match(stylesheet, /\.people-agent-role\s*{/);
@@ -2279,12 +2284,26 @@ function seededGitState() {
       },
     },
     tasks: {
+      "task-planned": {
+        id: "task-planned",
+        owner_agent_id: "alpha-lead",
+        project_id: "alpha-project",
+        priority: 0,
+        state: "pending",
+        state_entered_at: "2026-06-09T00:05:00Z",
+        title: "Plan alpha delivery",
+        description: "Work not started yet.",
+        created_by_agent_id: "alpha-manager",
+        created_at: "2026-06-09T00:00:00Z",
+        updated_at: "2026-06-09T00:05:00Z",
+      },
       "task-pending": {
         id: "task-pending",
         owner_agent_id: "alpha-lead",
         project_id: "alpha-project",
         priority: 1,
         state: "in_progress",
+        state_entered_at: "2026-06-09T00:20:00Z",
         title: "Draft pending delivery",
         description: "Pending work in progress.",
         created_by_agent_id: "alpha-manager",
@@ -2292,12 +2311,26 @@ function seededGitState() {
         created_at: "2026-06-09T00:00:00Z",
         updated_at: "2026-06-09T00:00:00Z",
       },
+      "task-active-later": {
+        id: "task-active-later",
+        owner_agent_id: "alpha-lead",
+        project_id: "alpha-project",
+        priority: 1,
+        state: "in_progress",
+        state_entered_at: "2026-06-09T00:25:00Z",
+        title: "Review new runtime signal",
+        description: "Newer in-progress work at the same priority.",
+        created_by_agent_id: "alpha-manager",
+        created_at: "2026-06-09T00:01:00Z",
+        updated_at: "2026-06-09T00:25:00Z",
+      },
       "task-waiting": {
         id: "task-waiting",
         owner_agent_id: "alpha-lead",
         project_id: "alpha-project",
         priority: 2,
-        state: "in_progress",
+        state: "waiting_for_review",
+        state_entered_at: "2026-06-09T00:30:00Z",
         title: "Await review",
         description: "Work ready for review.",
         created_by_agent_id: "alpha-manager",
@@ -2311,6 +2344,7 @@ function seededGitState() {
         project_id: "alpha-project",
         priority: 3,
         state: "accepted",
+        state_entered_at: "2026-06-09T00:40:00Z",
         title: "Ship accepted delivery",
         description: "Completed and reviewed work.",
         created_by_agent_id: "alpha-manager",
@@ -2324,6 +2358,7 @@ function seededGitState() {
         project_id: "beta-project",
         priority: 4,
         state: "in_progress",
+        state_entered_at: "2026-06-09T00:10:00Z",
         title: "Redo rejected delivery",
         description: "Work that needs revision.",
         created_by_agent_id: "beta-manager",
@@ -2337,6 +2372,7 @@ function seededGitState() {
         project_id: "beta-project",
         priority: 5,
         state: "blocked",
+        state_entered_at: "2026-06-09T00:50:00Z",
         title: "Blocked delivery",
         description: "Work blocked by an upstream issue.",
         created_by_agent_id: "beta-manager",
@@ -3056,6 +3092,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Overview",
     "Operations",
     "Delivery",
+    "Task board",
     "Teams",
     "Governance",
     "Planning",
@@ -3099,6 +3136,47 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-delivery-page .releases-view .record-item").first().waitFor({
     state: "visible",
   });
+
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#team-task-board-page").waitFor({ state: "visible" });
+  await page.locator("#task-board-view").getByText("Select a team and project to view its task board.").waitFor({
+    state: "visible",
+  });
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  assert.equal(await page.locator('#task-board-project-select option[value="alpha-project"]').count(), 1);
+  assert.equal(await page.locator('#task-board-project-select option[value="beta-project"]').count(), 0);
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  await page.locator("#team-task-board-page .task-board-lane").first().waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-task-board-page .task-board-lane").count(), 4);
+  await page.locator(".task-board-lane-planned").getByText("Plan alpha delivery").waitFor({
+    state: "visible",
+  });
+  await page.locator(".task-board-lane-in-progress").getByText("Draft pending delivery").waitFor({
+    state: "visible",
+  });
+  await page.locator(".task-board-lane-reviewing").getByText("Await review").waitFor({
+    state: "visible",
+  });
+  await page.locator(".task-board-lane-done").getByText("Ship accepted delivery").waitFor({
+    state: "visible",
+  });
+  const inProgressTaskTitles = await page
+    .locator(".task-board-lane-in-progress .task-board-card-title-row strong")
+    .evaluateAll((nodes) => nodes.map((node) => node.textContent?.trim()));
+  assert.deepEqual(inProgressTaskTitles, ["Review new runtime signal", "Draft pending delivery"]);
+  await page
+    .locator(".task-board-card", { hasText: "Draft pending delivery" })
+    .getByText("Assigned to: Grace Lead")
+    .waitFor({ state: "visible" });
+  await page.locator("#task-board-team-select").selectOption("team-beta");
+  await page.locator("#task-board-project-select").selectOption("beta-project");
+  const blockedCard = page.locator(".task-board-card-blocked", { hasText: "Blocked delivery" });
+  await blockedCard.locator(".state-pill").filter({ hasText: /^Blocked$/ }).waitFor({
+    state: "visible",
+  });
+  await blockedCard.getByText("Assigned to: Beta Lead").waitFor({ state: "visible" });
 
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
@@ -3222,7 +3300,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
   await page
-    .locator("#people-agent-detail-view .agent-detail-work-line strong", { hasText: "Draft pending delivery" })
+    .locator("#people-agent-detail-view .agent-detail-work-line strong", { hasText: "Plan alpha delivery" })
     .waitFor({ state: "visible" });
   const peopleStatusIndicator = page.locator(
     "#people-agent-detail-view .agent-detail-badges .agent-inbox-indicator--status_request",

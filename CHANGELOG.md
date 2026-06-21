@@ -11,6 +11,12 @@ material. Newer entries are added incrementally as changes land.
   message dispatch, persistent agent `chat_replies`, and chat-linked browser
   voice calls.
 
+## 2026-06-21 - Team Add-on Task Board
+
+- Added a Team Add-on Task board tab with Team/Project selection, Planned,
+  In Progress, Reviewing, and Done lanes, compact assignment cards, blocked
+  card highlighting, and exact task lane-entry timestamps.
+
 ## 2026-06-21 - Team Add-on Governance Groups
 
 - Added Team Add-on governance groups for portfolio-style managers that oversee
