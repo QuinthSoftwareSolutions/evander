@@ -1134,13 +1134,10 @@ function syncTeamStateFromChatPayload(payload) {
   }
   state = normalizeState({
     ...state,
-    revision: payload.revision,
+    revision: state.revision,
     conversations,
     conversation_messages: conversationMessages,
   });
-  if (elements.revisionBadge) {
-    elements.revisionBadge.textContent = `Revision ${state.revision}`;
-  }
 }
 
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {

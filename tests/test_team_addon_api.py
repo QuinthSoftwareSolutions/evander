@@ -1114,6 +1114,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "new EventSource" in script.text
     assert "ensureChatStream" in script.text
     assert "/stream" in script.text
+    assert "revision: state.revision,\n    conversations" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200

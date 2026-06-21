@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Chat Revision Safety
+
+- Kept partial Team Chat live-update snapshots from advancing the page-wide
+  Team state revision, preserving optimistic conflict checks for non-chat edits.
+
 ## 2026-06-21 - Team Add-on Chat Live Updates
 
 - Added a Team Chat conversation event stream and subscribed the Chat tab to
