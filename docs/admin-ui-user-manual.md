@@ -43,6 +43,10 @@ The supported environment variables include:
 
 - `AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE` for the browser title.
 - `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE` for the shell header title.
+- `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE=false` to keep the shell header title available to
+  assistive technology without rendering it beside the logo.
+- `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE=wordmark` for wider header logo lockups. The default is
+  `compact`.
 - `AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL` and
   `AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_DARK_URL` for the product logo used in the header and
   sign-in brand bar.

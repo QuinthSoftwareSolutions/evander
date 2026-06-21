@@ -38,12 +38,16 @@ test("initial branding reads the server bootstrap payload", () => {
     __ADMIN_WEB_BRANDING__: {
       page_title: "Factory Alpha Admin",
       header_title: "Factory Alpha",
+      header_title_visible: false,
+      header_logo_size: "wordmark",
     },
   };
   try {
     const branding = initialAdminBranding();
     assert.equal(branding?.page_title, "Factory Alpha Admin");
     assert.equal(branding?.header_title, "Factory Alpha");
+    assert.equal(branding?.header_title_visible, false);
+    assert.equal(branding?.header_logo_size, "wordmark");
   } finally {
     if (previousWindow === undefined) {
       Reflect.deleteProperty(globalThis, "window");
@@ -62,6 +66,8 @@ test("branding normalization trims text and falls header logo back to product lo
   const branding = normalizeAdminBranding({
     page_title: " Factory Alpha Admin ",
     header_title: " Factory Alpha ",
+    header_title_visible: "false",
+    header_logo_size: "wordmark",
     product_logo: {
       light_url: " /api/admin/branding/assets/logo-light.png ",
       dark_url: "",
@@ -75,6 +81,8 @@ test("branding normalization trims text and falls header logo back to product lo
 
   assert.equal(branding.page_title, "Factory Alpha Admin");
   assert.equal(branding.header_title, "Factory Alpha");
+  assert.equal(branding.header_title_visible, false);
+  assert.equal(branding.header_logo_size, "wordmark");
   assert.deepEqual(branding.product_logo, {
     light_url: "/api/admin/branding/assets/logo-light.png",
     dark_url: null,

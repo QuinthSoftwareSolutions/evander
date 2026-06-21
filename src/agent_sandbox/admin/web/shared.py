@@ -30,6 +30,7 @@ from agent_sandbox.admin.web.rbac import (
 )
 
 AdminAuthMode = Literal["none", "local_password", "azure_sso"]
+AdminWebHeaderLogoSize = Literal["compact", "wordmark"]
 
 AZURE_SSO_START_PATH = "/api/auth/azure-sso/start"
 AZURE_SSO_CALLBACK_PATH = "/api/auth/azure-sso/callback"
@@ -148,6 +149,8 @@ class AdminWebLogoConfig:
 class AdminWebBrandingConfig:
     page_title: str
     header_title: str
+    header_title_visible: bool
+    header_logo_size: AdminWebHeaderLogoSize
     header_logo: AdminWebLogoConfig
     product_logo: AdminWebLogoConfig
     company_logo: AdminWebLogoConfig
@@ -156,6 +159,8 @@ class AdminWebBrandingConfig:
         return {
             "page_title": self.page_title,
             "header_title": self.header_title,
+            "header_title_visible": self.header_title_visible,
+            "header_logo_size": self.header_logo_size,
             "header_logo": self.header_logo.to_payload(),
             "product_logo": self.product_logo.to_payload(),
             "company_logo": self.company_logo.to_payload(),
@@ -167,6 +172,10 @@ class AdminWebBrandingConfig:
         header_title = _env_text(
             "AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE", DEFAULT_ADMIN_WEB_HEADER_TITLE
         )
+        header_title_visible = _env_flag(
+            "AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE", default=True
+        )
+        header_logo_size = _env_header_logo_size()
         product_logo = _logo_config_from_env(
             "AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO",
             default_alt=f"{header_title} logo",
@@ -183,10 +192,23 @@ class AdminWebBrandingConfig:
         return cls(
             page_title=page_title,
             header_title=header_title,
+            header_title_visible=header_title_visible,
+            header_logo_size=header_logo_size,
             header_logo=header_logo,
             product_logo=product_logo,
             company_logo=company_logo,
         )
+
+
+def _env_header_logo_size() -> AdminWebHeaderLogoSize:
+    raw = os.environ.get("AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE", "").strip().lower()
+    if not raw:
+        return "compact"
+    if raw == "compact":
+        return "compact"
+    if raw == "wordmark":
+        return "wordmark"
+    raise ValueError("AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE must be compact or wordmark")
 
 
 def _logo_config_from_env(

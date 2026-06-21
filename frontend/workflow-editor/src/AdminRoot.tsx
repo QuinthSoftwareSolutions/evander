@@ -1574,6 +1574,12 @@ export default function AdminRoot() {
   const headerLogoUrl = brandingLoaded
     ? themedLogoUrl(branding.header_logo, theme, logoLight, logoDark)
     : null;
+  const headerLogoClassName = `admin-shell-logo${
+    branding.header_logo_size === "wordmark" ? " admin-shell-logo-wordmark" : ""
+  }`;
+  const headerTitleClassName = branding.header_title_visible
+    ? undefined
+    : "admin-shell-header-title-hidden";
 
   useEffect(() => {
     function handleHashChange() {
@@ -1692,11 +1698,11 @@ export default function AdminRoot() {
               <div className="admin-shell-brand-copy">
                 <div className="admin-shell-title-row">
                   {headerLogoUrl ? (
-                    <img className="admin-shell-logo" src={headerLogoUrl} alt={branding.header_logo.alt} />
+                    <img className={headerLogoClassName} src={headerLogoUrl} alt={branding.header_logo.alt} />
                   ) : (
-                    <span className="admin-shell-logo admin-shell-logo-placeholder" aria-hidden="true" />
+                    <span className={`${headerLogoClassName} admin-shell-logo-placeholder`} aria-hidden="true" />
                   )}
-                  <h1>{branding.header_title}</h1>
+                  <h1 className={headerTitleClassName}>{branding.header_title}</h1>
                 </div>
                 <p className="admin-shell-active-description">{activeTab.description}</p>
               </div>

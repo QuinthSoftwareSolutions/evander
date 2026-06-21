@@ -24,6 +24,11 @@ material. Newer entries are added incrementally as changes land.
 - Tightened governance agenda scoping so project and agent references must
   resolve to member teams, and removing a member team handles affected agenda.
 
+## 2026-06-21 - Admin Web Wordmark Header Branding
+
+- Added Admin Web branding controls for hiding the visible shell header title
+  and using a wider wordmark-sized header logo.
+
 ## 2026-06-21 - Team Add-on People List Cleanup
 
 - Simplified the Team Add-on People tab list to show each agent's avatar,
