@@ -38,6 +38,12 @@ from .models import (
     EphemeralAgentPolicy,
     AgentStatus,
     GitPromotionRecord,
+    GovernanceAgendaItem,
+    GovernanceAgendaItemState,
+    GovernanceAgendaItemType,
+    GovernanceGoal,
+    GovernanceGroup,
+    GovernanceRuntime,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -59,6 +65,7 @@ from .models import (
     TeamTaskState,
     task_payload_with_derived,
     _ensure_unique,
+    _unique_text_list,
 )
 from .sqlite_store import LEGACY_STATE_FILE, STATE_DB_FILE, TeamStateSqliteStore
 from .templates import TeamTemplate, get_template
@@ -304,6 +311,197 @@ class TeamStateRepository:
                         if agent.team_id == team_id:
                             agent.status = AgentStatus.ARCHIVED
             team.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_governance_group(
+        self,
+        *,
+        governance_group_id: str | None,
+        name: str,
+        manager_agent_id: str,
+        member_team_ids: list[str] | None = None,
+        goals: list[GovernanceGoal | Mapping[str, Any]] | None = None,
+        max_cost_usd: object | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_group_id = _optional_text(governance_group_id)
+        normalized_name = _required_text(name, "name")
+        normalized_manager_agent_id = _required_text(manager_agent_id, "manager_agent_id")
+        normalized_member_team_ids = _unique_text_list(member_team_ids or [], "member_team_ids")
+        goal_inputs = list(goals or [])
+
+        def _mutate(state: TeamState) -> TeamState:
+            effective_group_id = normalized_group_id or _generated_id(
+                prefix="governance",
+                labels=[normalized_name],
+                existing_ids=state.governance_groups,
+            )
+            _require_absent(state.governance_groups, effective_group_id, "governance group")
+            _require_present(state.agents, normalized_manager_agent_id, "governance manager")
+            for team_id in normalized_member_team_ids:
+                _require_present(state.teams, team_id, "member team")
+            now = utc_now()
+            state.governance_groups[effective_group_id] = GovernanceGroup(
+                id=effective_group_id,
+                name=normalized_name,
+                manager_agent_id=normalized_manager_agent_id,
+                member_team_ids=normalized_member_team_ids,
+                goals=_governance_goals_with_generated_ids(
+                    goal_inputs,
+                    governance_group_id=effective_group_id,
+                ),
+                max_cost_usd=max_cost_usd,
+                created_at=now,
+                updated_at=now,
+            )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_governance_group(
+        self,
+        *,
+        governance_group_id: str,
+        name: str | None = None,
+        manager_agent_id: str | None = None,
+        member_team_ids: list[str] | None = None,
+        set_member_team_ids: bool = False,
+        goals: list[GovernanceGoal] | None = None,
+        max_cost_usd: object | None = None,
+        set_max_cost_usd: bool = False,
+        archived: bool | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            group = _require_present(
+                state.governance_groups,
+                normalized_group_id,
+                "governance group",
+            )
+            if name is not None:
+                group.name = name
+            if manager_agent_id is not None:
+                _require_present(state.agents, manager_agent_id, "governance manager")
+                group.manager_agent_id = manager_agent_id
+            if set_member_team_ids:
+                normalized_member_team_ids = _unique_text_list(
+                    member_team_ids or [],
+                    "member_team_ids",
+                )
+                for team_id in normalized_member_team_ids:
+                    _require_present(state.teams, team_id, "member team")
+                group.member_team_ids = normalized_member_team_ids
+            if goals is not None:
+                group.goals = goals
+            if set_max_cost_usd:
+                group.max_cost_usd = _optional_cost_limit(max_cost_usd)
+            if archived is not None:
+                group.archived = archived
+            group.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_governance_agenda_item(
+        self,
+        *,
+        agenda_item_id: str | None,
+        governance_group_id: str,
+        item_type: GovernanceAgendaItemType | str,
+        title: str,
+        summary: str,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+        payload: Mapping[str, Any] | None = None,
+        priority: TeamInboxPriority | str = TeamInboxPriority.NORMAL,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_item_id = _optional_text(agenda_item_id)
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_title = _required_text(title, "title")
+        normalized_summary = _required_text(summary, "summary")
+        normalized_team_id = _optional_text(team_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_agent_id = _optional_text(agent_id)
+        normalized_item_type = (
+            item_type
+            if isinstance(item_type, GovernanceAgendaItemType)
+            else GovernanceAgendaItemType(_required_text(item_type, "item_type"))
+        )
+        normalized_priority = (
+            priority
+            if isinstance(priority, TeamInboxPriority)
+            else TeamInboxPriority(_required_text(priority, "priority"))
+        )
+        normalized_payload = dict(payload or {})
+
+        def _mutate(state: TeamState) -> TeamState:
+            group = _require_present(
+                state.governance_groups,
+                normalized_group_id,
+                "governance group",
+            )
+            if normalized_team_id is not None:
+                _require_present(state.teams, normalized_team_id, "team")
+                if normalized_team_id not in group.member_team_ids:
+                    raise ValueError(
+                        f"team {normalized_team_id} is not in governance group {group.id}"
+                    )
+            if normalized_project_id is not None:
+                project = _require_present(state.projects, normalized_project_id, "project")
+                if normalized_team_id is not None and project.team_id != normalized_team_id:
+                    raise ValueError(
+                        f"project {normalized_project_id} does not belong to team "
+                        f"{normalized_team_id}"
+                    )
+            if normalized_agent_id is not None:
+                _require_present(state.agents, normalized_agent_id, "agent")
+            effective_item_id = normalized_item_id or _generated_id(
+                prefix="governance-agenda",
+                labels=[normalized_group_id, normalized_item_type.value, normalized_title],
+                existing_ids=state.governance_agenda,
+            )
+            _require_absent(state.governance_agenda, effective_item_id, "governance agenda item")
+            now = utc_now()
+            state.governance_agenda[effective_item_id] = GovernanceAgendaItem(
+                id=effective_item_id,
+                governance_group_id=normalized_group_id,
+                item_type=normalized_item_type,
+                title=normalized_title,
+                summary=normalized_summary,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                agent_id=normalized_agent_id,
+                payload=normalized_payload,
+                priority=normalized_priority,
+                created_at=now,
+                updated_at=now,
+            )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def mark_governance_agenda_handled(
+        self,
+        *,
+        agenda_item_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_item_id = _required_text(agenda_item_id, "agenda_item_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            item = _require_present(
+                state.governance_agenda,
+                normalized_item_id,
+                "governance agenda item",
+            )
+            item.state = GovernanceAgendaItemState.HANDLED
+            item.updated_at = utc_now()
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -2169,6 +2367,133 @@ class TeamStateRepository:
         state = self.update(_mutate)
         return state, leases
 
+    def lease_due_governance_managers(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 10,
+        lease_seconds: int = 900,
+        wake_interval_seconds: int = 3600,
+        governance_group_id: str | None = None,
+        cost_payload: Mapping[str, Any] | None = None,
+        cost_warning_ratio: Decimal | str | float = Decimal("0.8"),
+    ) -> tuple[TeamState, list[dict[str, Any]]]:
+        effective_now = _ensure_utc(now or utc_now())
+        normalized_group_id = _optional_text(governance_group_id)
+        normalized_limit = max(0, int(limit))
+        warning_ratio = _decimal_or_zero(cost_warning_ratio)
+        leases: list[dict[str, Any]] = []
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            for group in sorted(state_model.governance_groups.values(), key=lambda item: item.id):
+                if normalized_limit and len(leases) >= normalized_limit:
+                    break
+                if group.archived:
+                    continue
+                if normalized_group_id is not None and group.id != normalized_group_id:
+                    continue
+                manager = state_model.agents.get(group.manager_agent_id)
+                if manager is None or manager.status != AgentStatus.ACTIVE:
+                    continue
+                runtime = state_model.governance_runtimes.setdefault(
+                    group.id,
+                    GovernanceRuntime(governance_group_id=group.id),
+                )
+                if (
+                    runtime.wake_leased_until is not None
+                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                ):
+                    continue
+
+                pending_agenda = _pending_governance_agenda_for_group(
+                    state_model,
+                    group.id,
+                )
+                cost_signals = _governance_cost_signals(
+                    state_model,
+                    group=group,
+                    cost_payload=cost_payload,
+                    warning_ratio=warning_ratio,
+                )
+                blocked_team_signals = _governance_blocked_team_signals(
+                    state_model,
+                    group=group,
+                )
+                scheduled_checkin_due = (
+                    runtime.next_wake_at is not None
+                    and _ensure_utc(runtime.next_wake_at) <= effective_now
+                )
+                if not pending_agenda and not cost_signals and not blocked_team_signals and not scheduled_checkin_due:
+                    continue
+
+                if pending_agenda:
+                    reason = pending_agenda[0].item_type.value
+                elif cost_signals:
+                    reason = cost_signals[0]["type"]
+                elif blocked_team_signals:
+                    reason = blocked_team_signals[0]["type"]
+                else:
+                    reason = GovernanceAgendaItemType.SCHEDULED_CHECKIN.value
+
+                dispatch_id = f"team-governance-dispatch-{uuid4().hex}"
+                runtime.active_dispatch_id = dispatch_id
+                runtime.wake_reason = reason
+                runtime.last_wake_at = effective_now
+                runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
+                runtime.updated_at = effective_now
+                leases.append(
+                    {
+                        "agent": _agent_payload(state_model, manager),
+                        "governance_group": _governance_group_payload(state_model, group),
+                        "runtime": runtime.model_dump(mode="json"),
+                        "dispatch_id": dispatch_id,
+                        "reason": reason,
+                        "agenda": [
+                            item.model_dump(mode="json")
+                            for item in pending_agenda
+                        ],
+                        "member_teams": [
+                            _governance_member_team_payload(
+                                state_model,
+                                team_id,
+                                cost_payload=cost_payload,
+                            )
+                            for team_id in group.member_team_ids
+                            if team_id in state_model.teams
+                        ],
+                        "cost_signals": cost_signals,
+                        "blocked_team_signals": blocked_team_signals,
+                    }
+                )
+            return state_model
+
+        if normalized_limit == 0:
+            return self.read(), []
+        state = self.update(_mutate)
+        return state, leases
+
+    def complete_governance_dispatch(
+        self,
+        *,
+        governance_group_id: str,
+        dispatch_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = state.governance_runtimes.get(normalized_group_id)
+            if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
+                return state
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def mirror_session_metadata_payload(
         self,
         *,
@@ -3124,6 +3449,35 @@ def _project_goals_with_generated_ids(
     return normalized
 
 
+def _governance_goals_with_generated_ids(
+    goals: list[GovernanceGoal | Mapping[str, Any]],
+    *,
+    governance_group_id: str,
+) -> list[GovernanceGoal]:
+    normalized: list[GovernanceGoal] = []
+    used_ids: set[str] = set()
+    for index, raw_goal in enumerate(goals):
+        if isinstance(raw_goal, GovernanceGoal):
+            payload = raw_goal.model_dump(mode="json")
+        elif isinstance(raw_goal, Mapping):
+            payload = dict(raw_goal)
+        else:
+            raise ValueError(f"goals[{index}] must be a JSON object")
+        goal_id = _optional_text(payload.get("id"))
+        if goal_id is None:
+            goal_id = _generated_id(
+                prefix="governance-goal",
+                labels=[governance_group_id, payload.get("description")],
+                existing_ids=used_ids,
+            )
+        if goal_id in used_ids:
+            raise ValueError(f"duplicate governance goal id: {goal_id}")
+        used_ids.add(goal_id)
+        payload["id"] = goal_id
+        normalized.append(GovernanceGoal.model_validate(payload))
+    return normalized
+
+
 def _remove_value(values: list[str], value: str) -> list[str]:
     return [item for item in values if item != value]
 
@@ -3184,6 +3538,164 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
         else []
     )
     return payload
+
+
+def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:
+    payload = group.model_dump(mode="json")
+    manager = state.agents.get(group.manager_agent_id)
+    payload["manager"] = _agent_payload(state, manager) if manager is not None else None
+    return payload
+
+
+def _governance_member_team_payload(
+    state: TeamState,
+    team_id: str,
+    *,
+    cost_payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    team = state.teams[team_id]
+    projects = [
+        project.model_dump(mode="json")
+        for project in sorted(state.projects.values(), key=lambda item: item.id)
+        if project.team_id == team_id
+    ]
+    manager = state.agents.get(team.manager_agent_id)
+    team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
+    return {
+        "team": team.model_dump(mode="json"),
+        "manager": _agent_payload(state, manager) if manager is not None else None,
+        "projects": projects,
+        "cost": dict(team_costs.get(team_id) or {}),
+    }
+
+
+def _pending_governance_agenda_for_group(
+    state: TeamState,
+    governance_group_id: str,
+) -> list[GovernanceAgendaItem]:
+    items = [
+        item
+        for item in state.governance_agenda.values()
+        if item.governance_group_id == governance_group_id
+        and item.state == GovernanceAgendaItemState.PENDING
+    ]
+    items.sort(
+        key=lambda item: (
+            _priority_sort_value(item.priority),
+            item.created_at,
+            item.id,
+        )
+    )
+    return items
+
+
+def _governance_cost_signals(
+    state: TeamState,
+    *,
+    group: GovernanceGroup,
+    cost_payload: Mapping[str, Any] | None,
+    warning_ratio: Decimal,
+) -> list[dict[str, Any]]:
+    team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
+    signals: list[dict[str, Any]] = []
+    for team_id in group.member_team_ids:
+        team = state.teams.get(team_id)
+        cost = team_costs.get(team_id)
+        if team is None or not isinstance(cost, Mapping):
+            continue
+        max_cost = _decimal_or_none(cost.get("max_cost_usd"))
+        if max_cost is None:
+            max_cost = _decimal_or_none(team.max_cost_usd)
+        if max_cost is None or max_cost <= 0:
+            continue
+        estimated = _decimal_or_zero(cost.get("estimated_cost"))
+        remaining = max(max_cost - estimated, Decimal("0"))
+        usage_ratio = estimated / max_cost
+        if bool(cost.get("cost_limit_reached")) or estimated >= max_cost:
+            signal_type = GovernanceAgendaItemType.COST_CAP_REACHED.value
+        elif usage_ratio >= warning_ratio:
+            signal_type = GovernanceAgendaItemType.COST_CAP_WARNING.value
+        else:
+            continue
+        signals.append(
+            {
+                "type": signal_type,
+                "team_id": team_id,
+                "team_name": team.name,
+                "estimated_cost": float(estimated),
+                "max_cost_usd": float(max_cost),
+                "remaining_cost_usd": float(remaining),
+                "usage_ratio": float(usage_ratio),
+                "coverage_status": cost.get("coverage_status"),
+                "coverage_reasons": list(cost.get("coverage_reasons") or []),
+            }
+        )
+    signals.sort(key=lambda item: (item["type"] != GovernanceAgendaItemType.COST_CAP_REACHED.value, item["team_id"]))
+    return signals
+
+
+def _governance_blocked_team_signals(
+    state: TeamState,
+    *,
+    group: GovernanceGroup,
+) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    for team_id in group.member_team_ids:
+        team = state.teams.get(team_id)
+        if team is None:
+            continue
+        blocked_projects = [
+            project.id
+            for project in state.projects.values()
+            if project.team_id == team_id and project.status == ProjectStatus.BLOCKED
+        ]
+        blocked_tasks = [
+            task.id
+            for task in state.tasks.values()
+            if task.state == TeamTaskState.BLOCKED
+            and (project := state.projects.get(task.project_id)) is not None
+            and project.team_id == team_id
+        ]
+        if not blocked_projects and not blocked_tasks:
+            continue
+        signals.append(
+            {
+                "type": GovernanceAgendaItemType.BLOCKED_TEAM.value,
+                "team_id": team_id,
+                "team_name": team.name,
+                "blocked_project_ids": sorted(blocked_projects),
+                "blocked_task_ids": sorted(blocked_tasks),
+            }
+        )
+    signals.sort(key=lambda item: item["team_id"])
+    return signals
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _decimal_or_zero(value: object) -> Decimal:
+    return _decimal_or_none(value) or Decimal("0")
+
+
+def _priority_sort_value(priority: TeamInboxPriority) -> int:
+    order = {
+        TeamInboxPriority.HIGH: 0,
+        TeamInboxPriority.NORMAL: 1,
+        TeamInboxPriority.LOW: 2,
+    }
+    return order.get(priority, 1)
 
 
 def _mapping(value: object, field_name: str) -> dict[str, Any]:

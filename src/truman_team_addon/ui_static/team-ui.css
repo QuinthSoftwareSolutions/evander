@@ -1479,10 +1479,31 @@ button.people-team-tab strong {
 .compact-record-list {
   display: grid;
   gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .compact-record-list li + li {
   margin-top: 0;
+}
+
+.compact-record-list li {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+}
+
+.compact-record-list li span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.governance-subsection {
+  margin-top: 0.65rem;
 }
 
 .compact-record-card {

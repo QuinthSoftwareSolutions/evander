@@ -16,6 +16,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             "node_ids": [
                 "team-cron",
                 "team-wake-due-agents",
+                "team-wake-governance-managers",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
@@ -209,6 +210,16 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "max_no_progress_count": 3,
                 "low_priority_wake_after_cycles": 4,
                 "action_artifact_path": "team-action.json",
+                "resume_mode": "same_context",
+            },
+            {
+                "id": "team-wake-governance-managers",
+                "display_name": "Wake governance managers",
+                "type": "effect:team:wake-governance-managers",
+                "limit": 10,
+                "lease_seconds": 900,
+                "wake_interval_seconds": 3600,
+                "cost_warning_ratio": 0.8,
                 "resume_mode": "same_context",
             },
             {
@@ -435,6 +446,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
         ],
         "edges": [
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
+            {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
             {"source_id": "team-ephemeral-requested", "target_id": "team-create-ephemeral-agent"},
             {"source_id": "team-create-ephemeral-agent", "target_id": "team-mark-ephemeral-spawned"},
             {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-ephemeral-spawned"},

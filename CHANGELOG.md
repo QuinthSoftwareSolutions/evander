@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Governance Groups
+
+- Added Team Add-on governance groups for portfolio-style managers that oversee
+  separate member teams without changing those teams' internal reporting chains.
+- Added governance agenda items, advisory group cost rollups, and a separate
+  governance-manager wake effect for agenda, cost, blocker, and check-in
+  signals.
+- Added Governance UI forms and a focused Governance tab with member-team,
+  agenda, goal, and cost-rollup views.
+
 ## 2026-06-21 - Team Add-on People List Cleanup
 
 - Simplified the Team Add-on People tab list to show each agent's avatar,

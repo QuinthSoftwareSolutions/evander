@@ -2976,6 +2976,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Operations",
     "Delivery",
     "People",
+    "Governance",
     "Planning",
     "Setup",
     "Timeline",
@@ -2987,7 +2988,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "Overview" }).click();
   await page.locator("#team-overview-page").waitFor({ state: "visible" });
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
-  assert.equal(await page.locator(".metric").count(), 7);
+  assert.equal(await page.locator(".metric").count(), 8);
   await page.locator("#team-overview-page").getByText("Pending reviews").waitFor({
     state: "visible",
   });

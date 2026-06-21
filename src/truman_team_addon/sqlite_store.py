@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 7
+SQLITE_SCHEMA_VERSION = 8
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -196,6 +196,9 @@ class TeamStateSqliteStore:
             "revision": int(metadata.get("revision", "0")),
             "updated_at": metadata.get("updated_at") or utc_now().isoformat(),
             "teams": {},
+            "governance_groups": {},
+            "governance_agenda": {},
+            "governance_runtimes": {},
             "projects": {},
             "roles": {},
             "agents": {},
@@ -212,6 +215,9 @@ class TeamStateSqliteStore:
             "stand_downs": {},
         }
         self._read_teams(connection, payload)
+        self._read_governance_groups(connection, payload)
+        self._read_governance_agenda(connection, payload)
+        self._read_governance_runtimes(connection, payload)
         self._read_roles(connection, payload)
         self._read_projects(connection, payload)
         self._read_agents(connection, payload)
@@ -232,6 +238,9 @@ class TeamStateSqliteStore:
         payload = state.model_dump(mode="json")
         self._clear_state_tables(connection)
         self._write_teams(connection, payload["teams"])
+        self._write_governance_groups(connection, payload["governance_groups"])
+        self._write_governance_agenda(connection, payload["governance_agenda"])
+        self._write_governance_runtimes(connection, payload["governance_runtimes"])
         self._write_roles(connection, payload["roles"])
         self._write_projects(connection, payload["projects"])
         self._write_agents(connection, payload["agents"])
@@ -313,6 +322,189 @@ class TeamStateSqliteStore:
                 team["id"],
                 "project_id",
                 team.get("project_ids", []),
+            )
+
+    @staticmethod
+    def _read_governance_groups(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        member_team_ids = _grouped_values(
+            connection,
+            """
+            SELECT governance_group_id AS owner_id, team_id AS value
+            FROM team_governance_group_members
+            ORDER BY governance_group_id, position
+            """,
+        )
+        goals = _grouped_rows(
+            connection,
+            """
+            SELECT governance_group_id AS owner_id, goal_id, description, state
+            FROM team_governance_group_goals
+            ORDER BY governance_group_id, position
+            """,
+            lambda row: {
+                "id": row["goal_id"],
+                "description": row["description"],
+                "state": row["state"],
+            },
+        )
+        for row in connection.execute("SELECT * FROM team_governance_groups ORDER BY id"):
+            payload["governance_groups"][row["id"]] = {
+                "id": row["id"],
+                "name": row["name"],
+                "manager_agent_id": row["manager_agent_id"],
+                "member_team_ids": member_team_ids.get(row["id"], []),
+                "goals": goals.get(row["id"], []),
+                "max_cost_usd": row["max_cost_usd"],
+                "archived": _bool(row["archived"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_governance_groups(
+        connection: sqlite3.Connection,
+        groups: dict[str, Any],
+    ) -> None:
+        for group in groups.values():
+            connection.execute(
+                """
+                INSERT INTO team_governance_groups(
+                    id, name, manager_agent_id, max_cost_usd, archived,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    group["id"],
+                    group["name"],
+                    group["manager_agent_id"],
+                    _optional_text(group.get("max_cost_usd")),
+                    _int_bool(group.get("archived")),
+                    group["created_at"],
+                    group["updated_at"],
+                ),
+            )
+            _insert_position_values(
+                connection,
+                "team_governance_group_members",
+                "governance_group_id",
+                group["id"],
+                "team_id",
+                group.get("member_team_ids", []),
+            )
+            for position, goal in enumerate(group.get("goals", [])):
+                connection.execute(
+                    """
+                    INSERT INTO team_governance_group_goals(
+                        governance_group_id, position, goal_id, description, state
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        group["id"],
+                        position,
+                        goal["id"],
+                        goal["description"],
+                        goal.get("state", "pending"),
+                    ),
+                )
+
+    @staticmethod
+    def _read_governance_agenda(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_governance_agenda ORDER BY id"):
+            payload["governance_agenda"][row["id"]] = {
+                "id": row["id"],
+                "governance_group_id": row["governance_group_id"],
+                "item_type": row["item_type"],
+                "title": row["title"],
+                "summary": row["summary"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "agent_id": row["agent_id"],
+                "payload": _json_loads(row["payload_json"]) if row["payload_json"] else {},
+                "state": row["state"],
+                "priority": row["priority"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_governance_agenda(
+        connection: sqlite3.Connection,
+        agenda: dict[str, Any],
+    ) -> None:
+        for item in agenda.values():
+            connection.execute(
+                """
+                INSERT INTO team_governance_agenda(
+                    id, governance_group_id, item_type, title, summary,
+                    team_id, project_id, agent_id, payload_json, state, priority,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["id"],
+                    item["governance_group_id"],
+                    item["item_type"],
+                    item["title"],
+                    item["summary"],
+                    item.get("team_id"),
+                    item.get("project_id"),
+                    item.get("agent_id"),
+                    _json_dumps(item.get("payload") or {}),
+                    item.get("state", "pending"),
+                    item.get("priority", "normal"),
+                    item["created_at"],
+                    item["updated_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_governance_runtimes(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_governance_runtimes ORDER BY governance_group_id"):
+            payload["governance_runtimes"][row["governance_group_id"]] = {
+                "governance_group_id": row["governance_group_id"],
+                "wake_leased_until": row["wake_leased_until"],
+                "active_dispatch_id": row["active_dispatch_id"],
+                "wake_reason": row["wake_reason"],
+                "last_wake_at": row["last_wake_at"],
+                "next_wake_at": row["next_wake_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_governance_runtimes(
+        connection: sqlite3.Connection,
+        runtimes: dict[str, Any],
+    ) -> None:
+        for runtime in runtimes.values():
+            connection.execute(
+                """
+                INSERT INTO team_governance_runtimes(
+                    governance_group_id, wake_leased_until, active_dispatch_id,
+                    wake_reason, last_wake_at, next_wake_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    runtime["governance_group_id"],
+                    runtime.get("wake_leased_until"),
+                    runtime.get("active_dispatch_id"),
+                    runtime.get("wake_reason"),
+                    runtime.get("last_wake_at"),
+                    runtime.get("next_wake_at"),
+                    runtime["updated_at"],
+                ),
             )
 
     @staticmethod
@@ -1367,6 +1559,10 @@ def _grouped_rows(
 
 
 _STATE_TABLES = (
+    "team_governance_group_members",
+    "team_governance_group_goals",
+    "team_governance_agenda",
+    "team_governance_runtimes",
     "team_team_projects",
     "team_role_permissions",
     "team_project_goals",
@@ -1400,6 +1596,7 @@ _STATE_TABLES = (
     "team_agents",
     "team_projects",
     "team_roles",
+    "team_governance_groups",
     "team_teams",
 )
 
@@ -1429,6 +1626,66 @@ CREATE TABLE IF NOT EXISTS team_team_projects (
     PRIMARY KEY(team_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_team_team_projects_project ON team_team_projects(project_id);
+
+CREATE TABLE IF NOT EXISTS team_governance_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    manager_agent_id TEXT NOT NULL,
+    max_cost_usd TEXT,
+    archived INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_governance_groups_archived
+    ON team_governance_groups(archived, id);
+
+CREATE TABLE IF NOT EXISTS team_governance_group_members (
+    governance_group_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    team_id TEXT NOT NULL,
+    PRIMARY KEY(governance_group_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_governance_group_members_team
+    ON team_governance_group_members(team_id);
+
+CREATE TABLE IF NOT EXISTS team_governance_group_goals (
+    governance_group_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    goal_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    state TEXT NOT NULL,
+    PRIMARY KEY(governance_group_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS team_governance_agenda (
+    id TEXT PRIMARY KEY,
+    governance_group_id TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    team_id TEXT,
+    project_id TEXT,
+    agent_id TEXT,
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_governance_agenda_group_state
+    ON team_governance_agenda(governance_group_id, state, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_governance_agenda_team
+    ON team_governance_agenda(team_id, state, id);
+
+CREATE TABLE IF NOT EXISTS team_governance_runtimes (
+    governance_group_id TEXT PRIMARY KEY,
+    wake_leased_until TEXT,
+    active_dispatch_id TEXT,
+    wake_reason TEXT,
+    last_wake_at TEXT,
+    next_wake_at TEXT,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS team_roles (
     id TEXT PRIMARY KEY,

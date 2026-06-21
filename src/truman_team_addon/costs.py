@@ -374,17 +374,22 @@ class TeamCostService:
         if backfill_result is not None and backfill_result.coverage_status != "complete":
             coverage_reasons.add("transcript_backfill_partial")
 
+        team_cost_payloads = {
+            team_id: _finalize_team_bucket(
+                bucket,
+                team=self.state.teams.get(team_id),
+            )
+            for team_id, bucket in sorted(team_buckets.items())
+        }
         payload = {
             "generated_at": utc_now().isoformat().replace("+00:00", "Z"),
             "coverage_status": "partial" if coverage_reasons else "complete",
             "coverage_reasons": sorted(coverage_reasons),
-            "team_costs": {
-                team_id: _finalize_team_bucket(
-                    bucket,
-                    team=self.state.teams.get(team_id),
-                )
-                for team_id, bucket in sorted(team_buckets.items())
-            },
+            "team_costs": team_cost_payloads,
+            "governance_group_costs": _governance_group_costs(
+                self.state,
+                team_cost_payloads=team_cost_payloads,
+            ),
             "project_costs": {
                 project_id: _finalize_bucket(bucket)
                 for project_id, bucket in sorted(project_buckets.items())
@@ -1219,6 +1224,86 @@ def _finalize_team_bucket(bucket: dict[str, Any], *, team: Any | None) -> dict[s
     )
     finalized["cost_limit_basis"] = "lifetime"
     return finalized
+
+
+def _governance_group_costs(
+    state: TeamState,
+    *,
+    team_cost_payloads: Mapping[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    group_costs: dict[str, dict[str, Any]] = {}
+    for group_id, group in sorted(state.governance_groups.items()):
+        estimated = Decimal("0")
+        events_count = 0
+        priced_events_count = 0
+        unpriced_events_count = 0
+        input_tokens = 0
+        cached_input_tokens = 0
+        cache_write_input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+        coverage_reasons: set[str] = set()
+        member_team_costs: dict[str, dict[str, Any]] = {}
+        cap_reached_team_ids: list[str] = []
+        cap_warning_team_ids: list[str] = []
+
+        for team_id in group.member_team_ids:
+            team_cost = dict(team_cost_payloads.get(team_id) or {})
+            if not team_cost and team_id in state.teams:
+                team_cost = _finalize_team_bucket(_new_bucket(team_id=team_id), team=state.teams[team_id])
+            if not team_cost:
+                continue
+            member_team_costs[team_id] = team_cost
+            estimated += _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
+            events_count += int(team_cost.get("events_count") or 0)
+            priced_events_count += int(team_cost.get("priced_events_count") or 0)
+            unpriced_events_count += int(team_cost.get("unpriced_events_count") or 0)
+            input_tokens += int(team_cost.get("input_tokens") or 0)
+            cached_input_tokens += int(team_cost.get("cached_input_tokens") or 0)
+            cache_write_input_tokens += int(team_cost.get("cache_write_input_tokens") or 0)
+            output_tokens += int(team_cost.get("output_tokens") or 0)
+            total_tokens += int(team_cost.get("total_tokens") or 0)
+            coverage_reasons.update(str(item) for item in team_cost.get("coverage_reasons") or [])
+            if team_cost.get("cost_limit_reached"):
+                cap_reached_team_ids.append(team_id)
+                continue
+            max_cost = _optional_decimal(team_cost.get("max_cost_usd"))
+            if max_cost is not None and max_cost > 0:
+                team_estimated = _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
+                if team_estimated / max_cost >= Decimal("0.8"):
+                    cap_warning_team_ids.append(team_id)
+
+        max_cost = _optional_decimal(getattr(group, "max_cost_usd", None))
+        remaining = (
+            _decimal_to_float(max(max_cost - estimated, Decimal("0")))
+            if max_cost is not None
+            else None
+        )
+        group_costs[group_id] = {
+            "governance_group_id": group_id,
+            "currency": "usd",
+            "estimated_cost": _decimal_to_float(estimated),
+            "events_count": events_count,
+            "priced_events_count": priced_events_count,
+            "unpriced_events_count": unpriced_events_count,
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cached_input_tokens,
+            "cache_write_input_tokens": cache_write_input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "coverage_status": "partial" if coverage_reasons else "complete",
+            "coverage_reasons": sorted(coverage_reasons),
+            "max_cost_usd": _decimal_to_float(max_cost),
+            "remaining_cost_usd": remaining,
+            "cost_limit_reached": bool(max_cost is not None and estimated >= max_cost),
+            "cost_limit_basis": "lifetime",
+            "hard_enforced": False,
+            "member_team_ids": list(group.member_team_ids),
+            "member_team_costs": member_team_costs,
+            "member_team_cap_reached_ids": sorted(cap_reached_team_ids),
+            "member_team_cap_warning_ids": sorted(cap_warning_team_ids),
+        }
+    return group_costs
 
 
 def _increment(counter: dict[str, int], key: str) -> None:

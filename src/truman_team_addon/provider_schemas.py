@@ -22,6 +22,16 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     resume_mode: ConfigValue | None = None
 
 
+class TeamWakeGovernanceManagersEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:wake-governance-managers"]
+    governance_group_id: ConfigValue | None = None
+    limit: ConfigValue | None = None
+    lease_seconds: ConfigValue | None = None
+    wake_interval_seconds: ConfigValue | None = None
+    cost_warning_ratio: ConfigValue | None = None
+    resume_mode: ConfigValue | None = None
+
+
 class TeamApplyAgentActionEffectDefinition(EffectDefinition):
     type: Literal["effect:team:apply-agent-action"]
     action: ConfigValue | None = None
@@ -224,6 +234,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "failed_project_repo_preparations": {"type": "array"},
         "cost_guard_blocked_team_ids": {"type": "array"},
         "cost_guard_blocked_teams": {"type": "array"},
+        "errors": {"type": "array"},
+    },
+    "effect:team:wake-governance-managers": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "leased_count": {"type": "integer"},
+        "leases": {"type": "array"},
+        "dispatches": {"type": "array"},
         "errors": {"type": "array"},
     },
     "effect:team:apply-agent-action": {

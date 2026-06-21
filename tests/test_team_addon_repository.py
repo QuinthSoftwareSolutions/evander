@@ -289,7 +289,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
     assert "voice_profile_json" in agent_columns
-    assert metadata["sqlite_schema_version"] == "7"
+    assert metadata["sqlite_schema_version"] == "8"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
@@ -1196,6 +1196,45 @@ def test_operator_stand_down_blocks_subtree_wakes_and_active_dispatch_actions(
         now=datetime(2026, 1, 1, minute=10, tzinfo=UTC),
     )
     assert len(leases) == 1
+
+
+def test_governance_group_persists_without_relaxing_same_team_reporting(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        goals=[{"description": "Keep teams governed independently"}],
+        max_cost_usd="25.00",
+        expected_revision=repo.read().revision,
+    )
+
+    group = state.governance_groups["portfolio"]
+    assert group.member_team_ids == ["team", "other"]
+    assert group.goals[0].id.startswith("governance-goal-portfolio")
+    assert float(group.max_cost_usd) == 25.0
+
+    reloaded = TeamStateRepository(tmp_path).read()
+    assert reloaded.governance_groups["portfolio"].member_team_ids == ["team", "other"]
+
+    with pytest.raises(ValueError, match="superior agent other-manager is not in team team"):
+        repo.update_agent(
+            agent_id="backend",
+            reports_to_agent_id="other-manager",
+            set_reports_to_agent_id=True,
+            expected_revision=repo.read().revision,
+        )
 
 
 def test_superior_action_stand_downs_and_revokes_direct_subordinate(

@@ -29,6 +29,17 @@ const realtimeVoiceOptions = [
   ["cedar", "Cedar"],
 ];
 const projectStatuses = ["active", "blocked", "completed", "archived"];
+const governanceAgendaTypes = [
+  "operator_directive",
+  "team_escalation",
+  "cost_cap_warning",
+  "cost_cap_reached",
+  "stale_team",
+  "blocked_team",
+  "scheduled_checkin",
+  "policy_decision",
+];
+const inboxPriorities = ["low", "normal", "high"];
 const gitProviders = [
   ["github", "GitHub"],
   ["azure_devops", "Azure DevOps"],
@@ -66,6 +77,7 @@ const teamViewIds = new Set([
   "operations",
   "delivery",
   "people",
+  "governance",
   "planning",
   "setup",
   "timeline",
@@ -178,6 +190,18 @@ const fieldTooltips = {
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
   "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+
+  "create-governance-group-form:name": "Human-readable portfolio or governance group name.",
+  "create-governance-group-form:manager_agent_id": "Existing persistent agent that wakes for governance agenda, cost, and blocker signals.",
+  "create-governance-group-form:member_team_ids": "Teams supervised by this governance group. Their internal reporting chains stay unchanged.",
+  "create-governance-group-form:goals": "Lightweight governance goals, one per line as id | description | state.",
+  "create-governance-group-form:max_cost_usd": "Optional advisory lifetime USD cap for the whole group. Per-team caps remain the hard wake guard.",
+  "create-governance-agenda-form:governance_group_id": "Governance group whose manager should see this agenda item.",
+  "create-governance-agenda-form:item_type": "Governance signal type that should drive the manager wake reason.",
+  "create-governance-agenda-form:priority": "Agenda priority. High items are shown first.",
+  "create-governance-agenda-form:team_id": "Optional member team related to this governance item.",
+  "create-governance-agenda-form:title": "Short agenda title shown to the governance manager.",
+  "create-governance-agenda-form:summary": "Governance context for the manager to inspect.",
 
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
   "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
@@ -317,6 +341,9 @@ function emptyState() {
   return {
     revision: 0,
     teams: {},
+    governance_groups: {},
+    governance_agenda: {},
+    governance_runtimes: {},
     projects: {},
     roles: {},
     agents: {},
@@ -358,6 +385,7 @@ function emptyCostState() {
     coverage_status: "partial",
     coverage_reasons: ["costs_not_loaded"],
     team_costs: {},
+    governance_group_costs: {},
     project_costs: {},
     unattributed_costs: null,
     source_counts: {},
@@ -603,6 +631,16 @@ function bindRecordEditing() {
       void dismissActionRecordAttention(
         dismissActionButton,
         dismissActionButton.dataset.dismissActionId,
+      );
+      return;
+    }
+
+    const governanceAgendaHandleButton = event.target.closest("[data-governance-agenda-handle-id]");
+    if (governanceAgendaHandleButton) {
+      event.preventDefault();
+      void markGovernanceAgendaHandled(
+        governanceAgendaHandleButton,
+        governanceAgendaHandleButton.dataset.governanceAgendaHandleId,
       );
       return;
     }
@@ -939,6 +977,7 @@ function render() {
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
   updatePlanningFilterControls();
+  renderGovernance();
   renderHierarchy();
   renderFocusedOrgChartIfActive();
   renderAgents();
@@ -1028,6 +1067,7 @@ function renderSummary() {
   const projects = values(state.projects);
   const visibleProjects = projects.filter(isVisibleProject);
   const visibleAgents = values(state.agents).filter(isVisibleAgent);
+  const visibleGovernanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup);
   const tasks = values(state.tasks);
   const deliverables = values(state.deliverables);
   const reviews = values(state.review_requests);
@@ -1037,6 +1077,7 @@ function renderSummary() {
 
   const metrics = [
     ["Teams", visibleTeams.length],
+    ["Governance groups", visibleGovernanceGroups.length],
     ["Projects", visibleProjects.length],
     ["Agents", visibleAgents.length],
     ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
@@ -1101,6 +1142,141 @@ function renderTeamCostBlockedNotice(teamId) {
       <span>Team wakes are suspended until the estimated cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} lifetime cap.${escapeHtml(coverageNote)}</span>
     </div>
   `;
+}
+
+function renderGovernance() {
+  if (!document.querySelector("[data-governance-view]")) {
+    return;
+  }
+  const groups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(byId);
+  if (!groups.length) {
+    renderIntoActiveTargets("[data-governance-view]", `
+      <p class="empty-state">No governance groups registered.</p>
+    `);
+    return;
+  }
+  renderIntoActiveTargets(
+    "[data-governance-view]",
+    `<ul class="record-list governance-list">${groups.map(renderGovernanceGroup).join("")}</ul>`,
+  );
+}
+
+function renderGovernanceGroup(group) {
+  const manager = state.agents?.[group.manager_agent_id] || null;
+  const memberTeams = (group.member_team_ids || [])
+    .map((teamId) => state.teams?.[teamId])
+    .filter(Boolean);
+  const agenda = governanceAgendaForGroup(group.id);
+  const pendingAgenda = agenda.filter((item) => item.state === "pending");
+  const cost = governanceCostForGroup(group.id);
+  const capReached = cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length > 0;
+  return `
+    <li class="record-item governance-item">
+      <div class="record-line">
+        <strong>${escapeHtml(group.name)}</strong>
+        <div class="record-actions">
+          ${group.archived ? `<span class="state-pill blocked">archived</span>` : ""}
+          ${capReached ? `<span class="state-pill warning">cost attention</span>` : ""}
+          ${editButton("governance-group", group.id, "Edit")}
+        </div>
+      </div>
+      <div class="meta-line">${escapeHtml(group.id)} - manager ${escapeHtml(manager ? agentLabel(manager) : group.manager_agent_id)}</div>
+      ${cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : ""}
+      ${renderGovernanceMemberTeams(memberTeams, cost)}
+      ${renderGovernanceGoals(group.goals || [])}
+      ${renderGovernanceAgenda(group, agenda, pendingAgenda)}
+    </li>
+  `;
+}
+
+function renderGovernanceMemberTeams(memberTeams, cost) {
+  if (!memberTeams.length) {
+    return `<p class="empty-state">No member teams.</p>`;
+  }
+  return `
+    <div class="governance-subsection">
+      <div class="meta-line">Member teams</div>
+      <ul class="compact-record-list">
+        ${memberTeams
+          .map((team) => {
+            const teamCost = cost?.member_team_costs?.[team.id] || teamCostForTeam(team.id);
+            const costLabel = teamCost ? ` - ${formatUsd(teamCost.estimated_cost)}` : "";
+            const cap = teamCost?.cost_limit_reached ? " - cap reached" : "";
+            return `<li><strong>${escapeHtml(team.name)}</strong> <span>${escapeHtml(team.id)}${escapeHtml(costLabel)}${escapeHtml(cap)}</span></li>`;
+          })
+          .join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderGovernanceGoals(goals) {
+  if (!goals.length) {
+    return "";
+  }
+  return `
+    <div class="governance-subsection">
+      <div class="meta-line">Goals</div>
+      <ul class="compact-record-list">
+        ${goals
+          .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong> <span>${escapeHtml(goal.state || "pending")}</span></li>`)
+          .join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderGovernanceAgenda(group, agenda, pendingAgenda) {
+  if (!agenda.length) {
+    return `<p class="empty-state">No governance agenda items.</p>`;
+  }
+  return `
+    <div class="governance-subsection">
+      <div class="meta-line">Agenda - ${escapeHtml(pendingAgenda.length)} pending</div>
+      <ul class="compact-record-list">
+        ${agenda
+          .map((item) => {
+            const related = [item.team_id && `team ${item.team_id}`, item.project_id && `project ${item.project_id}`, item.agent_id && `agent ${item.agent_id}`]
+              .filter(Boolean)
+              .join(" - ");
+            return `
+              <li>
+                <strong>${escapeHtml(item.title)}</strong>
+                <span>${escapeHtml(humanizeToken(item.item_type))} - ${escapeHtml(item.priority || "normal")} - ${escapeHtml(item.state || "pending")}${related ? ` - ${escapeHtml(related)}` : ""}</span>
+                <span>${escapeHtml(item.summary)}</span>
+                ${
+                  item.state === "pending"
+                    ? `<button class="record-action" type="button" data-governance-agenda-handle-id="${escapeAttr(item.id)}">Mark handled</button>`
+                    : ""
+                }
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function governanceAgendaForGroup(groupId) {
+  return values(state.governance_agenda)
+    .filter((item) => item.governance_group_id === groupId)
+    .sort((left, right) => {
+      return (
+        prioritySortValue(left.priority) - prioritySortValue(right.priority) ||
+        String(left.created_at || "").localeCompare(String(right.created_at || "")) ||
+        String(left.id || "").localeCompare(String(right.id || ""))
+      );
+    });
+}
+
+function governanceCostForGroup(groupId) {
+  return costState.governance_group_costs?.[groupId] || null;
+}
+
+function prioritySortValue(priority) {
+  const order = { high: 0, normal: 1, low: 2 };
+  return order[text(priority)] ?? 1;
 }
 
 function renderProjectCostCounter(projectId) {
@@ -1215,6 +1391,10 @@ function isArchivedTeam(team) {
   return Boolean(team?.archived);
 }
 
+function isArchivedGovernanceGroup(group) {
+  return Boolean(group?.archived);
+}
+
 function isArchivedProject(project) {
   return text(project?.status) === "archived";
 }
@@ -1233,6 +1413,10 @@ function isArchivedRole(role) {
 
 function isVisibleTeam(team) {
   return showArchived || !isArchivedTeam(team);
+}
+
+function isVisibleGovernanceGroup(group) {
+  return showArchived || !isArchivedGovernanceGroup(group);
 }
 
 function isVisibleProject(project) {
@@ -4802,6 +4986,7 @@ function refreshSelects({ includeEditForm = false } = {}) {
 
 function buildSelectOptionSets() {
   const teams = values(state.teams).filter(isVisibleTeam).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
+  const governanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup).sort(byId).map((group) => [group.id, `${group.name} (${group.id})`]);
   const projects = values(state.projects).filter(isVisibleProject).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
   const roles = values(state.roles).filter(isVisibleRole).sort(byId).map((role) => [role.id, `${role.name} (${role.id})`]);
   const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
@@ -4828,6 +5013,9 @@ function buildSelectOptionSets() {
     "review-profiles": reviewProfiles,
     "review-requests": reviewRequests,
     "release-packages": releasePackages,
+    "governance-groups": governanceGroups,
+    "governance-agenda-types": governanceAgendaTypes.map((item) => [item, humanizeToken(item)]),
+    "inbox-priorities": inboxPriorities.map((item) => [item, humanizeToken(item)]),
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
@@ -5913,6 +6101,55 @@ async function dismissActionRecordAttention(button, actionRecordId) {
   }
 }
 
+async function markGovernanceAgendaHandled(button, agendaItemId) {
+  if (!agendaItemId) {
+    setStatus("No governance agenda item selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Marking governance agenda item handled.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/governance-agenda/${encodeURIComponent(agendaItemId)}/handle`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; mark handled again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    setStatus(`Marked governance agenda item ${agendaItemId} handled.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Agenda update failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
 function endpointForForm(form, data) {
   const templateEndpoint = form.dataset.templateEndpoint;
   if (templateEndpoint) {
@@ -5984,6 +6221,35 @@ function payloadForForm(form, data = formData(form)) {
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
       payload.max_cost_usd = maxCost;
+    }
+    return payload;
+  }
+  if (formId === "create-governance-group-form") {
+    const payload = {
+      name: text(data.name),
+      manager_agent_id: text(data.manager_agent_id),
+      member_team_ids: splitList(data.member_team_ids),
+      goals: parseGoals(data.goals),
+    };
+    const maxCost = numberOrNull(data.max_cost_usd);
+    if (maxCost !== null) {
+      payload.max_cost_usd = maxCost;
+    }
+    return payload;
+  }
+  if (formId === "create-governance-agenda-form") {
+    const payload = {
+      governance_group_id: text(data.governance_group_id),
+      item_type: text(data.item_type),
+      priority: text(data.priority) || "normal",
+      title: text(data.title),
+      summary: text(data.summary),
+    };
+    for (const key of ["team_id", "project_id", "agent_id"]) {
+      const value = text(data[key]);
+      if (value) {
+        payload[key] = value;
+      }
     }
     return payload;
   }
@@ -6224,6 +6490,7 @@ async function submitEditForm(form) {
 
 function recordForEdit(type, id) {
   if (type === "team") return state.teams[id] || null;
+  if (type === "governance-group") return state.governance_groups[id] || null;
   if (type === "project") return state.projects[id] || null;
   if (type === "role") return state.roles[id] || null;
   if (type === "agent") return state.agents[id] || null;
@@ -6234,6 +6501,7 @@ function recordForEdit(type, id) {
 
 function editEndpoint(type, id) {
   if (type === "team") return `/teams/${encodeURIComponent(id)}`;
+  if (type === "governance-group") return `/governance-groups/${encodeURIComponent(id)}`;
   if (type === "project") return `/projects/${encodeURIComponent(id)}`;
   if (type === "role") return `/roles/${encodeURIComponent(id)}`;
   if (type === "agent") return `/agents/${encodeURIComponent(id)}`;
@@ -6245,6 +6513,7 @@ function editEndpoint(type, id) {
 function editDialogTitle(type, record) {
   const labels = {
     team: "team",
+    "governance-group": "governance group",
     project: "project",
     role: "role",
     agent: "agent",
@@ -6260,6 +6529,20 @@ function renderEditFields(type, record) {
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
+      ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
+      ${checkboxField("Archived", "archived", Boolean(record.archived))}
+    `;
+  }
+  if (type === "governance-group") {
+    return `
+      ${readonlyField("Governance group ID", record.id)}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
+      ${multiSelectField("Member teams", "member_team_ids", "teams", record.member_team_ids || [], { size: 5 })}
+      ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
+        rows: 4,
+        placeholder: "id | description | state",
+      })}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
@@ -6401,6 +6684,16 @@ function editPayloadForForm(type, form) {
     return {
       name: text(data.name),
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
+      max_cost_usd: numberOrNull(data.max_cost_usd),
+      archived: Boolean(form.elements.archived?.checked),
+    };
+  }
+  if (type === "governance-group") {
+    return {
+      name: text(data.name),
+      manager_agent_id: text(data.manager_agent_id),
+      member_team_ids: splitList(data.member_team_ids),
+      goals: parseGoals(data.goals),
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };

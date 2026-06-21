@@ -734,6 +734,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ui.text.count('name="lead_session_id"') == 1
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
+    assert 'data-team-view="governance"' in ui.text
+    assert 'id="create-governance-group-form"' in ui.text
+    assert 'id="create-governance-agenda-form"' in ui.text
     assert 'name="bare_repo"' in ui.text
     assert 'data-options="git-providers"' in ui.text
     assert "data-agent-source-picker" in ui.text
@@ -804,6 +807,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Progress reports" in script.text
     assert "max_cost_usd" in script.text
     assert "cost_limit_reached" in script.text
+    assert "renderGovernance" in script.text
+    assert "governance_group_costs" in script.text
+    assert "data-governance-agenda-handle-id" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -831,6 +837,65 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200
     assert 'name="max_cost_usd"' in html.text
+
+
+def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "expected_revision": 0,
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    assert team.status_code == 201
+
+    group = client.post(
+        "/api/addons/team-addon/governance-groups",
+        json={
+            "expected_revision": team.json()["revision"],
+            "id": "portfolio",
+            "name": "Portfolio",
+            "manager_agent_id": "manager",
+            "member_team_ids": ["team"],
+            "goals": [{"description": "Keep the team under budget"}],
+            "max_cost_usd": "10.00",
+        },
+    )
+    assert group.status_code == 201
+    state = group.json()
+    assert state["governance_groups"]["portfolio"]["member_team_ids"] == ["team"]
+    assert state["governance_groups"]["portfolio"]["goals"][0]["id"].startswith(
+        "governance-goal-portfolio"
+    )
+
+    agenda = client.post(
+        "/api/addons/team-addon/governance-agenda",
+        json={
+            "expected_revision": state["revision"],
+            "governance_group_id": "portfolio",
+            "item_type": "operator_directive",
+            "priority": "high",
+            "team_id": "team",
+            "title": "Review team status",
+            "summary": "Check whether the team needs intervention.",
+        },
+    )
+    assert agenda.status_code == 201
+    agenda_state = agenda.json()
+    agenda_id = next(iter(agenda_state["governance_agenda"]))
+    assert agenda_state["governance_agenda"][agenda_id]["state"] == "pending"
+
+    handled = client.post(
+        f"/api/addons/team-addon/governance-agenda/{agenda_id}/handle",
+        json={"expected_revision": agenda_state["revision"]},
+    )
+    assert handled.status_code == 200
+    assert handled.json()["governance_agenda"][agenda_id]["state"] == "handled"
 
 
 def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> None:

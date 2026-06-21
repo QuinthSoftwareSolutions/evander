@@ -106,6 +106,22 @@ class TeamInboxPriority(str, Enum):
     HIGH = "high"
 
 
+class GovernanceAgendaItemType(str, Enum):
+    OPERATOR_DIRECTIVE = "operator_directive"
+    TEAM_ESCALATION = "team_escalation"
+    COST_CAP_WARNING = "cost_cap_warning"
+    COST_CAP_REACHED = "cost_cap_reached"
+    STALE_TEAM = "stale_team"
+    BLOCKED_TEAM = "blocked_team"
+    SCHEDULED_CHECKIN = "scheduled_checkin"
+    POLICY_DECISION = "policy_decision"
+
+
+class GovernanceAgendaItemState(str, Enum):
+    PENDING = "pending"
+    HANDLED = "handled"
+
+
 class TeamModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -217,6 +233,121 @@ class ProjectGoal(TeamModel):
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
+
+
+class GovernanceGoal(TeamModel):
+    id: str
+    description: str
+    state: TeamRecordState = TeamRecordState.PENDING
+
+    @field_validator("id", "description", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
+class GovernanceGroup(TeamModel):
+    id: str
+    name: str
+    manager_agent_id: str
+    member_team_ids: list[str] = Field(default_factory=list)
+    goals: list[GovernanceGoal] = Field(default_factory=list)
+    max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    archived: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "name", "manager_agent_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("member_team_ids", mode="before")
+    @classmethod
+    def _member_team_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "member_team_ids")
+
+    @field_validator("max_cost_usd", mode="before")
+    @classmethod
+    def _optional_cost_limit(cls, value: object) -> Decimal | None:
+        text = _optional_text(value)
+        if text is None:
+            return None
+        try:
+            amount = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise ValueError("max_cost_usd must be a non-negative decimal") from None
+        if amount < 0:
+            raise ValueError("max_cost_usd must be a non-negative decimal")
+        return amount
+
+    @field_serializer("max_cost_usd", when_used="json")
+    def _serialize_max_cost_usd(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_goal_ids(self) -> "GovernanceGroup":
+        _ensure_unique([goal.id for goal in self.goals], "governance goals")
+        return self
+
+
+class GovernanceAgendaItem(TeamModel):
+    id: str
+    governance_group_id: str
+    item_type: GovernanceAgendaItemType
+    title: str
+    summary: str
+    team_id: str | None = None
+    project_id: str | None = None
+    agent_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    state: GovernanceAgendaItemState = GovernanceAgendaItemState.PENDING
+    priority: TeamInboxPriority = TeamInboxPriority.NORMAL
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "governance_group_id", "title", "summary", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("team_id", "project_id", "agent_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _payload(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("payload must be a JSON object")
+        return dict(value)
+
+
+class GovernanceRuntime(TeamModel):
+    governance_group_id: str
+    wake_leased_until: datetime | None = None
+    active_dispatch_id: str | None = None
+    wake_reason: str | None = None
+    last_wake_at: datetime | None = None
+    next_wake_at: datetime | None = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @property
+    def id(self) -> str:
+        return self.governance_group_id
+
+    @field_validator("governance_group_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("active_dispatch_id", "wake_reason", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class Team(TeamModel):
@@ -844,6 +975,9 @@ class TeamState(TeamModel):
     schema_version: int = SCHEMA_VERSION
     revision: int = Field(default=0, ge=0)
     teams: dict[str, Team] = Field(default_factory=dict)
+    governance_groups: dict[str, GovernanceGroup] = Field(default_factory=dict)
+    governance_agenda: dict[str, GovernanceAgendaItem] = Field(default_factory=dict)
+    governance_runtimes: dict[str, GovernanceRuntime] = Field(default_factory=dict)
     projects: dict[str, Project] = Field(default_factory=dict)
     roles: dict[str, TeamRole] = Field(default_factory=dict)
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
@@ -870,6 +1004,9 @@ class TeamState(TeamModel):
         self._ensure_core_role_permissions()
         self._validate_key_matches(errors)
         self._validate_teams(errors)
+        self._validate_governance_groups(errors)
+        self._validate_governance_agenda(errors)
+        self._validate_governance_runtimes(errors)
         self._validate_projects(errors)
         self._validate_roles(errors)
         self._validate_agents(errors)
@@ -898,6 +1035,9 @@ class TeamState(TeamModel):
     def _validate_key_matches(self, errors: list[str]) -> None:
         for collection_name in (
             "teams",
+            "governance_groups",
+            "governance_agenda",
+            "governance_runtimes",
             "projects",
             "roles",
             "agents",
@@ -915,7 +1055,11 @@ class TeamState(TeamModel):
         ):
             collection = getattr(self, collection_name)
             for key, record in collection.items():
-                record_id = getattr(record, "id", getattr(record, "agent_id", None))
+                record_id = getattr(
+                    record,
+                    "id",
+                    getattr(record, "agent_id", getattr(record, "governance_group_id", None)),
+                )
                 if key != record_id:
                     errors.append(
                         f"{collection_name}.{key} key does not match record id {record_id}"
@@ -946,6 +1090,62 @@ class TeamState(TeamModel):
                     errors.append(f"team {team.id} references missing project {project_id}")
                 elif project.team_id != team.id:
                     errors.append(f"team {team.id} project {project_id} belongs to team {project.team_id}")
+
+    def _validate_governance_groups(self, errors: list[str]) -> None:
+        for group in self.governance_groups.values():
+            if group.manager_agent_id not in self.agents:
+                errors.append(
+                    f"governance group {group.id} references missing manager "
+                    f"{group.manager_agent_id}"
+                )
+            for team_id in group.member_team_ids:
+                if team_id not in self.teams:
+                    errors.append(
+                        f"governance group {group.id} references missing member team {team_id}"
+                    )
+
+    def _validate_governance_agenda(self, errors: list[str]) -> None:
+        for item in self.governance_agenda.values():
+            group = self.governance_groups.get(item.governance_group_id)
+            if group is None:
+                errors.append(
+                    f"governance agenda item {item.id} references missing group "
+                    f"{item.governance_group_id}"
+                )
+            if item.team_id is not None:
+                team = self.teams.get(item.team_id)
+                if team is None:
+                    errors.append(
+                        f"governance agenda item {item.id} references missing team {item.team_id}"
+                    )
+                elif group is not None and item.team_id not in group.member_team_ids:
+                    errors.append(
+                        f"governance agenda item {item.id} team {item.team_id} is not in "
+                        f"group {group.id}"
+                    )
+            if item.project_id is not None:
+                project = self.projects.get(item.project_id)
+                if project is None:
+                    errors.append(
+                        f"governance agenda item {item.id} references missing project "
+                        f"{item.project_id}"
+                    )
+                elif item.team_id is not None and project.team_id != item.team_id:
+                    errors.append(
+                        f"governance agenda item {item.id} project {project.id} belongs "
+                        f"to team {project.team_id}"
+                    )
+            if item.agent_id is not None and item.agent_id not in self.agents:
+                errors.append(
+                    f"governance agenda item {item.id} references missing agent {item.agent_id}"
+                )
+
+    def _validate_governance_runtimes(self, errors: list[str]) -> None:
+        for group_id, runtime in self.governance_runtimes.items():
+            if runtime.governance_group_id != group_id:
+                errors.append(f"governance runtime {group_id} does not point back")
+            if group_id not in self.governance_groups:
+                errors.append(f"governance runtime {group_id} references missing group")
 
     def _validate_projects(self, errors: list[str]) -> None:
         for project in self.projects.values():

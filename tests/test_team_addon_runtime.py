@@ -51,6 +51,7 @@ from truman_team_addon.provider_schemas import (
     TeamSessionRoutingQueryDefinition,
     TeamStateQueryDefinition,
     TeamWakeDueAgentsEffectDefinition,
+    TeamWakeGovernanceManagersEffectDefinition,
 )
 from truman_team_addon.providers import (
     TEAM_AGENT_GUIDANCE_PATH,
@@ -65,6 +66,7 @@ from truman_team_addon.providers import (
     TeamSessionRoutingQueryProvider,
     TeamStateQueryProvider,
     TeamWakeDueAgentsEffectProvider,
+    TeamWakeGovernanceManagersEffectProvider,
     _build_prompt,
     _publish_deliverable_artifact_bundle,
 )
@@ -893,6 +895,60 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        goals=[{"id": "cost", "description": "Keep Team under budget"}],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review weekly status",
+        summary="Check whether Team is blocked.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    resumer = FakeResumer()
+    file_copier = FakeFileCopier()
+    provider = TeamWakeGovernanceManagersEffectProvider()
+    provider.initialize(
+        TeamWakeGovernanceManagersEffectDefinition(
+            id="wake-governance",
+            display_name="Wake governance",
+            type="effect:team:wake-governance-managers",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert result["leases"][0]["reason"] == "operator_directive"
+    assert result["leases"][0]["governance_group"]["id"] == "portfolio"
+    assert result["leases"][0]["agenda"][0]["id"] == "agenda-1"
+    assert file_copier.calls == []
+    assert len(resumer.calls) == 1
+    assert resumer.calls[0]["target"] == "session-manager"
+    assert "governance manager" in str(resumer.calls[0]["prompt"])
+    assert "Do not take ownership of member-team project tasks" in str(
+        resumer.calls[0]["prompt"]
+    )
+    assert repo.read().governance_runtimes["portfolio"].active_dispatch_id is None
 
 
 def test_build_prompt_allows_root_tasks_for_create_root_task_permission(

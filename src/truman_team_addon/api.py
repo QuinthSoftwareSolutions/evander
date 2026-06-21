@@ -40,11 +40,14 @@ from .models import (
     AgentStatus,
     AgentVoiceProfile,
     EphemeralAgentPolicy,
+    GovernanceAgendaItemType,
+    GovernanceGoal,
     ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
     TeamRecordState,
+    TeamInboxPriority,
     TeamTaskState,
     TeamState,
     team_state_payload,
@@ -170,6 +173,68 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             set_max_cost_usd="max_cost_usd" in payload,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def create_governance_group(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.create_governance_group(
+            governance_group_id=_optional(payload, "id")
+            or _optional(payload, "governance_group_id"),
+            name=_required(payload, "name"),
+            manager_agent_id=_required(payload, "manager_agent_id"),
+            member_team_ids=list(_optional_list(payload, "member_team_ids")),
+            goals=list(_optional_list(payload, "goals")),
+            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_governance_group(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        raw_archived = payload.get("archived")
+        goals = (
+            [GovernanceGoal.model_validate(item) for item in _optional_list(payload, "goals")]
+            if "goals" in payload
+            else None
+        )
+        state = repository.update_governance_group(
+            governance_group_id=request.path_params["governance_group_id"],
+            name=_optional(payload, "name"),
+            manager_agent_id=_optional(payload, "manager_agent_id"),
+            member_team_ids=list(_optional_list(payload, "member_team_ids")),
+            set_member_team_ids="member_team_ids" in payload,
+            goals=goals,
+            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+            set_max_cost_usd="max_cost_usd" in payload,
+            archived=raw_archived if isinstance(raw_archived, bool) else None,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def create_governance_agenda_item(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        raw_priority = _optional(payload, "priority") or TeamInboxPriority.NORMAL.value
+        state = repository.create_governance_agenda_item(
+            agenda_item_id=_optional(payload, "id") or _optional(payload, "agenda_item_id"),
+            governance_group_id=_required(payload, "governance_group_id"),
+            item_type=GovernanceAgendaItemType(_required(payload, "item_type")),
+            title=_required(payload, "title"),
+            summary=_required(payload, "summary"),
+            team_id=_optional(payload, "team_id"),
+            project_id=_optional(payload, "project_id"),
+            agent_id=_optional(payload, "agent_id"),
+            payload=payload.get("payload") if isinstance(payload.get("payload"), Mapping) else None,
+            priority=TeamInboxPriority(raw_priority),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def handle_governance_agenda_item(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.mark_governance_agenda_handled(
+            agenda_item_id=request.path_params["agenda_item_id"],
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
@@ -1012,6 +1077,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/costs", _with_errors(get_costs), methods=["GET"]),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
+        Route("/governance-groups", _with_errors(create_governance_group), methods=["POST"]),
+        Route(
+            "/governance-groups/{governance_group_id}",
+            _with_errors(patch_governance_group),
+            methods=["PATCH"],
+        ),
+        Route(
+            "/governance-agenda",
+            _with_errors(create_governance_agenda_item),
+            methods=["POST"],
+        ),
+        Route(
+            "/governance-agenda/{agenda_item_id}/handle",
+            _with_errors(handle_governance_agenda_item),
+            methods=["POST"],
+        ),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
         Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
         Route("/roles", _with_errors(create_role), methods=["POST"]),

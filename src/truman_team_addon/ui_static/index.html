@@ -83,6 +83,17 @@
           People
         </button>
         <button
+          id="team-view-governance-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-governance-page"
+          data-team-view="governance"
+        >
+          Governance
+        </button>
+        <button
           id="team-view-planning-tab"
           class="team-view-tab"
           type="button"
@@ -432,6 +443,33 @@
             </details>
 
             <details>
+              <summary>Create governance group</summary>
+              <form id="create-governance-group-form" data-endpoint="/governance-groups" data-method="POST">
+                <label>Name <input name="name" required /></label>
+                <label>Manager <select name="manager_agent_id" required data-options="agents"></select></label>
+                <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
+                <label>Goals <textarea name="goals" rows="4" placeholder="id | description | state"></textarea></label>
+                <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+                <button type="submit">Create governance group</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Create governance agenda item</summary>
+              <form id="create-governance-agenda-form" data-endpoint="/governance-agenda" data-method="POST">
+                <label>Governance group <select name="governance_group_id" required data-options="governance-groups"></select></label>
+                <label>Type <select name="item_type" required data-options="governance-agenda-types"></select></label>
+                <label>Priority <select name="priority" data-options="inbox-priorities"></select></label>
+                <label>Team <select name="team_id" data-options="teams"></select></label>
+                <label>Project <select name="project_id" data-options="projects"></select></label>
+                <label>Agent <select name="agent_id" data-options="agents"></select></label>
+                <label>Title <input name="title" required /></label>
+                <label>Summary <textarea name="summary" rows="3" required></textarea></label>
+                <button type="submit">Create agenda item</button>
+              </form>
+            </details>
+
+            <details>
               <summary>Create project</summary>
               <form id="create-project-form" data-endpoint="/projects" data-method="POST">
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
@@ -699,6 +737,25 @@
         <section class="content-panel" aria-labelledby="focused-roles-heading">
           <h2 id="focused-roles-heading">Roles</h2>
           <div class="roles-view" data-roles-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-governance-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-governance-tab"
+        data-team-view-panel="governance"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-governance-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Governance</p>
+              <h2 id="focused-governance-heading">Groups</h2>
+            </div>
+          </div>
+          <div class="governance-view" data-governance-view></div>
         </section>
       </main>
 

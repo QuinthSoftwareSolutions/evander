@@ -51,6 +51,7 @@ from .provider_schemas import (
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
     TeamWakeDueAgentsEffectDefinition,
+    TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
@@ -251,6 +252,61 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Guest user that owns the artifact path for libvirt-backed sessions.",
                 default_value="agent",
                 placeholder="agent",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:wake-governance-managers",
+        "Wake governance managers",
+        "Lease due governance group managers for agenda, cost, blocker, and check-in signals.",
+        [
+            _catalog_field(
+                "governance_group_id",
+                "Governance group ID",
+                "string",
+                description="Limit wake leasing to one governance group. Leave blank to evaluate all groups.",
+                placeholder="platform-portfolio",
+            ),
+            _catalog_field(
+                "limit",
+                "Lease limit",
+                "number",
+                description="Maximum number of governance managers to lease in this wake cycle.",
+                default_value=10,
+                placeholder="10",
+            ),
+            _catalog_field(
+                "lease_seconds",
+                "Lease seconds",
+                "number",
+                description="How long a governance runtime lease remains active before it can be retried.",
+                default_value=900,
+                placeholder="900",
+            ),
+            _catalog_field(
+                "wake_interval_seconds",
+                "Wake interval seconds",
+                "number",
+                description="Minimum delay before the same governance group can wake again for persistent signals.",
+                default_value=3600,
+                placeholder="3600",
+            ),
+            _catalog_field(
+                "cost_warning_ratio",
+                "Cost warning ratio",
+                "number",
+                description="Member-team cap usage ratio that should wake governance before the cap is reached.",
+                default_value=0.8,
+                placeholder="0.8",
+            ),
+            _catalog_field(
+                "resume_mode",
+                "Resume mode",
+                "string",
+                description="Resume mode passed to the underlying agent resumer.",
+                default_value="same_context",
+                placeholder="same_context",
             ),
         ],
     ),
@@ -908,6 +964,93 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "failed_project_repo_preparations": failed_project_repo_preparations,
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
+            "errors": errors,
+        }
+
+
+class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamWakeGovernanceManagersEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "governance_group_id",
+            "limit",
+            "lease_seconds",
+            "wake_interval_seconds",
+            "cost_warning_ratio",
+            "resume_mode",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        context = self.runtime_context
+        resumer = getattr(context, "agent_resumer", None)
+        if resumer is None or not callable(getattr(resumer, "resume_agent", None)):
+            raise RuntimeError("effect:team:wake-governance-managers requires agent_resumer")
+
+        repo = TeamStateRepository(_runtime_dir(context))
+        current_state = repo.read()
+        cost_payload = TeamCostService(
+            runtime_dir=_runtime_dir(context),
+            state=current_state,
+            session_repository=_session_repository_from_context(context),
+        ).costs_payload(backfill_transcripts=True)
+        state, leases = repo.lease_due_governance_managers(
+            governance_group_id=_optional_text(payload.get("governance_group_id")),
+            limit=_optional_int(payload.get("limit"), default=10),
+            lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
+            wake_interval_seconds=_optional_int(
+                payload.get("wake_interval_seconds"),
+                default=3600,
+            ),
+            cost_warning_ratio=_optional_text(payload.get("cost_warning_ratio")) or "0.8",
+            cost_payload=cost_payload,
+        )
+        resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
+        dispatches: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for lease in leases:
+            agent = lease["agent"]
+            group = lease["governance_group"]
+            try:
+                result = resumer.resume_agent(
+                    target=agent["session_id"],
+                    prompt=_build_governance_prompt(lease),
+                    resume_mode=resume_mode,
+                    dispatch_id=lease["dispatch_id"],
+                )
+                result_payload = _coerce_mapping(result)
+                if _result_reports_failure(result_payload):
+                    errors.append(
+                        f"{group['id']}/{agent['id']}: {_resume_failure_message(result_payload)}"
+                    )
+                dispatches.append(
+                    {
+                        "governance_group_id": group["id"],
+                        "agent_id": agent["id"],
+                        "session_id": agent["session_id"],
+                        "dispatch_id": lease["dispatch_id"],
+                        "reason": lease["reason"],
+                        "result": result_payload,
+                    }
+                )
+            except Exception as exc:  # pragma: no cover - defensive provider diagnostics
+                errors.append(f"{group['id']}/{agent['id']}: {exc}")
+            finally:
+                state = repo.complete_governance_dispatch(
+                    governance_group_id=group["id"],
+                    dispatch_id=lease["dispatch_id"],
+                )
+        return {
+            "success": not errors,
+            "revision": state.revision,
+            "leased_count": len(leases),
+            "leases": leases,
+            "dispatches": dispatches,
             "errors": errors,
         }
 
@@ -1856,6 +1999,7 @@ def register_providers() -> ProviderPluginRegistration:
     return ProviderPluginRegistration(
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
+            "effect:team:wake-governance-managers": TeamWakeGovernanceManagersEffectProvider,
             "effect:team:apply-agent-action": TeamApplyAgentActionEffectProvider,
             "effect:team:create-operator-directive": (
                 TeamCreateOperatorDirectiveEffectProvider
@@ -1884,6 +2028,12 @@ def register_providers() -> ProviderPluginRegistration:
         node_definition_resolvers={
             "effect:team:wake-due-agents": (
                 lambda node: _materialize(TeamWakeDueAgentsEffectDefinition, node)
+            ),
+            "effect:team:wake-governance-managers": (
+                lambda node: _materialize(
+                    TeamWakeGovernanceManagersEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:apply-agent-action": (
                 lambda node: _materialize(TeamApplyAgentActionEffectDefinition, node)
@@ -2087,6 +2237,34 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
+    agent = lease["agent"]
+    context = {
+        "agent": _agent_prompt_payload(agent),
+        "dispatch_id": lease["dispatch_id"],
+        "reason": lease["reason"],
+        "governance_group": lease["governance_group"],
+        "agenda": lease.get("agenda") or [],
+        "member_teams": lease.get("member_teams") or [],
+        "cost_signals": lease.get("cost_signals") or [],
+        "blocked_team_signals": lease.get("blocked_team_signals") or [],
+    }
+    return (
+        "Continue as a Team Add-on governance manager.\n"
+        "You supervise member teams through governance, escalation, and policy. "
+        "Do not take ownership of member-team project tasks, deliverables, "
+        "reviews, or releases, and do not assume you are in their direct "
+        "reporting chain. Member teams remain separate execution units.\n\n"
+        "Use this wake to inspect agenda items, cost-cap signals, blocked-team "
+        "signals, and member-team summaries. Respond with concise decisions, "
+        "recommended operator actions, and any directives that should be routed "
+        "to the relevant member-team managers through the Team Add-on governance "
+        "or operator-directive APIs. If no governance action is needed, say so "
+        "briefly and do not invent project work.\n\n"
+        f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
     )
 
 
