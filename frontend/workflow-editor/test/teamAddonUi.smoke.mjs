@@ -28,7 +28,13 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-timeline-filter/);
   assert.match(script, /data-planning-task-status/);
   assert.match(script, /data-select-agent-id/);
+  assert.match(script, /data-select-project-id/);
+  assert.match(script, /data-select-role-id/);
   assert.match(script, /renderSelectableAgent/);
+  assert.match(script, /renderSelectableProject/);
+  assert.match(script, /renderSelectableRole/);
+  assert.match(script, /renderTeamProjectDetail/);
+  assert.match(script, /renderTeamRoleDetail/);
   assert.match(script, /renderPeopleTeamTabs/);
   assert.match(script, /data-people-team-id/);
   assert.match(script, /renderPeopleAgentDetail/);
@@ -2660,6 +2666,81 @@ function seededGitState() {
   };
 }
 
+test("team add-on Teams tab groups records and opens detail panes", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  initialState.agents["beta-manager"].display_name = "Zed Manager";
+  initialState.agents["beta-lead"].display_name = "Beta Lead";
+  const { port } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+
+  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
+  assert.equal(await page.locator("#team-people-page .team-record-section").count(), 6);
+  assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "10");
+  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "5");
+  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "5");
+
+  await page.locator('#team-people-page [data-people-team-id="team-beta"]').click();
+  await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').count(), 0);
+  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 1);
+  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 1);
+
+  await page.locator('#team-people-page [data-people-team-id="team-alpha"]').click();
+  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
+    state: "visible",
+  });
+
+  const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
+  await alphaProjectRecord.getByRole("button").click();
+  await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Alpha Project" }).waitFor({
+    state: "visible",
+  });
+  await page
+    .locator("#people-agent-detail-view .agent-detail-section strong")
+    .filter({ hasText: /^Ship alpha work$/ })
+    .waitFor({
+      state: "visible",
+    });
+
+  const alphaLeadRoleCard = page.locator('#team-people-page [data-role-id="alpha-project__project-lead"]');
+  await alphaLeadRoleCard.getByRole("button").click();
+  await alphaLeadRoleCard.locator('.team-record-select[aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Project Lead" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByText("Create Root Task").waitFor({
+    state: "visible",
+  });
+
+  const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  await alphaLeadCard.getByRole("button").click();
+  await alphaLeadCard.locator('.people-agent-select[aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Grace Lead" }).waitFor({
+    state: "visible",
+  });
+  assert.equal((await alphaLeadCard.innerText()).includes("alpha-lead"), false);
+});
+
 function seededScrollablePeopleTooltipState() {
   const state = seededGitState();
   for (let index = 2; index <= 18; index += 1) {
@@ -2975,7 +3056,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Overview",
     "Operations",
     "Delivery",
-    "People",
+    "Teams",
     "Governance",
     "Planning",
     "Setup",
@@ -3019,9 +3100,17 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
 
-  await page.getByRole("tab", { name: "People" }).click();
+  await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
-  assert.equal(await page.locator(".agent-item").count(), 4);
+  assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 4);
+  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
+  assert.equal(await page.locator("#team-people-page .team-record-section").count(), 6);
+  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').getByRole("heading", { name: "Alpha Team" }).waitFor({
+    state: "visible",
+  });
+  await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').getByRole("heading", { name: "Beta Team" }).waitFor({
+    state: "visible",
+  });
   assert.equal(await page.locator("#team-people-page .hierarchy-view").count(), 0);
   assert.equal(await page.locator("#team-people-page .people-agent-detail-panel").count(), 1);
   assert.equal(await page.locator("#team-people-page").getByRole("heading", { name: "Agent details" }).count(), 0);
@@ -3063,28 +3152,59 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator('#team-people-page [data-people-team-id="all"][aria-selected="true"]').waitFor({
     state: "visible",
   });
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "4");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "2");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "2");
+  assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "10");
+  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "5");
+  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "5");
   await page.locator('#team-people-page [data-people-team-id="team-beta"]').click();
   await page.locator('#team-people-page [data-people-team-id="team-beta"][aria-selected="true"]').waitFor({
     state: "visible",
   });
+  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 1);
+  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').count(), 1);
   const betaPeopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
     return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
   });
   assert.deepEqual(betaPeopleLabels, ["Beta Lead", "Zed Manager"]);
   assert.equal(await page.locator('#team-people-page [data-agent-id="alpha-lead"]').count(), 0);
+  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 1);
+  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 1);
   await page.locator('#team-people-page [data-people-team-id="team-alpha"]').click();
   await page.locator('#team-people-page [data-people-team-id="team-alpha"][aria-selected="true"]').waitFor({
     state: "visible",
   });
+  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 1);
+  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').count(), 1);
   const alphaPeopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
     return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
   });
   assert.deepEqual(alphaPeopleLabels, ["Ada Manager", "Grace Lead"]);
   assert.equal(await page.locator("#team-people-page .people-agent-select .agent-summary-meta").count(), 0);
-  await page.locator("#people-agent-detail-view").getByText("No agent selected.").waitFor({
+  await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
+    state: "visible",
+  });
+  const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
+  await alphaProjectRecord.getByRole("button").click();
+  await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Alpha Project" }).waitFor({
+    state: "visible",
+  });
+  await page
+    .locator("#people-agent-detail-view .agent-detail-section strong")
+    .filter({ hasText: /^Ship alpha work$/ })
+    .waitFor({
+      state: "visible",
+    });
+  const alphaLeadRoleCard = page.locator('#team-people-page [data-role-id="alpha-project__project-lead"]');
+  await alphaLeadRoleCard.getByRole("button").click();
+  await alphaLeadRoleCard.locator('.team-record-select[aria-pressed="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Project Lead" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#people-agent-detail-view").getByText("Create Root Task").waitFor({
     state: "visible",
   });
   const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
@@ -3211,7 +3331,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
 });
 
-test("team add-on People detail inbox popover stays reachable and scrollable", async (t) => {
+test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededScrollablePeopleTooltipState(),
   });
@@ -3220,7 +3340,7 @@ test("team add-on People detail inbox popover stays reachable and scrollable", a
   });
 
   await waitForRevision(page, 4);
-  await page.getByRole("tab", { name: "People" }).click();
+  await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
   assert.equal(await alphaLeadCard.locator(".agent-inbox-indicator--status_request").count(), 0);

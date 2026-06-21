@@ -45,6 +45,13 @@ material. Newer entries are added incrementally as changes land.
 - Added People tab team filters so operators can switch between an all-team
   list and per-team agent lists.
 
+## 2026-06-21 - Team Add-on Teams Tab Records
+
+- Renamed the focused People tab to Teams and grouped team-specific agents,
+  projects, and roles under their owning teams.
+- Added selectable project and role rows to the Teams tab with detail-pane views
+  alongside the existing selectable agent detail flow.
+
 ## 2026-06-21 - Team Add-on Agent Identity Guidance
 
 - Added each persistent Team agent's current ID and display name to the managed
