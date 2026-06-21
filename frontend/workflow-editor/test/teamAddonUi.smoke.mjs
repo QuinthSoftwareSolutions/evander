@@ -36,6 +36,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderSelectableAgent/);
   assert.match(script, /renderSelectableProject/);
   assert.match(script, /renderSelectableRole/);
+  assert.doesNotMatch(script, /Chat message sent\./);
+  assert.match(script, /data-chat-scroll-conversation-id/);
+  assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
   assert.match(script, /renderPeopleTeamTabs/);
@@ -73,6 +76,8 @@ function emptyState() {
     ephemeral_assignments: {},
     git_promotions: {},
     stand_downs: {},
+    conversations: {},
+    conversation_messages: {},
   };
 }
 
@@ -926,6 +931,96 @@ function unique(values) {
   return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))];
 }
 
+function compareChatMessages(left, right) {
+  return (
+    String(left.created_at || "").localeCompare(String(right.created_at || "")) ||
+    String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function chatMessagesForConversation(state, conversationId) {
+  return Object.values(state.conversation_messages || {})
+    .filter((message) => message.conversation_id === conversationId)
+    .sort(compareChatMessages);
+}
+
+function chatMessagePage(state, conversationId, { before = null, limit = 50 } = {}) {
+  const messages = chatMessagesForConversation(state, conversationId);
+  let end = messages.length;
+  if (before) {
+    const index = messages.findIndex((message) => message.id === before);
+    end = index >= 0 ? index : end;
+  }
+  const boundedLimit = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 100));
+  const start = Math.max(0, end - boundedLimit);
+  const page = messages.slice(start, end);
+  return {
+    messages: page,
+    message_count: messages.length,
+    has_older: start > 0,
+    oldest_message_id: page[0]?.id || null,
+    newest_message_id: page[page.length - 1]?.id || null,
+  };
+}
+
+function chatAgentPayload(state, agentId) {
+  const agent = state.agents?.[agentId];
+  if (!agent) {
+    return null;
+  }
+  return {
+    id: agent.id,
+    display_name: agent.display_name || agent.id,
+    team_id: agent.team_id,
+    project_id: agent.project_id || null,
+    role_id: agent.role_id || null,
+    role_name: null,
+    status: agent.status || "active",
+    session_id: agent.session_id || null,
+    avatar: agent.avatar || null,
+  };
+}
+
+function chatConversationPayload(state, conversation, { includeMessages = false, limit = 50 } = {}) {
+  const page = chatMessagePage(state, conversation.id, { limit });
+  const payload = {
+    id: conversation.id,
+    agent_id: conversation.agent_id,
+    agent: chatAgentPayload(state, conversation.agent_id),
+    created_by: conversation.created_by || null,
+    last_message_preview: conversation.last_message_preview || "",
+    created_at: conversation.created_at || null,
+    updated_at: conversation.updated_at || null,
+    last_interaction_at: conversation.last_interaction_at || null,
+    message_count: page.message_count,
+  };
+  if (includeMessages) {
+    Object.assign(payload, page, { messages_limit: limit });
+  }
+  return payload;
+}
+
+function chatCollectionPayload(state, { selectedConversationId = null } = {}) {
+  const conversations = Object.values(state.conversations || {}).sort((left, right) => {
+    return (
+      String(right.last_interaction_at || "").localeCompare(String(left.last_interaction_at || "")) ||
+      String(right.id || "").localeCompare(String(left.id || ""))
+    );
+  });
+  const eligibleAgents = Object.values(state.agents || {})
+    .filter((agent) => (agent.status || "active") !== "archived")
+    .sort((left, right) => String(left.display_name || left.id).localeCompare(String(right.display_name || right.id)))
+    .map((agent) => chatAgentPayload(state, agent.id));
+  return {
+    revision: state.revision,
+    selected_conversation_id: selectedConversationId,
+    eligible_agents: eligibleAgents,
+    conversations: conversations.map((conversation) =>
+      chatConversationPayload(state, conversation, { includeMessages: false }),
+    ),
+  };
+}
+
 function taskNeedsAttention(state) {
   return ["pending", "blocked", "waiting_for_review", "rejected"].includes(state);
 }
@@ -964,6 +1059,7 @@ async function createTeamAddonServer(
   const requests = [];
   const costResponses = [];
   const timelineRequests = [];
+  const openChatStreams = new Set();
   let conflictSent = false;
   const template = autoDevSquadTemplate();
 
@@ -1047,6 +1143,91 @@ async function createTeamAddonServer(
         );
         return;
       }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/conversations") {
+        requests.push({ method: request.method, pathname, search: url.search });
+        jsonResponse(response, chatCollectionPayload(state));
+        return;
+      }
+      const conversationDetailMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/conversations\/([^/]+)$/,
+      );
+      if (request.method === "GET" && conversationDetailMatch) {
+        requests.push({ method: request.method, pathname, search: url.search });
+        const conversationId = decodeURIComponent(conversationDetailMatch[1]);
+        const conversation = state.conversations?.[conversationId];
+        if (!conversation) {
+          jsonResponse(response, { error: "conversation not found" }, 404);
+          return;
+        }
+        jsonResponse(response, {
+          revision: state.revision,
+          conversation: chatConversationPayload(state, conversation, {
+            includeMessages: true,
+            limit: 50,
+          }),
+        });
+        return;
+      }
+      const conversationMessagesMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/conversations\/([^/]+)\/messages$/,
+      );
+      if (request.method === "GET" && conversationMessagesMatch) {
+        requests.push({ method: request.method, pathname, search: url.search });
+        const conversationId = decodeURIComponent(conversationMessagesMatch[1]);
+        if (!state.conversations?.[conversationId]) {
+          jsonResponse(response, { error: "conversation not found" }, 404);
+          return;
+        }
+        const page = chatMessagePage(state, conversationId, {
+          before: queryText(url.searchParams, "before"),
+          limit: queryText(url.searchParams, "limit") || 50,
+        });
+        jsonResponse(response, {
+          revision: state.revision,
+          conversation_id: conversationId,
+          before_message_id: queryText(url.searchParams, "before"),
+          messages_limit: Number.parseInt(queryText(url.searchParams, "limit") || "50", 10),
+          ...page,
+        });
+        return;
+      }
+      const conversationStreamMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/conversations\/([^/]+)\/stream$/,
+      );
+      if (request.method === "GET" && conversationStreamMatch) {
+        requests.push({ method: request.method, pathname, search: url.search });
+        const conversationId = decodeURIComponent(conversationStreamMatch[1]);
+        const conversation = state.conversations?.[conversationId];
+        if (!conversation) {
+          jsonResponse(response, { error: "conversation not found" }, 404);
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        response.write(`event: snapshot\n`);
+        response.write(
+          `data: ${JSON.stringify({
+            revision: state.revision,
+            conversation: chatConversationPayload(state, conversation, {
+              includeMessages: true,
+              limit: 50,
+            }),
+          })}\n\n`,
+        );
+        const interval = setInterval(() => {
+          response.write(": keepalive\n\n");
+        }, 1000);
+        const streamRecord = { response, interval };
+        openChatStreams.add(streamRecord);
+        request.on("close", () => {
+          clearInterval(interval);
+          openChatStreams.delete(streamRecord);
+        });
+        return;
+      }
 
       if (!pathname.startsWith("/api/addons/team-addon/")) {
         jsonResponse(response, { error: `unexpected route ${pathname}` }, 404);
@@ -1112,6 +1293,12 @@ async function createTeamAddonServer(
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   await t.after(async () => {
+    for (const stream of openChatStreams) {
+      clearInterval(stream.interval);
+      stream.response.end();
+      stream.response.destroy?.();
+    }
+    openChatStreams.clear();
     await new Promise((resolve) => server.close(resolve));
   });
   const address = server.address();
@@ -2816,6 +3003,144 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     state: "visible",
   });
   assert.equal((await alphaLeadCard.innerText()).includes("alpha-lead"), false);
+});
+
+function seededLongChatState(messageCount = 120) {
+  const state = seededGitState();
+  state.revision = 9;
+  state.agents["alpha-lead"].display_name = "Ada";
+  state.conversations = {
+    "conversation-alpha-lead": {
+      id: "conversation-alpha-lead",
+      agent_id: "alpha-lead",
+      created_by: "operator",
+      last_message_preview: `Message ${String(messageCount - 1).padStart(3, "0")}`,
+      created_at: "2026-06-09T00:00:00Z",
+      updated_at: "2026-06-09T02:00:00Z",
+      last_interaction_at: "2026-06-09T02:00:00Z",
+    },
+  };
+  state.conversation_messages = {};
+  for (let index = 0; index < messageCount; index += 1) {
+    const timestamp = new Date(Date.UTC(2026, 5, 9, 0, index, 0)).toISOString();
+    state.conversation_messages[`msg-${String(index).padStart(3, "0")}`] = {
+      id: `msg-${String(index).padStart(3, "0")}`,
+      conversation_id: "conversation-alpha-lead",
+      sender: index % 2 === 0 ? "operator" : "agent",
+      message_type: "text",
+      body: `Message ${String(index).padStart(3, "0")}`,
+      status: "sent",
+      dispatch_id: null,
+      voice_session_id: null,
+      source_message_id: null,
+      error: null,
+      metadata: {},
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+  }
+  return state;
+}
+
+test("team add-on Chat panel stays bounded and loads older messages on upward scroll", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator("#status-message").waitFor({ state: "hidden" });
+
+  const messageList = page.locator(".chat-message-list");
+  await messageList.getByText("Message 119").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".chat-message").count(), 50);
+  assert.equal(await messageList.getByText("Message 000").count(), 0);
+
+  await page.waitForFunction(() => {
+    const list = document.querySelector(".chat-message-list");
+    if (!(list instanceof HTMLElement)) {
+      return false;
+    }
+    const bottomGap = list.scrollHeight - list.clientHeight - list.scrollTop;
+    return list.scrollHeight > list.clientHeight && bottomGap <= 4;
+  });
+
+  const viewport = page.viewportSize();
+  assert.ok(viewport, "expected viewport size");
+  const layoutBox = await page.locator("#team-chat-page").boundingBox();
+  assert.ok(layoutBox, "expected chat page bounds");
+  assert.ok(
+    layoutBox.y + layoutBox.height <= viewport.height + 2,
+    `expected chat page to stay within the viewport: ${JSON.stringify({ layoutBox, viewport })}`,
+  );
+  const documentOverflow = await page.evaluate(() => ({
+    clientHeight: document.documentElement.clientHeight,
+    scrollHeight: document.documentElement.scrollHeight,
+  }));
+  assert.ok(
+    documentOverflow.scrollHeight <= documentOverflow.clientHeight + 4,
+    `expected chat history not to overflow the page: ${JSON.stringify(documentOverflow)}`,
+  );
+
+  const beforeScrollMetrics = await messageList.evaluate((element) => ({
+    scrollHeight: element.scrollHeight,
+  }));
+  await messageList.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "GET" &&
+          request.pathname ===
+            "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
+          String(request.search || "").includes("before=msg-070"),
+    ),
+    "expected scrolling upward to request the older chat page",
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".chat-message").length === 100);
+  const renderedMessages = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".chat-message")).map((element) => element.textContent || ""),
+  );
+  assert.ok(renderedMessages.some((message) => message.includes("Message 020")));
+  assert.equal(renderedMessages.some((message) => message.includes("Message 000")), false);
+  const gridPlacement = await page.evaluate(() => {
+    const thread = document.querySelector(".chat-thread");
+    const list = document.querySelector(".chat-message-list");
+    const composer = document.querySelector(".chat-composer");
+    if (!(thread instanceof HTMLElement) || !(list instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+      return null;
+    }
+    return {
+      hasCallStripClass: thread.classList.contains("has-call-strip"),
+      listConversationId: list.dataset.chatConversationId || null,
+      scrollConversationId: list.dataset.chatScrollConversationId || null,
+      listGridRowStart: getComputedStyle(list).gridRowStart,
+      composerGridRowStart: getComputedStyle(composer).gridRowStart,
+    };
+  });
+  assert.deepEqual(gridPlacement, {
+    hasCallStripClass: false,
+    listConversationId: null,
+    scrollConversationId: "conversation-alpha-lead",
+    listGridRowStart: "2",
+    composerGridRowStart: "3",
+  });
+  const afterScrollMetrics = await messageList.evaluate((element) => ({
+    scrollHeight: element.scrollHeight,
+    scrollTop: element.scrollTop,
+  }));
+  assert.ok(
+    afterScrollMetrics.scrollHeight > beforeScrollMetrics.scrollHeight,
+    "expected prepended messages to increase the scrollable history height",
+  );
+  assert.ok(
+    afterScrollMetrics.scrollTop > 0,
+    `expected scroll position to be preserved after prepend: ${JSON.stringify(afterScrollMetrics)}`,
+  );
 });
 
 function seededScrollablePeopleTooltipState() {

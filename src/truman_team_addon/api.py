@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
@@ -62,6 +63,9 @@ from .providers import (
     _seed_action_contract_files,
     _seed_team_agent_guidance,
 )
+
+DEFAULT_CHAT_MESSAGE_LIMIT = 50
+MAX_CHAT_MESSAGE_LIMIT = 100
 
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
@@ -547,6 +551,33 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     include_messages=True,
                 ),
             }
+        )
+
+    async def list_conversation_messages(request: Request) -> JSONResponse:
+        state = repository.read()
+        conversation_id = request.path_params["conversation_id"]
+        conversation = state.conversations.get(conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        return JSONResponse(
+            _conversation_message_page_payload(
+                state,
+                conversation,
+                before_message_id=_query_text(request, "before"),
+                limit=_query_chat_message_limit(request),
+            )
+        )
+
+    async def stream_conversation(request: Request) -> StreamingResponse | JSONResponse:
+        conversation_id = request.path_params["conversation_id"]
+        try:
+            _conversation_snapshot_payload(repository, conversation_id)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return StreamingResponse(
+            _conversation_snapshot_events(repository, request, conversation_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     async def send_conversation_message(request: Request) -> JSONResponse:
@@ -1366,6 +1397,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["GET"],
         ),
         Route(
+            "/conversations/{conversation_id}/stream",
+            _with_errors(stream_conversation),
+            methods=["GET"],
+        ),
+        Route(
+            "/conversations/{conversation_id}/messages",
+            _with_errors(list_conversation_messages),
+            methods=["GET"],
+        ),
+        Route(
             "/conversations/{conversation_id}/messages",
             _with_errors(send_conversation_message),
             methods=["POST"],
@@ -1570,13 +1611,9 @@ def _conversation_payload(
     conversation: Any,
     *,
     include_messages: bool,
+    message_limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
 ) -> dict[str, Any]:
-    messages = [
-        message
-        for message in state.conversation_messages.values()
-        if message.conversation_id == conversation.id
-    ]
-    messages.sort(key=lambda message: (message.created_at, message.id))
+    messages = _conversation_messages(state, conversation.id)
     payload = {
         "id": conversation.id,
         "agent_id": conversation.agent_id,
@@ -1593,8 +1630,124 @@ def _conversation_payload(
         "message_count": len(messages),
     }
     if include_messages:
-        payload["messages"] = [_conversation_message_payload(message) for message in messages]
+        page = _bounded_conversation_message_page(messages, limit=message_limit)
+        payload.update(_conversation_message_page_fields(page, message_count=len(messages)))
     return payload
+
+
+def _conversation_messages(state: TeamState, conversation_id: str) -> list[Any]:
+    messages = [
+        message
+        for message in state.conversation_messages.values()
+        if message.conversation_id == conversation_id
+    ]
+    messages.sort(key=lambda message: (message.created_at, message.id))
+    return messages
+
+
+def _bounded_conversation_message_page(
+    messages: Sequence[Any],
+    *,
+    limit: int,
+    before_message_id: str | None = None,
+) -> tuple[list[Any], bool]:
+    end = len(messages)
+    if before_message_id is not None:
+        for index, message in enumerate(messages):
+            if message.id == before_message_id:
+                end = index
+                break
+        else:
+            raise ValueError("before message not found")
+    start = max(0, end - limit)
+    return list(messages[start:end]), start > 0
+
+
+def _conversation_message_page_fields(
+    page: tuple[list[Any], bool],
+    *,
+    message_count: int,
+) -> dict[str, Any]:
+    messages, has_older = page
+    return {
+        "messages": [_conversation_message_payload(message) for message in messages],
+        "messages_limit": DEFAULT_CHAT_MESSAGE_LIMIT,
+        "message_count": message_count,
+        "has_older": has_older,
+        "oldest_message_id": messages[0].id if messages else None,
+        "newest_message_id": messages[-1].id if messages else None,
+    }
+
+
+def _conversation_message_page_payload(
+    state: TeamState,
+    conversation: Any,
+    *,
+    before_message_id: str | None = None,
+    limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
+) -> dict[str, Any]:
+    messages = _conversation_messages(state, conversation.id)
+    page = _bounded_conversation_message_page(
+        messages,
+        limit=limit,
+        before_message_id=before_message_id,
+    )
+    payload = _conversation_message_page_fields(page, message_count=len(messages))
+    payload["messages_limit"] = limit
+    return {
+        "revision": state.revision,
+        "conversation_id": conversation.id,
+        "before_message_id": before_message_id,
+        **payload,
+    }
+
+
+def _conversation_snapshot_payload(
+    repository: TeamStateRepository,
+    conversation_id: str,
+) -> dict[str, Any]:
+    state = repository.read()
+    conversation = state.conversations.get(conversation_id)
+    if conversation is None:
+        raise ValueError("conversation not found")
+    return {
+        "revision": state.revision,
+        "conversation": _conversation_payload(
+            state,
+            conversation,
+            include_messages=True,
+        ),
+    }
+
+
+async def _conversation_snapshot_events(
+    repository: TeamStateRepository,
+    request: Request,
+    conversation_id: str,
+    *,
+    poll_interval_seconds: float = 1.0,
+) -> AsyncIterator[str]:
+    last_serialized = ""
+    try:
+        snapshot = _conversation_snapshot_payload(repository, conversation_id)
+    except ValueError:
+        return
+    last_serialized = json.dumps(snapshot, sort_keys=True)
+    yield f"event: snapshot\ndata: {last_serialized}\n\n"
+    while True:
+        if await request.is_disconnected():
+            break
+        await asyncio.sleep(max(0.0, poll_interval_seconds))
+        try:
+            snapshot = _conversation_snapshot_payload(repository, conversation_id)
+        except ValueError:
+            break
+        serialized = json.dumps(snapshot, sort_keys=True)
+        if serialized == last_serialized:
+            yield ": keepalive\n\n"
+            continue
+        last_serialized = serialized
+        yield f"event: snapshot\ndata: {serialized}\n\n"
 
 
 def _conversation_message_payload(message: Any) -> dict[str, Any]:
@@ -2259,6 +2412,16 @@ def _query_bool(request: Request, field_name: str) -> bool | None:
     if text in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{field_name} must be true or false")
+
+
+def _query_chat_message_limit(request: Request) -> int:
+    value = _query_text(request, "limit")
+    if value is None:
+        return DEFAULT_CHAT_MESSAGE_LIMIT
+    limit = _coerce_int(value, "limit")
+    if limit < 1:
+        raise ValueError("limit must be greater than zero")
+    return min(limit, MAX_CHAT_MESSAGE_LIMIT)
 
 
 def _optional_bool(payload: Mapping[str, Any], field_name: str) -> bool | None:
