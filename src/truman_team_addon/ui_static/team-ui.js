@@ -2494,14 +2494,16 @@ function renderAgents() {
 function renderPeopleAgents(allAgents, agents) {
   renderIntoActiveTargets("[data-agents-view]", "");
   const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
   if (selectedPeopleTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedPeopleTeamId))) {
     selectedPeopleTeamId = "all";
   }
+  const teamAgents = agents.filter((agent) => visibleTeamIds.has(text(agent.team_id)));
   const allProjects = values(state.projects).sort(byId);
-  const projects = allProjects.filter(isVisibleProject);
+  const projects = allProjects.filter((project) => isVisibleProject(project) && visibleTeamIds.has(text(project.team_id)));
   const allRoles = values(state.roles).sort(byId);
-  const roles = allRoles.filter(isVisibleRole);
-  const teamTabs = renderPeopleTeamTabs(visibleTeams, { agents, projects, roles });
+  const roles = allRoles.filter((role) => isVisibleRole(role) && visibleTeamIds.has(text(role.team_id)));
+  const teamTabs = renderPeopleTeamTabs(visibleTeams, { agents: teamAgents, projects, roles });
 
   if (!visibleTeams.length) {
     clearSelectedTeamRecord();
@@ -2515,7 +2517,7 @@ function renderPeopleAgents(allAgents, agents) {
     : visibleTeams.filter((team) => text(team.id) === text(selectedPeopleTeamId));
   const scopedTeamIds = new Set(scopedTeams.map((team) => text(team.id)));
   const scopedRecords = {
-    agents: agents.filter((agent) => scopedTeamIds.has(text(agent.team_id))).sort(comparePeopleAgents),
+    agents: teamAgents.filter((agent) => scopedTeamIds.has(text(agent.team_id))).sort(comparePeopleAgents),
     projects: projects.filter((project) => scopedTeamIds.has(text(project.team_id))).sort(compareTeamProjects),
     roles: roles.filter((role) => scopedTeamIds.has(text(role.team_id))).sort(compareTeamRoles),
   };

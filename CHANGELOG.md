@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Teams Tab Archived Counts
+
+- Fixed Teams tab record counts so active projects, roles, or agents owned by
+  hidden archived teams are not included while archived records are hidden.
+
 ## 2026-06-21 - Team Add-on Chat Tab
 
 - Added a Team Add-on Chat tab with recent per-agent conversations, operator

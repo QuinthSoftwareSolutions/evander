@@ -2708,6 +2708,44 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.agents["beta-manager"].display_name = "Zed Manager";
   initialState.agents["beta-lead"].display_name = "Beta Lead";
+  initialState.teams["team-archived"] = {
+    id: "team-archived",
+    name: "Archived Team",
+    manager_agent_id: "archived-agent",
+    operator_communication_target_id: "ops-archived",
+    project_ids: ["archived-project"],
+    archived: true,
+  };
+  initialState.projects["archived-project"] = {
+    id: "archived-project",
+    team_id: "team-archived",
+    name: "Archived Project",
+    lead_agent_id: "archived-agent",
+    goals: [],
+    git: {},
+    status: "active",
+  };
+  initialState.roles["archived-project__project-lead"] = {
+    id: "archived-project__project-lead",
+    team_id: "team-archived",
+    project_id: "archived-project",
+    name: "Archived Project Lead",
+    description: "",
+    permissions: ["create_root_task"],
+    ephemeral_policy: { max_concurrent: 0 },
+    archived: false,
+  };
+  initialState.agents["archived-agent"] = {
+    id: "archived-agent",
+    team_id: "team-archived",
+    project_id: "archived-project",
+    role_id: "archived-project__project-lead",
+    session_id: "session-archived-agent",
+    reports_to_agent_id: null,
+    subordinate_agent_ids: [],
+    ephemeral_policy: { max_concurrent: 0 },
+    status: "active",
+  };
   const { port } = await createTeamAddonServer(t, {
     initialState,
   });
@@ -2719,6 +2757,9 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
 
   assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-section").count(), 6);
+  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-archived"]').count(), 0);
+  assert.equal(await page.locator('#team-people-page [data-project-id="archived-project"]').count(), 0);
+  assert.equal(await page.locator('#team-people-page [data-role-id="archived-project__project-lead"]').count(), 0);
   assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "10");
   assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "5");
   assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "5");
