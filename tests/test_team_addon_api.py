@@ -1004,6 +1004,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "loadConversations" in script.text
     assert "renderChat" in script.text
     assert "data-chat-message-form" in script.text
+    assert 'document.addEventListener("submit"' in script.text
+    assert 'closest?.("[data-chat-message-form]")' in script.text
     assert "data-agent-call-conversation-id" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")

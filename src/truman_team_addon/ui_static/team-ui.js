@@ -579,11 +579,13 @@ function bindForms() {
     void submitReviewDecision(decideReviewForm);
   });
 
-  document.querySelectorAll("[data-chat-message-form]").forEach((form) => {
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      void submitChatMessage(form);
-    });
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("[data-chat-message-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    void submitChatMessage(form);
   });
 }
 

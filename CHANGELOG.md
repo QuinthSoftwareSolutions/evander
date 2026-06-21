@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Added a Team Add-on Chat tab with recent per-agent conversations, operator
   message dispatch, persistent agent `chat_replies`, and chat-linked browser
   voice calls.
+- Fixed dynamically rendered chat composers so Send uses the chat dispatch flow,
+  and reopened existing conversations without Team state revision churn.
 
 ## 2026-06-21 - Team Add-on Task Board
 

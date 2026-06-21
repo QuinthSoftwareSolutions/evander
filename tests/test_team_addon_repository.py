@@ -297,6 +297,30 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
     assert state.agent_runtimes["backend"].wake_leased_until is None
 
 
+def test_repository_gets_existing_team_chat_conversation_without_revision_bump(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    assert created is True
+    revision = state.revision
+
+    state, same_conversation, created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:bob",
+        expected_revision=revision,
+    )
+
+    assert created is False
+    assert same_conversation.id == conversation.id
+    assert state.revision == revision
+    assert repo.read().revision == revision
+
+
 def test_repository_rejects_chat_reply_from_wrong_agent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     state, conversation, _created = repo.create_or_get_conversation(
