@@ -791,6 +791,82 @@ class AgentActionRecord(TeamModel):
         return _optional_text(value)
 
 
+class TeamConversation(TeamModel):
+    id: str
+    agent_id: str
+    created_by: str | None = None
+    last_message_preview: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    last_interaction_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "agent_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("created_by", "last_message_preview", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class TeamConversationMessage(TeamModel):
+    id: str
+    conversation_id: str
+    sender: Literal["operator", "agent", "system"]
+    message_type: Literal["text", "voice_call", "system"] = "text"
+    body: str | None = None
+    status: Literal[
+        "created",
+        "dispatching",
+        "running",
+        "replied",
+        "failed",
+        "sent",
+        "ended",
+    ] = "sent"
+    dispatch_id: str | None = None
+    voice_session_id: str | None = None
+    source_message_id: str | None = None
+    error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "conversation_id", "sender", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "body",
+        "dispatch_id",
+        "voice_session_id",
+        "source_message_id",
+        "error",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+    @model_validator(mode="after")
+    def _validate_body(self) -> "TeamConversationMessage":
+        if self.message_type == "text" and not self.body:
+            raise ValueError("text conversation messages require body")
+        return self
+
+
 class AgentStandDown(TeamModel):
     id: str
     agent_id: str
@@ -999,6 +1075,8 @@ class TeamState(TeamModel):
     review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
+    conversations: dict[str, TeamConversation] = Field(default_factory=dict)
+    conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
@@ -1029,6 +1107,7 @@ class TeamState(TeamModel):
         self._validate_reviews(errors)
         self._validate_inbox(errors)
         self._validate_action_records(errors)
+        self._validate_conversations(errors)
         self._validate_releases(errors)
         self._validate_ephemeral_assignments(errors)
         self._validate_git_promotions(errors)
@@ -1059,6 +1138,8 @@ class TeamState(TeamModel):
             "review_profiles",
             "inbox",
             "action_records",
+            "conversations",
+            "conversation_messages",
             "release_packages",
             "ephemeral_assignments",
             "git_promotions",
@@ -1536,6 +1617,36 @@ class TeamState(TeamModel):
             if record.agent_id not in self.agents:
                 errors.append(
                     f"action record {record.id} references missing agent {record.agent_id}"
+                )
+
+    def _validate_conversations(self, errors: list[str]) -> None:
+        conversation_agents: dict[str, str] = {}
+        for conversation in self.conversations.values():
+            if conversation.agent_id not in self.agents:
+                errors.append(
+                    f"conversation {conversation.id} references missing agent "
+                    f"{conversation.agent_id}"
+                )
+            existing = conversation_agents.get(conversation.agent_id)
+            if existing is not None:
+                errors.append(
+                    f"agent {conversation.agent_id} has multiple conversations: "
+                    f"{existing}, {conversation.id}"
+                )
+            conversation_agents[conversation.agent_id] = conversation.id
+        for message in self.conversation_messages.values():
+            if message.conversation_id not in self.conversations:
+                errors.append(
+                    f"conversation message {message.id} references missing conversation "
+                    f"{message.conversation_id}"
+                )
+            if (
+                message.source_message_id is not None
+                and message.source_message_id not in self.conversation_messages
+            ):
+                errors.append(
+                    f"conversation message {message.id} references missing source message "
+                    f"{message.source_message_id}"
                 )
 
     def _validate_releases(self, errors: list[str]) -> None:

@@ -56,6 +56,8 @@ from .models import (
     ReviewRequest,
     RolePermission,
     Team,
+    TeamConversation,
+    TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamInboxItemType,
@@ -927,6 +929,297 @@ class TeamStateRepository:
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_or_get_conversation(
+        self,
+        *,
+        agent_id: str,
+        created_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamConversation, bool]:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_created_by = _optional_text(created_by)
+        conversation_id: str | None = None
+        created = False
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal conversation_id, created
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            for conversation in state.conversations.values():
+                if conversation.agent_id == agent.id:
+                    conversation_id = conversation.id
+                    return state
+            now = utc_now()
+            conversation_id = _generated_id(
+                prefix="conversation",
+                labels=[agent.id],
+                existing_ids=state.conversations,
+            )
+            state.conversations[conversation_id] = TeamConversation(
+                id=conversation_id,
+                agent_id=agent.id,
+                created_by=normalized_created_by,
+                last_message_preview="",
+                created_at=now,
+                updated_at=now,
+                last_interaction_at=now,
+            )
+            created = True
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        if conversation_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation was not resolved")
+        return state, state.conversations[conversation_id], created
+
+    def record_operator_chat_message(
+        self,
+        *,
+        conversation_id: str,
+        body: str,
+        created_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_conversation_id = _required_text(conversation_id, "conversation_id")
+        normalized_body = _required_text(body, "body")
+        normalized_created_by = _optional_text(created_by)
+        message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal message_id
+            conversation = _require_present(
+                state.conversations,
+                normalized_conversation_id,
+                "conversation",
+            )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            now = utc_now()
+            message_id = f"chatmsg-{uuid4().hex}"
+            state.conversation_messages[message_id] = TeamConversationMessage(
+                id=message_id,
+                conversation_id=conversation.id,
+                sender="operator",
+                message_type="text",
+                body=normalized_body,
+                status="created",
+                metadata={"created_by": normalized_created_by} if normalized_created_by else {},
+                created_at=now,
+                updated_at=now,
+            )
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=_chat_preview(normalized_body),
+            )
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        if message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message was not created")
+        return state, state.conversation_messages[message_id]
+
+    def begin_chat_message_dispatch(
+        self,
+        *,
+        message_id: str,
+        dispatch_id: str,
+        lease_seconds: int = 172800,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        resolved_message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_message_id
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            runtime = state.agent_runtimes.setdefault(
+                agent.id,
+                AgentRuntime(agent_id=agent.id),
+            )
+            if (
+                runtime.active_dispatch_id is not None
+                and runtime.active_dispatch_id != normalized_dispatch_id
+            ):
+                raise ValueError(
+                    f"agent {agent.id} already has active Team dispatch "
+                    f"{runtime.active_dispatch_id}"
+                )
+            now = utc_now()
+            runtime.active_dispatch_id = normalized_dispatch_id
+            runtime.wake_leased_until = now + timedelta(seconds=max(1, int(lease_seconds)))
+            runtime.wake_reason = "team_chat"
+            runtime.last_wake_at = now
+            runtime.next_wake_at = None
+            runtime.updated_at = now
+            message.status = "running"
+            message.dispatch_id = normalized_dispatch_id
+            message.error = None
+            message.updated_at = now
+            conversation.updated_at = now
+            resolved_message_id = message.id
+            return state
+
+        state = self.update(_mutate)
+        if resolved_message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch was not started")
+        return state, state.conversation_messages[resolved_message_id]
+
+    def mark_chat_message_dispatch_failed(
+        self,
+        *,
+        message_id: str,
+        error: str,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_error = _required_text(error, "error")
+        resolved_message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_message_id
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            runtime = state.agent_runtimes.get(conversation.agent_id)
+            if (
+                runtime is not None
+                and message.dispatch_id is not None
+                and runtime.active_dispatch_id == message.dispatch_id
+            ):
+                runtime.active_dispatch_id = None
+                runtime.wake_leased_until = None
+                runtime.wake_reason = None
+                runtime.updated_at = utc_now()
+            now = utc_now()
+            message.status = "failed"
+            message.error = normalized_error
+            message.updated_at = now
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=f"Send failed: {_chat_preview(normalized_error)}",
+            )
+            resolved_message_id = message.id
+            return state
+
+        state = self.update(_mutate)
+        if resolved_message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch failure was not recorded")
+        return state, state.conversation_messages[resolved_message_id]
+
+    def record_conversation_voice_call(
+        self,
+        *,
+        conversation_id: str,
+        voice_session_id: str,
+        status: str = "running",
+        summary: str | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_conversation_id = _required_text(conversation_id, "conversation_id")
+        normalized_voice_session_id = _required_text(voice_session_id, "voice_session_id")
+        normalized_summary = _optional_text(summary)
+        normalized_status = _optional_text(status) or "running"
+        message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal message_id
+            conversation = _require_present(
+                state.conversations,
+                normalized_conversation_id,
+                "conversation",
+            )
+            now = utc_now()
+            message_id = f"chatmsg-{uuid4().hex}"
+            body = normalized_summary or "Voice call"
+            state.conversation_messages[message_id] = TeamConversationMessage(
+                id=message_id,
+                conversation_id=conversation.id,
+                sender="system",
+                message_type="voice_call",
+                body=body,
+                status="ended" if normalized_status == "ended" else "running",
+                voice_session_id=normalized_voice_session_id,
+                created_at=now,
+                updated_at=now,
+            )
+            _touch_conversation(conversation, now=now, preview=body)
+            return state
+
+        state = self.update(_mutate)
+        if message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation voice call was not recorded")
+        return state, state.conversation_messages[message_id]
+
+    def update_conversation_voice_call_status(
+        self,
+        *,
+        voice_session_id: str,
+        status: str,
+        summary: str | None = None,
+        error: str | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage] | None:
+        normalized_voice_session_id = _required_text(voice_session_id, "voice_session_id")
+        normalized_status = _optional_text(status) or "ended"
+        normalized_summary = _optional_text(summary)
+        normalized_error = _optional_text(error)
+        current = self.read()
+        message_id = next(
+            (
+                message.id
+                for message in current.conversation_messages.values()
+                if message.voice_session_id == normalized_voice_session_id
+            ),
+            None,
+        )
+        if message_id is None:
+            return None
+
+        def _mutate(state: TeamState) -> TeamState:
+            message = _require_present(
+                state.conversation_messages,
+                message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            now = utc_now()
+            message.status = "failed" if normalized_status == "failed" else "ended"
+            if normalized_summary is not None:
+                message.metadata = {**message.metadata, "summary": normalized_summary}
+            if normalized_error is not None:
+                message.error = normalized_error
+            message.updated_at = now
+            preview = "Voice call failed" if message.status == "failed" else "Voice call ended"
+            _touch_conversation(conversation, now=now, preview=preview)
+            return state
+
+        state = self.update(_mutate)
+        return state, state.conversation_messages[message_id]
 
     def set_agent_avatar(
         self,
@@ -2640,6 +2933,8 @@ class TeamStateRepository:
             "rejected_ephemeral_assignment_ids": [],
             "created_stand_down_ids": [],
             "revoked_stand_down_ids": [],
+            "created_chat_reply_message_ids": [],
+            "replied_chat_message_ids": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -2993,6 +3288,22 @@ class TeamStateRepository:
                     _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "status_requests", index, exc)
+
+            for index, reply in enumerate(
+                _list_of_mappings(normalized_action.get("chat_replies"), "chat_replies")
+            ):
+                try:
+                    created_id = _apply_chat_reply(
+                        state_model,
+                        actor=agent,
+                        reply=reply,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "chat_replies", index, exc)
+                    continue
+                result["created_chat_reply_message_ids"].append(created_id)
+                _mark_progress()
 
             for escalation in _list_of_mappings(
                 normalized_action.get("operator_escalations"), "operator_escalations"
@@ -3909,6 +4220,24 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _chat_preview(value: object, *, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}..."
+
+
+def _touch_conversation(
+    conversation: TeamConversation,
+    *,
+    now: datetime,
+    preview: str,
+) -> None:
+    conversation.last_message_preview = _chat_preview(preview)
+    conversation.last_interaction_at = now
+    conversation.updated_at = now
+
+
 def _optional_cost_limit(value: object) -> Decimal | None:
     text = _optional_text(value)
     if text is None:
@@ -4493,6 +4822,57 @@ def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
 def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
     project = state.projects.get(project_id)
     return project is not None and project.lead_agent_id == agent_id
+
+
+def _apply_chat_reply(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    reply: Mapping[str, Any],
+    result: dict[str, Any],
+) -> str:
+    conversation_id = _required_text(reply.get("conversation_id"), "conversation_id")
+    source_message_id = _required_text(reply.get("message_id"), "message_id")
+    body = _required_text(reply.get("body"), "body")
+    conversation = _require_present(state.conversations, conversation_id, "conversation")
+    if conversation.agent_id != actor.id:
+        raise ValueError(
+            f"agent {actor.id} cannot reply to conversation {conversation_id}"
+        )
+    source_message = _require_present(
+        state.conversation_messages,
+        source_message_id,
+        "conversation message",
+    )
+    if source_message.conversation_id != conversation.id:
+        raise ValueError(
+            f"message {source_message_id} is not in conversation {conversation_id}"
+        )
+    if source_message.sender != "operator":
+        raise ValueError(f"message {source_message_id} is not an operator message")
+    now = utc_now()
+    source_message.status = "replied"
+    source_message.updated_at = now
+    reply_id = f"chatmsg-{uuid4().hex}"
+    metadata: dict[str, Any] = {}
+    summary = _optional_text(reply.get("summary"))
+    if summary is not None:
+        metadata["summary"] = summary
+    state.conversation_messages[reply_id] = TeamConversationMessage(
+        id=reply_id,
+        conversation_id=conversation.id,
+        sender="agent",
+        message_type="text",
+        body=body,
+        status="sent",
+        source_message_id=source_message.id,
+        metadata=metadata,
+        created_at=now,
+        updated_at=now,
+    )
+    _touch_conversation(conversation, now=now, preview=_chat_preview(body))
+    result["replied_chat_message_ids"].append(source_message.id)
+    return reply_id
 
 
 def _agent_has_role_permission_for_project(

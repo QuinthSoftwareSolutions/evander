@@ -56,7 +56,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 9
+ACTION_CONTRACT_SCHEMA_VERSION = 10
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 TEAM_AGENT_GUIDANCE_VERSION = 2
@@ -2839,6 +2839,25 @@ def _persistent_action_schema() -> dict[str, Any]:
                 "default": [],
                 "items": _message_item_schema(),
             },
+            "chat_replies": {
+                "type": "array",
+                "description": (
+                    "Reply to an operator Team Chat message. Use only when the wake "
+                    "prompt provides a conversation_id and message_id for operator chat."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["conversation_id", "message_id", "body"],
+                    "properties": {
+                        "conversation_id": {"type": "string", "minLength": 1},
+                        "message_id": {"type": "string", "minLength": 1},
+                        "body": {"type": "string", "minLength": 1},
+                        "summary": text_or_null,
+                    },
+                },
+            },
             "operator_escalations": {
                 "type": "array",
                 "default": [],
@@ -3097,6 +3116,14 @@ def _persistent_action_example() -> dict[str, Any]:
                 "message": "No reply needed unless this changes your plan.",
                 "response_requested": False,
                 "priority": "low",
+            }
+        ],
+        "chat_replies": [
+            {
+                "conversation_id": "operator-chat-conversation-id",
+                "message_id": "operator-chat-message-id",
+                "body": "Concise reply for the operator.",
+                "summary": "Short reply summary.",
             }
         ],
         "operator_escalations": [],

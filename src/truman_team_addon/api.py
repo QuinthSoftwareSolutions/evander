@@ -13,6 +13,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -56,6 +57,11 @@ from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
+from .providers import (
+    DEFAULT_ACTION_ARTIFACT_PATH,
+    _seed_action_contract_files,
+    _seed_team_agent_guidance,
+)
 
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
@@ -507,6 +513,111 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
         return JSONResponse(team_state_payload(state))
 
+    async def list_conversations(_request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(_conversation_collection_payload(state))
+
+    async def create_conversation(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state, conversation, created = repository.create_or_get_conversation(
+            agent_id=_required(payload, "agent_id"),
+            created_by=_optional(payload, "created_by")
+            or _operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        response_payload = _conversation_collection_payload(
+            state,
+            selected_conversation_id=conversation.id,
+        )
+        response_payload["created"] = created
+        return JSONResponse(response_payload, status_code=201 if created else 200)
+
+    async def get_conversation(request: Request) -> JSONResponse:
+        state = repository.read()
+        conversation_id = request.path_params["conversation_id"]
+        conversation = state.conversations.get(conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "conversation": _conversation_payload(
+                    state,
+                    conversation,
+                    include_messages=True,
+                ),
+            }
+        )
+
+    async def send_conversation_message(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        conversation_id = request.path_params["conversation_id"]
+        state, message = repository.record_operator_chat_message(
+            conversation_id=conversation_id,
+            body=_required(payload, "body"),
+            created_by=_optional(payload, "created_by")
+            or _operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        conversation = state.conversations[conversation_id]
+        agent = state.agents[conversation.agent_id]
+        dispatch_id = f"team-chat:{message.id}"
+        dispatch_payload: dict[str, Any] = {
+            "success": False,
+            "dispatch_id": dispatch_id,
+            "message": None,
+        }
+        try:
+            state, message = repository.begin_chat_message_dispatch(
+                message_id=message.id,
+                dispatch_id=dispatch_id,
+            )
+            conversation = state.conversations[conversation_id]
+            agent_setup = _seed_team_chat_agent_files(context, agent)
+            prompt = _build_team_chat_prompt(
+                state=state,
+                conversation=conversation,
+                message=message,
+            )
+            dispatch_result = _resume_team_chat_agent(
+                context,
+                agent=agent,
+                prompt=prompt,
+                dispatch_id=dispatch_id,
+            )
+            dispatch_payload = _dispatch_result_payload(dispatch_result)
+            dispatch_payload["dispatch_id"] = dispatch_payload.get("dispatch_id") or dispatch_id
+            dispatch_payload["agent_setup"] = agent_setup
+            if not bool(dispatch_payload.get("success")):
+                state, message = repository.mark_chat_message_dispatch_failed(
+                    message_id=message.id,
+                    error=str(dispatch_payload.get("message") or "agent dispatch failed"),
+                )
+        except Exception as exc:
+            state, message = repository.mark_chat_message_dispatch_failed(
+                message_id=message.id,
+                error=str(exc),
+            )
+            dispatch_payload = {
+                "success": False,
+                "dispatch_id": dispatch_id,
+                "message": str(exc),
+            }
+        conversation = state.conversations[conversation_id]
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "conversation": _conversation_payload(
+                    state,
+                    conversation,
+                    include_messages=True,
+                ),
+                "message": _conversation_message_payload(message),
+                "dispatch": dispatch_payload,
+            },
+            status_code=202,
+        )
+
     async def create_agent_voice_session(request: Request) -> JSONResponse:
         payload = await _read_optional_payload(request)
         state = repository.read()
@@ -516,6 +627,17 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse({"error": "agent not found"}, status_code=404)
         if _enum_value(agent.status) == AgentStatus.ARCHIVED.value:
             return JSONResponse({"error": "archived agents cannot be called"}, status_code=403)
+        conversation_id = _optional(payload, "conversation_id")
+        conversation = None
+        if conversation_id is not None:
+            conversation = state.conversations.get(conversation_id)
+            if conversation is None:
+                return JSONResponse({"error": "conversation not found"}, status_code=404)
+            if conversation.agent_id != agent.id:
+                return JSONResponse(
+                    {"error": "conversation belongs to a different agent"},
+                    status_code=400,
+                )
         runtime = _runtime_from_context(context)
         session = runtime.session_repository.get_session(agent.session_id)
         if session is None:
@@ -555,10 +677,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             prompt_metadata=prompt_metadata,
             projection=projection,
             caller_metadata={
-                "call_surface": "team_people_tab",
+                "call_surface": "team_chat_tab" if conversation is not None else "team_people_tab",
                 "agent_id": agent.id,
                 "team_id": agent.team_id,
                 "project_id": agent.project_id,
+                "conversation_id": conversation_id,
                 "voice_profile": voice_profile,
             },
             contact_id=agent.id,
@@ -588,16 +711,29 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 "provider": "openai_realtime",
                 "transport": "webrtc_browser",
                 "model": getattr(resolved_config, "openai_realtime_model", "gpt-realtime-2"),
-                "call_surface": "team_people_tab",
+                "call_surface": "team_chat_tab" if conversation is not None else "team_people_tab",
                 "voice": voice_profile.get("voice"),
                 "speaking_style": voice_profile.get("speaking_style"),
             },
         )
+        conversation_message = None
+        if conversation is not None:
+            state, conversation_message = repository.record_conversation_voice_call(
+                conversation_id=conversation.id,
+                voice_session_id=record.voice_session_id,
+                status="running",
+                summary=f"Voice call with {_agent_display_name(agent)}",
+            )
         return JSONResponse(
             {
                 **_team_voice_session_payload(record),
                 "created": created,
                 "projection": projection,
+                "conversation_message": (
+                    _conversation_message_payload(conversation_message)
+                    if conversation_message is not None
+                    else None
+                ),
                 "client_secret": client_secret,
                 "realtime": {
                     "provider": "openai_realtime",
@@ -653,6 +789,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     else None,
                     error=_optional(payload, "error"),
                 )
+                _record_chat_voice_call_status(repository, updated)
                 runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
             else:
                 updated = runtime.voice_session_store.attach_bridge_session(
@@ -687,6 +824,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             else None,
             error=_optional(payload, "error"),
         )
+        _record_chat_voice_call_status(repository, updated)
         reconciled = runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
         return JSONResponse(_team_voice_session_payload(reconciled or updated))
 
@@ -711,6 +849,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             else None,
             error=_optional(payload, "error"),
         )
+        _record_chat_voice_call_status(repository, updated)
         reconciled = runtime.voice_session_reconciler.schedule_reconciliation(
             record.voice_session_id
         )
@@ -1099,6 +1238,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/roles", _with_errors(list_roles), methods=["GET"]),
         Route("/roles/{role_id}", _with_errors(get_role), methods=["GET"]),
         Route("/roles/{role_id}", _with_errors(patch_role), methods=["PATCH"]),
+        Route("/conversations", _with_errors(list_conversations), methods=["GET"]),
+        Route("/conversations", _with_errors(create_conversation), methods=["POST"]),
+        Route(
+            "/conversations/{conversation_id}",
+            _with_errors(get_conversation),
+            methods=["GET"],
+        ),
+        Route(
+            "/conversations/{conversation_id}/messages",
+            _with_errors(send_conversation_message),
+            methods=["POST"],
+        ),
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
         Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
         Route(
@@ -1264,6 +1415,253 @@ def _runtime_from_context(context: AddonContext) -> Any:
     if runtime is None:
         raise RuntimeError("Admin runtime is unavailable")
     return runtime
+
+
+def _conversation_collection_payload(
+    state: TeamState,
+    *,
+    selected_conversation_id: str | None = None,
+) -> dict[str, Any]:
+    conversations = sorted(
+        state.conversations.values(),
+        key=lambda conversation: (
+            conversation.last_interaction_at,
+            conversation.id,
+        ),
+        reverse=True,
+    )
+    return {
+        "revision": state.revision,
+        "selected_conversation_id": selected_conversation_id,
+        "eligible_agents": [
+            _chat_agent_payload(agent)
+            for agent in sorted(state.agents.values(), key=lambda item: _agent_display_name(item))
+            if _chat_agent_is_eligible(agent)
+        ],
+        "conversations": [
+            _conversation_payload(state, conversation, include_messages=False)
+            for conversation in conversations
+        ],
+    }
+
+
+def _conversation_payload(
+    state: TeamState,
+    conversation: Any,
+    *,
+    include_messages: bool,
+) -> dict[str, Any]:
+    messages = [
+        message
+        for message in state.conversation_messages.values()
+        if message.conversation_id == conversation.id
+    ]
+    messages.sort(key=lambda message: (message.created_at, message.id))
+    payload = {
+        "id": conversation.id,
+        "agent_id": conversation.agent_id,
+        "agent": _chat_agent_payload(state.agents.get(conversation.agent_id)),
+        "created_by": conversation.created_by,
+        "last_message_preview": conversation.last_message_preview,
+        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
+        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "last_interaction_at": (
+            conversation.last_interaction_at.isoformat()
+            if conversation.last_interaction_at
+            else None
+        ),
+        "message_count": len(messages),
+    }
+    if include_messages:
+        payload["messages"] = [_conversation_message_payload(message) for message in messages]
+    return payload
+
+
+def _conversation_message_payload(message: Any) -> dict[str, Any]:
+    return {
+        "id": message.id,
+        "conversation_id": message.conversation_id,
+        "sender": message.sender,
+        "message_type": message.message_type,
+        "body": message.body,
+        "status": message.status,
+        "dispatch_id": message.dispatch_id,
+        "voice_session_id": message.voice_session_id,
+        "source_message_id": message.source_message_id,
+        "error": message.error,
+        "metadata": dict(message.metadata or {}),
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+    }
+
+
+def _chat_agent_payload(agent: Any | None) -> dict[str, Any] | None:
+    if agent is None:
+        return None
+    return {
+        "id": agent.id,
+        "display_name": _agent_display_name(agent),
+        "team_id": agent.team_id,
+        "project_id": agent.project_id,
+        "role_id": agent.role_id,
+        "role_name": None,
+        "status": _enum_value(agent.status),
+        "session_id": agent.session_id,
+        "avatar": (
+            agent.avatar.model_dump(mode="json")
+            if getattr(agent, "avatar", None) is not None
+            else None
+        ),
+    }
+
+
+def _chat_agent_is_eligible(agent: Any) -> bool:
+    return _enum_value(getattr(agent, "status", None)) != AgentStatus.ARCHIVED.value
+
+
+def _build_team_chat_prompt(
+    *,
+    state: TeamState,
+    conversation: Any,
+    message: Any,
+) -> str:
+    agent = state.agents[conversation.agent_id]
+    recent_messages = [
+        item
+        for item in state.conversation_messages.values()
+        if item.conversation_id == conversation.id
+    ]
+    recent_messages.sort(key=lambda item: (item.created_at, item.id))
+    transcript_lines = []
+    for item in recent_messages[-12:]:
+        body = str(item.body or "").strip()
+        if not body:
+            continue
+        transcript_lines.append(f"{item.sender}: {body}")
+    transcript = "\n".join(transcript_lines)
+    return (
+        "You have received an operator message in the Team Add-on Chat tab.\n"
+        "Treat this as the current operator request. Reply to the operator by writing "
+        "/artifacts/team-action.json with a chat_replies entry. Do not use questions "
+        "or status_reports for this operator reply; those are for agent-to-agent inbox "
+        "communication.\n\n"
+        f"Current agent: {_agent_display_name(agent)} ({agent.id})\n"
+        f"Conversation ID: {conversation.id}\n"
+        f"Operator message ID: {message.id}\n"
+        f"Dispatch ID: {message.dispatch_id or ''}\n\n"
+        "Required reply shape:\n"
+        "{\n"
+        f'  "schema_version": 10,\n'
+        f'  "agent_id": "{agent.id}",\n'
+        f'  "dispatch_id": "{message.dispatch_id or ""}",\n'
+        '  "chat_replies": [\n'
+        "    {\n"
+        f'      "conversation_id": "{conversation.id}",\n'
+        f'      "message_id": "{message.id}",\n'
+        '      "body": "Your reply to the operator."\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Recent conversation:\n"
+        f"{transcript or '(no earlier messages)'}\n\n"
+        "Operator message:\n"
+        f"{message.body}"
+    )
+
+
+def _resume_team_chat_agent(
+    context: AddonContext,
+    *,
+    agent: Any,
+    prompt: str,
+    dispatch_id: str,
+) -> Any:
+    service = getattr(context, "service", None)
+    resume_agent = getattr(service, "resume_agent", None)
+    if not callable(resume_agent):
+        raise RuntimeError("AdminService resume_agent is unavailable")
+    return resume_agent(
+        agent.session_id,
+        prompt,
+        dispatch_id=dispatch_id,
+        resume_mode="same_context",
+    )
+
+
+def _dispatch_result_payload(result: Any) -> dict[str, Any]:
+    if result is None:
+        return {"success": False, "dispatch_id": None, "message": "no dispatch result"}
+    model_dump = getattr(result, "model_dump", None)
+    if callable(model_dump):
+        payload = model_dump(mode="json")
+    elif isinstance(result, Mapping):
+        payload = dict(result)
+    else:
+        payload = {
+            "success": bool(getattr(result, "success", False)),
+            "message": str(getattr(result, "message", "") or ""),
+        }
+    return {
+        "success": bool(payload.get("success")),
+        "dispatch_id": payload.get("dispatch_id"),
+        "message": payload.get("message"),
+        "action": payload.get("action"),
+        "vm_name": payload.get("vm_name"),
+        "thread_id": payload.get("thread_id"),
+    }
+
+
+def _seed_team_chat_agent_files(context: AddonContext, agent: Any) -> dict[str, Any]:
+    runtime_context = _team_effect_runtime_context(context, agent=agent)
+    agent_payload = agent.model_dump(mode="json") if hasattr(agent, "model_dump") else dict(agent)
+    return {
+        "action_contract": _seed_action_contract_files(
+            runtime_context,
+            agent=agent_payload,
+            action_artifact_path=DEFAULT_ACTION_ARTIFACT_PATH,
+        ),
+        "agent_guidance": _seed_team_agent_guidance(
+            runtime_context,
+            agent=agent_payload,
+        ),
+    }
+
+
+def _team_effect_runtime_context(
+    context: AddonContext,
+    *,
+    agent: Any,
+) -> EffectRuntimeContext:
+    directory_path = "root"
+    try:
+        runtime = _runtime_from_context(context)
+        session = runtime.session_repository.get_session(agent.session_id)
+        directory_path = str(getattr(session, "directory_path", None) or "root")
+    except Exception:
+        directory_path = "root"
+    return EffectRuntimeContext(
+        resolved_config=context.config,
+        metadata={"directory_path": directory_path},
+        admin_service=context.service,
+    )
+
+
+def _record_chat_voice_call_status(
+    repository: TeamStateRepository,
+    record: Any,
+) -> None:
+    metadata = getattr(record, "caller_metadata", None)
+    if not isinstance(metadata, Mapping) or not _optional(metadata, "conversation_id"):
+        return
+    try:
+        repository.update_conversation_voice_call_status(
+            voice_session_id=record.voice_session_id,
+            status=str(getattr(record, "status", "") or "ended"),
+            summary=str(getattr(record, "summary", "") or "").strip() or None,
+            error=str(getattr(record, "error", "") or "").strip() or None,
+        )
+    except ValueError:
+        return
 
 
 def _session_is_expired(session: Any) -> bool:

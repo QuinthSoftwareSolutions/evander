@@ -70,6 +70,11 @@ let selectedOrgTeamId = "all";
 let selectedPeopleTeamId = "all";
 let selectedPeopleAgentId = null;
 let activeAgentVoiceCall = null;
+let chatState = emptyChatState();
+let chatRequestId = 0;
+let chatNewPickerOpen = false;
+let selectedChatConversationId = null;
+let chatSending = false;
 
 const teamViewIds = new Set([
   "workspace",
@@ -77,6 +82,7 @@ const teamViewIds = new Set([
   "operations",
   "delivery",
   "people",
+  "chat",
   "governance",
   "planning",
   "setup",
@@ -115,6 +121,9 @@ const elements = {
   reviewDeliveryView: document.querySelector("#review-delivery-view"),
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
+  chatConversationsView: document.querySelector("#chat-conversations-view"),
+  chatThreadView: document.querySelector("#chat-thread-view"),
+  chatNewPicker: document.querySelector("#chat-new-picker"),
   rolesView: document.querySelector("#roles-view"),
   projectsView: document.querySelector("#projects-view"),
   reviewProfilesView: document.querySelector("#review-profiles-view"),
@@ -555,6 +564,13 @@ function bindForms() {
     event.preventDefault();
     void submitReviewDecision(decideReviewForm);
   });
+
+  document.querySelectorAll("[data-chat-message-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitChatMessage(form);
+    });
+  });
 }
 
 function bindRecordEditing() {
@@ -596,6 +612,39 @@ function bindRecordEditing() {
     }
 
     const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
+    const chatNewButton = event.target.closest("[data-chat-new]");
+    if (chatNewButton) {
+      event.preventDefault();
+      chatNewPickerOpen = !chatNewPickerOpen;
+      renderChat();
+      return;
+    }
+
+    const chatAgentButton = event.target.closest("[data-chat-agent-id]");
+    if (chatAgentButton) {
+      event.preventDefault();
+      void createOrFocusChat(chatAgentButton.dataset.chatAgentId);
+      return;
+    }
+
+    const chatConversationButton = event.target.closest("[data-chat-conversation-id]");
+    if (chatConversationButton) {
+      event.preventDefault();
+      selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
+      renderChat();
+      if (selectedChatConversationId) {
+        void loadConversationDetail(selectedChatConversationId);
+      }
+      return;
+    }
+
+    const chatRefreshButton = event.target.closest("[data-chat-refresh]");
+    if (chatRefreshButton) {
+      event.preventDefault();
+      void loadConversations({ selectedConversationId: selectedChatConversationId });
+      return;
+    }
+
     if (contextRotationButton) {
       event.preventDefault();
       void requestContextRotation(
@@ -918,6 +967,7 @@ async function loadState({ preserveForms = false } = {}) {
     }
     setStatus("", "");
     void loadCosts();
+    void loadConversations({ preserveSelection: true });
     void loadTimeline();
   } catch (error) {
     timelineLoading = false;
@@ -956,6 +1006,18 @@ async function loadCosts() {
   }
 }
 
+function emptyChatState() {
+  return {
+    revision: 0,
+    selected_conversation_id: null,
+    eligible_agents: [],
+    conversations: [],
+    loading: false,
+    error: null,
+  };
+}
+
+
 function normalizeState(payload) {
   return { ...emptyState(), ...(payload || {}) };
 }
@@ -966,6 +1028,191 @@ function normalizeTemplates(payload) {
 
 function normalizeCosts(payload) {
   return { ...emptyCostState(), ...(payload || {}) };
+}
+
+function normalizeChat(payload) {
+  const normalized = { ...emptyChatState(), ...(payload || {}) };
+  normalized.eligible_agents = Array.isArray(normalized.eligible_agents)
+    ? normalized.eligible_agents
+    : [];
+  normalized.conversations = Array.isArray(normalized.conversations)
+    ? normalized.conversations
+    : [];
+  return normalized;
+}
+
+async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
+  const requestId = ++chatRequestId;
+  chatState = { ...chatState, loading: true, error: null };
+  renderChat();
+  try {
+    const response = await fetch(`${API_BASE}/conversations`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== chatRequestId) {
+      return;
+    }
+    chatState = normalizeChat(payload);
+    const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
+    selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
+    renderChat();
+    if (selectedChatConversationId) {
+      void loadConversationDetail(selectedChatConversationId, requestId);
+    }
+  } catch (error) {
+    if (requestId !== chatRequestId) {
+      return;
+    }
+    chatState = {
+      ...chatState,
+      loading: false,
+      error: error instanceof Error ? error.message : "Conversations failed to load.",
+    };
+    renderChat();
+  }
+}
+
+async function loadConversationDetail(conversationId, requestId = chatRequestId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId) {
+    return;
+  }
+  try {
+    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== chatRequestId) {
+      return;
+    }
+    replaceChatConversation(payload.conversation);
+    chatState = { ...chatState, loading: false, error: null, revision: payload.revision ?? chatState.revision };
+    renderChat();
+  } catch (error) {
+    if (requestId !== chatRequestId) {
+      return;
+    }
+    chatState = {
+      ...chatState,
+      loading: false,
+      error: error instanceof Error ? error.message : "Conversation failed to load.",
+    };
+    renderChat();
+  }
+}
+
+function selectExistingConversationId(conversationId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId) {
+    return null;
+  }
+  return chatState.conversations.some((conversation) => text(conversation.id) === normalizedConversationId)
+    ? normalizedConversationId
+    : null;
+}
+
+function firstConversationId() {
+  return text(chatState.conversations[0]?.id) || null;
+}
+
+function replaceChatConversation(conversation) {
+  if (!conversation?.id) {
+    return;
+  }
+  const nextConversations = chatState.conversations.filter((item) => text(item.id) !== text(conversation.id));
+  nextConversations.push(conversation);
+  nextConversations.sort(compareChatConversations);
+  chatState = { ...chatState, conversations: nextConversations };
+}
+
+async function createOrFocusChat(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return;
+  }
+  setStatus("Opening chat.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}/conversations`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        agent_id: normalizedAgentId,
+        expected_revision: chatState.revision ?? state.revision,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    chatState = normalizeChat(payload);
+    selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
+    chatNewPickerOpen = false;
+    renderChat();
+    if (selectedChatConversationId) {
+      await loadConversationDetail(selectedChatConversationId);
+    }
+    setStatus("", "");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Chat could not be opened.", "error");
+  }
+}
+
+async function submitChatMessage(form) {
+  const conversation = selectedChatConversation();
+  if (!conversation || chatSending) {
+    return;
+  }
+  const formData = new FormData(form);
+  const body = text(formData.get("body"));
+  if (!body) {
+    setStatus("Message is required.", "error");
+    return;
+  }
+  chatSending = true;
+  renderChat();
+  setStatus("Sending chat message.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        body,
+        expected_revision: chatState.revision ?? state.revision,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    replaceChatConversation(payload.conversation);
+    selectedChatConversationId = payload.conversation?.id || selectedChatConversationId;
+    chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
+    form.reset();
+    setStatus(
+      payload.dispatch?.success === false
+        ? (payload.dispatch.message || "Chat message saved, but dispatch failed.")
+        : "Chat message sent.",
+      payload.dispatch?.success === false ? "warning" : "ok",
+    );
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Chat message failed.", "error");
+  } finally {
+    chatSending = false;
+    renderChat();
+  }
 }
 
 function render() {
@@ -981,6 +1228,7 @@ function render() {
   renderHierarchy();
   renderFocusedOrgChartIfActive();
   renderAgents();
+  renderChat();
   renderRoles();
   renderProjects();
   renderReviewProfiles();
@@ -2328,6 +2576,240 @@ function renderSelectableAgent(agent) {
       </button>
     </li>
   `;
+}
+
+function renderChat() {
+  renderChatConversationList();
+  renderChatThread();
+}
+
+function renderChatConversationList() {
+  if (!elements.chatConversationsView) {
+    return;
+  }
+  if (chatState.error && !chatState.conversations.length) {
+    elements.chatConversationsView.innerHTML = `<p class="empty-state">${escapeHtml(chatState.error)}</p>`;
+  } else if (chatState.loading && !chatState.conversations.length) {
+    elements.chatConversationsView.innerHTML = `<p class="empty-state">Loading conversations.</p>`;
+  } else if (!chatState.conversations.length) {
+    elements.chatConversationsView.innerHTML = `<p class="empty-state">No conversations.</p>`;
+  } else {
+    elements.chatConversationsView.innerHTML = `
+      <ul class="chat-conversation-list">
+        ${chatState.conversations.map(renderChatConversationRow).join("")}
+      </ul>
+    `;
+  }
+  renderChatNewPicker();
+}
+
+function renderChatNewPicker() {
+  if (!elements.chatNewPicker) {
+    return;
+  }
+  elements.chatNewPicker.hidden = !chatNewPickerOpen;
+  if (!chatNewPickerOpen) {
+    elements.chatNewPicker.innerHTML = "";
+    return;
+  }
+  const agents = [...chatState.eligible_agents].sort((left, right) => {
+    return text(left.display_name || left.id).localeCompare(text(right.display_name || right.id));
+  });
+  elements.chatNewPicker.innerHTML = agents.length
+    ? `
+      <div class="chat-agent-picker">
+        ${agents.map(renderChatAgentPickerRow).join("")}
+      </div>
+    `
+    : `<p class="empty-state">No available agents.</p>`;
+}
+
+function renderChatConversationRow(conversation) {
+  const selected = text(conversation.id) === text(selectedChatConversationId);
+  const agent = conversation.agent || {};
+  const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
+  const preview = text(conversation.last_message_preview) || "No messages yet.";
+  return `
+    <li>
+      <button
+        type="button"
+        class="chat-conversation-row${selected ? " is-selected" : ""}"
+        data-chat-conversation-id="${escapeAttr(conversation.id)}"
+        aria-pressed="${selected ? "true" : "false"}"
+      >
+        ${renderChatAvatar(agent)}
+        <span class="chat-conversation-main">
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(preview)}</span>
+        </span>
+        <time>${escapeHtml(formatChatTimestamp(conversation.last_interaction_at))}</time>
+      </button>
+    </li>
+  `;
+}
+
+function renderChatAgentPickerRow(agent) {
+  const conversation = conversationForAgent(agent.id);
+  const label = text(agent.display_name) || text(agent.id);
+  return `
+    <button type="button" class="chat-agent-picker-row" data-chat-agent-id="${escapeAttr(agent.id)}">
+      ${renderChatAvatar(agent)}
+      <span class="chat-conversation-main">
+        <strong>${escapeHtml(label)}</strong>
+        <span>${escapeHtml(conversation ? "Open conversation" : agent.session_id || agent.id)}</span>
+      </span>
+      <span class="state-pill ${escapeAttr(agent.status || "active")}">${escapeHtml(agent.status || "active")}</span>
+    </button>
+  `;
+}
+
+function renderChatThread() {
+  if (!elements.chatThreadView) {
+    return;
+  }
+  const conversation = selectedChatConversation();
+  if (!conversation) {
+    elements.chatThreadView.innerHTML = `
+      <div class="chat-empty">
+        <p class="empty-state">${chatState.loading ? "Loading conversations." : "Select or start a chat."}</p>
+      </div>
+    `;
+    return;
+  }
+  const agent = conversation.agent || {};
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
+  elements.chatThreadView.innerHTML = `
+    <div class="chat-thread">
+      <header class="chat-thread-header">
+        <div class="chat-thread-title">
+          ${renderChatAvatar(agent)}
+          <div>
+            <h2>${escapeHtml(label)}</h2>
+            <div class="meta-line">${escapeHtml(agent.session_id || conversation.agent_id || "")}</div>
+          </div>
+        </div>
+        <div class="chat-thread-actions">
+          <button
+            type="button"
+            data-agent-call-agent-id="${escapeAttr(conversation.agent_id)}"
+            data-agent-call-conversation-id="${escapeAttr(conversation.id)}"
+          >Call</button>
+          <button type="button" data-chat-refresh>Refresh</button>
+        </div>
+      </header>
+      ${renderChatCallStrip(conversation)}
+      <div class="chat-message-list" role="log" aria-live="polite">
+        ${
+          messages.length
+            ? messages.map(renderChatMessage).join("")
+            : `<p class="empty-state">No messages.</p>`
+        }
+      </div>
+      <form class="chat-composer" data-chat-message-form>
+        <textarea name="body" rows="3" placeholder="Message ${escapeAttr(label)}" ${chatSending ? "disabled" : ""}></textarea>
+        <button type="submit" ${chatSending ? "disabled" : ""}>Send</button>
+      </form>
+    </div>
+  `;
+}
+
+function renderChatCallStrip(conversation) {
+  const call = activeAgentVoiceCall;
+  if (!call || agentVoiceCallIsTerminal(call) || call.agentId !== conversation.agent_id) {
+    return "";
+  }
+  return `
+    <section class="chat-call-strip">
+      <span class="state-pill ${escapeAttr(agentVoiceCallPillClass(call))}">${escapeHtml(agentVoiceCallStatusLabel(call))}</span>
+      <button type="button" data-agent-call-mute>${call.muted ? "Unmute" : "Mute"}</button>
+      <button type="button" data-agent-call-end>End</button>
+    </section>
+  `;
+}
+
+function renderChatMessage(message) {
+  const sender = text(message.sender) || "system";
+  const status = text(message.status);
+  const type = text(message.message_type) || "text";
+  return `
+    <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
+      <div class="chat-message-bubble">
+        <p>${escapeHtml(message.body || "")}</p>
+        <div class="chat-message-meta">
+          <span>${escapeHtml(chatMessageSenderLabel(sender))}</span>
+          <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
+          ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
+        </div>
+        ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderChatAvatar(agent) {
+  const label = text(agent?.display_name || agent?.id || "?");
+  const avatarAsset = text(agent?.avatar?.asset_id);
+  if (avatarAsset) {
+    return `<img class="chat-avatar" src="${API_BASE}/avatars/${encodeURIComponent(avatarAsset)}" alt="" />`;
+  }
+  return `<span class="chat-avatar chat-avatar-fallback" aria-hidden="true">${escapeHtml(label.slice(0, 1).toUpperCase() || "?")}</span>`;
+}
+
+function selectedChatConversation() {
+  return chatState.conversations.find((conversation) => text(conversation.id) === text(selectedChatConversationId)) || null;
+}
+
+function conversationForAgent(agentId) {
+  const normalizedAgentId = text(agentId);
+  return chatState.conversations.find((conversation) => text(conversation.agent_id) === normalizedAgentId) || null;
+}
+
+function compareChatConversations(left, right) {
+  return (
+    text(right.last_interaction_at).localeCompare(text(left.last_interaction_at)) ||
+    byId(left, right)
+  );
+}
+
+function chatMessageSenderLabel(sender) {
+  if (sender === "operator") {
+    return "Operator";
+  }
+  if (sender === "agent") {
+    return "Agent";
+  }
+  return "System";
+}
+
+function chatStatusLabel(status) {
+  const labels = {
+    created: "Created",
+    dispatching: "Dispatching",
+    running: "Sent",
+    replied: "Replied",
+    failed: "Failed",
+    sent: "Sent",
+    ended: "Ended",
+  };
+  return labels[status] || humanizeToken(status);
+}
+
+function formatChatTimestamp(value) {
+  const raw = text(value);
+  if (!raw) {
+    return "";
+  }
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    return raw;
+  }
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
@@ -5344,6 +5826,7 @@ async function requestContextRotation(button, agentId) {
 
 async function startAgentVoiceCall(button, agentId) {
   const normalizedAgentId = text(agentId);
+  const conversationId = text(button?.dataset?.agentCallConversationId);
   if (!normalizedAgentId || !state.agents[normalizedAgentId]) {
     setStatus("No agent selected.", "error");
     return;
@@ -5378,6 +5861,7 @@ async function startAgentVoiceCall(button, agentId) {
   activeAgentVoiceCall = call;
   button.disabled = true;
   renderAgents();
+  renderChat();
   setStatus("Connecting voice call.", "loading");
   try {
     const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -5401,7 +5885,10 @@ async function startAgentVoiceCall(button, agentId) {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ request_id: call.requestId }),
+        body: JSON.stringify({
+          request_id: call.requestId,
+          conversation_id: conversationId || null,
+        }),
       },
     );
     if (!response.ok) {
@@ -5420,6 +5907,10 @@ async function startAgentVoiceCall(button, agentId) {
     call.requestId = text(payload.request_id) || call.requestId;
     call.clientSecret = realtimeClientSecretValue(payload);
     call.callsUrl = text(payload.realtime?.calls_url) || "https://api.openai.com/v1/realtime/calls";
+    if (conversationId) {
+      selectedChatConversationId = conversationId;
+      void loadConversations({ selectedConversationId: conversationId });
+    }
     if (!call.voiceSessionId || !call.clientSecret) {
       throw new Error("Voice call response was missing a session or client secret.");
     }
@@ -5441,6 +5932,7 @@ async function startAgentVoiceCall(button, agentId) {
     call.startupPhase = "active";
     call.error = "";
     renderAgents();
+    renderChat();
     await recordAgentVoiceEvent(call.voiceSessionId, {
       status: "active",
       event_type: "browser_call.active",
@@ -5553,6 +6045,7 @@ async function endAgentVoiceCall(button) {
   call.cancelRequested = true;
   call.status = "ending";
   renderAgents();
+  renderChat();
   if (!call.voiceSessionId && !call.requestId) {
     cleanupAgentVoiceCall(call);
     clearAgentVoiceCallIfCurrent(call);
@@ -5614,6 +6107,7 @@ function clearAgentVoiceCallIfCurrent(call) {
   }
   activeAgentVoiceCall = null;
   renderAgents();
+  renderChat();
 }
 
 async function endAgentVoiceCallAfterStartupCancel(call) {
@@ -5634,6 +6128,7 @@ async function failAgentVoiceCall(call, message) {
   call.error = message;
   if (agentVoiceCallIsCurrent(call)) {
     renderAgents();
+    renderChat();
   }
   if (!call.voiceSessionId && !call.requestId) {
     cleanupAgentVoiceCall(call);
@@ -5658,6 +6153,7 @@ function markAgentVoiceEndFailed(call, prefix, error) {
   call.error = `${prefix}: ${error instanceof Error ? error.message : "retry required"}`;
   if (agentVoiceCallIsCurrent(call)) {
     renderAgents();
+    renderChat();
   }
   setStatus(call.error, "error");
 }
@@ -5727,6 +6223,7 @@ function toggleAgentVoiceMute() {
     track.enabled = !call.muted;
   });
   renderAgents();
+  renderChat();
 }
 
 async function handleRealtimeAgentVoiceEvent(call, rawEvent) {
@@ -5740,6 +6237,7 @@ async function handleRealtimeAgentVoiceEvent(call, rawEvent) {
     const message = text(event.error?.message) || "Realtime voice error.";
     call.error = message;
     renderAgents();
+    renderChat();
     setStatus(message, "error");
     return;
   }
@@ -5748,6 +6246,7 @@ async function handleRealtimeAgentVoiceEvent(call, rawEvent) {
     call.transcript.push(transcript);
     call.transcript = call.transcript.slice(-40);
     renderAgents();
+    renderChat();
     if (call.voiceSessionId) {
       void recordAgentVoiceEvent(call.voiceSessionId, {
         text: transcript.text,
@@ -5821,6 +6320,7 @@ async function handleRealtimeFunctionCall(call, functionCall) {
   const previousStatus = call.status;
   call.status = "querying";
   renderAgents();
+  renderChat();
   try {
     const query = await createAgentVoiceQuery(call, {
       question,
@@ -5844,6 +6344,7 @@ async function handleRealtimeFunctionCall(call, functionCall) {
     if (!agentVoiceCallIsTerminal(call)) {
       call.status = previousStatus === "connecting" ? "active" : previousStatus;
       renderAgents();
+      renderChat();
     }
   }
 }

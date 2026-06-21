@@ -83,6 +83,17 @@
           People
         </button>
         <button
+          id="team-view-chat-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-chat-page"
+          data-team-view="chat"
+        >
+          Chat
+        </button>
+        <button
           id="team-view-governance-tab"
           class="team-view-tab"
           type="button"
@@ -737,6 +748,30 @@
         <section class="content-panel" aria-labelledby="focused-roles-heading">
           <h2 id="focused-roles-heading">Roles</h2>
           <div class="roles-view" data-roles-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-chat-page"
+        class="focused-team-page chat-layout"
+        role="tabpanel"
+        aria-labelledby="team-view-chat-tab"
+        data-team-view-panel="chat"
+        hidden
+      >
+        <aside class="content-panel chat-sidebar" aria-label="Recent conversations">
+          <div class="chat-sidebar-header">
+            <div>
+              <p class="section-label">Chat</p>
+              <h2>Recent</h2>
+            </div>
+            <button type="button" data-chat-new>New chat</button>
+          </div>
+          <div id="chat-new-picker" class="chat-new-picker" data-chat-new-picker hidden></div>
+          <div id="chat-conversations-view" class="chat-conversations-view" data-chat-conversations-view></div>
+        </aside>
+        <section class="content-panel chat-main" aria-label="Selected conversation">
+          <div id="chat-thread-view" class="chat-thread-view" data-chat-thread-view></div>
         </section>
       </main>
 

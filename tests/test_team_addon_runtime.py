@@ -820,8 +820,14 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert schema["properties"]["status_reports"]["items"]["properties"]["priority"][
         "enum"
     ] == ["low", "normal", "high"]
+    assert schema["properties"]["chat_replies"]["items"]["required"] == [
+        "conversation_id",
+        "message_id",
+        "body",
+    ]
     example = json.loads(str(copied_files[1]["content"]))
-    assert example["schema_version"] == 9
+    assert example["schema_version"] == 10
+    assert example["chat_replies"][0]["body"]
     assert example["status_requests"][0]["response_requested"] is True
     assert example["status_requests"][0]["priority"] == "normal"
     assert example["questions"][0]["response_requested"] is True
@@ -876,7 +882,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         assert field_name in prompt
     assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
         "seeded": True,
-        "schema_version": 9,
+        "schema_version": 10,
         "schema_path": "/artifacts/team-action.schema.json",
         "example_path": "/artifacts/team-action.example.json",
         "action_artifact_path": "/artifacts/team-action.json",
@@ -1390,7 +1396,7 @@ def test_wake_due_agents_provider_skips_already_seeded_action_contract(
         "team_addon": {
             "action_contract": {
                 "seeded": True,
-                "schema_version": 9,
+                "schema_version": 10,
                 "schema_path": "/artifacts/team-action.schema.json",
                 "example_path": "/artifacts/team-action.example.json",
                 "action_artifact_path": "/artifacts/team-action.json",
@@ -1476,11 +1482,11 @@ def test_wake_due_agents_provider_reseeds_stale_action_contract(
 
     assert result["success"] is True
     assert result["dispatches"][0]["action_contract"]["seeded"] is True
-    assert result["dispatches"][0]["action_contract"]["schema_version"] == 9
+    assert result["dispatches"][0]["action_contract"]["schema_version"] == 10
     assert len(file_copier.calls) == 1
     assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"][
         "schema_version"
-    ] == 9
+    ] == 10
 
 
 def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
@@ -1492,7 +1498,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
         "team_addon": {
             "action_contract": {
                 "seeded": True,
-                "schema_version": 9,
+                "schema_version": 10,
                 "schema_path": "/artifacts/team-action.schema.json",
                 "example_path": "/artifacts/team-action.example.json",
                 "action_artifact_path": "/artifacts/team-action.json",
@@ -1554,7 +1560,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
         "team_addon": {
             "action_contract": {
                 "seeded": True,
-                "schema_version": 9,
+                "schema_version": 10,
                 "schema_path": "/artifacts/team-action.schema.json",
                 "example_path": "/artifacts/team-action.example.json",
                 "action_artifact_path": "/artifacts/team-action.json",

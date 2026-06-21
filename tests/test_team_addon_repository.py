@@ -231,6 +231,104 @@ def test_repository_round_trips_agent_voice_profile(tmp_path: Path) -> None:
     assert cleared.agents["backend"].voice_profile is None
 
 
+def test_repository_round_trips_team_chat_conversation_and_reply(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, conversation, created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    assert created is True
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you summarize the blocker?",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    state, message = repo.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id="team-chat:test",
+        lease_seconds=60,
+    )
+
+    assert message.status == "running"
+    assert message.dispatch_id == "team-chat:test"
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-chat:test"
+    assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.conversations[conversation.id].agent_id == "backend"
+    assert reread.conversation_messages[message.id].body == (
+        "Can you summarize the blocker?"
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": "team-chat:test",
+            "chat_replies": [
+                {
+                    "conversation_id": conversation.id,
+                    "message_id": message.id,
+                    "body": "The dependency task is still open.",
+                }
+            ],
+        },
+        dispatch_id="team-chat:test",
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    assert result["created_chat_reply_message_ids"]
+    assert result["replied_chat_message_ids"] == [message.id]
+    assert state.conversation_messages[message.id].status == "replied"
+    reply = state.conversation_messages[result["created_chat_reply_message_ids"][0]]
+    assert reply.sender == "agent"
+    assert reply.source_message_id == message.id
+    assert reply.body == "The dependency task is still open."
+    assert state.conversations[conversation.id].last_message_preview == (
+        "The dependency task is still open."
+    )
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    assert state.agent_runtimes["backend"].wake_leased_until is None
+
+
+def test_repository_rejects_chat_reply_from_wrong_agent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Are you blocked?",
+        expected_revision=state.revision,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "chat_replies": [
+                {
+                    "conversation_id": conversation.id,
+                    "message_id": message.id,
+                    "body": "I cannot answer for that agent.",
+                }
+            ],
+        },
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is False
+    assert not result["created_chat_reply_message_ids"]
+    assert "chat_replies[0]" in result["errors"][0]
+    assert state.conversation_messages[message.id].status == "created"
+
+
 def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     tmp_path: Path,
 ) -> None:

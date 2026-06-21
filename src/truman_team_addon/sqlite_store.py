@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 9
+SQLITE_SCHEMA_VERSION = 10
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -221,6 +221,8 @@ class TeamStateSqliteStore:
             "review_profiles": {},
             "inbox": {},
             "action_records": {},
+            "conversations": {},
+            "conversation_messages": {},
             "release_packages": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
@@ -241,6 +243,8 @@ class TeamStateSqliteStore:
         self._read_review_requests(connection, payload)
         self._read_inbox(connection, payload)
         self._read_action_records(connection, payload)
+        self._read_conversations(connection, payload)
+        self._read_conversation_messages(connection, payload)
         self._read_release_packages(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
@@ -264,6 +268,8 @@ class TeamStateSqliteStore:
         self._write_review_requests(connection, payload["review_requests"])
         self._write_inbox(connection, payload["inbox"])
         self._write_action_records(connection, payload["action_records"])
+        self._write_conversations(connection, payload["conversations"])
+        self._write_conversation_messages(connection, payload["conversation_messages"])
         self._write_release_packages(connection, payload["release_packages"])
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
         self._write_git_promotions(connection, payload["git_promotions"])
@@ -1259,6 +1265,101 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_conversations(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_conversations ORDER BY id"):
+            payload["conversations"][row["id"]] = {
+                "id": row["id"],
+                "agent_id": row["agent_id"],
+                "created_by": row["created_by"],
+                "last_message_preview": row["last_message_preview"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_interaction_at": row["last_interaction_at"],
+            }
+
+    @staticmethod
+    def _write_conversations(
+        connection: sqlite3.Connection,
+        conversations: dict[str, Any],
+    ) -> None:
+        for conversation in conversations.values():
+            connection.execute(
+                """
+                INSERT INTO team_conversations(
+                    id, agent_id, created_by, last_message_preview,
+                    created_at, updated_at, last_interaction_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation["id"],
+                    conversation["agent_id"],
+                    conversation.get("created_by"),
+                    conversation.get("last_message_preview"),
+                    conversation["created_at"],
+                    conversation["updated_at"],
+                    conversation["last_interaction_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_conversation_messages(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_conversation_messages ORDER BY created_at, id"):
+            payload["conversation_messages"][row["id"]] = {
+                "id": row["id"],
+                "conversation_id": row["conversation_id"],
+                "sender": row["sender"],
+                "message_type": row["message_type"],
+                "body": row["body"],
+                "status": row["status"],
+                "dispatch_id": row["dispatch_id"],
+                "voice_session_id": row["voice_session_id"],
+                "source_message_id": row["source_message_id"],
+                "error": row["error"],
+                "metadata": _json_loads(row["metadata_json"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_conversation_messages(
+        connection: sqlite3.Connection,
+        messages: dict[str, Any],
+    ) -> None:
+        for message in messages.values():
+            connection.execute(
+                """
+                INSERT INTO team_conversation_messages(
+                    id, conversation_id, sender, message_type, body, status,
+                    dispatch_id, voice_session_id, source_message_id, error,
+                    metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message["id"],
+                    message["conversation_id"],
+                    message["sender"],
+                    message.get("message_type", "text"),
+                    message.get("body"),
+                    message.get("status", "sent"),
+                    message.get("dispatch_id"),
+                    message.get("voice_session_id"),
+                    message.get("source_message_id"),
+                    message.get("error"),
+                    _json_dumps(message.get("metadata", {})),
+                    message["created_at"],
+                    message["updated_at"],
+                ),
+            )
+
+    @staticmethod
     def _read_release_packages(
         connection: sqlite3.Connection, payload: dict[str, Any]
     ) -> None:
@@ -1612,6 +1713,8 @@ _STATE_TABLES = (
     "team_git_promotions",
     "team_ephemeral_assignments",
     "team_release_packages",
+    "team_conversation_messages",
+    "team_conversations",
     "team_action_records",
     "team_inbox",
     "team_review_requests",
@@ -1989,6 +2092,38 @@ CREATE INDEX IF NOT EXISTS idx_team_action_records_agent_dispatch
     ON team_action_records(agent_id, dispatch_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_action_records_attention
     ON team_action_records(success, dismissed_at, created_at, id);
+
+CREATE TABLE IF NOT EXISTS team_conversations (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL UNIQUE,
+    created_by TEXT,
+    last_message_preview TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_interaction_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_conversations_recent
+    ON team_conversations(last_interaction_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS team_conversation_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    body TEXT,
+    status TEXT NOT NULL,
+    dispatch_id TEXT,
+    voice_session_id TEXT,
+    source_message_id TEXT,
+    error TEXT,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_conversation
+    ON team_conversation_messages(conversation_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_dispatch
+    ON team_conversation_messages(dispatch_id, id);
 
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,
