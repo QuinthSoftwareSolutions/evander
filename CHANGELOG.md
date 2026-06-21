@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Chat Virtual Scrolling
+
+- Bounded the Team Add-on Chat panel so long histories scroll inside the chat
+  message list, open at the latest message, and load older messages on upward
+  scroll instead of rendering the full transcript at once.
+- Removed the redundant global success banner after sending a chat message.
+
 ## 2026-06-21 - Team Add-on Chat Revision Safety
 
 - Kept partial Team Chat live-update snapshots from advancing the page-wide
