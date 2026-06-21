@@ -68,6 +68,11 @@ let runtimeFilter = null;
 let runtimeFilterTouched = false;
 let templates = [];
 let timelineState = emptyTimelineState();
+let chatState = emptyChatState();
+let chatRequestId = 0;
+let chatNewPickerOpen = false;
+let selectedChatConversationId = null;
+let chatSending = false;
 let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
@@ -82,11 +87,6 @@ let selectedTeamRecordId = null;
 let selectedTaskBoardTeamId = "";
 let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
-let chatState = emptyChatState();
-let chatRequestId = 0;
-let chatNewPickerOpen = false;
-let selectedChatConversationId = null;
-let chatSending = false;
 
 const teamViewIds = new Set([
   "workspace",
@@ -134,9 +134,6 @@ const elements = {
   reviewDeliveryView: document.querySelector("#review-delivery-view"),
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
-  chatConversationsView: document.querySelector("#chat-conversations-view"),
-  chatThreadView: document.querySelector("#chat-thread-view"),
-  chatNewPicker: document.querySelector("#chat-new-picker"),
   rolesView: document.querySelector("#roles-view"),
   projectsView: document.querySelector("#projects-view"),
   reviewProfilesView: document.querySelector("#review-profiles-view"),
@@ -159,6 +156,9 @@ const elements = {
   orgFocusSummary: document.querySelector("#org-focus-summary"),
   orgFocusTeamTabs: document.querySelector("#org-focus-team-tabs"),
   orgFocusView: document.querySelector("#org-focus-view"),
+  chatConversationsView: document.querySelector("#chat-conversations-view"),
+  chatThreadView: document.querySelector("#chat-thread-view"),
+  chatNewPicker: document.querySelector("#chat-new-picker"),
   setupFormsPanel: document.querySelector("#setup-forms-panel"),
   workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
   focusedSetupMount: document.querySelector("#focused-setup-mount"),
@@ -420,6 +420,17 @@ function emptyCostState() {
   };
 }
 
+function emptyChatState() {
+  return {
+    revision: 0,
+    selected_conversation_id: null,
+    eligible_agents: [],
+    conversations: [],
+    loading: false,
+    error: null,
+  };
+}
+
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
   question: "Question",
@@ -627,21 +638,6 @@ function bindRecordEditing() {
       return;
     }
 
-    const agentCallMuteButton = event.target.closest("[data-agent-call-mute]");
-    if (agentCallMuteButton) {
-      event.preventDefault();
-      toggleAgentVoiceMute(agentCallMuteButton);
-      return;
-    }
-
-    const agentCallEndButton = event.target.closest("[data-agent-call-end]");
-    if (agentCallEndButton) {
-      event.preventDefault();
-      void endAgentVoiceCall(agentCallEndButton);
-      return;
-    }
-
-    const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     const chatNewButton = event.target.closest("[data-chat-new]");
     if (chatNewButton) {
       event.preventDefault();
@@ -671,10 +667,25 @@ function bindRecordEditing() {
     const chatRefreshButton = event.target.closest("[data-chat-refresh]");
     if (chatRefreshButton) {
       event.preventDefault();
-      void loadConversations({ selectedConversationId: selectedChatConversationId });
+      void loadConversations({ preserveSelection: true });
       return;
     }
 
+    const agentCallMuteButton = event.target.closest("[data-agent-call-mute]");
+    if (agentCallMuteButton) {
+      event.preventDefault();
+      toggleAgentVoiceMute(agentCallMuteButton);
+      return;
+    }
+
+    const agentCallEndButton = event.target.closest("[data-agent-call-end]");
+    if (agentCallEndButton) {
+      event.preventDefault();
+      void endAgentVoiceCall(agentCallEndButton);
+      return;
+    }
+
+    const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     if (contextRotationButton) {
       event.preventDefault();
       void requestContextRotation(
@@ -1053,18 +1064,6 @@ async function loadCosts() {
     restoreFormDrafts(drafts);
   }
 }
-
-function emptyChatState() {
-  return {
-    revision: 0,
-    selected_conversation_id: null,
-    eligible_agents: [],
-    conversations: [],
-    loading: false,
-    error: null,
-  };
-}
-
 
 function normalizeState(payload) {
   return { ...emptyState(), ...(payload || {}) };
