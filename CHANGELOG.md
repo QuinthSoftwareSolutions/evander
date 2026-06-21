@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Agent Identity Guidance
+
+- Added each persistent Team agent's current ID and display name to the managed
+  `/home/agent/AGENTS.md` Team guidance section.
+- Made Team guidance reseed when an agent's display name changes while
+  preserving the rest of `AGENTS.md` through the existing managed-section merge.
+
 ## 2026-06-21 - Team Add-on Voice Profile Review Fixes
 
 - Kept Team agent voice profiles out of regular wake, ephemeral, and agent-visible

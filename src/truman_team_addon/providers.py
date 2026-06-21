@@ -58,7 +58,7 @@ DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
 ACTION_CONTRACT_SCHEMA_VERSION = 9
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
-TEAM_AGENT_GUIDANCE_VERSION = 1
+TEAM_AGENT_GUIDANCE_VERSION = 2
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1933,10 +1933,20 @@ def register_providers() -> ProviderPluginRegistration:
     )
 
 
-def _team_agent_guidance_content() -> str:
+def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
+    identity = _agent_guidance_identity(agent)
+    display_name = identity["display_name"]
+    display_line = (
+        f"- Current display name: {json.dumps(display_name)}\n"
+        if display_name is not None
+        else "- Current display name: not configured; use your agent id when a name is needed.\n"
+    )
     return (
         "# Team Add-on Guidance\n\n"
         f"Guidance version: {TEAM_AGENT_GUIDANCE_VERSION}\n\n"
+        "Identity:\n"
+        f"- Persistent agent id: {json.dumps(identity['agent_id'])}\n"
+        f"{display_line}\n"
         "Use the provided Team context and update only your own assigned tasks. "
         "Questions and progress reports must go to your direct superior; "
         "agents without a direct superior use operator_escalations. Use "
@@ -1998,7 +2008,7 @@ def _team_agent_guidance_content() -> str:
 def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str:
     agent = lease["agent"]
     context = {
-        "agent": agent,
+        "agent": _agent_prompt_payload(agent),
         "dispatch_id": lease["dispatch_id"],
         "reason": lease["reason"],
         "superior_agent_id": lease["superior_agent_id"],
@@ -2100,6 +2110,12 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
         "top-level tasks. Every task_creations item you submit must set "
         "parent_task_id to one of your own active tasks.\n\n"
     )
+
+
+def _agent_prompt_payload(agent: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(agent)
+    payload.pop("display_name", None)
+    return payload
 
 
 def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:
@@ -2307,15 +2323,17 @@ def _seed_team_agent_guidance(
     agent: Mapping[str, Any],
 ) -> dict[str, Any]:
     session_id = _required_text(agent.get("session_id"), "session_id")
+    identity = _agent_guidance_identity(agent)
     metadata = _session_metadata(context, session_id=session_id)
     known_vm_ip = _session_known_vm_ip(metadata)
-    if _metadata_has_current_agent_guidance(metadata):
+    if _metadata_has_current_agent_guidance(metadata, agent=agent):
         return {
             "seeded": False,
             "reason": "already_seeded",
             "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
             "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            **identity,
         }
 
     provider = AgentCopyFilesEffectProvider()
@@ -2328,7 +2346,7 @@ def _seed_team_agent_guidance(
             vm_user="agent",
             files=[
                 {
-                    "content": _team_agent_guidance_content(),
+                    "content": _team_agent_guidance_content(agent=agent),
                     "destination_path": TEAM_AGENT_GUIDANCE_PATH,
                     "mode": "0644",
                     "overwrite": True,
@@ -2349,6 +2367,7 @@ def _seed_team_agent_guidance(
     _mark_agent_guidance_seeded(
         context,
         session_id=session_id,
+        agent=agent,
         copy_result=copy_result,
         vm_ip=copied_vm_ip,
     )
@@ -2357,6 +2376,7 @@ def _seed_team_agent_guidance(
         "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
         "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
         "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        **identity,
         "vm_ip": copied_vm_ip,
         "copied_paths": list(copy_result.get("copied_paths") or []),
     }
@@ -2379,19 +2399,33 @@ def _session_has_current_action_contract(
     )
 
 
-def _metadata_has_current_agent_guidance(metadata: Mapping[str, Any]) -> bool:
+def _metadata_has_current_agent_guidance(
+    metadata: Mapping[str, Any],
+    *,
+    agent: Mapping[str, Any],
+) -> bool:
     team_addon = metadata.get("team_addon")
     if not isinstance(team_addon, Mapping):
         return False
     guidance = team_addon.get("agent_guidance")
     if not isinstance(guidance, Mapping):
         return False
+    identity = _agent_guidance_identity(agent)
     return (
         int(guidance.get("guidance_version") or 0) == TEAM_AGENT_GUIDANCE_VERSION
         and guidance.get("guidance_path") == TEAM_AGENT_GUIDANCE_PATH
         and guidance.get("section_id") == TEAM_AGENT_GUIDANCE_SECTION_ID
+        and guidance.get("agent_id") == identity["agent_id"]
+        and guidance.get("display_name") == identity["display_name"]
         and guidance.get("seeded") is True
     )
+
+
+def _agent_guidance_identity(agent: Mapping[str, Any]) -> dict[str, str | None]:
+    return {
+        "agent_id": _required_text(agent.get("id"), "agent.id"),
+        "display_name": _optional_text(agent.get("display_name")),
+    }
 
 
 def _metadata_has_current_action_contract(
@@ -2485,6 +2519,7 @@ def _mark_agent_guidance_seeded(
     context: Any,
     *,
     session_id: str,
+    agent: Mapping[str, Any],
     copy_result: Mapping[str, Any],
     vm_ip: str | None,
 ) -> None:
@@ -2498,6 +2533,7 @@ def _mark_agent_guidance_seeded(
             "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
             "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            **_agent_guidance_identity(agent),
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }

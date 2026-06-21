@@ -737,6 +737,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "Continue your assigned team-agent work" not in guidance
     assert "managers and project leads may create top-level tasks" not in guidance
     assert "non-lead roles" not in guidance
+    assert 'Persistent agent id: "backend"' in guidance
+    assert "Current display name: not configured; use your agent id" in guidance
     assert "task creation mandate in your wake prompt" in guidance
     assert "Action surface guide:" in guidance
     assert "Do not accept or reject someone else's task with task_updates" in guidance
@@ -886,6 +888,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
         "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
         "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        "agent_id": "backend",
+        "display_name": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
@@ -1340,6 +1344,8 @@ def test_wake_due_agents_provider_skips_already_seeded_action_contract(
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
                 "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
                 "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "agent_id": "backend",
+                "display_name": None,
             },
         }
     }
@@ -1388,6 +1394,8 @@ def test_wake_due_agents_provider_reseeds_stale_action_contract(
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
                 "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
                 "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "agent_id": "backend",
+                "display_name": None,
             },
         }
     }
@@ -1438,6 +1446,8 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION - 1,
                 "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
                 "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "agent_id": "backend",
+                "display_name": None,
             },
         }
     }
@@ -1471,6 +1481,74 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION
+
+
+def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_change(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_agent(
+        agent_id="backend",
+        display_name="Beatrice",
+        set_display_name=True,
+        expected_revision=repo.read().revision,
+    )
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].metadata = {
+        "team_addon": {
+            "action_contract": {
+                "seeded": True,
+                "schema_version": 9,
+                "schema_path": "/artifacts/team-action.schema.json",
+                "example_path": "/artifacts/team-action.example.json",
+                "action_artifact_path": "/artifacts/team-action.json",
+            },
+            "agent_guidance": {
+                "seeded": True,
+                "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+                "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+                "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "agent_id": "backend",
+                "display_name": "Old Backend",
+            },
+        }
+    }
+    file_copier = FakeFileCopier()
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["action_contract"]["seeded"] is False
+    assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
+    assert result["dispatches"][0]["agent_guidance"]["display_name"] == "Beatrice"
+    assert len(file_copier.calls) == 1
+    copied_file = file_copier.calls[0]["files"][0]
+    assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
+    assert copied_file["merge_strategy"] == "managed_section"
+    assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
+    assert 'Current display name: "Beatrice"' in str(copied_file["content"])
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Beatrice" not in prompt
+    assert '"display_name"' not in prompt
+    assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
+        "display_name"
+    ] == "Beatrice"
 
 
 def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
