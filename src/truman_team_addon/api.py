@@ -38,6 +38,7 @@ from .avatars import (
 )
 from .models import (
     AgentStatus,
+    AgentVoiceProfile,
     EphemeralAgentPolicy,
     ProjectGitConfig,
     ProjectGoal,
@@ -296,6 +297,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def patch_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
+        raw_voice_profile = payload.get("voice_profile")
         raw_status = _optional(payload, "status")
         state = repository.update_agent(
             agent_id=request.path_params["agent_id"],
@@ -313,6 +315,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 else None
             ),
             status=AgentStatus(raw_status) if raw_status else None,
+            voice_profile=(
+                AgentVoiceProfile.model_validate(raw_voice_profile)
+                if raw_voice_profile is not None
+                else None
+            ),
+            set_voice_profile="voice_profile" in payload,
             auto_context_clearing_enabled=_optional_bool(
                 payload,
                 "auto_context_clearing_enabled",
@@ -461,11 +469,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             tool_summary=tool_summary,
         )
         prompt = str(projection["prompt"])
+        voice_profile = _agent_voice_profile_payload(agent)
+        effective_prompt = _agent_voice_effective_prompt(
+            prompt,
+            voice_profile=voice_profile,
+        )
         prompt_metadata = _agent_voice_prompt_metadata(
             state=state,
             agent=agent,
             session=session,
             prompt=prompt,
+            effective_prompt=effective_prompt,
+            voice_profile=voice_profile,
         )
         record, created = runtime.voice_session_store.prepare_session(
             origin_session_id=session.session_id,
@@ -479,6 +494,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 "agent_id": agent.id,
                 "team_id": agent.team_id,
                 "project_id": agent.project_id,
+                "voice_profile": voice_profile,
             },
             contact_id=agent.id,
             contact_display_name=_agent_display_name(agent),
@@ -487,9 +503,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             client_secret = OpenAIRealtimeClientSecretService(
                 config=resolved_config,
             ).create_client_secret(
-                instructions=prompt,
+                instructions=effective_prompt,
                 safety_identifier=f"team-addon:{agent.id}",
                 include_query_origin_agent=payload.get("include_query_origin_agent") is not False,
+                voice=voice_profile.get("voice"),
             )
         except (RuntimeError, ProviderRequestError) as exc:
             runtime.voice_session_store.complete_session(
@@ -507,6 +524,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 "transport": "webrtc_browser",
                 "model": getattr(resolved_config, "openai_realtime_model", "gpt-realtime-2"),
                 "call_surface": "team_people_tab",
+                "voice": voice_profile.get("voice"),
+                "speaking_style": voice_profile.get("speaking_style"),
             },
         )
         return JSONResponse(
@@ -524,6 +543,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                         "openai_realtime_model",
                         "gpt-realtime-2",
                     ),
+                    "voice": voice_profile.get("voice"),
+                    "speaking_style": voice_profile.get("speaking_style"),
                 },
             },
             status_code=201 if created else 200,
@@ -1394,11 +1415,17 @@ def _agent_voice_prompt_metadata(
     agent: Any,
     session: Any,
     prompt: str,
+    effective_prompt: str | None = None,
+    voice_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = str(prompt or "").strip()
+    effective = str(effective_prompt or normalized).strip()
+    voice_profile_payload = sanitize_voice_metadata(voice_profile or {})
     return {
-        "sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
-        "length": len(normalized),
+        "sha256": hashlib.sha256(effective.encode("utf-8")).hexdigest(),
+        "length": len(effective),
+        "base_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        "base_length": len(normalized),
         "team_state_revision": state.revision,
         "agent_id": agent.id,
         "team_id": agent.team_id,
@@ -1406,7 +1433,40 @@ def _agent_voice_prompt_metadata(
         "role_id": agent.role_id,
         "session_id": session.session_id,
         "call_surface": "team_people_tab",
+        "voice_profile": voice_profile_payload,
     }
+
+
+def _agent_voice_profile_payload(agent: Any) -> dict[str, Any]:
+    voice_profile = getattr(agent, "voice_profile", None)
+    if voice_profile is None:
+        return {}
+    model_dump = getattr(voice_profile, "model_dump", None)
+    if callable(model_dump):
+        payload = model_dump(mode="json", exclude_none=True)
+    elif isinstance(voice_profile, Mapping):
+        payload = {key: value for key, value in voice_profile.items() if value is not None}
+    else:
+        payload = {}
+    return sanitize_voice_metadata(payload) if isinstance(payload, dict) else {}
+
+
+def _agent_voice_effective_prompt(
+    prompt: str,
+    *,
+    voice_profile: Mapping[str, Any],
+) -> str:
+    normalized = str(prompt or "").strip()
+    speaking_style = str(voice_profile.get("speaking_style") or "").strip()
+    if not speaking_style:
+        return normalized
+    return (
+        f"{normalized}\n\n"
+        "Voice delivery style for this agent:\n"
+        f"{speaking_style}\n\n"
+        "Apply this as spoken delivery guidance only. Do not treat it as task, "
+        "team, tool, repository, or runtime state."
+    )
 
 
 def _team_voice_session_payload(record: Any) -> dict[str, Any]:

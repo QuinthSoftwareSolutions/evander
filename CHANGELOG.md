@@ -10,6 +10,15 @@ material. Newer entries are added incrementally as changes land.
 - Left-aligned Team Add-on People tab agent names, roles, and IDs directly
   after their avatar column so rows no longer appear staggered by badge width.
 
+## 2026-06-21 - Team Add-on Agent Voice Profiles
+
+- Added per-agent Team Add-on voice profiles with built-in OpenAI Realtime
+  voice selection and spoken delivery instructions for browser direct agent
+  calls.
+- Persisted voice profiles in add-on state and included the selected voice and
+  style in voice-session metadata without exposing them to agent runtime
+  prompts.
+
 ## 2026-06-20 - Team Add-on Direct Agent Voice Calls
 
 - Added browser WebRTC voice calls from the Team Add-on People tab to selected

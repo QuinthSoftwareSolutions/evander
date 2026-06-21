@@ -15,6 +15,7 @@ from truman_team_addon.models import (
     AgentRuntime,
     AgentStandDownSource,
     AgentStatus,
+    AgentVoiceProfile,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
     ProjectGitConfig,
@@ -196,6 +197,38 @@ def test_repository_round_trips_agent_avatar_metadata(tmp_path: Path) -> None:
     assert reread.agents["worker"].avatar is None
 
 
+def test_repository_round_trips_agent_voice_profile(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    voice_profile = AgentVoiceProfile(
+        voice="cedar",
+        speaking_style="Calm, concise, and lightly upbeat.",
+    )
+
+    state = repo.update_agent(
+        agent_id="backend",
+        voice_profile=voice_profile,
+        set_voice_profile=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.agents["backend"].voice_profile == voice_profile
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.agents["backend"].voice_profile is not None
+    assert reread.agents["backend"].voice_profile.voice == "cedar"
+    assert reread.agents["backend"].voice_profile.speaking_style == (
+        "Calm, concise, and lightly upbeat."
+    )
+
+    cleared = TeamStateRepository(tmp_path).update_agent(
+        agent_id="backend",
+        voice_profile=AgentVoiceProfile(),
+        set_voice_profile=True,
+        expected_revision=reread.revision,
+    )
+
+    assert cleared.agents["backend"].voice_profile is None
+
+
 def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     tmp_path: Path,
 ) -> None:
@@ -241,6 +274,10 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_agent_runtimes)")
         }
+        agent_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_agents)")
+        }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
@@ -251,7 +288,8 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_started_at" in runtime_columns
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
-    assert metadata["sqlite_schema_version"] == "6"
+    assert "voice_profile_json" in agent_columns
+    assert metadata["sqlite_schema_version"] == "7"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:

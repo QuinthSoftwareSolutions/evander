@@ -23,6 +23,7 @@ from .git_naming import (
 )
 from .models import (
     AgentAvatar,
+    AgentVoiceProfile,
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
@@ -616,6 +617,8 @@ class TeamStateRepository:
         set_display_name: bool = False,
         ephemeral_policy: EphemeralAgentPolicy | None = None,
         status: AgentStatus | None = None,
+        voice_profile: AgentVoiceProfile | None = None,
+        set_voice_profile: bool = False,
         auto_context_clearing_enabled: bool | None = None,
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
@@ -654,6 +657,12 @@ class TeamStateRepository:
                 agent.ephemeral_policy = ephemeral_policy
             if status is not None:
                 agent.status = status
+            if set_voice_profile:
+                agent.voice_profile = (
+                    voice_profile
+                    if voice_profile is not None and voice_profile.configured
+                    else None
+                )
             if set_auto_context_clearing_enabled:
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,

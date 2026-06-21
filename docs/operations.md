@@ -1015,6 +1015,9 @@ but it does not use DIDWW, Asterisk, SIP, or the host media bridge. The Admin AP
 selected agent and origin session, writes a `browser_agent_call` record to
 `runtime/voice-sessions-store.json`, and mints an OpenAI Realtime ephemeral client secret with the
 agent's current team, role, task, inbox, review, deliverable, runtime, and visible tool context.
+Each persistent agent can optionally select a built-in Realtime voice and speaking-style
+instruction; the style is appended only to browser-call session instructions and is not exposed to
+agent runtime prompts.
 
 Set `openai_realtime_api_key_env` to the host environment variable used for the OpenAI Realtime API
 key, or leave it at the default `OPENAI_API_KEY`. `openai_realtime_api_base_url` defaults to

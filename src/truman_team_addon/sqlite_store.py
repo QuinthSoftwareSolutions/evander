@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 6
+SQLITE_SCHEMA_VERSION = 7
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -109,6 +109,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_agents",
                     column_name="avatar_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agents",
+                    column_name="voice_profile_json",
                     definition="TEXT",
                 )
                 connection.execute(
@@ -440,6 +446,11 @@ class TeamStateSqliteStore:
                 "avatar": (
                     _json_loads(row["avatar_json"]) if row["avatar_json"] is not None else None
                 ),
+                "voice_profile": (
+                    _json_loads(row["voice_profile_json"])
+                    if row["voice_profile_json"] is not None
+                    else None
+                ),
                 "role_id": row["role_id"],
                 "session_id": row["session_id"],
                 "reports_to_agent_id": row["reports_to_agent_id"],
@@ -454,10 +465,10 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_agents(
-                    id, team_id, project_id, display_name, avatar_json, role_id, session_id,
-                    reports_to_agent_id, max_ephemeral_concurrent, status
+                    id, team_id, project_id, display_name, avatar_json, voice_profile_json,
+                    role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
@@ -465,6 +476,11 @@ class TeamStateSqliteStore:
                     agent.get("project_id"),
                     agent.get("display_name"),
                     _json_dumps(agent.get("avatar")) if agent.get("avatar") is not None else None,
+                    (
+                        _json_dumps(agent.get("voice_profile"))
+                        if agent.get("voice_profile") is not None
+                        else None
+                    ),
                     agent["role_id"],
                     agent["session_id"],
                     agent.get("reports_to_agent_id"),
@@ -1461,6 +1477,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
     project_id TEXT,
     display_name TEXT,
     avatar_json TEXT,
+    voice_profile_json TEXT,
     role_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     reports_to_agent_id TEXT,

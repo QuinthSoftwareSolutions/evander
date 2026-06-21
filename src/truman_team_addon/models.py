@@ -18,6 +18,18 @@ from agent_sandbox.models import utc_now
 from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
 
 SCHEMA_VERSION = 2
+REALTIME_BUILT_IN_VOICE_IDS = (
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+    "marin",
+    "cedar",
+)
 
 
 class TeamTaskState(str, Enum):
@@ -128,6 +140,32 @@ class AgentAvatar(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+
+class AgentVoiceProfile(TeamModel):
+    voice: str | None = None
+    speaking_style: str | None = Field(default=None, max_length=1200)
+
+    @field_validator("voice", mode="before")
+    @classmethod
+    def _voice(cls, value: object) -> str | None:
+        text = _optional_text(value)
+        if text is None:
+            return None
+        normalized = text.casefold()
+        if normalized not in REALTIME_BUILT_IN_VOICE_IDS:
+            choices = ", ".join(REALTIME_BUILT_IN_VOICE_IDS)
+            raise ValueError(f"voice must be one of: {choices}")
+        return normalized
+
+    @field_validator("speaking_style", mode="before")
+    @classmethod
+    def _speaking_style(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @property
+    def configured(self) -> bool:
+        return self.voice is not None or self.speaking_style is not None
 
 
 class TeamRole(TeamModel):
@@ -295,6 +333,7 @@ class PersistentAgent(TeamModel):
     project_id: str | None = None
     display_name: str | None = None
     avatar: AgentAvatar | None = None
+    voice_profile: AgentVoiceProfile | None = None
     role_id: str
     session_id: str
     reports_to_agent_id: str | None = None

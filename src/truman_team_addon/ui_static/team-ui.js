@@ -16,6 +16,18 @@ const avatarStylePresets = [
   ["playful", "Playful"],
   ["minimal", "Minimal"],
 ];
+const realtimeVoiceOptions = [
+  ["alloy", "Alloy"],
+  ["ash", "Ash"],
+  ["ballad", "Ballad"],
+  ["coral", "Coral"],
+  ["echo", "Echo"],
+  ["sage", "Sage"],
+  ["shimmer", "Shimmer"],
+  ["verse", "Verse"],
+  ["marin", "Marin"],
+  ["cedar", "Cedar"],
+];
 const projectStatuses = ["active", "blocked", "completed", "archived"];
 const gitProviders = [
   ["github", "GitHub"],
@@ -182,6 +194,8 @@ const fieldTooltips = {
   "register-agent-form:display_name": "Optional display name. If blank, the generated agent ID is shown.",
   "register-agent-form:reports_to_agent_id": "Supervisor for routing, permissions, status requests, and hierarchy display.",
   "register-agent-form:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at the same time.",
+  "edit:agent:voice": "Base OpenAI Realtime voice used for this agent's browser calls.",
+  "edit:agent:speaking_style": "Optional spoken delivery guidance appended to this agent's browser voice sessions.",
   "edit:agent:auto_context_clearing_enabled": "When enabled, the Team runtime marks this agent for fresh context after it becomes idle.",
 
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
@@ -2137,6 +2151,7 @@ function renderAgentVoiceCallPanel(details) {
   const liveCallForOtherAgent =
     activeAgentVoiceCall && !agentVoiceCallIsTerminal(activeAgentVoiceCall) && activeAgentVoiceCall.agentId !== details.id;
   const callDisabled = details.status === "archived" || liveCallForOtherAgent;
+  const voiceProfileLabel = agentVoiceProfileLabel(details.voice_profile);
   const transcriptRows = (call?.transcript || [])
     .slice(-4)
     .map((entry) => {
@@ -2154,6 +2169,7 @@ function renderAgentVoiceCallPanel(details) {
         <div class="record-actions agent-voice-call-controls">
           <button class="record-action" type="button" data-agent-call-agent-id="${escapeAttr(details.id)}" ${callDisabled ? "disabled" : ""}>Call</button>
         </div>
+        <div class="meta-line">Voice: ${escapeHtml(voiceProfileLabel)}</div>
         ${call?.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
       </section>
     `;
@@ -2170,10 +2186,17 @@ function renderAgentVoiceCallPanel(details) {
         ${retryEnd ? "" : `<button class="record-action" type="button" data-agent-call-mute>${call.muted ? "Unmute" : "Mute"}</button>`}
         <button class="record-action" type="button" data-agent-call-end ${endingDisabled}>${retryEnd ? "Retry end" : "End"}</button>
       </div>
+      <div class="meta-line">Voice: ${escapeHtml(voiceProfileLabel)}</div>
       ${call.error ? `<div class="meta-line agent-voice-error">${escapeHtml(call.error)}</div>` : ""}
       ${transcriptRows ? `<ol class="agent-voice-transcript">${transcriptRows}</ol>` : ""}
     </section>
   `;
+}
+
+function agentVoiceProfileLabel(profile) {
+  const voice = text(profile?.voice) || "Default";
+  const style = text(profile?.speaking_style);
+  return style ? `${voice} - custom style` : voice;
 }
 
 function agentVoiceCallIsTerminal(call) {
@@ -4732,6 +4755,7 @@ function buildSelectOptionSets() {
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
+    "realtime-voices": realtimeVoiceOptions,
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
     "git-providers": gitProviders,
@@ -6195,6 +6219,7 @@ function renderEditFields(type, record) {
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
       ${renderAvatarEditControls(record)}
+      ${renderVoiceProfileEditControls(record)}
       ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
@@ -6280,6 +6305,20 @@ function renderAvatarEditControls(record) {
   `;
 }
 
+function renderVoiceProfileEditControls(record) {
+  const profile = record?.voice_profile || {};
+  return `
+    <fieldset class="voice-profile-editor">
+      <legend>Voice</legend>
+      ${selectField("Base voice", "voice", "realtime-voices", profile.voice || "", { placeholder: "Default (marin)" })}
+      ${textareaField("Speaking style", "speaking_style", profile.speaking_style || "", {
+        rows: 3,
+        placeholder: "Calm, concise, lightly upbeat",
+      })}
+    </fieldset>
+  `;
+}
+
 function editPayloadForForm(type, form) {
   const data = formData(form);
   if (type === "team") {
@@ -6305,6 +6344,10 @@ function editPayloadForForm(type, form) {
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id) || null,
       display_name: text(data.display_name) || null,
+      voice_profile: {
+        voice: text(data.voice) || null,
+        speaking_style: text(data.speaking_style) || null,
+      },
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
       status: text(data.status),
       auto_context_clearing_enabled: Boolean(form.elements.auto_context_clearing_enabled?.checked),

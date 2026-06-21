@@ -20,6 +20,7 @@ from truman_team_addon.models import (
     AgentInboxItem,
     AgentRuntime,
     AgentStatus,
+    AgentVoiceProfile,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -459,7 +460,16 @@ def test_agent_voice_session_create_query_and_end(
     monkeypatch,
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
-    _seed_runtime_operations_state(tmp_path / "runtime")
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    repo.update_agent(
+        agent_id="backend",
+        voice_profile=AgentVoiceProfile(
+            voice="cedar",
+            speaking_style="Calm, concise, and lightly upbeat.",
+        ),
+        set_voice_profile=True,
+        expected_revision=repo.read().revision,
+    )
     service = AdminService(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -494,6 +504,8 @@ def test_agent_voice_session_create_query_and_end(
     assert payload["status"] == "connecting"
     assert payload["client_secret"]["value"] == "ek_test"
     assert payload["realtime"]["transport"] == "webrtc_browser"
+    assert payload["realtime"]["voice"] == "cedar"
+    assert payload["realtime"]["speaking_style"] == "Calm, concise, and lightly upbeat."
     assert payload["projection"]["metadata"]["agent_id"] == "backend"
     assert payload["projection"]["context"]["open_tasks"][0]["title"] == "Blocked task"
     prompt = client_secret_calls[0]["instructions"]
@@ -501,13 +513,20 @@ def test_agent_voice_session_create_query_and_end(
     assert "Blocked task" in prompt
     assert "Status update?" in prompt
     assert "Waiting task deliverable." in prompt
+    assert "Voice delivery style for this agent:" in prompt
+    assert "Calm, concise, and lightly upbeat." in prompt
     assert client_secret_calls[0]["safety_identifier"] == "team-addon:backend"
+    assert client_secret_calls[0]["voice"] == "cedar"
     record = service.runtime.voice_session_store.get_by_voice_session_id(
         payload["voice_session_id"]
     )
     assert record is not None
     assert record.channel == "browser_agent_call"
     assert record.origin_session_id == "session-backend"
+    assert record.prompt_metadata["voice_profile"]["voice"] == "cedar"
+    assert record.caller_metadata["voice_profile"]["speaking_style"] == (
+        "Calm, concise, and lightly upbeat."
+    )
 
     event_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
@@ -1394,6 +1413,10 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
             "session_id": "session-backend-2",
             "reports_to_agent_id": "manager",
             "display_name": None,
+            "voice_profile": {
+                "voice": "sage",
+                "speaking_style": "Measured and direct.",
+            },
             "ephemeral_policy": {"max_concurrent": 4},
             "status": "paused",
             "expected_revision": 7,
@@ -1408,6 +1431,10 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
     assert backend["session_id"] == "session-backend-2"
     assert backend["reports_to_agent_id"] == "manager"
     assert backend["display_name"] is None
+    assert backend["voice_profile"] == {
+        "voice": "sage",
+        "speaking_style": "Measured and direct.",
+    }
     assert backend["ephemeral_policy"]["max_concurrent"] == 4
     assert backend["status"] == "paused"
     assert body["agents"]["lead"]["subordinate_agent_ids"] == []
