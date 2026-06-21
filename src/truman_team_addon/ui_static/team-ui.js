@@ -669,7 +669,7 @@ function bindRecordEditing() {
       return;
     }
 
-    const chatConversationButton = event.target.closest("[data-chat-conversation-id]");
+    const chatConversationButton = event.target.closest(".chat-conversation-row[data-chat-conversation-id]");
     if (chatConversationButton) {
       event.preventDefault();
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
@@ -3214,8 +3214,9 @@ function renderChatThread() {
   const messages = conversationMessages(conversation);
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
   const olderLoading = chatOlderMessageLoads.has(text(conversation.id));
+  const callStrip = renderChatCallStrip(conversation);
   elements.chatThreadView.innerHTML = `
-    <div class="chat-thread">
+    <div class="chat-thread${callStrip ? " has-call-strip" : ""}">
       <header class="chat-thread-header">
         <div class="chat-thread-title">
           ${renderChatAvatar(agent)}
@@ -3233,8 +3234,8 @@ function renderChatThread() {
           <button type="button" data-chat-refresh>Refresh</button>
         </div>
       </header>
-      ${renderChatCallStrip(conversation)}
-      <div class="chat-message-list" role="log" aria-live="polite" data-chat-conversation-id="${escapeAttr(conversation.id)}">
+      ${callStrip}
+      <div class="chat-message-list" role="log" aria-live="polite" data-chat-scroll-conversation-id="${escapeAttr(conversation.id)}">
         ${
           conversation.has_older || olderLoading
             ? `<div class="chat-history-sentinel" data-chat-history-sentinel>${olderLoading ? "Loading older messages." : ""}</div>`
@@ -3404,7 +3405,7 @@ function chatMessageListElement(conversationId = selectedChatConversationId) {
     return null;
   }
   return Array.from(elements.chatThreadView.querySelectorAll(".chat-message-list")).find((list) => {
-    return text(list.dataset.chatConversationId) === normalizedConversationId;
+    return text(list.dataset.chatScrollConversationId) === normalizedConversationId;
   }) || null;
 }
 

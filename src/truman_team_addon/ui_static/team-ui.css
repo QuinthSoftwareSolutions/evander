@@ -442,13 +442,21 @@ button.team-view-tab[aria-selected="true"] {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0.85rem;
+}
+
+.chat-thread.has-call-strip {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .chat-thread-view {
   height: 100%;
   min-height: 0;
+}
+
+.chat-thread-header {
+  grid-row: 1;
 }
 
 .chat-thread-title {
@@ -467,6 +475,7 @@ button.team-view-tab[aria-selected="true"] {
 }
 
 .chat-call-strip {
+  grid-row: 2;
   justify-content: flex-end;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -475,11 +484,24 @@ button.team-view-tab[aria-selected="true"] {
 }
 
 .chat-message-list {
+  grid-row: 2;
   align-content: start;
   overflow: auto;
   min-height: 0;
   padding-right: 0.25rem;
   overscroll-behavior: contain;
+}
+
+.chat-thread.has-call-strip .chat-message-list {
+  grid-row: 3;
+}
+
+.chat-composer {
+  grid-row: 3;
+}
+
+.chat-thread.has-call-strip .chat-composer {
+  grid-row: 4;
 }
 
 .chat-history-sentinel {

@@ -37,6 +37,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderSelectableProject/);
   assert.match(script, /renderSelectableRole/);
   assert.doesNotMatch(script, /Chat message sent\./);
+  assert.match(script, /data-chat-scroll-conversation-id/);
+  assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
   assert.match(script, /renderPeopleTeamTabs/);
@@ -3105,6 +3107,28 @@ test("team add-on Chat panel stays bounded and loads older messages on upward sc
   );
   assert.ok(renderedMessages.some((message) => message.includes("Message 020")));
   assert.equal(renderedMessages.some((message) => message.includes("Message 000")), false);
+  const gridPlacement = await page.evaluate(() => {
+    const thread = document.querySelector(".chat-thread");
+    const list = document.querySelector(".chat-message-list");
+    const composer = document.querySelector(".chat-composer");
+    if (!(thread instanceof HTMLElement) || !(list instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+      return null;
+    }
+    return {
+      hasCallStripClass: thread.classList.contains("has-call-strip"),
+      listConversationId: list.dataset.chatConversationId || null,
+      scrollConversationId: list.dataset.chatScrollConversationId || null,
+      listGridRowStart: getComputedStyle(list).gridRowStart,
+      composerGridRowStart: getComputedStyle(composer).gridRowStart,
+    };
+  });
+  assert.deepEqual(gridPlacement, {
+    hasCallStripClass: false,
+    listConversationId: null,
+    scrollConversationId: "conversation-alpha-lead",
+    listGridRowStart: "2",
+    composerGridRowStart: "3",
+  });
   const afterScrollMetrics = await messageList.evaluate((element) => ({
     scrollHeight: element.scrollHeight,
     scrollTop: element.scrollTop,
