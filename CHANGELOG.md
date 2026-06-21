@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on People List Cleanup
+
+- Simplified the Team Add-on People tab list to show each agent's avatar,
+  display name, and role only, keeping status, inbox, and work details in the
+  selected-agent detail pane.
+- Sorted People tab agents by team and display name so the list is easier to
+  scan across multi-team workspaces.
+- Added People tab team filters so operators can switch between an all-team
+  list and per-team agent lists.
+
 ## 2026-06-21 - Team Add-on Agent Identity Guidance
 
 - Added each persistent Team agent's current ID and display name to the managed

@@ -56,6 +56,7 @@ let showArchived = false;
 let activeTeamView = "workspace";
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
+let selectedPeopleTeamId = "all";
 let selectedPeopleAgentId = null;
 let activeAgentVoiceCall = null;
 
@@ -530,6 +531,14 @@ function bindForms() {
 
 function bindRecordEditing() {
   document.addEventListener("click", (event) => {
+    const peopleTeamButton = event.target.closest("[data-people-team-id]");
+    if (peopleTeamButton) {
+      event.preventDefault();
+      selectedPeopleTeamId = peopleTeamButton.dataset.peopleTeamId || "all";
+      renderAgents();
+      return;
+    }
+
     const selectAgentButton = event.target.closest("[data-select-agent-id]");
     if (selectAgentButton) {
       event.preventDefault();
@@ -2001,30 +2010,109 @@ function renderAgents() {
 }
 
 function renderPeopleAgents(allAgents, agents) {
+  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  if (selectedPeopleTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedPeopleTeamId))) {
+    selectedPeopleTeamId = "all";
+  }
+  const teamTabs = renderPeopleTeamTabs(visibleTeams, agents);
+
   if (!allAgents.length) {
     selectedPeopleAgentId = null;
-    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
+    renderIntoActiveTargets("[data-agents-view]", `${teamTabs}<p class="empty-state">No agents registered.</p>`);
     renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(null, "No agents registered."));
     return;
   }
   if (!agents.length) {
     selectedPeopleAgentId = null;
-    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
+    renderIntoActiveTargets("[data-agents-view]", `${teamTabs}<p class="empty-state">No visible agents.</p>`);
     renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(null, "No visible agents."));
     return;
   }
 
-  const selectedAgent = agents.find((agent) => text(agent.id) === text(selectedPeopleAgentId)) || null;
+  const scopedAgents = peopleAgentsForSelectedTeam(agents);
+  const selectedAgent = scopedAgents.find((agent) => text(agent.id) === text(selectedPeopleAgentId)) || null;
   if (selectedPeopleAgentId && !selectedAgent) {
     selectedPeopleAgentId = null;
   }
+  const sortedAgents = scopedAgents.slice().sort(comparePeopleAgents);
+
+  if (!sortedAgents.length) {
+    renderIntoActiveTargets("[data-agents-view]", `${teamTabs}<p class="empty-state">No agents in this team.</p>`);
+    renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(null, "No agent selected."));
+    return;
+  }
 
   renderIntoActiveTargets("[data-agents-view]", `
+    ${teamTabs}
     <ul class="agent-list compact-record-list people-agent-list">
-      ${agents.map((agent) => renderSelectableAgent(agent)).join("")}
+      ${sortedAgents.map((agent) => renderSelectableAgent(agent)).join("")}
     </ul>
   `);
   renderIntoActiveTargets("[data-agent-detail-view]", renderPeopleAgentDetail(selectedAgent));
+}
+
+function renderPeopleTeamTabs(visibleTeams, visibleAgents) {
+  if (visibleTeams.length <= 1) {
+    return "";
+  }
+  const buttons = [
+    renderPeopleTeamTab({
+      id: "all",
+      label: "All teams",
+      count: visibleAgents.length,
+      selected: selectedPeopleTeamId === "all",
+    }),
+    ...visibleTeams.map((team) => {
+      const teamAgents = visibleAgents.filter((agent) => text(agent.team_id) === text(team.id));
+      return renderPeopleTeamTab({
+        id: team.id,
+        label: team.name || team.id,
+        count: teamAgents.length,
+        selected: text(selectedPeopleTeamId) === text(team.id),
+      });
+    }),
+  ];
+  return `<div class="people-team-tabs" role="tablist" aria-label="People teams">${buttons.join("")}</div>`;
+}
+
+function renderPeopleTeamTab({ id, label, count, selected }) {
+  return `
+    <button
+      type="button"
+      class="people-team-tab${selected ? " active" : ""}"
+      role="tab"
+      aria-selected="${selected ? "true" : "false"}"
+      data-people-team-id="${escapeAttr(id)}"
+    >
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(count)}</strong>
+    </button>
+  `;
+}
+
+function peopleAgentsForSelectedTeam(agents) {
+  if (selectedPeopleTeamId === "all") {
+    return agents;
+  }
+  return agents.filter((agent) => text(agent.team_id) === text(selectedPeopleTeamId));
+}
+
+function comparePeopleTeams(left, right) {
+  return teamSortKey(left).localeCompare(teamSortKey(right)) || byId(left, right);
+}
+
+function comparePeopleAgents(left, right) {
+  return (
+    agentTeamSortKey(left).localeCompare(agentTeamSortKey(right)) ||
+    agentLabel(left).localeCompare(agentLabel(right)) ||
+    byId(left, right)
+  );
+}
+
+function agentTeamSortKey(agent) {
+  const teamId = text(agent?.team_id);
+  const team = state.teams[teamId];
+  return teamSortKey(team || { id: teamId });
 }
 
 function selectPeopleAgent(agentId) {
@@ -2038,13 +2126,6 @@ function selectPeopleAgent(agentId) {
 
 function renderSelectableAgent(agent) {
   const details = agentCardData(agent);
-  const blockedWaiting = details.taskStats.blockedWaitingCount;
-  const inboxCount = details.inboxCount;
-  const summaryBits = [
-    `${details.taskStats.openCount} open`,
-    blockedWaiting ? `${blockedWaiting} blocked/waiting` : "",
-    inboxCount ? `${inboxCount} inbox` : "",
-  ].filter(Boolean);
   const selected = text(selectedPeopleAgentId) === details.id;
   return `
     <li class="agent-item agent-item-compact people-agent-card${selected ? " is-selected" : ""}" data-agent-id="${escapeAttr(details.id)}">
@@ -2058,13 +2139,7 @@ function renderSelectableAgent(agent) {
           ${renderAgentAvatar(details)}
           <span class="compact-record-main">
             <strong>${escapeHtml(details.label)}</strong>
-            <span>${escapeHtml(details.role)} - ${escapeHtml(details.id)}</span>
-          </span>
-          <span class="agent-summary-meta">
-            <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
-            ${renderAgentAwakePill(details)}
-            ${renderAgentInboxHeaderIndicators(details, { interactive: false })}
-            <span>${escapeHtml(summaryBits.join(" - ") || "no open work")}</span>
+            <span class="people-agent-role">${escapeHtml(details.role)}</span>
           </span>
       </button>
     </li>

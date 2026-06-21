@@ -628,7 +628,8 @@ button.runtime-filter-button.active {
   font-weight: 700;
 }
 
-.org-focus-team-tabs {
+.org-focus-team-tabs,
+.people-team-tabs {
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -638,7 +639,8 @@ button.runtime-filter-button.active {
   padding-bottom: 0.65rem;
 }
 
-button.org-focus-team-tab {
+button.org-focus-team-tab,
+button.people-team-tab {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
@@ -651,20 +653,24 @@ button.org-focus-team-tab {
   font-weight: 800;
 }
 
-button.org-focus-team-tab:hover {
+button.org-focus-team-tab:hover,
+button.people-team-tab:hover {
   border-color: rgba(23, 111, 122, 0.3);
   background: var(--panel-alt);
   color: var(--accent-strong);
 }
 
 button.org-focus-team-tab.active,
-button.org-focus-team-tab[aria-selected="true"] {
+button.org-focus-team-tab[aria-selected="true"],
+button.people-team-tab.active,
+button.people-team-tab[aria-selected="true"] {
   border-color: rgba(23, 111, 122, 0.34);
   background: rgba(23, 111, 122, 0.12);
   color: var(--accent-strong);
 }
 
-button.org-focus-team-tab strong {
+button.org-focus-team-tab strong,
+button.people-team-tab strong {
   min-width: 1.35rem;
   border-radius: 999px;
   padding: 0.08rem 0.38rem;
@@ -1889,7 +1895,8 @@ button.record-action:hover {
 
 button.people-agent-select {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
   justify-content: stretch;
   width: 100%;
   min-height: 3.2rem;
@@ -1902,10 +1909,22 @@ button.people-agent-select {
 
 .people-agent-select .compact-record-main {
   justify-self: stretch;
+  gap: 0.22rem;
 }
 
-.people-agent-select .agent-summary-meta {
-  justify-self: end;
+.people-agent-role {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 1.45rem;
+  border: 1px solid rgba(23, 111, 122, 0.26);
+  border-radius: 6px;
+  padding: 0.12rem 0.45rem;
+  background: rgba(23, 111, 122, 0.08);
+  color: var(--accent-strong);
+  font-size: 0.76rem;
+  font-weight: 800;
 }
 
 button.people-agent-select:hover,
@@ -2567,11 +2586,6 @@ label textarea {
   button.people-agent-select .agent-avatar {
     grid-row: 1 / span 2;
     align-self: start;
-  }
-
-  .people-agent-select .agent-summary-meta {
-    grid-column: 2;
-    justify-self: start;
   }
 
   .timeline-entry-summary .timeline-summary-text,
