@@ -7446,6 +7446,8 @@ def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path) -> None:
     assert payload == {
         "page_title": "evander Control Plane Admin",
         "header_title": "evander Control Plane",
+        "header_title_visible": True,
+        "header_logo_size": "compact",
         "header_logo": {
             "light_url": None,
             "dark_url": None,
@@ -7476,6 +7478,8 @@ def test_admin_web_branding_reads_env_and_serves_assets_without_login(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE", "Factory Alpha Admin")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE", "Factory Alpha")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE", "false")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE", "wordmark")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR", str(asset_dir))
     monkeypatch.setenv(
         "AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL",
@@ -7499,6 +7503,8 @@ def test_admin_web_branding_reads_env_and_serves_assets_without_login(
     payload = branding.json()
     assert payload["page_title"] == "Factory Alpha Admin"
     assert payload["header_title"] == "Factory Alpha"
+    assert payload["header_title_visible"] is False
+    assert payload["header_logo_size"] == "wordmark"
     assert payload["product_logo"] == {
         "light_url": "/api/admin/branding/assets/logos/product-light.png",
         "dark_url": "/api/admin/branding/assets/logos/product-light.png",

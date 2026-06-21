@@ -4,9 +4,13 @@ export type AdminLogoConfig = {
   alt: string;
 };
 
+export type AdminHeaderLogoSize = "compact" | "wordmark";
+
 export type AdminBrandingConfig = {
   page_title: string;
   header_title: string;
+  header_title_visible: boolean;
+  header_logo_size: AdminHeaderLogoSize;
   header_logo: AdminLogoConfig;
   product_logo: AdminLogoConfig;
   company_logo: AdminLogoConfig;
@@ -15,6 +19,8 @@ export type AdminBrandingConfig = {
 export const DEFAULT_ADMIN_BRANDING: AdminBrandingConfig = {
   page_title: "evander Control Plane Admin",
   header_title: "evander Control Plane",
+  header_title_visible: true,
+  header_logo_size: "compact",
   header_logo: {
     light_url: null,
     dark_url: null,
@@ -35,6 +41,8 @@ export const DEFAULT_ADMIN_BRANDING: AdminBrandingConfig = {
 export const EMPTY_ADMIN_BRANDING: AdminBrandingConfig = {
   page_title: "",
   header_title: "",
+  header_title_visible: true,
+  header_logo_size: "compact",
   header_logo: {
     light_url: null,
     dark_url: null,
@@ -73,6 +81,28 @@ function textOrDefault(value: unknown, fallback: string): string {
   return optionalText(value) ?? fallback;
 }
 
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
+function headerLogoSizeOrDefault(value: unknown, fallback: AdminHeaderLogoSize): AdminHeaderLogoSize {
+  const normalized = optionalText(value)?.toLowerCase();
+  return normalized === "compact" || normalized === "wordmark" ? normalized : fallback;
+}
+
 function normalizeLogoConfig(value: unknown, fallback: AdminLogoConfig): AdminLogoConfig {
   const record = asRecord(value);
   const lightUrl = optionalText(record.light_url) ?? fallback.light_url;
@@ -90,6 +120,14 @@ export function normalizeAdminBranding(value: unknown): AdminBrandingConfig {
   return {
     page_title: textOrDefault(record.page_title, DEFAULT_ADMIN_BRANDING.page_title),
     header_title: textOrDefault(record.header_title, DEFAULT_ADMIN_BRANDING.header_title),
+    header_title_visible: booleanOrDefault(
+      record.header_title_visible,
+      DEFAULT_ADMIN_BRANDING.header_title_visible,
+    ),
+    header_logo_size: headerLogoSizeOrDefault(
+      record.header_logo_size,
+      DEFAULT_ADMIN_BRANDING.header_logo_size,
+    ),
     product_logo: productLogo,
     company_logo: normalizeLogoConfig(record.company_logo, DEFAULT_ADMIN_BRANDING.company_logo),
     header_logo: normalizeLogoConfig(record.header_logo, productLogo),

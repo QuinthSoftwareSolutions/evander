@@ -209,6 +209,43 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
     assert team_cost["cost_limit_reached"] is True
 
 
+def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    repo.update_team(
+        team_id="team",
+        max_cost_usd="2.00",
+        set_max_cost_usd=True,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        max_cost_usd="5.00",
+        expected_revision=repo.read().revision,
+    )
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(_usage_event("manager", session_id="session-manager"))
+    store.upsert_event(_usage_event("backend", session_id="session-backend"))
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    group_cost = payload["governance_group_costs"]["portfolio"]
+    assert group_cost["estimated_cost"] == 2.0
+    assert group_cost["max_cost_usd"] == 5.0
+    assert group_cost["remaining_cost_usd"] == 3.0
+    assert group_cost["hard_enforced"] is False
+    assert group_cost["member_team_ids"] == ["team"]
+    assert group_cost["member_team_costs"]["team"]["estimated_cost"] == 2.0
+    assert group_cost["member_team_cap_reached_ids"] == ["team"]
+
+
 def test_claude_transcript_backfill_imports_usage_without_content_and_is_idempotent(
     tmp_path: Path,
 ) -> None:

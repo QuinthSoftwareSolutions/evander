@@ -133,6 +133,14 @@ def test_realtime_browser_session_config_includes_origin_query_tool() -> None:
     assert payload["tools"][0]["name"] == "query_origin_agent"
     assert payload["tool_choice"] == "auto"
 
+    custom_payload = realtime_browser_session_config(
+        config,
+        instructions="Answer as Backend.",
+        voice={"id": "voice_custom"},
+    )
+
+    assert custom_payload["audio"]["output"]["voice"] == {"id": "voice_custom"}
+
 
 def test_openai_realtime_client_secret_service_posts_browser_session_config(
     monkeypatch: pytest.MonkeyPatch,
@@ -144,6 +152,7 @@ def test_openai_realtime_client_secret_service_posts_browser_session_config(
         body = json.loads(request.content)
         assert body["session"]["instructions"] == "Answer as Backend."
         assert body["session"]["tools"][0]["name"] == "query_origin_agent"
+        assert body["session"]["audio"]["output"]["voice"] == "cedar"
         return httpx.Response(200, json={"value": "ek_test", "expires_at": 123})
 
     monkeypatch.setenv("REALTIME_KEY", "sk-test")
@@ -162,6 +171,7 @@ def test_openai_realtime_client_secret_service_posts_browser_session_config(
         ).create_client_secret(
             instructions="Answer as Backend.",
             safety_identifier="team-addon:backend",
+            voice="cedar",
         )
 
     assert payload == {"value": "ek_test", "expires_at": 123}

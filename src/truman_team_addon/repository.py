@@ -22,8 +22,10 @@ from .git_naming import (
     validate_branch_name,
 )
 from .models import (
-    AgentAvatar,
+    AGENT_OPERATOR_ONLY_FIELDS,
     AgentActionRecord,
+    AgentAvatar,
+    AgentVoiceProfile,
     AgentInboxItem,
     AgentRuntime,
     AgentStandDown,
@@ -36,6 +38,12 @@ from .models import (
     EphemeralAgentPolicy,
     AgentStatus,
     GitPromotionRecord,
+    GovernanceAgendaItem,
+    GovernanceAgendaItemState,
+    GovernanceAgendaItemType,
+    GovernanceGoal,
+    GovernanceGroup,
+    GovernanceRuntime,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -48,6 +56,8 @@ from .models import (
     ReviewRequest,
     RolePermission,
     Team,
+    TeamConversation,
+    TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamInboxItemType,
@@ -57,6 +67,7 @@ from .models import (
     TeamTaskState,
     task_payload_with_derived,
     _ensure_unique,
+    _unique_text_list,
 )
 from .sqlite_store import LEGACY_STATE_FILE, STATE_DB_FILE, TeamStateSqliteStore
 from .templates import TeamTemplate, get_template
@@ -76,6 +87,15 @@ _NON_TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.WAITING_FOR_REVIEW,
     }
 )
+
+
+def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:
+    if task.state == state:
+        return False
+    effective_now = now or utc_now()
+    task.state = state
+    task.state_entered_at = effective_now
+    return True
 
 
 @dataclass(frozen=True)
@@ -302,6 +322,223 @@ class TeamStateRepository:
                         if agent.team_id == team_id:
                             agent.status = AgentStatus.ARCHIVED
             team.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_governance_group(
+        self,
+        *,
+        governance_group_id: str | None,
+        name: str,
+        manager_agent_id: str,
+        member_team_ids: list[str] | None = None,
+        goals: list[GovernanceGoal | Mapping[str, Any]] | None = None,
+        max_cost_usd: object | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_group_id = _optional_text(governance_group_id)
+        normalized_name = _required_text(name, "name")
+        normalized_manager_agent_id = _required_text(manager_agent_id, "manager_agent_id")
+        normalized_member_team_ids = _unique_text_list(member_team_ids or [], "member_team_ids")
+        goal_inputs = list(goals or [])
+
+        def _mutate(state: TeamState) -> TeamState:
+            effective_group_id = normalized_group_id or _generated_id(
+                prefix="governance",
+                labels=[normalized_name],
+                existing_ids=state.governance_groups,
+            )
+            _require_absent(state.governance_groups, effective_group_id, "governance group")
+            _require_present(state.agents, normalized_manager_agent_id, "governance manager")
+            for team_id in normalized_member_team_ids:
+                _require_present(state.teams, team_id, "member team")
+            now = utc_now()
+            state.governance_groups[effective_group_id] = GovernanceGroup(
+                id=effective_group_id,
+                name=normalized_name,
+                manager_agent_id=normalized_manager_agent_id,
+                member_team_ids=normalized_member_team_ids,
+                goals=_governance_goals_with_generated_ids(
+                    goal_inputs,
+                    governance_group_id=effective_group_id,
+                ),
+                max_cost_usd=max_cost_usd,
+                created_at=now,
+                updated_at=now,
+            )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_governance_group(
+        self,
+        *,
+        governance_group_id: str,
+        name: str | None = None,
+        manager_agent_id: str | None = None,
+        member_team_ids: list[str] | None = None,
+        set_member_team_ids: bool = False,
+        goals: list[GovernanceGoal] | None = None,
+        max_cost_usd: object | None = None,
+        set_max_cost_usd: bool = False,
+        archived: bool | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            group = _require_present(
+                state.governance_groups,
+                normalized_group_id,
+                "governance group",
+            )
+            if name is not None:
+                group.name = name
+            if manager_agent_id is not None:
+                _require_present(state.agents, manager_agent_id, "governance manager")
+                group.manager_agent_id = manager_agent_id
+            if set_member_team_ids:
+                previous_member_team_ids = set(group.member_team_ids)
+                normalized_member_team_ids = _unique_text_list(
+                    member_team_ids or [],
+                    "member_team_ids",
+                )
+                for team_id in normalized_member_team_ids:
+                    _require_present(state.teams, team_id, "member team")
+                group.member_team_ids = normalized_member_team_ids
+                removed_team_ids = previous_member_team_ids - set(normalized_member_team_ids)
+                if removed_team_ids:
+                    now = utc_now()
+                    for item in state.governance_agenda.values():
+                        if (
+                            item.governance_group_id != group.id
+                            or item.state == GovernanceAgendaItemState.HANDLED
+                        ):
+                            continue
+                        item_team_id = _governance_agenda_effective_team_id(state, item)
+                        if item_team_id in removed_team_ids:
+                            item.state = GovernanceAgendaItemState.HANDLED
+                            item.updated_at = now
+            if goals is not None:
+                group.goals = goals
+            if set_max_cost_usd:
+                group.max_cost_usd = _optional_cost_limit(max_cost_usd)
+            if archived is not None:
+                group.archived = archived
+            group.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_governance_agenda_item(
+        self,
+        *,
+        agenda_item_id: str | None,
+        governance_group_id: str,
+        item_type: GovernanceAgendaItemType | str,
+        title: str,
+        summary: str,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+        payload: Mapping[str, Any] | None = None,
+        priority: TeamInboxPriority | str = TeamInboxPriority.NORMAL,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_item_id = _optional_text(agenda_item_id)
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_title = _required_text(title, "title")
+        normalized_summary = _required_text(summary, "summary")
+        normalized_team_id = _optional_text(team_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_agent_id = _optional_text(agent_id)
+        normalized_item_type = (
+            item_type
+            if isinstance(item_type, GovernanceAgendaItemType)
+            else GovernanceAgendaItemType(_required_text(item_type, "item_type"))
+        )
+        normalized_priority = (
+            priority
+            if isinstance(priority, TeamInboxPriority)
+            else TeamInboxPriority(_required_text(priority, "priority"))
+        )
+        normalized_payload = dict(payload or {})
+
+        def _mutate(state: TeamState) -> TeamState:
+            group = _require_present(
+                state.governance_groups,
+                normalized_group_id,
+                "governance group",
+            )
+            effective_team_id = normalized_team_id
+            if normalized_project_id is not None:
+                project = _require_present(state.projects, normalized_project_id, "project")
+                if effective_team_id is not None and project.team_id != effective_team_id:
+                    raise ValueError(
+                        f"project {normalized_project_id} does not belong to team "
+                        f"{effective_team_id}"
+                    )
+                effective_team_id = effective_team_id or project.team_id
+            if normalized_agent_id is not None:
+                agent = _require_present(state.agents, normalized_agent_id, "agent")
+                if effective_team_id is not None and agent.team_id != effective_team_id:
+                    raise ValueError(
+                        f"agent {normalized_agent_id} does not belong to team "
+                        f"{effective_team_id}"
+                    )
+                effective_team_id = effective_team_id or agent.team_id
+            if effective_team_id is not None:
+                _require_present(state.teams, effective_team_id, "team")
+                if effective_team_id not in group.member_team_ids:
+                    raise ValueError(
+                        f"team {effective_team_id} is not in governance group {group.id}"
+                    )
+            effective_item_id = normalized_item_id or _generated_id(
+                prefix="governance-agenda",
+                labels=[normalized_group_id, normalized_item_type.value, normalized_title],
+                existing_ids=state.governance_agenda,
+            )
+            _require_absent(state.governance_agenda, effective_item_id, "governance agenda item")
+            now = utc_now()
+            state.governance_agenda[effective_item_id] = GovernanceAgendaItem(
+                id=effective_item_id,
+                governance_group_id=normalized_group_id,
+                item_type=normalized_item_type,
+                title=normalized_title,
+                summary=normalized_summary,
+                team_id=effective_team_id,
+                project_id=normalized_project_id,
+                agent_id=normalized_agent_id,
+                payload=normalized_payload,
+                priority=normalized_priority,
+                created_at=now,
+                updated_at=now,
+            )
+            runtime = state.governance_runtimes.get(normalized_group_id)
+            if runtime is not None:
+                runtime.next_wake_at = None
+                runtime.updated_at = now
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def mark_governance_agenda_handled(
+        self,
+        *,
+        agenda_item_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_item_id = _required_text(agenda_item_id, "agenda_item_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            item = _require_present(
+                state.governance_agenda,
+                normalized_item_id,
+                "governance agenda item",
+            )
+            item.state = GovernanceAgendaItemState.HANDLED
+            item.updated_at = utc_now()
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -616,6 +853,8 @@ class TeamStateRepository:
         set_display_name: bool = False,
         ephemeral_policy: EphemeralAgentPolicy | None = None,
         status: AgentStatus | None = None,
+        voice_profile: AgentVoiceProfile | None = None,
+        set_voice_profile: bool = False,
         auto_context_clearing_enabled: bool | None = None,
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
@@ -654,6 +893,12 @@ class TeamStateRepository:
                 agent.ephemeral_policy = ephemeral_policy
             if status is not None:
                 agent.status = status
+            if set_voice_profile:
+                agent.voice_profile = (
+                    voice_profile
+                    if voice_profile is not None and voice_profile.configured
+                    else None
+                )
             if set_auto_context_clearing_enabled:
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,
@@ -693,6 +938,320 @@ class TeamStateRepository:
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_or_get_conversation(
+        self,
+        *,
+        agent_id: str,
+        created_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamConversation, bool]:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_created_by = _optional_text(created_by)
+
+        current_state = self.read()
+        if expected_revision is not None and current_state.revision != expected_revision:
+            raise TeamStateConflictError(
+                expected_revision=expected_revision,
+                current_revision=current_state.revision,
+            )
+        current_agent = _require_present(current_state.agents, normalized_agent_id, "agent")
+        if current_agent.status == AgentStatus.ARCHIVED:
+            raise ValueError(f"agent {current_agent.id} is archived")
+        for conversation in current_state.conversations.values():
+            if conversation.agent_id == current_agent.id:
+                return current_state, conversation, False
+
+        conversation_id: str | None = None
+        created = False
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal conversation_id, created
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            for conversation in state.conversations.values():
+                if conversation.agent_id == agent.id:
+                    conversation_id = conversation.id
+                    return state
+            now = utc_now()
+            conversation_id = _generated_id(
+                prefix="conversation",
+                labels=[agent.id],
+                existing_ids=state.conversations,
+            )
+            state.conversations[conversation_id] = TeamConversation(
+                id=conversation_id,
+                agent_id=agent.id,
+                created_by=normalized_created_by,
+                last_message_preview="",
+                created_at=now,
+                updated_at=now,
+                last_interaction_at=now,
+            )
+            created = True
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        if conversation_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation was not resolved")
+        return state, state.conversations[conversation_id], created
+
+    def record_operator_chat_message(
+        self,
+        *,
+        conversation_id: str,
+        body: str,
+        created_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_conversation_id = _required_text(conversation_id, "conversation_id")
+        normalized_body = _required_text(body, "body")
+        normalized_created_by = _optional_text(created_by)
+        message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal message_id
+            conversation = _require_present(
+                state.conversations,
+                normalized_conversation_id,
+                "conversation",
+            )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            now = utc_now()
+            message_id = f"chatmsg-{uuid4().hex}"
+            state.conversation_messages[message_id] = TeamConversationMessage(
+                id=message_id,
+                conversation_id=conversation.id,
+                sender="operator",
+                message_type="text",
+                body=normalized_body,
+                status="created",
+                metadata={"created_by": normalized_created_by} if normalized_created_by else {},
+                created_at=now,
+                updated_at=now,
+            )
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=_chat_preview(normalized_body),
+            )
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        if message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message was not created")
+        return state, state.conversation_messages[message_id]
+
+    def begin_chat_message_dispatch(
+        self,
+        *,
+        message_id: str,
+        dispatch_id: str,
+        lease_seconds: int = 172800,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        resolved_message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_message_id
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            runtime = state.agent_runtimes.setdefault(
+                agent.id,
+                AgentRuntime(agent_id=agent.id),
+            )
+            if (
+                runtime.active_dispatch_id is not None
+                and runtime.active_dispatch_id != normalized_dispatch_id
+            ):
+                raise ValueError(
+                    f"agent {agent.id} already has active Team dispatch "
+                    f"{runtime.active_dispatch_id}"
+                )
+            now = utc_now()
+            runtime.active_dispatch_id = normalized_dispatch_id
+            runtime.wake_leased_until = now + timedelta(seconds=max(1, int(lease_seconds)))
+            runtime.wake_reason = "team_chat"
+            runtime.last_wake_at = now
+            runtime.next_wake_at = None
+            runtime.updated_at = now
+            message.status = "running"
+            message.dispatch_id = normalized_dispatch_id
+            message.error = None
+            message.updated_at = now
+            conversation.updated_at = now
+            resolved_message_id = message.id
+            return state
+
+        state = self.update(_mutate)
+        if resolved_message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch was not started")
+        return state, state.conversation_messages[resolved_message_id]
+
+    def mark_chat_message_dispatch_failed(
+        self,
+        *,
+        message_id: str,
+        error: str,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_error = _required_text(error, "error")
+        resolved_message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_message_id
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            runtime = state.agent_runtimes.get(conversation.agent_id)
+            if (
+                runtime is not None
+                and message.dispatch_id is not None
+                and runtime.active_dispatch_id == message.dispatch_id
+            ):
+                runtime.active_dispatch_id = None
+                runtime.wake_leased_until = None
+                runtime.wake_reason = None
+                runtime.updated_at = utc_now()
+            now = utc_now()
+            message.status = "failed"
+            message.error = normalized_error
+            message.updated_at = now
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=f"Send failed: {_chat_preview(normalized_error)}",
+            )
+            resolved_message_id = message.id
+            return state
+
+        state = self.update(_mutate)
+        if resolved_message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch failure was not recorded")
+        return state, state.conversation_messages[resolved_message_id]
+
+    def record_conversation_voice_call(
+        self,
+        *,
+        conversation_id: str,
+        voice_session_id: str,
+        status: str = "running",
+        summary: str | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_conversation_id = _required_text(conversation_id, "conversation_id")
+        normalized_voice_session_id = _required_text(voice_session_id, "voice_session_id")
+        normalized_summary = _optional_text(summary)
+        normalized_status = _optional_text(status) or "running"
+        message_id: str | None = None
+
+        current_state = self.read()
+        for message in current_state.conversation_messages.values():
+            if message.voice_session_id == normalized_voice_session_id:
+                return current_state, message
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal message_id
+            for message in state.conversation_messages.values():
+                if message.voice_session_id == normalized_voice_session_id:
+                    message_id = message.id
+                    return state
+            conversation = _require_present(
+                state.conversations,
+                normalized_conversation_id,
+                "conversation",
+            )
+            now = utc_now()
+            message_id = f"chatmsg-{uuid4().hex}"
+            body = normalized_summary or "Voice call"
+            state.conversation_messages[message_id] = TeamConversationMessage(
+                id=message_id,
+                conversation_id=conversation.id,
+                sender="system",
+                message_type="voice_call",
+                body=body,
+                status="ended" if normalized_status == "ended" else "running",
+                voice_session_id=normalized_voice_session_id,
+                created_at=now,
+                updated_at=now,
+            )
+            _touch_conversation(conversation, now=now, preview=body)
+            return state
+
+        state = self.update(_mutate)
+        if message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation voice call was not recorded")
+        return state, state.conversation_messages[message_id]
+
+    def update_conversation_voice_call_status(
+        self,
+        *,
+        voice_session_id: str,
+        status: str,
+        summary: str | None = None,
+        error: str | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage] | None:
+        normalized_voice_session_id = _required_text(voice_session_id, "voice_session_id")
+        normalized_status = _optional_text(status) or "ended"
+        normalized_summary = _optional_text(summary)
+        normalized_error = _optional_text(error)
+        current = self.read()
+        message_id = next(
+            (
+                message.id
+                for message in current.conversation_messages.values()
+                if message.voice_session_id == normalized_voice_session_id
+            ),
+            None,
+        )
+        if message_id is None:
+            return None
+
+        def _mutate(state: TeamState) -> TeamState:
+            message = _require_present(
+                state.conversation_messages,
+                message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            now = utc_now()
+            message.status = "failed" if normalized_status == "failed" else "ended"
+            if normalized_summary is not None:
+                message.metadata = {**message.metadata, "summary": normalized_summary}
+            if normalized_error is not None:
+                message.error = normalized_error
+            message.updated_at = now
+            preview = "Voice call failed" if message.status == "failed" else "Voice call ended"
+            _touch_conversation(conversation, now=now, preview=preview)
+            return state
+
+        state = self.update(_mutate)
+        return state, state.conversation_messages[message_id]
 
     def set_agent_avatar(
         self,
@@ -927,6 +1486,7 @@ class TeamStateRepository:
                 project_id=normalized_project_id,
                 priority=priority,
                 state=state,
+                state_entered_at=now,
                 title=normalized_title,
                 description=normalized_description,
                 created_by_agent_id=created_by_agent_id,
@@ -963,10 +1523,11 @@ class TeamStateRepository:
     ) -> TeamState:
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, task_id, "task")
+            now = utc_now()
             if priority is not None:
                 task.priority = priority
             if state is not None:
-                task.state = state
+                _set_task_state(task, state, now=now)
             if title is not None:
                 task.title = title
             if description is not None:
@@ -975,7 +1536,7 @@ class TeamStateRepository:
                 task.parent_task_id = parent_task_id
             if dependency_task_ids is not None:
                 task.dependency_task_ids = dependency_task_ids
-            task.updated_at = utc_now()
+            task.updated_at = now
             if task.state in _NON_TERMINAL_TASK_STATES:
                 _mark_agent_work_due(
                     state_model,
@@ -2159,6 +2720,167 @@ class TeamStateRepository:
         state = self.update(_mutate)
         return state, leases
 
+    def lease_due_governance_managers(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 10,
+        lease_seconds: int = 900,
+        wake_interval_seconds: int = 3600,
+        governance_group_id: str | None = None,
+        cost_payload: Mapping[str, Any] | None = None,
+        cost_warning_ratio: Decimal | str | float = Decimal("0.8"),
+    ) -> tuple[TeamState, list[dict[str, Any]]]:
+        effective_now = _ensure_utc(now or utc_now())
+        normalized_group_id = _optional_text(governance_group_id)
+        normalized_limit = max(0, int(limit))
+        warning_ratio = _decimal_or_zero(cost_warning_ratio)
+        leases: list[dict[str, Any]] = []
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            for group in sorted(state_model.governance_groups.values(), key=lambda item: item.id):
+                if normalized_limit and len(leases) >= normalized_limit:
+                    break
+                if group.archived:
+                    continue
+                if normalized_group_id is not None and group.id != normalized_group_id:
+                    continue
+                manager = state_model.agents.get(group.manager_agent_id)
+                if manager is None or manager.status != AgentStatus.ACTIVE:
+                    continue
+                manager_runtime = state_model.agent_runtimes.get(manager.id)
+                if (
+                    manager_runtime is not None
+                    and manager_runtime.wake_leased_until is not None
+                    and _ensure_utc(manager_runtime.wake_leased_until) > effective_now
+                ):
+                    continue
+                runtime = state_model.governance_runtimes.setdefault(
+                    group.id,
+                    GovernanceRuntime(governance_group_id=group.id),
+                )
+                if (
+                    runtime.wake_leased_until is not None
+                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                ):
+                    continue
+
+                pending_agenda = _pending_governance_agenda_for_group(
+                    state_model,
+                    group.id,
+                )
+                cost_signals = _governance_cost_signals(
+                    state_model,
+                    group=group,
+                    cost_payload=cost_payload,
+                    warning_ratio=warning_ratio,
+                )
+                blocked_team_signals = _governance_blocked_team_signals(
+                    state_model,
+                    group=group,
+                )
+                cost_signal_fingerprints = _governance_cost_signal_fingerprints(
+                    cost_signals
+                )
+                blocked_signal_fingerprints = _governance_blocked_signal_fingerprints(
+                    blocked_team_signals
+                )
+                cost_signals_changed = (
+                    cost_signal_fingerprints != runtime.last_cost_signal_fingerprints
+                )
+                blocked_signals_changed = (
+                    blocked_signal_fingerprints != runtime.last_blocked_signal_fingerprints
+                )
+                changed_cost_signals = cost_signals if cost_signals and cost_signals_changed else []
+                changed_blocked_team_signals = (
+                    blocked_team_signals
+                    if blocked_team_signals and blocked_signals_changed
+                    else []
+                )
+                due_by_interval = (
+                    runtime.next_wake_at is None
+                    or _ensure_utc(runtime.next_wake_at) <= effective_now
+                )
+                pending_agenda_ready = bool(pending_agenda) and due_by_interval
+                if (
+                    not pending_agenda_ready
+                    and not changed_cost_signals
+                    and not changed_blocked_team_signals
+                ):
+                    if cost_signals_changed or blocked_signals_changed:
+                        runtime.last_cost_signal_fingerprints = cost_signal_fingerprints
+                        runtime.last_blocked_signal_fingerprints = blocked_signal_fingerprints
+                        runtime.updated_at = effective_now
+                    continue
+
+                if pending_agenda_ready:
+                    reason = pending_agenda[0].item_type.value
+                elif changed_cost_signals:
+                    reason = changed_cost_signals[0]["type"]
+                else:
+                    reason = changed_blocked_team_signals[0]["type"]
+
+                dispatch_id = f"team-governance-dispatch-{uuid4().hex}"
+                runtime.active_dispatch_id = dispatch_id
+                runtime.wake_reason = reason
+                runtime.last_wake_at = effective_now
+                runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
+                runtime.last_cost_signal_fingerprints = cost_signal_fingerprints
+                runtime.last_blocked_signal_fingerprints = blocked_signal_fingerprints
+                runtime.updated_at = effective_now
+                leases.append(
+                    {
+                        "agent": _agent_payload(state_model, manager),
+                        "governance_group": _governance_group_payload(state_model, group),
+                        "runtime": runtime.model_dump(mode="json"),
+                        "dispatch_id": dispatch_id,
+                        "reason": reason,
+                        "agenda": [
+                            item.model_dump(mode="json")
+                            for item in pending_agenda
+                        ],
+                        "member_teams": [
+                            _governance_member_team_payload(
+                                state_model,
+                                team_id,
+                                cost_payload=cost_payload,
+                            )
+                            for team_id in group.member_team_ids
+                            if team_id in state_model.teams
+                        ],
+                        "cost_signals": changed_cost_signals,
+                        "blocked_team_signals": changed_blocked_team_signals,
+                    }
+                )
+            return state_model
+
+        if normalized_limit == 0:
+            return self.read(), []
+        state = self.update(_mutate)
+        return state, leases
+
+    def complete_governance_dispatch(
+        self,
+        *,
+        governance_group_id: str,
+        dispatch_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = state.governance_runtimes.get(normalized_group_id)
+            if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
+                return state
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def mirror_session_metadata_payload(
         self,
         *,
@@ -2245,6 +2967,8 @@ class TeamStateRepository:
             "rejected_ephemeral_assignment_ids": [],
             "created_stand_down_ids": [],
             "revoked_stand_down_ids": [],
+            "created_chat_reply_message_ids": [],
+            "replied_chat_message_ids": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -2392,8 +3116,9 @@ class TeamStateRepository:
                             result["errors"].append(graph_error)
                             continue
                     changed = False
+                    now = utc_now()
                     if raw_state is not None:
-                        task.state = TeamTaskState(raw_state)
+                        _set_task_state(task, TeamTaskState(raw_state), now=now)
                         projects_to_recalc.add(task.project_id)
                         changed = True
                     if priority is not None:
@@ -2409,7 +3134,7 @@ class TeamStateRepository:
                         task.dependency_task_ids = new_dependency_task_ids
                         changed = True
                     if changed:
-                        task.updated_at = utc_now()
+                        task.updated_at = now
                         _mark_progress()
                         result["updated_task_ids"].append(task.id)
                 except ValueError as exc:
@@ -2599,6 +3324,28 @@ class TeamStateRepository:
                 except ValueError as exc:
                     _append_action_item_error(result, "status_requests", index, exc)
 
+            for index, reply in enumerate(
+                _list_of_mappings(normalized_action.get("chat_replies"), "chat_replies")
+            ):
+                try:
+                    created_id = _apply_chat_reply(
+                        state_model,
+                        actor=agent,
+                        reply=reply,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    error_detail = f"chat_replies[{index}]: {exc}"
+                    _append_action_item_error(result, "chat_replies", index, exc)
+                    _mark_chat_dispatch_message_failed(
+                        state_model,
+                        dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
+                        error=error_detail,
+                    )
+                    continue
+                result["created_chat_reply_message_ids"].append(created_id)
+                _mark_progress()
+
             for escalation in _list_of_mappings(
                 normalized_action.get("operator_escalations"), "operator_escalations"
             ):
@@ -2644,8 +3391,9 @@ class TeamStateRepository:
                     )
                     state_model.deliverables[deliverable.id] = deliverable
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
-                    task.state = TeamTaskState.WAITING_FOR_REVIEW
-                    task.updated_at = utc_now()
+                    now = utc_now()
+                    _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+                    task.updated_at = now
                     projects_to_recalc.add(task.project_id)
                     result["created_deliverable_ids"].append(deliverable.id)
                     if agent.reports_to_agent_id is not None:
@@ -3114,6 +3862,35 @@ def _project_goals_with_generated_ids(
     return normalized
 
 
+def _governance_goals_with_generated_ids(
+    goals: list[GovernanceGoal | Mapping[str, Any]],
+    *,
+    governance_group_id: str,
+) -> list[GovernanceGoal]:
+    normalized: list[GovernanceGoal] = []
+    used_ids: set[str] = set()
+    for index, raw_goal in enumerate(goals):
+        if isinstance(raw_goal, GovernanceGoal):
+            payload = raw_goal.model_dump(mode="json")
+        elif isinstance(raw_goal, Mapping):
+            payload = dict(raw_goal)
+        else:
+            raise ValueError(f"goals[{index}] must be a JSON object")
+        goal_id = _optional_text(payload.get("id"))
+        if goal_id is None:
+            goal_id = _generated_id(
+                prefix="governance-goal",
+                labels=[governance_group_id, payload.get("description")],
+                existing_ids=used_ids,
+            )
+        if goal_id in used_ids:
+            raise ValueError(f"duplicate governance goal id: {goal_id}")
+        used_ids.add(goal_id)
+        payload["id"] = goal_id
+        normalized.append(GovernanceGoal.model_validate(payload))
+    return normalized
+
+
 def _remove_value(values: list[str], value: str) -> list[str]:
     return [item for item in values if item != value]
 
@@ -3165,7 +3942,7 @@ def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) 
 
 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
-    payload = agent.model_dump(mode="json", exclude={"avatar"})
+    payload = agent.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
     role = state.roles.get(agent.role_id)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (
@@ -3174,6 +3951,204 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
         else []
     )
     return payload
+
+
+def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:
+    payload = group.model_dump(mode="json")
+    manager = state.agents.get(group.manager_agent_id)
+    payload["manager"] = _agent_payload(state, manager) if manager is not None else None
+    return payload
+
+
+def _governance_member_team_payload(
+    state: TeamState,
+    team_id: str,
+    *,
+    cost_payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    team = state.teams[team_id]
+    projects = [
+        project.model_dump(mode="json")
+        for project in sorted(state.projects.values(), key=lambda item: item.id)
+        if project.team_id == team_id
+    ]
+    manager = state.agents.get(team.manager_agent_id)
+    team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
+    return {
+        "team": team.model_dump(mode="json"),
+        "manager": _agent_payload(state, manager) if manager is not None else None,
+        "projects": projects,
+        "cost": dict(team_costs.get(team_id) or {}),
+    }
+
+
+def _pending_governance_agenda_for_group(
+    state: TeamState,
+    governance_group_id: str,
+) -> list[GovernanceAgendaItem]:
+    items = [
+        item
+        for item in state.governance_agenda.values()
+        if item.governance_group_id == governance_group_id
+        and item.state == GovernanceAgendaItemState.PENDING
+    ]
+    items.sort(
+        key=lambda item: (
+            _priority_sort_value(item.priority),
+            item.created_at,
+            item.id,
+        )
+    )
+    return items
+
+
+def _governance_agenda_effective_team_id(
+    state: TeamState,
+    item: GovernanceAgendaItem,
+) -> str | None:
+    if item.team_id is not None:
+        return item.team_id
+    if item.project_id is not None:
+        project = state.projects.get(item.project_id)
+        if project is not None:
+            return project.team_id
+    if item.agent_id is not None:
+        agent = state.agents.get(item.agent_id)
+        if agent is not None:
+            return agent.team_id
+    return None
+
+
+def _governance_cost_signals(
+    state: TeamState,
+    *,
+    group: GovernanceGroup,
+    cost_payload: Mapping[str, Any] | None,
+    warning_ratio: Decimal,
+) -> list[dict[str, Any]]:
+    team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
+    signals: list[dict[str, Any]] = []
+    for team_id in group.member_team_ids:
+        team = state.teams.get(team_id)
+        cost = team_costs.get(team_id)
+        if team is None or not isinstance(cost, Mapping):
+            continue
+        max_cost = _decimal_or_none(cost.get("max_cost_usd"))
+        if max_cost is None:
+            max_cost = _decimal_or_none(team.max_cost_usd)
+        if max_cost is None or max_cost <= 0:
+            continue
+        estimated = _decimal_or_zero(cost.get("estimated_cost"))
+        remaining = max(max_cost - estimated, Decimal("0"))
+        usage_ratio = estimated / max_cost
+        if bool(cost.get("cost_limit_reached")) or estimated >= max_cost:
+            signal_type = GovernanceAgendaItemType.COST_CAP_REACHED.value
+        elif usage_ratio >= warning_ratio:
+            signal_type = GovernanceAgendaItemType.COST_CAP_WARNING.value
+        else:
+            continue
+        signals.append(
+            {
+                "type": signal_type,
+                "team_id": team_id,
+                "team_name": team.name,
+                "estimated_cost": float(estimated),
+                "max_cost_usd": float(max_cost),
+                "remaining_cost_usd": float(remaining),
+                "usage_ratio": float(usage_ratio),
+                "coverage_status": cost.get("coverage_status"),
+                "coverage_reasons": list(cost.get("coverage_reasons") or []),
+            }
+        )
+    signals.sort(key=lambda item: (item["type"] != GovernanceAgendaItemType.COST_CAP_REACHED.value, item["team_id"]))
+    return signals
+
+
+def _governance_cost_signal_fingerprints(signals: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        f"{_optional_text(signal.get('team_id')) or ''}:{_optional_text(signal.get('type')) or ''}"
+        for signal in signals
+    )
+
+
+def _governance_blocked_team_signals(
+    state: TeamState,
+    *,
+    group: GovernanceGroup,
+) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    for team_id in group.member_team_ids:
+        team = state.teams.get(team_id)
+        if team is None:
+            continue
+        blocked_projects = [
+            project.id
+            for project in state.projects.values()
+            if project.team_id == team_id and project.status == ProjectStatus.BLOCKED
+        ]
+        blocked_tasks = [
+            task.id
+            for task in state.tasks.values()
+            if task.state == TeamTaskState.BLOCKED
+            and (project := state.projects.get(task.project_id)) is not None
+            and project.team_id == team_id
+        ]
+        if not blocked_projects and not blocked_tasks:
+            continue
+        signals.append(
+            {
+                "type": GovernanceAgendaItemType.BLOCKED_TEAM.value,
+                "team_id": team_id,
+                "team_name": team.name,
+                "blocked_project_ids": sorted(blocked_projects),
+                "blocked_task_ids": sorted(blocked_tasks),
+            }
+        )
+    signals.sort(key=lambda item: item["team_id"])
+    return signals
+
+
+def _governance_blocked_signal_fingerprints(signals: list[dict[str, Any]]) -> list[str]:
+    fingerprints: list[str] = []
+    for signal in signals:
+        blocked_projects = ",".join(
+            sorted(str(project_id) for project_id in signal.get("blocked_project_ids") or [])
+        )
+        blocked_tasks = ",".join(
+            sorted(str(task_id) for task_id in signal.get("blocked_task_ids") or [])
+        )
+        fingerprints.append(
+            f"{_optional_text(signal.get('team_id')) or ''}:"
+            f"projects={blocked_projects}:tasks={blocked_tasks}"
+        )
+    return sorted(fingerprints)
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _decimal_or_zero(value: object) -> Decimal:
+    return _decimal_or_none(value) or Decimal("0")
+
+
+def _priority_sort_value(priority: TeamInboxPriority) -> int:
+    order = {
+        TeamInboxPriority.HIGH: 0,
+        TeamInboxPriority.NORMAL: 1,
+        TeamInboxPriority.LOW: 2,
+    }
+    return order.get(priority, 1)
 
 
 def _mapping(value: object, field_name: str) -> dict[str, Any]:
@@ -3285,6 +4260,24 @@ def _optional_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _chat_preview(value: object, *, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}..."
+
+
+def _touch_conversation(
+    conversation: TeamConversation,
+    *,
+    now: datetime,
+    preview: str,
+) -> None:
+    conversation.last_message_preview = _chat_preview(preview)
+    conversation.last_interaction_at = now
+    conversation.updated_at = now
 
 
 def _optional_cost_limit(value: object) -> Decimal | None:
@@ -3871,6 +4864,93 @@ def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
 def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
     project = state.projects.get(project_id)
     return project is not None and project.lead_agent_id == agent_id
+
+
+def _apply_chat_reply(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    reply: Mapping[str, Any],
+    result: dict[str, Any],
+) -> str:
+    conversation_id = _required_text(reply.get("conversation_id"), "conversation_id")
+    source_message_id = _required_text(reply.get("message_id"), "message_id")
+    body = _required_text(reply.get("body"), "body")
+    conversation = _require_present(state.conversations, conversation_id, "conversation")
+    if conversation.agent_id != actor.id:
+        raise ValueError(
+            f"agent {actor.id} cannot reply to conversation {conversation_id}"
+        )
+    source_message = _require_present(
+        state.conversation_messages,
+        source_message_id,
+        "conversation message",
+    )
+    if source_message.conversation_id != conversation.id:
+        raise ValueError(
+            f"message {source_message_id} is not in conversation {conversation_id}"
+        )
+    if source_message.sender != "operator":
+        raise ValueError(f"message {source_message_id} is not an operator message")
+    now = utc_now()
+    source_message.status = "replied"
+    source_message.error = None
+    source_message.updated_at = now
+    reply_id = f"chatmsg-{uuid4().hex}"
+    metadata: dict[str, Any] = {}
+    summary = _optional_text(reply.get("summary"))
+    if summary is not None:
+        metadata["summary"] = summary
+    state.conversation_messages[reply_id] = TeamConversationMessage(
+        id=reply_id,
+        conversation_id=conversation.id,
+        sender="agent",
+        message_type="text",
+        body=body,
+        status="sent",
+        source_message_id=source_message.id,
+        metadata=metadata,
+        created_at=now,
+        updated_at=now,
+    )
+    _touch_conversation(conversation, now=now, preview=_chat_preview(body))
+    result["replied_chat_message_ids"].append(source_message.id)
+    return reply_id
+
+
+def _mark_chat_dispatch_message_failed(
+    state: TeamState,
+    *,
+    dispatch_id: str | None,
+    error: str,
+) -> str | None:
+    normalized_dispatch_id = _optional_text(dispatch_id)
+    if normalized_dispatch_id is None or not normalized_dispatch_id.startswith("team-chat:"):
+        return None
+    source_message = next(
+        (
+            message
+            for message in state.conversation_messages.values()
+            if message.dispatch_id == normalized_dispatch_id
+            and message.sender == "operator"
+            and message.status != "replied"
+        ),
+        None,
+    )
+    if source_message is None:
+        return None
+    conversation = state.conversations.get(source_message.conversation_id)
+    now = utc_now()
+    source_message.status = "failed"
+    source_message.error = error
+    source_message.updated_at = now
+    if conversation is not None:
+        _touch_conversation(
+            conversation,
+            now=now,
+            preview=f"Reply failed: {_chat_preview(error)}",
+        )
+    return source_message.id
 
 
 def _agent_has_role_permission_for_project(
@@ -4769,15 +5849,15 @@ def _cascade_review_decision(
             if task_deliverables and all(
                 item.state == TeamRecordState.ACCEPTED for item in task_deliverables
             ):
-                task.state = TeamTaskState.ACCEPTED
+                _set_task_state(task, TeamTaskState.ACCEPTED, now=now)
                 task.updated_at = now
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
-        task.state = TeamTaskState.BLOCKED
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         task.updated_at = now
     else:  # blocked
         deliverable.state = TeamRecordState.BLOCKED
-        task.state = TeamTaskState.BLOCKED
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         task.updated_at = now
     projects_to_recalc.add(task.project_id)
 
@@ -5762,8 +6842,9 @@ def _apply_ephemeral_acceptance(
         )
         state.deliverables[deliverable.id] = deliverable
         task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
-        task.state = TeamTaskState.WAITING_FOR_REVIEW
-        task.updated_at = utc_now()
+        now = utc_now()
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        task.updated_at = now
         assignment.state = EphemeralAssignmentState.ACCEPTED
         assignment.error = None
         assignment.updated_at = utc_now()
@@ -5841,7 +6922,10 @@ def _build_ephemeral_prompt(
 ) -> str:
     context = {
         "assignment": assignment.model_dump(mode="json"),
-        "parent_agent": parent.model_dump(mode="json", exclude={"avatar"}),
+        "parent_agent": parent.model_dump(
+            mode="json",
+            exclude=AGENT_OPERATOR_ONLY_FIELDS,
+        ),
         "task": task.model_dump(mode="json"),
         "action_artifact_path": "/artifacts/team-action.json",
     }

@@ -33,7 +33,7 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
-from .models import RolePermission, team_state_payload
+from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
     TeamAgentActionArtifactQueryDefinition,
@@ -51,14 +51,15 @@ from .provider_schemas import (
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
     TeamWakeDueAgentsEffectDefinition,
+    TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 9
+ACTION_CONTRACT_SCHEMA_VERSION = 10
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
-TEAM_AGENT_GUIDANCE_VERSION = 1
+TEAM_AGENT_GUIDANCE_VERSION = 2
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -251,6 +252,61 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Guest user that owns the artifact path for libvirt-backed sessions.",
                 default_value="agent",
                 placeholder="agent",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:wake-governance-managers",
+        "Wake governance managers",
+        "Lease due governance group managers for agenda, cost, blocker, and check-in signals.",
+        [
+            _catalog_field(
+                "governance_group_id",
+                "Governance group ID",
+                "string",
+                description="Limit wake leasing to one governance group. Leave blank to evaluate all groups.",
+                placeholder="platform-portfolio",
+            ),
+            _catalog_field(
+                "limit",
+                "Lease limit",
+                "number",
+                description="Maximum number of governance managers to lease in this wake cycle.",
+                default_value=10,
+                placeholder="10",
+            ),
+            _catalog_field(
+                "lease_seconds",
+                "Lease seconds",
+                "number",
+                description="How long a governance runtime lease remains active before it can be retried.",
+                default_value=900,
+                placeholder="900",
+            ),
+            _catalog_field(
+                "wake_interval_seconds",
+                "Wake interval seconds",
+                "number",
+                description="Minimum delay before the same governance group can wake again for persistent signals.",
+                default_value=3600,
+                placeholder="3600",
+            ),
+            _catalog_field(
+                "cost_warning_ratio",
+                "Cost warning ratio",
+                "number",
+                description="Member-team cap usage ratio that should wake governance before the cap is reached.",
+                default_value=0.8,
+                placeholder="0.8",
+            ),
+            _catalog_field(
+                "resume_mode",
+                "Resume mode",
+                "string",
+                description="Resume mode passed to the underlying agent resumer.",
+                default_value="same_context",
+                placeholder="same_context",
             ),
         ],
     ),
@@ -908,6 +964,93 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "failed_project_repo_preparations": failed_project_repo_preparations,
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
+            "errors": errors,
+        }
+
+
+class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamWakeGovernanceManagersEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "governance_group_id",
+            "limit",
+            "lease_seconds",
+            "wake_interval_seconds",
+            "cost_warning_ratio",
+            "resume_mode",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        context = self.runtime_context
+        resumer = getattr(context, "agent_resumer", None)
+        if resumer is None or not callable(getattr(resumer, "resume_agent", None)):
+            raise RuntimeError("effect:team:wake-governance-managers requires agent_resumer")
+
+        repo = TeamStateRepository(_runtime_dir(context))
+        current_state = repo.read()
+        cost_payload = TeamCostService(
+            runtime_dir=_runtime_dir(context),
+            state=current_state,
+            session_repository=_session_repository_from_context(context),
+        ).costs_payload(backfill_transcripts=True)
+        state, leases = repo.lease_due_governance_managers(
+            governance_group_id=_optional_text(payload.get("governance_group_id")),
+            limit=_optional_int(payload.get("limit"), default=10),
+            lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
+            wake_interval_seconds=_optional_int(
+                payload.get("wake_interval_seconds"),
+                default=3600,
+            ),
+            cost_warning_ratio=_optional_text(payload.get("cost_warning_ratio")) or "0.8",
+            cost_payload=cost_payload,
+        )
+        resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
+        dispatches: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for lease in leases:
+            agent = lease["agent"]
+            group = lease["governance_group"]
+            try:
+                result = resumer.resume_agent(
+                    target=agent["session_id"],
+                    prompt=_build_governance_prompt(lease),
+                    resume_mode=resume_mode,
+                    dispatch_id=lease["dispatch_id"],
+                )
+                result_payload = _coerce_mapping(result)
+                if _result_reports_failure(result_payload):
+                    errors.append(
+                        f"{group['id']}/{agent['id']}: {_resume_failure_message(result_payload)}"
+                    )
+                dispatches.append(
+                    {
+                        "governance_group_id": group["id"],
+                        "agent_id": agent["id"],
+                        "session_id": agent["session_id"],
+                        "dispatch_id": lease["dispatch_id"],
+                        "reason": lease["reason"],
+                        "result": result_payload,
+                    }
+                )
+            except Exception as exc:  # pragma: no cover - defensive provider diagnostics
+                errors.append(f"{group['id']}/{agent['id']}: {exc}")
+            finally:
+                state = repo.complete_governance_dispatch(
+                    governance_group_id=group["id"],
+                    dispatch_id=lease["dispatch_id"],
+                )
+        return {
+            "success": not errors,
+            "revision": state.revision,
+            "leased_count": len(leases),
+            "leases": leases,
+            "dispatches": dispatches,
             "errors": errors,
         }
 
@@ -1678,7 +1821,10 @@ def _prepare_deliverable_artifacts(
             deliverable["id"] = deliverable_id
             artifact_record = _publish_deliverable_artifact_bundle(
                 context,
-                agent=agent.model_dump(mode="json", exclude={"avatar"}),
+                agent=agent.model_dump(
+                    mode="json",
+                    exclude=AGENT_OPERATOR_ONLY_FIELDS,
+                ),
                 team_id=agent.team_id,
                 project_id=task.project_id,
                 deliverable_id=deliverable_id,
@@ -1853,6 +1999,7 @@ def register_providers() -> ProviderPluginRegistration:
     return ProviderPluginRegistration(
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
+            "effect:team:wake-governance-managers": TeamWakeGovernanceManagersEffectProvider,
             "effect:team:apply-agent-action": TeamApplyAgentActionEffectProvider,
             "effect:team:create-operator-directive": (
                 TeamCreateOperatorDirectiveEffectProvider
@@ -1881,6 +2028,12 @@ def register_providers() -> ProviderPluginRegistration:
         node_definition_resolvers={
             "effect:team:wake-due-agents": (
                 lambda node: _materialize(TeamWakeDueAgentsEffectDefinition, node)
+            ),
+            "effect:team:wake-governance-managers": (
+                lambda node: _materialize(
+                    TeamWakeGovernanceManagersEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:apply-agent-action": (
                 lambda node: _materialize(TeamApplyAgentActionEffectDefinition, node)
@@ -1930,10 +2083,20 @@ def register_providers() -> ProviderPluginRegistration:
     )
 
 
-def _team_agent_guidance_content() -> str:
+def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
+    identity = _agent_guidance_identity(agent)
+    display_name = identity["display_name"]
+    display_line = (
+        f"- Current display name: {json.dumps(display_name)}\n"
+        if display_name is not None
+        else "- Current display name: not configured; use your agent id when a name is needed.\n"
+    )
     return (
         "# Team Add-on Guidance\n\n"
         f"Guidance version: {TEAM_AGENT_GUIDANCE_VERSION}\n\n"
+        "Identity:\n"
+        f"- Persistent agent id: {json.dumps(identity['agent_id'])}\n"
+        f"{display_line}\n"
         "Use the provided Team context and update only your own assigned tasks. "
         "Questions and progress reports must go to your direct superior; "
         "agents without a direct superior use operator_escalations. Use "
@@ -1995,7 +2158,7 @@ def _team_agent_guidance_content() -> str:
 def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str:
     agent = lease["agent"]
     context = {
-        "agent": agent,
+        "agent": _agent_prompt_payload(agent),
         "dispatch_id": lease["dispatch_id"],
         "reason": lease["reason"],
         "superior_agent_id": lease["superior_agent_id"],
@@ -2077,6 +2240,34 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
     )
 
 
+def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
+    agent = lease["agent"]
+    context = {
+        "agent": _agent_prompt_payload(agent),
+        "dispatch_id": lease["dispatch_id"],
+        "reason": lease["reason"],
+        "governance_group": lease["governance_group"],
+        "agenda": lease.get("agenda") or [],
+        "member_teams": lease.get("member_teams") or [],
+        "cost_signals": lease.get("cost_signals") or [],
+        "blocked_team_signals": lease.get("blocked_team_signals") or [],
+    }
+    return (
+        "Continue as a Team Add-on governance manager.\n"
+        "You supervise member teams through governance, escalation, and policy. "
+        "Do not take ownership of member-team project tasks, deliverables, "
+        "reviews, or releases, and do not assume you are in their direct "
+        "reporting chain. Member teams remain separate execution units.\n\n"
+        "Use this wake to inspect agenda items, cost-cap signals, blocked-team "
+        "signals, and member-team summaries. Respond with concise decisions, "
+        "recommended operator actions, and any directives that should be routed "
+        "to the relevant member-team managers through the Team Add-on governance "
+        "or operator-directive APIs. If no governance action is needed, say so "
+        "briefly and do not invent project work.\n\n"
+        f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
+    )
+
+
 def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
     role_permissions = {
         str(permission)
@@ -2097,6 +2288,12 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
         "top-level tasks. Every task_creations item you submit must set "
         "parent_task_id to one of your own active tasks.\n\n"
     )
+
+
+def _agent_prompt_payload(agent: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(agent)
+    payload.pop("display_name", None)
+    return payload
 
 
 def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:
@@ -2304,15 +2501,17 @@ def _seed_team_agent_guidance(
     agent: Mapping[str, Any],
 ) -> dict[str, Any]:
     session_id = _required_text(agent.get("session_id"), "session_id")
+    identity = _agent_guidance_identity(agent)
     metadata = _session_metadata(context, session_id=session_id)
     known_vm_ip = _session_known_vm_ip(metadata)
-    if _metadata_has_current_agent_guidance(metadata):
+    if _metadata_has_current_agent_guidance(metadata, agent=agent):
         return {
             "seeded": False,
             "reason": "already_seeded",
             "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
             "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            **identity,
         }
 
     provider = AgentCopyFilesEffectProvider()
@@ -2325,7 +2524,7 @@ def _seed_team_agent_guidance(
             vm_user="agent",
             files=[
                 {
-                    "content": _team_agent_guidance_content(),
+                    "content": _team_agent_guidance_content(agent=agent),
                     "destination_path": TEAM_AGENT_GUIDANCE_PATH,
                     "mode": "0644",
                     "overwrite": True,
@@ -2346,6 +2545,7 @@ def _seed_team_agent_guidance(
     _mark_agent_guidance_seeded(
         context,
         session_id=session_id,
+        agent=agent,
         copy_result=copy_result,
         vm_ip=copied_vm_ip,
     )
@@ -2354,6 +2554,7 @@ def _seed_team_agent_guidance(
         "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
         "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
         "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        **identity,
         "vm_ip": copied_vm_ip,
         "copied_paths": list(copy_result.get("copied_paths") or []),
     }
@@ -2376,19 +2577,33 @@ def _session_has_current_action_contract(
     )
 
 
-def _metadata_has_current_agent_guidance(metadata: Mapping[str, Any]) -> bool:
+def _metadata_has_current_agent_guidance(
+    metadata: Mapping[str, Any],
+    *,
+    agent: Mapping[str, Any],
+) -> bool:
     team_addon = metadata.get("team_addon")
     if not isinstance(team_addon, Mapping):
         return False
     guidance = team_addon.get("agent_guidance")
     if not isinstance(guidance, Mapping):
         return False
+    identity = _agent_guidance_identity(agent)
     return (
         int(guidance.get("guidance_version") or 0) == TEAM_AGENT_GUIDANCE_VERSION
         and guidance.get("guidance_path") == TEAM_AGENT_GUIDANCE_PATH
         and guidance.get("section_id") == TEAM_AGENT_GUIDANCE_SECTION_ID
+        and guidance.get("agent_id") == identity["agent_id"]
+        and guidance.get("display_name") == identity["display_name"]
         and guidance.get("seeded") is True
     )
+
+
+def _agent_guidance_identity(agent: Mapping[str, Any]) -> dict[str, str | None]:
+    return {
+        "agent_id": _required_text(agent.get("id"), "agent.id"),
+        "display_name": _optional_text(agent.get("display_name")),
+    }
 
 
 def _metadata_has_current_action_contract(
@@ -2482,6 +2697,7 @@ def _mark_agent_guidance_seeded(
     context: Any,
     *,
     session_id: str,
+    agent: Mapping[str, Any],
     copy_result: Mapping[str, Any],
     vm_ip: str | None,
 ) -> None:
@@ -2495,6 +2711,7 @@ def _mark_agent_guidance_seeded(
             "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
             "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            **_agent_guidance_identity(agent),
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }
@@ -2621,6 +2838,25 @@ def _persistent_action_schema() -> dict[str, Any]:
                 "type": "array",
                 "default": [],
                 "items": _message_item_schema(),
+            },
+            "chat_replies": {
+                "type": "array",
+                "description": (
+                    "Reply to an operator Team Chat message. Use only when the wake "
+                    "prompt provides a conversation_id and message_id for operator chat."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["conversation_id", "message_id", "body"],
+                    "properties": {
+                        "conversation_id": {"type": "string", "minLength": 1},
+                        "message_id": {"type": "string", "minLength": 1},
+                        "body": {"type": "string", "minLength": 1},
+                        "summary": text_or_null,
+                    },
+                },
             },
             "operator_escalations": {
                 "type": "array",
@@ -2880,6 +3116,14 @@ def _persistent_action_example() -> dict[str, Any]:
                 "message": "No reply needed unless this changes your plan.",
                 "response_requested": False,
                 "priority": "low",
+            }
+        ],
+        "chat_replies": [
+            {
+                "conversation_id": "operator-chat-conversation-id",
+                "message_id": "operator-chat-message-id",
+                "body": "Concise reply for the operator.",
+                "summary": "Short reply summary.",
             }
         ],
         "operator_escalations": [],

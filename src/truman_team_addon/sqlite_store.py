@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 6
+SQLITE_SCHEMA_VERSION = 10
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -111,6 +111,37 @@ class TeamStateSqliteStore:
                     column_name="avatar_json",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_agents",
+                    column_name="voice_profile_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="last_cost_signal_fingerprints_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="last_blocked_signal_fingerprints_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_tasks",
+                    column_name="state_entered_at",
+                    definition="TEXT",
+                )
+                connection.execute(
+                    """
+                    UPDATE team_tasks
+                    SET state_entered_at = COALESCE(NULLIF(state_entered_at, ''), updated_at, created_at)
+                    WHERE state_entered_at IS NULL OR state_entered_at = ''
+                    """
+                )
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -190,6 +221,9 @@ class TeamStateSqliteStore:
             "revision": int(metadata.get("revision", "0")),
             "updated_at": metadata.get("updated_at") or utc_now().isoformat(),
             "teams": {},
+            "governance_groups": {},
+            "governance_agenda": {},
+            "governance_runtimes": {},
             "projects": {},
             "roles": {},
             "agents": {},
@@ -200,12 +234,17 @@ class TeamStateSqliteStore:
             "review_profiles": {},
             "inbox": {},
             "action_records": {},
+            "conversations": {},
+            "conversation_messages": {},
             "release_packages": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
             "stand_downs": {},
         }
         self._read_teams(connection, payload)
+        self._read_governance_groups(connection, payload)
+        self._read_governance_agenda(connection, payload)
+        self._read_governance_runtimes(connection, payload)
         self._read_roles(connection, payload)
         self._read_projects(connection, payload)
         self._read_agents(connection, payload)
@@ -217,6 +256,8 @@ class TeamStateSqliteStore:
         self._read_review_requests(connection, payload)
         self._read_inbox(connection, payload)
         self._read_action_records(connection, payload)
+        self._read_conversations(connection, payload)
+        self._read_conversation_messages(connection, payload)
         self._read_release_packages(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
@@ -226,6 +267,9 @@ class TeamStateSqliteStore:
         payload = state.model_dump(mode="json")
         self._clear_state_tables(connection)
         self._write_teams(connection, payload["teams"])
+        self._write_governance_groups(connection, payload["governance_groups"])
+        self._write_governance_agenda(connection, payload["governance_agenda"])
+        self._write_governance_runtimes(connection, payload["governance_runtimes"])
         self._write_roles(connection, payload["roles"])
         self._write_projects(connection, payload["projects"])
         self._write_agents(connection, payload["agents"])
@@ -237,6 +281,8 @@ class TeamStateSqliteStore:
         self._write_review_requests(connection, payload["review_requests"])
         self._write_inbox(connection, payload["inbox"])
         self._write_action_records(connection, payload["action_records"])
+        self._write_conversations(connection, payload["conversations"])
+        self._write_conversation_messages(connection, payload["conversation_messages"])
         self._write_release_packages(connection, payload["release_packages"])
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
         self._write_git_promotions(connection, payload["git_promotions"])
@@ -307,6 +353,204 @@ class TeamStateSqliteStore:
                 team["id"],
                 "project_id",
                 team.get("project_ids", []),
+            )
+
+    @staticmethod
+    def _read_governance_groups(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        member_team_ids = _grouped_values(
+            connection,
+            """
+            SELECT governance_group_id AS owner_id, team_id AS value
+            FROM team_governance_group_members
+            ORDER BY governance_group_id, position
+            """,
+        )
+        goals = _grouped_rows(
+            connection,
+            """
+            SELECT governance_group_id AS owner_id, goal_id, description, state
+            FROM team_governance_group_goals
+            ORDER BY governance_group_id, position
+            """,
+            lambda row: {
+                "id": row["goal_id"],
+                "description": row["description"],
+                "state": row["state"],
+            },
+        )
+        for row in connection.execute("SELECT * FROM team_governance_groups ORDER BY id"):
+            payload["governance_groups"][row["id"]] = {
+                "id": row["id"],
+                "name": row["name"],
+                "manager_agent_id": row["manager_agent_id"],
+                "member_team_ids": member_team_ids.get(row["id"], []),
+                "goals": goals.get(row["id"], []),
+                "max_cost_usd": row["max_cost_usd"],
+                "archived": _bool(row["archived"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_governance_groups(
+        connection: sqlite3.Connection,
+        groups: dict[str, Any],
+    ) -> None:
+        for group in groups.values():
+            connection.execute(
+                """
+                INSERT INTO team_governance_groups(
+                    id, name, manager_agent_id, max_cost_usd, archived,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    group["id"],
+                    group["name"],
+                    group["manager_agent_id"],
+                    _optional_text(group.get("max_cost_usd")),
+                    _int_bool(group.get("archived")),
+                    group["created_at"],
+                    group["updated_at"],
+                ),
+            )
+            _insert_position_values(
+                connection,
+                "team_governance_group_members",
+                "governance_group_id",
+                group["id"],
+                "team_id",
+                group.get("member_team_ids", []),
+            )
+            for position, goal in enumerate(group.get("goals", [])):
+                connection.execute(
+                    """
+                    INSERT INTO team_governance_group_goals(
+                        governance_group_id, position, goal_id, description, state
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        group["id"],
+                        position,
+                        goal["id"],
+                        goal["description"],
+                        goal.get("state", "pending"),
+                    ),
+                )
+
+    @staticmethod
+    def _read_governance_agenda(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_governance_agenda ORDER BY id"):
+            payload["governance_agenda"][row["id"]] = {
+                "id": row["id"],
+                "governance_group_id": row["governance_group_id"],
+                "item_type": row["item_type"],
+                "title": row["title"],
+                "summary": row["summary"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "agent_id": row["agent_id"],
+                "payload": _json_loads(row["payload_json"]) if row["payload_json"] else {},
+                "state": row["state"],
+                "priority": row["priority"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_governance_agenda(
+        connection: sqlite3.Connection,
+        agenda: dict[str, Any],
+    ) -> None:
+        for item in agenda.values():
+            connection.execute(
+                """
+                INSERT INTO team_governance_agenda(
+                    id, governance_group_id, item_type, title, summary,
+                    team_id, project_id, agent_id, payload_json, state, priority,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["id"],
+                    item["governance_group_id"],
+                    item["item_type"],
+                    item["title"],
+                    item["summary"],
+                    item.get("team_id"),
+                    item.get("project_id"),
+                    item.get("agent_id"),
+                    _json_dumps(item.get("payload") or {}),
+                    item.get("state", "pending"),
+                    item.get("priority", "normal"),
+                    item["created_at"],
+                    item["updated_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_governance_runtimes(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_governance_runtimes ORDER BY governance_group_id"):
+            payload["governance_runtimes"][row["governance_group_id"]] = {
+                "governance_group_id": row["governance_group_id"],
+                "wake_leased_until": row["wake_leased_until"],
+                "active_dispatch_id": row["active_dispatch_id"],
+                "wake_reason": row["wake_reason"],
+                "last_wake_at": row["last_wake_at"],
+                "next_wake_at": row["next_wake_at"],
+                "last_cost_signal_fingerprints": (
+                    _json_loads(row["last_cost_signal_fingerprints_json"])
+                    if row["last_cost_signal_fingerprints_json"]
+                    else []
+                ),
+                "last_blocked_signal_fingerprints": (
+                    _json_loads(row["last_blocked_signal_fingerprints_json"])
+                    if row["last_blocked_signal_fingerprints_json"]
+                    else []
+                ),
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_governance_runtimes(
+        connection: sqlite3.Connection,
+        runtimes: dict[str, Any],
+    ) -> None:
+        for runtime in runtimes.values():
+            connection.execute(
+                """
+                INSERT INTO team_governance_runtimes(
+                    governance_group_id, wake_leased_until, active_dispatch_id,
+                    wake_reason, last_wake_at, next_wake_at,
+                    last_cost_signal_fingerprints_json,
+                    last_blocked_signal_fingerprints_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    runtime["governance_group_id"],
+                    runtime.get("wake_leased_until"),
+                    runtime.get("active_dispatch_id"),
+                    runtime.get("wake_reason"),
+                    runtime.get("last_wake_at"),
+                    runtime.get("next_wake_at"),
+                    _json_dumps(runtime.get("last_cost_signal_fingerprints") or []),
+                    _json_dumps(runtime.get("last_blocked_signal_fingerprints") or []),
+                    runtime["updated_at"],
+                ),
             )
 
     @staticmethod
@@ -440,6 +684,11 @@ class TeamStateSqliteStore:
                 "avatar": (
                     _json_loads(row["avatar_json"]) if row["avatar_json"] is not None else None
                 ),
+                "voice_profile": (
+                    _json_loads(row["voice_profile_json"])
+                    if row["voice_profile_json"] is not None
+                    else None
+                ),
                 "role_id": row["role_id"],
                 "session_id": row["session_id"],
                 "reports_to_agent_id": row["reports_to_agent_id"],
@@ -454,10 +703,10 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_agents(
-                    id, team_id, project_id, display_name, avatar_json, role_id, session_id,
-                    reports_to_agent_id, max_ephemeral_concurrent, status
+                    id, team_id, project_id, display_name, avatar_json, voice_profile_json,
+                    role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
@@ -465,6 +714,11 @@ class TeamStateSqliteStore:
                     agent.get("project_id"),
                     agent.get("display_name"),
                     _json_dumps(agent.get("avatar")) if agent.get("avatar") is not None else None,
+                    (
+                        _json_dumps(agent.get("voice_profile"))
+                        if agent.get("voice_profile") is not None
+                        else None
+                    ),
                     agent["role_id"],
                     agent["session_id"],
                     agent.get("reports_to_agent_id"),
@@ -616,6 +870,7 @@ class TeamStateSqliteStore:
                 "project_id": row["project_id"],
                 "priority": row["priority"],
                 "state": row["state"],
+                "state_entered_at": row["state_entered_at"] or row["updated_at"] or row["created_at"],
                 "title": row["title"],
                 "description": row["description"],
                 "created_by_agent_id": row["created_by_agent_id"],
@@ -634,9 +889,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, priority, state, title, description,
-                    created_by_agent_id, created_by_actor, parent_task_id, created_at, updated_at
+                    state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -646,6 +902,7 @@ class TeamStateSqliteStore:
                     task.get("state", "pending"),
                     task["title"],
                     task["description"],
+                    task.get("state_entered_at") or task.get("updated_at") or task["created_at"],
                     task.get("created_by_agent_id"),
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
@@ -1024,6 +1281,101 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_conversations(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_conversations ORDER BY id"):
+            payload["conversations"][row["id"]] = {
+                "id": row["id"],
+                "agent_id": row["agent_id"],
+                "created_by": row["created_by"],
+                "last_message_preview": row["last_message_preview"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_interaction_at": row["last_interaction_at"],
+            }
+
+    @staticmethod
+    def _write_conversations(
+        connection: sqlite3.Connection,
+        conversations: dict[str, Any],
+    ) -> None:
+        for conversation in conversations.values():
+            connection.execute(
+                """
+                INSERT INTO team_conversations(
+                    id, agent_id, created_by, last_message_preview,
+                    created_at, updated_at, last_interaction_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation["id"],
+                    conversation["agent_id"],
+                    conversation.get("created_by"),
+                    conversation.get("last_message_preview"),
+                    conversation["created_at"],
+                    conversation["updated_at"],
+                    conversation["last_interaction_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_conversation_messages(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_conversation_messages ORDER BY created_at, id"):
+            payload["conversation_messages"][row["id"]] = {
+                "id": row["id"],
+                "conversation_id": row["conversation_id"],
+                "sender": row["sender"],
+                "message_type": row["message_type"],
+                "body": row["body"],
+                "status": row["status"],
+                "dispatch_id": row["dispatch_id"],
+                "voice_session_id": row["voice_session_id"],
+                "source_message_id": row["source_message_id"],
+                "error": row["error"],
+                "metadata": _json_loads(row["metadata_json"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_conversation_messages(
+        connection: sqlite3.Connection,
+        messages: dict[str, Any],
+    ) -> None:
+        for message in messages.values():
+            connection.execute(
+                """
+                INSERT INTO team_conversation_messages(
+                    id, conversation_id, sender, message_type, body, status,
+                    dispatch_id, voice_session_id, source_message_id, error,
+                    metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message["id"],
+                    message["conversation_id"],
+                    message["sender"],
+                    message.get("message_type", "text"),
+                    message.get("body"),
+                    message.get("status", "sent"),
+                    message.get("dispatch_id"),
+                    message.get("voice_session_id"),
+                    message.get("source_message_id"),
+                    message.get("error"),
+                    _json_dumps(message.get("metadata", {})),
+                    message["created_at"],
+                    message["updated_at"],
+                ),
+            )
+
+    @staticmethod
     def _read_release_packages(
         connection: sqlite3.Connection, payload: dict[str, Any]
     ) -> None:
@@ -1351,6 +1703,10 @@ def _grouped_rows(
 
 
 _STATE_TABLES = (
+    "team_governance_group_members",
+    "team_governance_group_goals",
+    "team_governance_agenda",
+    "team_governance_runtimes",
     "team_team_projects",
     "team_role_permissions",
     "team_project_goals",
@@ -1373,6 +1729,8 @@ _STATE_TABLES = (
     "team_git_promotions",
     "team_ephemeral_assignments",
     "team_release_packages",
+    "team_conversation_messages",
+    "team_conversations",
     "team_action_records",
     "team_inbox",
     "team_review_requests",
@@ -1384,6 +1742,7 @@ _STATE_TABLES = (
     "team_agents",
     "team_projects",
     "team_roles",
+    "team_governance_groups",
     "team_teams",
 )
 
@@ -1413,6 +1772,68 @@ CREATE TABLE IF NOT EXISTS team_team_projects (
     PRIMARY KEY(team_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_team_team_projects_project ON team_team_projects(project_id);
+
+CREATE TABLE IF NOT EXISTS team_governance_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    manager_agent_id TEXT NOT NULL,
+    max_cost_usd TEXT,
+    archived INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_governance_groups_archived
+    ON team_governance_groups(archived, id);
+
+CREATE TABLE IF NOT EXISTS team_governance_group_members (
+    governance_group_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    team_id TEXT NOT NULL,
+    PRIMARY KEY(governance_group_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_governance_group_members_team
+    ON team_governance_group_members(team_id);
+
+CREATE TABLE IF NOT EXISTS team_governance_group_goals (
+    governance_group_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    goal_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    state TEXT NOT NULL,
+    PRIMARY KEY(governance_group_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS team_governance_agenda (
+    id TEXT PRIMARY KEY,
+    governance_group_id TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    team_id TEXT,
+    project_id TEXT,
+    agent_id TEXT,
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_governance_agenda_group_state
+    ON team_governance_agenda(governance_group_id, state, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_governance_agenda_team
+    ON team_governance_agenda(team_id, state, id);
+
+CREATE TABLE IF NOT EXISTS team_governance_runtimes (
+    governance_group_id TEXT PRIMARY KEY,
+    wake_leased_until TEXT,
+    active_dispatch_id TEXT,
+    wake_reason TEXT,
+    last_wake_at TEXT,
+    next_wake_at TEXT,
+    last_cost_signal_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+    last_blocked_signal_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS team_roles (
     id TEXT PRIMARY KEY,
@@ -1461,6 +1882,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
     project_id TEXT,
     display_name TEXT,
     avatar_json TEXT,
+    voice_profile_json TEXT,
     role_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     reports_to_agent_id TEXT,
@@ -1523,6 +1945,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     project_id TEXT NOT NULL,
     priority INTEGER NOT NULL,
     state TEXT NOT NULL,
+    state_entered_at TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     created_by_agent_id TEXT,
@@ -1686,6 +2109,38 @@ CREATE INDEX IF NOT EXISTS idx_team_action_records_agent_dispatch
     ON team_action_records(agent_id, dispatch_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_action_records_attention
     ON team_action_records(success, dismissed_at, created_at, id);
+
+CREATE TABLE IF NOT EXISTS team_conversations (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL UNIQUE,
+    created_by TEXT,
+    last_message_preview TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_interaction_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_conversations_recent
+    ON team_conversations(last_interaction_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS team_conversation_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    body TEXT,
+    status TEXT NOT NULL,
+    dispatch_id TEXT,
+    voice_session_id TEXT,
+    source_message_id TEXT,
+    error TEXT,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_conversation
+    ON team_conversation_messages(conversation_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_dispatch
+    ON team_conversation_messages(dispatch_id, id);
 
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,

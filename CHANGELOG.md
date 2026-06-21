@@ -5,6 +5,106 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Chat Lifecycle Fixes
+
+- Fixed Team Chat reply-application errors so the source operator message is
+  marked failed instead of staying running after the dispatch lease is cleared.
+- Made chat-linked browser voice-call history idempotent for retried
+  `request_id` values, and synced Team UI revisions after chat mutations.
+
+## 2026-06-21 - Team Add-on Teams Tab Archived Counts
+
+- Fixed Teams tab record counts so active projects, roles, or agents owned by
+  hidden archived teams are not included while archived records are hidden.
+
+## 2026-06-21 - Team Add-on Chat Tab
+
+- Added a Team Add-on Chat tab with recent per-agent conversations, operator
+  message dispatch, persistent agent `chat_replies`, and chat-linked browser
+  voice calls.
+- Fixed dynamically rendered chat composers so Send uses the chat dispatch flow,
+  and reopened existing conversations without Team state revision churn.
+
+## 2026-06-21 - Team Add-on Task Board
+
+- Added a Team Add-on Task board tab with Team/Project selection, Planned,
+  In Progress, Reviewing, and Done lanes, compact assignment cards, blocked
+  card highlighting, and exact task lane-entry timestamps.
+
+## 2026-06-21 - Team Add-on Governance Groups
+
+- Added Team Add-on governance groups for portfolio-style managers that oversee
+  separate member teams without changing those teams' internal reporting chains.
+- Added governance agenda items, advisory group cost rollups, and a separate
+  governance-manager wake effect for agenda, cost, blocker, and check-in
+  signals.
+- Added Governance UI forms and a focused Governance tab with member-team,
+  agenda, goal, and cost-rollup views.
+
+## 2026-06-21 - Team Add-on Governance Review Fixes
+
+- Fixed governance manager leasing to avoid double-dispatching managers that
+  already have active agent runtime leases.
+- Changed governance cost-cap and blocked-team signals to wake only on status
+  changes instead of repeatedly waking for unchanged conditions.
+- Tightened governance agenda scoping so project and agent references must
+  resolve to member teams, and removing a member team handles affected agenda.
+
+## 2026-06-21 - Admin Web Wordmark Header Branding
+
+- Added Admin Web branding controls for hiding the visible shell header title
+  and using a wider wordmark-sized header logo.
+
+## 2026-06-21 - Team Add-on People List Cleanup
+
+- Simplified the Team Add-on People tab list to show each agent's avatar,
+  display name, and role only, keeping status, inbox, and work details in the
+  selected-agent detail pane.
+- Sorted People tab agents by team and display name so the list is easier to
+  scan across multi-team workspaces.
+- Added People tab team filters so operators can switch between an all-team
+  list and per-team agent lists.
+
+## 2026-06-21 - Team Add-on Teams Tab Records
+
+- Renamed the focused People tab to Teams and grouped team-specific agents,
+  projects, and roles under their owning teams.
+- Added selectable project and role rows to the Teams tab with detail-pane views
+  alongside the existing selectable agent detail flow.
+
+## 2026-06-21 - Team Add-on Agent Identity Guidance
+
+- Added each persistent Team agent's current ID and display name to the managed
+  `/home/agent/AGENTS.md` Team guidance section.
+- Made Team guidance reseed when an agent's display name changes while
+  preserving the rest of `AGENTS.md` through the existing managed-section merge.
+
+## 2026-06-21 - Team Add-on Voice Profile Review Fixes
+
+- Kept Team agent voice profiles out of regular wake, ephemeral, and agent-visible
+  Team state payloads while leaving them available in Admin/browser-call metadata.
+- Fixed the People tab voice panel so configured agent voices and speaking styles
+  are shown instead of always falling back to the default label.
+
+## 2026-06-21 - Team Add-on Cost Warning Fix
+
+- Fixed Team Add-on draft restoration so avatar upload file inputs no longer
+  surface browser file-input security exceptions as estimated cost warnings.
+
+## 2026-06-21 - Team Add-on People Row Alignment
+
+- Left-aligned Team Add-on People tab agent names, roles, and IDs directly
+  after their avatar column so rows no longer appear staggered by badge width.
+
+## 2026-06-21 - Team Add-on Agent Voice Profiles
+
+- Added per-agent Team Add-on voice profiles with built-in OpenAI Realtime
+  voice selection and spoken delivery instructions for browser direct agent
+  calls.
+- Persisted voice profiles in add-on state and included the selected voice and
+  style in voice-session metadata without exposing them to agent runtime
+  prompts.
+
 ## 2026-06-20 - Team Add-on Direct Agent Voice Calls
 
 - Added browser WebRTC voice calls from the Team Add-on People tab to selected

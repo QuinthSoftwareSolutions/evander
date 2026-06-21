@@ -819,6 +819,7 @@ def realtime_browser_session_config(
     *,
     instructions: str,
     include_query_origin_agent: bool = True,
+    voice: str | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_instructions = str(instructions or "").strip()
     if not normalized_instructions:
@@ -840,7 +841,7 @@ def realtime_browser_session_config(
                 },
             },
             "output": {
-                "voice": getattr(config, "openai_realtime_voice", "marin"),
+                "voice": _realtime_output_voice(config, voice),
             },
         },
     }
@@ -866,6 +867,7 @@ class OpenAIRealtimeClientSecretService:
         instructions: str,
         safety_identifier: str | None = None,
         include_query_origin_agent: bool = True,
+        voice: str | Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         api_key_env = str(
             getattr(self.config, "openai_realtime_api_key_env", "OPENAI_API_KEY") or ""
@@ -885,6 +887,7 @@ class OpenAIRealtimeClientSecretService:
                 self.config,
                 instructions=instructions,
                 include_query_origin_agent=include_query_origin_agent,
+                voice=voice,
             )
         }
         headers = {
@@ -1491,6 +1494,21 @@ def voice_phone_call_result_payload(record: VoiceSessionRecord) -> dict[str, Any
     if isinstance(bridge_audio_quality, dict):
         payload["audio_quality"] = sanitize_voice_metadata(bridge_audio_quality)
     return payload
+
+
+def _realtime_output_voice(
+    config: Any,
+    voice: str | Mapping[str, Any] | None,
+) -> str | dict[str, Any]:
+    if isinstance(voice, Mapping):
+        voice_id = str(voice.get("id") or "").strip()
+        if voice_id:
+            return {"id": voice_id}
+    else:
+        normalized = str(voice or "").strip()
+        if normalized:
+            return normalized
+    return getattr(config, "openai_realtime_voice", "marin")
 
 
 def build_reconciliation_prompt(

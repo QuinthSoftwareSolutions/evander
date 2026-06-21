@@ -20,6 +20,7 @@ from truman_team_addon.models import (
     AgentInboxItem,
     AgentRuntime,
     AgentStatus,
+    AgentVoiceProfile,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -454,12 +455,145 @@ def test_agent_avatar_delete_clears_state_and_asset(tmp_path: Path) -> None:
     assert client.get(f"/api/addons/team-addon/avatars/{asset_id}").status_code == 404
 
 
+def test_team_addon_admin_api_conversation_dispatch_and_reply(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    def _clear_backend_runtime(state):
+        state.agent_runtimes.pop("backend", None)
+        return state
+
+    repo.update(_clear_backend_runtime)
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_calls: list[dict[str, object]] = []
+    copy_calls: list[dict[str, object]] = []
+
+    def _fake_resume_agent(target, prompt, **kwargs):
+        resume_calls.append(
+            {
+                "target": target,
+                "prompt": prompt,
+                **kwargs,
+            }
+        )
+        return {
+            "success": True,
+            "action": "resume_issue_agent",
+            "vm_name": "vm-backend",
+            "message": "started",
+            "dispatch_id": kwargs.get("dispatch_id"),
+        }
+
+    def _fake_vm_copy_files(**kwargs):
+        copy_calls.append(kwargs)
+        return {
+            "success": True,
+            "vm_name": kwargs.get("target") or "vm-backend",
+            "copied_count": len(kwargs.get("files") or []),
+            "copied_paths": [
+                str(file.get("destination_path"))
+                for file in kwargs.get("files") or []
+            ],
+        }
+
+    monkeypatch.setattr(service, "resume_agent", _fake_resume_agent)
+    monkeypatch.setattr(service, "vm_copy_files", _fake_vm_copy_files)
+    client = TestClient(create_app(service))
+
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+    assert created.status_code == 201
+    conversation = created.json()["conversations"][0]
+    assert conversation["agent_id"] == "backend"
+    assert {agent["id"] for agent in created.json()["eligible_agents"]} >= {
+        "backend",
+        "lead",
+        "manager",
+    }
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={
+            "body": "Can you summarize the blocker?",
+            "expected_revision": created.json()["revision"],
+        },
+    )
+
+    assert sent.status_code == 202
+    sent_payload = sent.json()
+    assert sent_payload["dispatch"]["success"] is True
+    assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
+    assert sent_payload["dispatch"]["agent_setup"]["action_contract"]["schema_version"] == 10
+    assert len(copy_calls) == 2
+    message = sent_payload["message"]
+    assert message["sender"] == "operator"
+    assert message["status"] == "running"
+    assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    assert resume_calls[0]["target"] == "session-backend"
+    assert resume_calls[0]["resume_mode"] == "same_context"
+    assert resume_calls[0]["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    assert "chat_replies" in str(resume_calls[0]["prompt"])
+    assert conversation["id"] in str(resume_calls[0]["prompt"])
+    assert message["id"] in str(resume_calls[0]["prompt"])
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": message["dispatch_id"],
+            "chat_replies": [
+                {
+                    "conversation_id": conversation["id"],
+                    "message_id": message["id"],
+                    "body": "The dependency task is still open.",
+                }
+            ],
+        },
+        dispatch_id=message["dispatch_id"],
+        expected_revision=repo.read().revision,
+    )
+    assert result["success"] is True
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+
+    detail = client.get(
+        f"/api/addons/team-addon/conversations/{conversation['id']}",
+    )
+    assert detail.status_code == 200
+    messages = detail.json()["conversation"]["messages"]
+    assert [item["sender"] for item in messages] == ["operator", "agent"]
+    assert messages[0]["status"] == "replied"
+    assert messages[1]["body"] == "The dependency task is still open."
+
+
 def test_agent_voice_session_create_query_and_end(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
-    _seed_runtime_operations_state(tmp_path / "runtime")
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    repo.update_agent(
+        agent_id="backend",
+        voice_profile=AgentVoiceProfile(
+            voice="cedar",
+            speaking_style="Calm, concise, and lightly upbeat.",
+        ),
+        set_voice_profile=True,
+        expected_revision=repo.read().revision,
+    )
     service = AdminService(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -494,6 +628,8 @@ def test_agent_voice_session_create_query_and_end(
     assert payload["status"] == "connecting"
     assert payload["client_secret"]["value"] == "ek_test"
     assert payload["realtime"]["transport"] == "webrtc_browser"
+    assert payload["realtime"]["voice"] == "cedar"
+    assert payload["realtime"]["speaking_style"] == "Calm, concise, and lightly upbeat."
     assert payload["projection"]["metadata"]["agent_id"] == "backend"
     assert payload["projection"]["context"]["open_tasks"][0]["title"] == "Blocked task"
     prompt = client_secret_calls[0]["instructions"]
@@ -501,13 +637,20 @@ def test_agent_voice_session_create_query_and_end(
     assert "Blocked task" in prompt
     assert "Status update?" in prompt
     assert "Waiting task deliverable." in prompt
+    assert "Voice delivery style for this agent:" in prompt
+    assert "Calm, concise, and lightly upbeat." in prompt
     assert client_secret_calls[0]["safety_identifier"] == "team-addon:backend"
+    assert client_secret_calls[0]["voice"] == "cedar"
     record = service.runtime.voice_session_store.get_by_voice_session_id(
         payload["voice_session_id"]
     )
     assert record is not None
     assert record.channel == "browser_agent_call"
     assert record.origin_session_id == "session-backend"
+    assert record.prompt_metadata["voice_profile"]["voice"] == "cedar"
+    assert record.caller_metadata["voice_profile"]["speaking_style"] == (
+        "Calm, concise, and lightly upbeat."
+    )
 
     event_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/events",
@@ -547,6 +690,96 @@ def test_agent_voice_session_create_query_and_end(
     assert service.runtime.wake_store.get_request(
         f"voice-session-reconcile:{payload['voice_session_id']}"
     ) is not None
+
+
+def test_agent_voice_session_records_chat_conversation_message(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class _FakeRealtimeClientSecretService:
+        def __init__(self, *, config) -> None:
+            self.config = config
+
+        def create_client_secret(self, **_kwargs):
+            return {"value": "ek_test", "expires_at": 123}
+
+    monkeypatch.setattr(
+        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        _FakeRealtimeClientSecretService,
+    )
+    client = TestClient(create_app(service))
+
+    created = client.post(
+        "/api/addons/team-addon/agents/backend/voice-sessions",
+        json={"conversation_id": conversation.id, "request_id": "chat-call-request-1"},
+    )
+
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["created"] is True
+    assert payload["revision"] > state.revision
+    assert payload["conversation"]["id"] == conversation.id
+    assert payload["conversation_message"]["message_type"] == "voice_call"
+    assert payload["conversation_message"]["status"] == "running"
+    assert payload["conversation_message"]["voice_session_id"] == payload["voice_session_id"]
+    record = service.runtime.voice_session_store.get_by_voice_session_id(
+        payload["voice_session_id"]
+    )
+    assert record is not None
+    assert record.caller_metadata["call_surface"] == "team_chat_tab"
+    assert record.caller_metadata["conversation_id"] == conversation.id
+
+    retry = client.post(
+        "/api/addons/team-addon/agents/backend/voice-sessions",
+        json={"conversation_id": conversation.id, "request_id": "chat-call-request-1"},
+    )
+
+    assert retry.status_code == 200
+    retry_payload = retry.json()
+    assert retry_payload["created"] is False
+    assert retry_payload["voice_session_id"] == payload["voice_session_id"]
+    assert retry_payload["conversation_message"]["id"] == payload["conversation_message"]["id"]
+    assert retry_payload["revision"] == payload["revision"]
+    reread_before_end = TeamStateRepository(tmp_path / "runtime").read()
+    assert [
+        message.id
+        for message in reread_before_end.conversation_messages.values()
+        if message.voice_session_id == payload["voice_session_id"]
+    ] == [payload["conversation_message"]["id"]]
+
+    ended = client.post(
+        f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
+        json={"status": "ended", "summary": "Operator asked about blockers."},
+    )
+
+    assert ended.status_code == 200
+    reread = TeamStateRepository(tmp_path / "runtime").read()
+    chat_message = reread.conversation_messages[payload["conversation_message"]["id"]]
+    assert chat_message.status == "ended"
+    assert chat_message.metadata["summary"] == "Operator asked about blockers."
+    assert reread.conversations[conversation.id].last_message_preview == "Voice call ended"
+    assert [
+        message.id
+        for message in reread.conversation_messages.values()
+        if message.voice_session_id == payload["voice_session_id"]
+    ] == [payload["conversation_message"]["id"]]
 
 
 def test_agent_voice_session_can_end_by_request_id(
@@ -715,6 +948,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ui.text.count('name="lead_session_id"') == 1
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
+    assert 'data-team-view="governance"' in ui.text
+    assert 'id="create-governance-group-form"' in ui.text
+    assert 'id="create-governance-agenda-form"' in ui.text
+    assert 'data-team-view="chat"' in ui.text
+    assert 'id="team-chat-page"' in ui.text
+    assert "data-chat-conversations-view" in ui.text
     assert 'name="bare_repo"' in ui.text
     assert 'data-options="git-providers"' in ui.text
     assert "data-agent-source-picker" in ui.text
@@ -748,6 +987,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "bindExistingAgentPickers" in script.text
     assert "setAutogeneratedValue" not in script.text
     assert "submitEditForm" in script.text
+    assert "voice_profile: agent?.voice_profile || null" in script.text
     assert "elements.editModal?.contains(event.target)" in script.text
     assert "firstEditableField?.focus()" in script.text
     assert "refreshSelects({ includeEditForm = false } = {})" in script.text
@@ -784,6 +1024,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Progress reports" in script.text
     assert "max_cost_usd" in script.text
     assert "cost_limit_reached" in script.text
+    assert "renderGovernance" in script.text
+    assert "governance_group_costs" in script.text
+    assert "data-governance-agenda-handle-id" in script.text
+    assert "loadConversations" in script.text
+    assert "renderChat" in script.text
+    assert "data-chat-message-form" in script.text
+    assert 'document.addEventListener("submit"' in script.text
+    assert 'closest?.("[data-chat-message-form]")' in script.text
+    assert "data-agent-call-conversation-id" in script.text
+    assert "syncTeamStateFromChatPayload(payload)" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -807,10 +1057,72 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".agent-inbox-bubble" in stylesheet.text
     assert ".agent-voice-call-panel" in stylesheet.text
     assert ".agent-voice-transcript" in stylesheet.text
+    assert ".chat-layout" in stylesheet.text
+    assert ".chat-message-bubble" in stylesheet.text
+    assert ".chat-composer" in stylesheet.text
 
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200
     assert 'name="max_cost_usd"' in html.text
+
+
+def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "expected_revision": 0,
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    assert team.status_code == 201
+
+    group = client.post(
+        "/api/addons/team-addon/governance-groups",
+        json={
+            "expected_revision": team.json()["revision"],
+            "id": "portfolio",
+            "name": "Portfolio",
+            "manager_agent_id": "manager",
+            "member_team_ids": ["team"],
+            "goals": [{"description": "Keep the team under budget"}],
+            "max_cost_usd": "10.00",
+        },
+    )
+    assert group.status_code == 201
+    state = group.json()
+    assert state["governance_groups"]["portfolio"]["member_team_ids"] == ["team"]
+    assert state["governance_groups"]["portfolio"]["goals"][0]["id"].startswith(
+        "governance-goal-portfolio"
+    )
+
+    agenda = client.post(
+        "/api/addons/team-addon/governance-agenda",
+        json={
+            "expected_revision": state["revision"],
+            "governance_group_id": "portfolio",
+            "item_type": "operator_directive",
+            "priority": "high",
+            "team_id": "team",
+            "title": "Review team status",
+            "summary": "Check whether the team needs intervention.",
+        },
+    )
+    assert agenda.status_code == 201
+    agenda_state = agenda.json()
+    agenda_id = next(iter(agenda_state["governance_agenda"]))
+    assert agenda_state["governance_agenda"][agenda_id]["state"] == "pending"
+
+    handled = client.post(
+        f"/api/addons/team-addon/governance-agenda/{agenda_id}/handle",
+        json={"expected_revision": agenda_state["revision"]},
+    )
+    assert handled.status_code == 200
+    assert handled.json()["governance_agenda"][agenda_id]["state"] == "handled"
 
 
 def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> None:
@@ -1394,6 +1706,10 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
             "session_id": "session-backend-2",
             "reports_to_agent_id": "manager",
             "display_name": None,
+            "voice_profile": {
+                "voice": "sage",
+                "speaking_style": "Measured and direct.",
+            },
             "ephemeral_policy": {"max_concurrent": 4},
             "status": "paused",
             "expected_revision": 7,
@@ -1408,6 +1724,10 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
     assert backend["session_id"] == "session-backend-2"
     assert backend["reports_to_agent_id"] == "manager"
     assert backend["display_name"] is None
+    assert backend["voice_profile"] == {
+        "voice": "sage",
+        "speaking_style": "Measured and direct.",
+    }
     assert backend["ephemeral_policy"]["max_concurrent"] == 4
     assert backend["status"] == "paused"
     assert body["agents"]["lead"]["subordinate_agent_ids"] == []
