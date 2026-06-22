@@ -6,6 +6,12 @@
   handles, and widened the graph layout so governance, Team, root-agent, and
   sibling-agent cards no longer overlap.
 
+## 2026-06-22 - Trigger Cursor File Locking
+
+- Added process-level file locking around trigger cursor JSON stores so ADO,
+  Teams, Discord, ticket, and other trigger cursor updates cannot lose writes
+  when multiple worker processes or operator tools touch the same cursor file.
+
 ## 2026-06-22 - Team Add-on Org Chart Canvas
 
 - Replaced the focused Team Add-on Org chart tab with an add-on-owned
