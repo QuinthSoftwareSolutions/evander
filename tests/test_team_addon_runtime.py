@@ -18,6 +18,7 @@ from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from truman_team_addon.mcp import TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentAvatar,
@@ -289,6 +290,13 @@ class FakeSessionStore(FakeMetadataUpdater):
 
     def read_all_sessions(self) -> dict[str, object]:
         return self.sessions
+
+    def get_session(self, session_id: str) -> object | None:
+        return self.sessions.get(session_id)
+
+    def upsert_session(self, session: object) -> object:
+        self.sessions[str(getattr(session, "session_id"))] = session
+        return session
 
     def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
         super().session_update_metadata(**kwargs)
@@ -1015,6 +1023,16 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         "vm_ip": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
     }
+    assert result["dispatches"][0]["governance_mcp_tools"] == {
+        "session_id": "session-portfolio-manager",
+        "requested_tools": [TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+        "already_allowed_tools": [],
+        "granted_tools": [TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+        "error": None,
+    }
+    assert session_store.sessions["session-portfolio-manager"].allowed_tools == [
+        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
+    ]
     usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
         result["dispatches"][0]["dispatch_id"]
     )

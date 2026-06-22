@@ -422,6 +422,10 @@ set:
   `operator_directive` inbox item. The item defaults to the team manager,
   resets the manager's no-progress throttle, and is handled by the next normal
   Team wake through `team-action.json`.
+- `team_create_operator_directive` is the add-on-owned MCP tool for governance
+  managers. It creates the same durable `operator_directive` inbox item, but
+  only for member Teams of a governance group managed by the caller, and only
+  for the target Team manager inbox.
 - `query:team:session-routing` classifies a completed Truman session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
   unknown session before action artifacts are applied. Persistent agents are
@@ -585,11 +589,13 @@ Team communication is directional and enforced by the repository, not by prose:
   that event to an `effect:communication:send-message` node bound to the team's
   `operator_communication_target_id`. The repository and effect providers never
   call the communication sender directly — routing is the workflow pack's job.
-- **Operator to manager** — use the add-on `POST /operator-directives` Admin API
-  or `effect:team:create-operator-directive`. These surfaces create a pending
-  `operator_directive` inbox item for the manager and mark the manager due, so
-  an operator instruction like "ask the lead for status on next dispatch"
-  becomes normal Team work instead of an out-of-band `team-action.json` write.
+- **Operator or governance manager to manager** — use the add-on
+  `POST /operator-directives` Admin API, `effect:team:create-operator-directive`,
+  or the `team_create_operator_directive` MCP tool for governance managers.
+  These surfaces create a pending `operator_directive` inbox item for the
+  manager and mark the manager due, so an instruction like "ask the lead for
+  status on next dispatch" becomes normal Team work instead of an out-of-band
+  `team-action.json` write.
 - **Team Chat to a human** — use `chat_replies` only to answer a specific human
   operator message from the built-in Chat tab. Use `operator_chat_messages[]`
   only for human operators listed in the current dispatch context. Do not use

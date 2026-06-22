@@ -1853,15 +1853,21 @@ class TeamStateRepository:
                     state_model,
                     session_id=normalized_requesting_session_id,
                 )
-                if requester.id != team.manager_agent_id:
+                requester_is_team_manager = requester.id == team.manager_agent_id
+                requester_is_governance_manager = _agent_governs_team(
+                    state_model,
+                    agent_id=requester.id,
+                    team_id=team.id,
+                )
+                if not requester_is_team_manager and not requester_is_governance_manager:
                     raise ValueError(
                         "team operator directives from agent sessions require the "
-                        "team manager session"
+                        "team manager session or governance manager session"
                     )
                 if recipient.id != team.manager_agent_id:
                     raise ValueError(
-                        "team manager sessions can only enqueue operator directives "
-                        "for their own manager inbox"
+                        "team manager and governance manager sessions can only enqueue "
+                        "operator directives for the target team manager inbox"
                     )
 
             effective_project_id = normalized_project_id
@@ -5250,6 +5256,15 @@ def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
         return False
     team = state.teams.get(actor.team_id)
     return team is not None and team.manager_agent_id == actor.id
+
+
+def _agent_governs_team(state: TeamState, *, agent_id: str, team_id: str) -> bool:
+    return any(
+        not group.archived
+        and group.manager_agent_id == agent_id
+        and team_id in group.member_team_ids
+        for group in state.governance_groups.values()
+    )
 
 
 def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:

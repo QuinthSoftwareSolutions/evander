@@ -22,6 +22,7 @@ from agent_sandbox.events.provider_models import (
     ArtifactPublishArtifactsEffectDefinition,
 )
 from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.models import tool_name_value
 from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryProviderBase
@@ -34,6 +35,7 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
+from .mcp import TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
 from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -1027,6 +1029,11 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             group = lease["governance_group"]
             try:
                 guidance_result = _seed_team_governance_guidance(context, agent=agent)
+                tool_grant_result = _ensure_session_allows_mcp_tools(
+                    context,
+                    session_id=agent["session_id"],
+                    tool_names=[TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+                )
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=_build_governance_prompt(lease),
@@ -1053,6 +1060,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                         "dispatch_id": lease["dispatch_id"],
                         "reason": lease["reason"],
                         "governance_agent_guidance": guidance_result,
+                        "governance_mcp_tools": tool_grant_result,
                         "result": result_payload,
                     }
                 )
@@ -2214,8 +2222,8 @@ def _team_governance_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "direct-report chains.\n"
         "- Use governance wakes to make policy, priority, escalation, cost, and "
         "blocked-team decisions. Route directives to the relevant member-team "
-        "manager through the Team Add-on governance or operator-directive APIs "
-        "when action is needed.\n"
+        f"manager with the {TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool when "
+        "action is needed.\n"
         "- Governance wakes are not normal Team action-artifact dispatches unless "
         "the wake prompt explicitly says otherwise. Do not write or rely on "
         "/artifacts/team-action.json for governance-only decisions.\n"
@@ -2357,9 +2365,9 @@ def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
         "Use this wake to inspect agenda items, cost-cap signals, blocked-team "
         "signals, and member-team summaries. Respond with concise decisions, "
         "recommended operator actions, and any directives that should be routed "
-        "to the relevant member-team managers through the Team Add-on governance "
-        "or operator-directive APIs. If no governance action is needed, say so "
-        "briefly and do not invent project work.\n\n"
+        "to the relevant member-team managers with the "
+        f"{TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool. If no governance "
+        "action is needed, say so briefly and do not invent project work.\n\n"
         f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
     )
 
@@ -3583,6 +3591,75 @@ def _session_repository_from_context(context: Any) -> Any | None:
     service = getattr(context, "admin_service", None)
     service_runtime = getattr(service, "runtime", None)
     return getattr(service_runtime, "session_repository", None)
+
+
+def _session_repository_for_manifest_updates(context: Any) -> Any | None:
+    candidates = [
+        getattr(context, "session_repository", None),
+        getattr(context, "session_lookup", None),
+        getattr(getattr(context, "runtime", None), "session_repository", None),
+        getattr(getattr(getattr(context, "admin_service", None), "runtime", None), "session_repository", None),
+    ]
+    for repository in candidates:
+        if repository is None:
+            continue
+        if callable(getattr(repository, "get_session", None)) and callable(
+            getattr(repository, "upsert_session", None)
+        ):
+            return repository
+    return None
+
+
+def _ensure_session_allows_mcp_tools(
+    context: Any,
+    *,
+    session_id: object,
+    tool_names: list[str],
+) -> dict[str, Any]:
+    normalized_session_id = _required_text(session_id, "session_id")
+    requested_tools = [
+        tool
+        for tool in (str(tool_name or "").strip() for tool_name in tool_names)
+        if tool
+    ]
+    result: dict[str, Any] = {
+        "session_id": normalized_session_id,
+        "requested_tools": requested_tools,
+        "already_allowed_tools": [],
+        "granted_tools": [],
+        "error": None,
+    }
+    if not requested_tools:
+        return result
+    repository = _session_repository_for_manifest_updates(context)
+    if repository is None:
+        result["error"] = "session repository is not available"
+        return result
+    session = repository.get_session(normalized_session_id)
+    if session is None:
+        result["error"] = f"session {normalized_session_id} was not found"
+        return result
+    allowed_values = [tool_name_value(tool) for tool in getattr(session, "allowed_tools", [])]
+    seen = set(allowed_values)
+    added: list[str] = []
+    already_allowed: list[str] = []
+    for tool_name in requested_tools:
+        if tool_name in seen:
+            already_allowed.append(tool_name)
+            continue
+        seen.add(tool_name)
+        allowed_values.append(tool_name)
+        added.append(tool_name)
+    if added:
+        if callable(getattr(session, "model_copy", None)):
+            updated_session = session.model_copy(update={"allowed_tools": allowed_values})
+        else:
+            setattr(session, "allowed_tools", allowed_values)
+            updated_session = session
+        repository.upsert_session(updated_session)
+    result["already_allowed_tools"] = already_allowed
+    result["granted_tools"] = added
+    return result
 
 
 def _register_team_dispatch_model_usage_context(

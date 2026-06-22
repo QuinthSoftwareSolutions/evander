@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Governance Directive Tool
+
+- Added an add-on-owned `team_create_operator_directive` MCP tool so governance
+  managers can route durable directives to member-team managers from governance
+  wakes without reintroducing Team-specific core gateway tool ownership.
+- Governance wakes now grant the directive MCP tool to the governance manager's
+  session before resuming it.
+- Allowed active governance managers to create operator directives for Teams in
+  their governance group while preserving manager-inbox-only delivery.
+
 ## 2026-06-22 - Test Suite Expectation Refresh
 
 - Updated stale Admin Web, CLI, VM delegation, Discord inbox, and PR feedback

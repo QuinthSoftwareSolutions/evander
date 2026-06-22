@@ -3088,6 +3088,38 @@ def test_create_operator_directive_rejects_non_manager_session(tmp_path: Path) -
         )
 
 
+def test_create_operator_directive_accepts_governance_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+
+    state, item = repo.create_operator_directive(
+        team_id="team",
+        message="Confirm the exact blocker and avoid retrying failed promotion.",
+        title="Governance blocker check",
+        requesting_session_id="session-governance",
+    )
+
+    assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
+    assert item.recipient_agent_id == "manager"
+    assert item.payload["title"] == "Governance blocker check"
+    assert "created_by" not in item.payload
+    assert item.payload["requesting_session_id"] == "session-governance"
+    assert state.agent_runtimes["manager"].next_wake_at is None
+
+
 def test_operator_task_creation_can_use_operator_actor(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
