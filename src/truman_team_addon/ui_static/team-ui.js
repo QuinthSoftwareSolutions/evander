@@ -61,6 +61,22 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
+const defaultTeamView = "workspace";
+const teamViewStorageKey = "team-addon:active-view";
+const teamViewIds = new Set([
+  "workspace",
+  "overview",
+  "operations",
+  "delivery",
+  "task-board",
+  "people",
+  "chat",
+  "governance",
+  "planning",
+  "setup",
+  "timeline",
+  "org",
+]);
 
 let state = emptyState();
 let costState = emptyCostState();
@@ -78,7 +94,7 @@ let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
 let showArchived = false;
-let activeTeamView = "workspace";
+let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedPeopleTeamId = "all";
@@ -91,21 +107,9 @@ const teamRecordPageSize = 6;
 let selectedTaskBoardTeamId = "";
 let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
+let teamsCreateTeamPanelOpen = false;
+let governanceCreateGroupPanelOpen = false;
 
-const teamViewIds = new Set([
-  "workspace",
-  "overview",
-  "operations",
-  "delivery",
-  "task-board",
-  "people",
-  "chat",
-  "governance",
-  "planning",
-  "setup",
-  "timeline",
-  "org",
-]);
 const runtimeFilterChoices = [
   ["all", "All"],
   ["needs_attention", "Needs attention"],
@@ -166,6 +170,11 @@ const elements = {
   setupFormsPanel: document.querySelector("#setup-forms-panel"),
   workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
   focusedSetupMount: document.querySelector("#focused-setup-mount"),
+  teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
+  teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
+  governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
+  governanceCreateGroupForm: document.querySelector("#create-governance-group-form"),
+  governanceCreateGroupToggle: document.querySelector("[data-governance-create-toggle]"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
@@ -464,8 +473,29 @@ function bindTopLevelTabs() {
   updateTeamViewTabs();
 }
 
+function normalizedTeamView(view) {
+  return teamViewIds.has(view) ? view : defaultTeamView;
+}
+
+function readStoredTeamView() {
+  try {
+    return normalizedTeamView(window.localStorage.getItem(teamViewStorageKey));
+  } catch {
+    return defaultTeamView;
+  }
+}
+
+function storeTeamView(view) {
+  try {
+    window.localStorage.setItem(teamViewStorageKey, normalizedTeamView(view));
+  } catch {
+    // Storage can be unavailable in hardened browser contexts.
+  }
+}
+
 function setTeamView(view) {
-  activeTeamView = teamViewIds.has(view) ? view : "workspace";
+  activeTeamView = normalizedTeamView(view);
+  storeTeamView(activeTeamView);
   render();
 }
 
@@ -571,6 +601,62 @@ function placeSetupFormsPanel() {
   }
 }
 
+function openTeamsCreateTeamPanel() {
+  teamsCreateTeamPanelOpen = true;
+  syncTeamsCreateTeamPanel();
+  window.requestAnimationFrame(() => {
+    elements.teamsCreateTeamForm?.elements.name?.focus();
+  });
+}
+
+function closeTeamsCreateTeamPanel({ reset = false } = {}) {
+  teamsCreateTeamPanelOpen = false;
+  if (reset) {
+    elements.teamsCreateTeamForm?.reset();
+  }
+  syncTeamsCreateTeamPanel();
+}
+
+function syncTeamsCreateTeamPanel() {
+  if (!elements.teamsCreateTeamPanel) {
+    return;
+  }
+  elements.teamsCreateTeamPanel.hidden = !teamsCreateTeamPanelOpen || activeTeamView !== "people";
+}
+
+function openGovernanceCreateGroupPanel() {
+  governanceCreateGroupPanelOpen = true;
+  syncGovernanceCreateGroupPanel();
+  window.requestAnimationFrame(() => {
+    elements.governanceCreateGroupForm?.elements.name?.focus();
+  });
+}
+
+function closeGovernanceCreateGroupPanel({ reset = false } = {}) {
+  governanceCreateGroupPanelOpen = false;
+  if (reset) {
+    elements.governanceCreateGroupForm?.reset();
+  }
+  syncGovernanceCreateGroupPanel();
+}
+
+function toggleGovernanceCreateGroupPanel() {
+  if (governanceCreateGroupPanelOpen) {
+    closeGovernanceCreateGroupPanel();
+    return;
+  }
+  openGovernanceCreateGroupPanel();
+}
+
+function syncGovernanceCreateGroupPanel() {
+  if (!elements.governanceCreateGroupPanel) {
+    return;
+  }
+  const open = governanceCreateGroupPanelOpen && activeTeamView === "governance";
+  elements.governanceCreateGroupPanel.hidden = !open;
+  elements.governanceCreateGroupToggle?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function bindForms() {
   document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
@@ -611,6 +697,27 @@ function bindRecordEditing() {
       event.preventDefault();
       selectedPeopleTeamId = peopleTeamButton.dataset.peopleTeamId || "all";
       renderAgents();
+      return;
+    }
+
+    const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
+    if (openCreateTeamButton) {
+      event.preventDefault();
+      openTeamsCreateTeamPanel();
+      return;
+    }
+
+    const closeCreateTeamButton = event.target.closest("[data-teams-create-team-close]");
+    if (closeCreateTeamButton) {
+      event.preventDefault();
+      closeTeamsCreateTeamPanel();
+      return;
+    }
+
+    const governanceCreateGroupButton = event.target.closest("[data-governance-create-toggle]");
+    if (governanceCreateGroupButton) {
+      event.preventDefault();
+      toggleGovernanceCreateGroupPanel();
       return;
     }
 
@@ -883,6 +990,7 @@ function decorateFieldTooltips(root = document) {
 function tooltipForField(label, field) {
   const form = field.form;
   const formId = formIdentifier(form);
+  const aliasedFormId = formId === "create-team-from-teams-form" ? "create-team-form" : "";
   const fieldName = text(field.name);
   const editType = text(form?.dataset?.editType);
   const keys = [];
@@ -891,6 +999,9 @@ function tooltipForField(label, field) {
   }
   if (formId) {
     keys.push(`${formId}:${fieldName}`);
+  }
+  if (aliasedFormId) {
+    keys.push(`${aliasedFormId}:${fieldName}`);
   }
   keys.push(fieldName);
   const labelText = text(label.textContent);
@@ -1366,6 +1477,8 @@ function render() {
   decorateFieldTooltips(document);
   updateTeamViewTabs();
   placeSetupFormsPanel();
+  syncTeamsCreateTeamPanel();
+  syncGovernanceCreateGroupPanel();
 }
 
 function renderFocusedOrgChartIfActive() {
@@ -2673,23 +2786,20 @@ function renderTeamRecordGroup(team, scopedRecords) {
   ];
   return `
     <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}" data-team-record-group-id="${escapeAttr(teamId)}">
-      <div class="team-record-group-header">
-        <button
-          class="team-record-group-toggle"
-          type="button"
-          aria-expanded="${expanded ? "true" : "false"}"
-          data-team-record-toggle="${escapeAttr(teamId)}"
-        >
-          <span class="team-record-group-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
-          <span>
-            <span class="section-label">${escapeHtml(teamId)}</span>
-            <strong>${escapeHtml(team.name || teamId)}</strong>
-          </span>
-        </button>
-        <div class="team-record-group-counts">
+      <button
+        class="team-record-group-header"
+        type="button"
+        aria-expanded="${expanded ? "true" : "false"}"
+        data-team-record-toggle="${escapeAttr(teamId)}"
+      >
+        <span class="team-record-group-title">
+          <span class="section-label">${escapeHtml(teamId)}</span>
+          <strong>${escapeHtml(team.name || teamId)}</strong>
+        </span>
+        <span class="team-record-group-counts">
           ${counts.map((count) => `<span class="state-pill neutral">${escapeHtml(count)}</span>`).join("")}
-        </div>
-      </div>
+        </span>
+      </button>
       ${
         expanded
           ? `<div class="team-record-group-body">
@@ -6271,7 +6381,16 @@ async function submitCreateForm(form) {
     return;
   }
   const payload = payloadForForm(form, data);
-  await submitMutation(form, endpoint, method, payload);
+  const saved = await submitMutation(form, endpoint, method, payload);
+  const formId = formIdentifier(form);
+  if (saved && formId === "create-team-from-teams-form") {
+    selectedPeopleTeamId = "all";
+    closeTeamsCreateTeamPanel({ reset: true });
+    renderAgents();
+  }
+  if (saved && formId === "create-governance-group-form") {
+    closeGovernanceCreateGroupPanel({ reset: true });
+  }
 }
 
 async function submitTaskUpdate(form) {
@@ -7418,7 +7537,7 @@ function payloadForForm(form, data = formData(form)) {
     }
     return payload;
   }
-  if (formId === "create-team-form") {
+  if (formId === "create-team-form" || formId === "create-team-from-teams-form") {
     const payload = {
       name: text(data.name),
       manager_session_id: text(data.manager_session_id),

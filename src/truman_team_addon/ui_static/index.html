@@ -16,8 +16,11 @@
         </div>
         <div class="team-header-actions">
           <label class="checkbox-label archived-toggle">
-            <input id="show-archived-toggle" type="checkbox" />
-            Show archived
+            <span class="archived-toggle-track" aria-hidden="true">
+              <input id="show-archived-toggle" type="checkbox" />
+              <span class="archived-toggle-slider" aria-hidden="true"></span>
+            </span>
+            <span>Show archived</span>
           </label>
           <span id="revision-badge" class="revision-badge">Revision 0</span>
           <button id="refresh-button" type="button">Refresh</button>
@@ -465,18 +468,6 @@
             </details>
 
             <details>
-              <summary>Create governance group</summary>
-              <form id="create-governance-group-form" data-endpoint="/governance-groups" data-method="POST">
-                <label>Name <input name="name" required /></label>
-                <label>Manager <select name="manager_agent_id" required data-options="agents"></select></label>
-                <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
-                <label>Goals <textarea name="goals" rows="4" placeholder="id | description | state"></textarea></label>
-                <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
-                <button type="submit">Create governance group</button>
-              </form>
-            </details>
-
-            <details>
               <summary>Create governance agenda item</summary>
               <form id="create-governance-agenda-form" data-endpoint="/governance-agenda" data-method="POST">
                 <label>Governance group <select name="governance_group_id" required data-options="governance-groups"></select></label>
@@ -743,13 +734,52 @@
         hidden
       >
         <div class="people-layout">
-          <section class="content-panel people-agents-panel" aria-labelledby="focused-teams-heading">
+          <section class="people-agents-panel" aria-labelledby="focused-teams-heading">
             <div class="focused-section-header">
               <div>
                 <p class="section-label">Teams</p>
                 <h2 id="focused-teams-heading">Teams</h2>
               </div>
+              <div class="focused-section-header-actions">
+                <button type="button" data-teams-create-team-open>Create team</button>
+              </div>
             </div>
+            <section
+              id="teams-create-team-panel"
+              class="content-panel teams-create-team-panel"
+              aria-labelledby="teams-create-team-heading"
+              data-teams-create-team-panel
+              hidden
+            >
+              <div class="teams-create-team-header">
+                <div>
+                  <p class="section-label">Team</p>
+                  <h3 id="teams-create-team-heading">Create team</h3>
+                </div>
+                <button type="button" class="record-action" data-teams-create-team-close>Close</button>
+              </div>
+              <form id="create-team-from-teams-form" data-endpoint="/teams" data-method="POST">
+                <label>Name <input name="name" required /></label>
+                <label>
+                  Manager existing agent
+                  <select
+                    name="manager_existing_agent_id"
+                    data-options="agents"
+                    data-placeholder="Select existing agent"
+                    data-agent-source-picker
+                    data-session-field="manager_session_id"
+                    data-display-field="manager_display_name"
+                    data-suggested-role="manager"
+                  ></select>
+                </label>
+                <label>Manager session ID <input name="manager_session_id" required /></label>
+                <label>Manager display name <input name="manager_display_name" /></label>
+                <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
+                <label>Operator communication target id <input name="operator_communication_target_id" /></label>
+                <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+                <button type="submit">Create team</button>
+              </form>
+            </section>
             <div class="teams-records-view" data-teams-records-view></div>
           </section>
           <aside class="content-panel people-agent-detail-panel" aria-label="Selected team record detail">
@@ -825,6 +855,30 @@
               <p class="section-label">Governance</p>
               <h2 id="focused-governance-heading">Groups</h2>
             </div>
+            <button
+              type="button"
+              class="record-action"
+              aria-controls="governance-create-panel"
+              aria-expanded="false"
+              data-governance-create-toggle
+            >
+              New governance group
+            </button>
+          </div>
+          <div id="governance-create-panel" class="governance-create-panel" hidden>
+            <form
+              id="create-governance-group-form"
+              class="governance-create-form"
+              data-endpoint="/governance-groups"
+              data-method="POST"
+            >
+              <label>Name <input name="name" required /></label>
+              <label>Manager <select name="manager_agent_id" required data-options="agents"></select></label>
+              <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
+              <label>Goals <textarea name="goals" rows="4" placeholder="id | description | state"></textarea></label>
+              <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+              <button type="submit">Create governance group</button>
+            </form>
           </div>
           <div class="governance-view" data-governance-view></div>
         </section>

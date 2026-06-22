@@ -949,7 +949,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
     assert 'data-team-view="governance"' in ui.text
+    assert "data-governance-create-toggle" in ui.text
+    assert 'id="governance-create-panel"' in ui.text
     assert 'id="create-governance-group-form"' in ui.text
+    assert ui.text.count('id="create-governance-group-form"') == 1
     assert 'id="create-governance-agenda-form"' in ui.text
     assert 'data-team-view="chat"' in ui.text
     assert 'id="team-chat-page"' in ui.text
