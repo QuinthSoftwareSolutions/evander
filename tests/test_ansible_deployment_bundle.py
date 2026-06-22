@@ -710,6 +710,21 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
         assert f"  - {path}" not in defaults
 
 
+def test_ansible_uv_bootstrap_uses_python_install_environment() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    host_prereqs = (repo / "ansible" / "roles" / "host_prereqs" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    worker_defaults = (repo / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Install uv for repo bootstrap" in host_prereqs
+    assert "environment: \"{{ agent_sandbox_python_install_env | default({}) }}\"" in host_prereqs
+    assert "PIP_INDEX_URL" in worker_defaults
+    assert "agent_sandbox_worker_pypi_index_url" in worker_defaults
+
+
 def test_ansible_manages_current_optional_systemd_units() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(

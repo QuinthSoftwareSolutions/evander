@@ -6,6 +6,8 @@
   DIDWW SIP bridge config files expected by systemd preflight, manage their
   systemd units through service toggles, and hide secret-bearing env template
   task output.
+- Routed the bootstrap `uv` pip install through the configured Python package
+  environment so private worker VMs can use the control-plane package cache.
 
 ## 2026-06-22 - ADO Worker Exact Directory Polling
 
