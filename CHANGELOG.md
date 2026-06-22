@@ -15,6 +15,8 @@
   session before resuming it.
 - Allowed active governance managers to create operator directives for Teams in
   their governance group while preserving manager-inbox-only delivery.
+- Rejected governance-manager directive requests after the governance manager
+  agent becomes paused or archived, even if its MCP session is still valid.
 
 ## 2026-06-22 - Test Suite Expectation Refresh
 

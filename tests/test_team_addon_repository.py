@@ -3120,6 +3120,39 @@ def test_create_operator_directive_accepts_governance_manager_session(
     assert state.agent_runtimes["manager"].next_wake_at is None
 
 
+@pytest.mark.parametrize("status", [AgentStatus.PAUSED, AgentStatus.ARCHIVED])
+def test_create_operator_directive_rejects_inactive_governance_manager_session(
+    tmp_path: Path,
+    status: AgentStatus,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+
+    def _mark_inactive(state):
+        state.agents["governance-manager"].status = status
+        return state
+
+    repo.update(_mark_inactive)
+
+    with pytest.raises(ValueError, match="governance manager session"):
+        repo.create_operator_directive(
+            team_id="team",
+            message="This should not route after the governance manager is inactive.",
+            requesting_session_id="session-governance",
+        )
+
+
 def test_operator_task_creation_can_use_operator_actor(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 

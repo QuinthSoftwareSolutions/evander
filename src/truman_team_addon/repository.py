@@ -5259,6 +5259,9 @@ def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
 
 
 def _agent_governs_team(state: TeamState, *, agent_id: str, team_id: str) -> bool:
+    agent = state.agents.get(agent_id)
+    if agent is None or agent.status != AgentStatus.ACTIVE:
+        return False
     return any(
         not group.archived
         and group.manager_agent_id == agent_id
