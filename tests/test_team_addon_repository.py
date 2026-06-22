@@ -689,6 +689,56 @@ def test_repository_migrates_legacy_chat_operator_ids_to_lowercase() -> None:
     assert row["operator_user_id"] == "alice@example.com"
 
 
+def test_repository_normalizes_existing_chat_operator_ids_to_lowercase() -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE team_conversations (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                operator_user_id TEXT NOT NULL,
+                operator_display_name TEXT,
+                created_by TEXT,
+                last_message_preview TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_interaction_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_team_conversations_agent_operator
+            ON team_conversations(agent_id, operator_user_id);
+            INSERT INTO team_conversations(
+                id, agent_id, operator_user_id, operator_display_name, created_by,
+                last_message_preview, created_at, updated_at, last_interaction_at
+            )
+            VALUES (
+                'conversation-backend',
+                'backend',
+                'Jonathan',
+                'Jonathan',
+                'operator:Jonathan',
+                '',
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00'
+            );
+            """
+        )
+
+        _ensure_team_conversations_operator_scope(connection)
+        row = connection.execute(
+            """
+            SELECT operator_user_id, operator_display_name, created_by
+            FROM team_conversations
+            WHERE id = 'conversation-backend'
+            """
+        ).fetchone()
+
+    assert row["operator_user_id"] == "jonathan"
+    assert row["operator_display_name"] == "Jonathan"
+    assert row["created_by"] == "operator:Jonathan"
+
+
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
     legacy_path.parent.mkdir(parents=True)

@@ -1728,8 +1728,12 @@ def _ensure_team_conversations_operator_scope(connection: sqlite3.Connection) ->
         connection.execute(
             """
             UPDATE team_conversations
-            SET operator_user_id = 'admin'
-            WHERE operator_user_id IS NULL OR operator_user_id = ''
+            SET operator_user_id = lower(trim(
+                COALESCE(NULLIF(trim(operator_user_id), ''), 'admin')
+            ))
+            WHERE operator_user_id IS NULL
+               OR trim(operator_user_id) = ''
+               OR operator_user_id <> lower(trim(operator_user_id))
             """
         )
         connection.execute(
