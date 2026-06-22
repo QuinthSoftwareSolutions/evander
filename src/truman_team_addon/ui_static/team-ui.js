@@ -8242,7 +8242,7 @@ function renderEditFields(type, record) {
   if (type === "project") {
     return `
       ${readonlyField("Project ID", record.id)}
-      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
+      ${readonlyField("Team", record.team_id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${selectField("Status", "status", "project-statuses", record.status || "active", { required: true })}
       ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
@@ -8280,7 +8280,7 @@ function renderEditFields(type, record) {
   if (type === "role") {
     return `
       ${readonlyField("Role ID", record.id)}
-      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
+      ${readonlyField("Team", record.team_id)}
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
@@ -8305,7 +8305,7 @@ function renderEditFields(type, record) {
   if (type === "review-profile") {
     return `
       ${readonlyField("Profile ID", record.id)}
-      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
+      ${readonlyField("Team", record.team_id)}
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}

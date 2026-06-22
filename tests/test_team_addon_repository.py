@@ -4708,3 +4708,46 @@ def test_remove_unreferenced_agent_from_team(tmp_path: Path) -> None:
     agent = state.agents["observer"]
     assert agent.team_id is None
     assert agent.role_id is None
+
+
+
+def test_remove_agent_from_team_preserves_terminal_task_history(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_role(
+        role_id="team__observer",
+        team_id="team",
+        name="Observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="observer",
+        team_id="team",
+        role_id="team__observer",
+        session_id="session-observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="completed-history",
+        owner_agent_id="observer",
+        project_id="project",
+        priority=1,
+        title="Completed history",
+        description="This completed task should retain historical ownership.",
+        created_by_agent_id="observer",
+    )
+    repo.update(lambda state: _mark_task_state(state, "completed-history", TeamTaskState.ACCEPTED))
+
+    state = repo.update_agent(
+        agent_id="observer",
+        team_id=None,
+        set_team_id=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.agents["observer"].team_id is None
+    assert state.tasks["completed-history"].owner_agent_id == "observer"
+
+
+def _mark_task_state(state, task_id: str, state_value: TeamTaskState):
+    state.tasks[task_id].state = state_value
+    return state

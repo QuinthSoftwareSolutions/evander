@@ -1377,14 +1377,24 @@ class TeamState(TeamModel):
             current_id = current.reports_to_agent_id if current is not None else None
 
     def _validate_tasks(self, errors: list[str]) -> None:
+        terminal_task_states = {
+            TeamTaskState.FINISHED,
+            TeamTaskState.ACCEPTED,
+            TeamTaskState.REJECTED,
+        }
         for task in self.tasks.values():
+            task_is_terminal = task.state in terminal_task_states
             owner = self.agents.get(task.owner_agent_id)
             if owner is None:
                 errors.append(f"task {task.id} references missing owner {task.owner_agent_id}")
             project = self.projects.get(task.project_id)
             if project is None:
                 errors.append(f"task {task.id} references missing project {task.project_id}")
-            elif owner is not None and owner.team_id != project.team_id:
+            elif (
+                not task_is_terminal
+                and owner is not None
+                and owner.team_id != project.team_id
+            ):
                 errors.append(f"task {task.id} owner {owner.id} is outside project team")
             if (
                 task.created_by_agent_id is not None
