@@ -257,6 +257,46 @@ button.team-view-tab[aria-selected="true"] {
   border-bottom: 1px solid var(--line);
 }
 
+.team-record-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.team-record-group-toggle:hover {
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.team-record-group-toggle .section-label {
+  display: block;
+  margin-bottom: 0.12rem;
+}
+
+.team-record-group-toggle strong {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.team-record-group-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
 .team-record-group-header h3 {
   margin: 0;
 }
@@ -269,11 +309,77 @@ button.team-view-tab[aria-selected="true"] {
   flex-wrap: wrap;
 }
 
-.team-record-grid {
+.team-record-group-body {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
   margin-top: 0.75rem;
+}
+
+.team-record-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.team-record-kind-tabs {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 100%;
+}
+
+button.team-record-kind-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0.32rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+button.team-record-kind-tab:hover {
+  border-color: rgba(23, 111, 122, 0.3);
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+}
+
+button.team-record-kind-tab.active,
+button.team-record-kind-tab[aria-selected="true"] {
+  border-color: rgba(23, 111, 122, 0.34);
+  background: rgba(23, 111, 122, 0.12);
+  color: var(--accent-strong);
+}
+
+button.team-record-kind-tab strong {
+  min-width: 1.35rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+  text-align: center;
+}
+
+.team-record-pager,
+.team-record-pager-summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.team-record-pager button {
+  min-height: 1.85rem;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.78rem;
 }
 
 .team-record-section {

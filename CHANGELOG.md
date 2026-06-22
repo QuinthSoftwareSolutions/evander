@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-21 - Team Add-on Teams Tab Collapsible Lists
+
+- Changed the Team Add-on Teams tab so each team starts collapsed and expands into a single active records tab for agents, projects, or roles.
+- Added per-team record paging controls to keep long team lists compact.
+
 ## 2026-06-21 - Team Add-on Chat Lifecycle Fixes
 
 - Fixed Team Chat reply-application errors so the source operator message is

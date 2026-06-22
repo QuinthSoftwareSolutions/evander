@@ -2756,7 +2756,8 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
   await page.locator("#team-people-page").waitFor({ state: "visible" });
 
   assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
-  assert.equal(await page.locator("#team-people-page .team-record-section").count(), 6);
+  assert.equal(await page.locator("#team-people-page .team-record-group.is-collapsed").count(), 2);
+  assert.equal(await page.locator("#team-people-page .team-record-section").count(), 0);
   assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-archived"]').count(), 0);
   assert.equal(await page.locator('#team-people-page [data-project-id="archived-project"]').count(), 0);
   assert.equal(await page.locator('#team-people-page [data-role-id="archived-project__project-lead"]').count(), 0);
@@ -2769,17 +2770,26 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     state: "visible",
   });
   assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').count(), 0);
+  await page.locator('#team-people-page [data-team-record-toggle="team-beta"]').click();
+  await page.locator('#team-people-page [data-team-record-group-id="team-beta"].is-expanded').waitFor({ state: "visible" });
+  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 0);
+  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
   assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 1);
+  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 0);
+  await page.locator('#team-people-page [data-team-record-tab="role"]').click();
   assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 1);
 
   await page.locator('#team-people-page [data-people-team-id="team-alpha"]').click();
   await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').waitFor({
     state: "visible",
   });
+  await page.locator('#team-people-page [data-team-record-toggle="team-alpha"]').click();
+  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"].is-expanded').waitFor({ state: "visible" });
   await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
     state: "visible",
   });
 
+  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
   const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
   await alphaProjectRecord.getByRole("button").click();
   await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
@@ -2795,6 +2805,7 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
       state: "visible",
     });
 
+  await page.locator('#team-people-page [data-team-record-tab="role"]').click();
   const alphaLeadRoleCard = page.locator('#team-people-page [data-role-id="alpha-project__project-lead"]');
   await alphaLeadRoleCard.getByRole("button").click();
   await alphaLeadRoleCard.locator('.team-record-select[aria-pressed="true"]').waitFor({
@@ -2807,6 +2818,7 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     state: "visible",
   });
 
+  await page.locator('#team-people-page [data-team-record-tab="agent"]').click();
   const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
   await alphaLeadCard.getByRole("button").click();
   await alphaLeadCard.locator('.people-agent-select[aria-pressed="true"]').waitFor({
@@ -3223,7 +3235,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 4);
   assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
-  assert.equal(await page.locator("#team-people-page .team-record-section").count(), 6);
+  assert.equal(await page.locator("#team-people-page .team-record-group.is-collapsed").count(), 2);
+  assert.equal(await page.locator("#team-people-page .team-record-section").count(), 0);
   await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').getByRole("heading", { name: "Alpha Team" }).waitFor({
     state: "visible",
   });
@@ -3301,6 +3314,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
     state: "visible",
   });
+  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
   const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
   await alphaProjectRecord.getByRole("button").click();
   await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
@@ -3315,6 +3329,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     .waitFor({
       state: "visible",
     });
+  await page.locator('#team-people-page [data-team-record-tab="role"]').click();
   const alphaLeadRoleCard = page.locator('#team-people-page [data-role-id="alpha-project__project-lead"]');
   await alphaLeadRoleCard.getByRole("button").click();
   await alphaLeadRoleCard.locator('.team-record-select[aria-pressed="true"]').waitFor({
@@ -3326,6 +3341,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#people-agent-detail-view").getByText("Create Root Task").waitFor({
     state: "visible",
   });
+  await page.locator('#team-people-page [data-team-record-tab="agent"]').click();
   const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
   await alphaLeadCard.waitFor({ state: "visible" });
   assert.equal((await alphaLeadCard.locator(".people-agent-role").innerText()).trim(), "Project Lead");
@@ -3461,6 +3477,7 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
   await waitForRevision(page, 4);
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
+  await page.locator('#team-people-page [data-team-record-tab="agent"]').click();
   const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
   assert.equal(await alphaLeadCard.locator(".agent-inbox-indicator--status_request").count(), 0);
   await alphaLeadCard.getByRole("button").click();

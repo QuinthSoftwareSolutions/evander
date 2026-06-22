@@ -84,6 +84,10 @@ let selectedOrgTeamId = "all";
 let selectedPeopleTeamId = "all";
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
+const expandedTeamRecordGroupIds = new Set();
+const teamRecordGroupTabs = {};
+const teamRecordGroupPages = {};
+const teamRecordPageSize = 6;
 let selectedTaskBoardTeamId = "";
 let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
@@ -607,6 +611,31 @@ function bindRecordEditing() {
       event.preventDefault();
       selectedPeopleTeamId = peopleTeamButton.dataset.peopleTeamId || "all";
       renderAgents();
+      return;
+    }
+
+    const teamGroupToggle = event.target.closest("[data-team-record-toggle]");
+    if (teamGroupToggle) {
+      event.preventDefault();
+      toggleTeamRecordGroup(teamGroupToggle.dataset.teamRecordToggle);
+      return;
+    }
+
+    const teamRecordTab = event.target.closest("[data-team-record-tab]");
+    if (teamRecordTab) {
+      event.preventDefault();
+      setTeamRecordGroupTab(teamRecordTab.dataset.teamRecordGroupId, teamRecordTab.dataset.teamRecordTab);
+      return;
+    }
+
+    const teamRecordPage = event.target.closest("[data-team-record-page]");
+    if (teamRecordPage) {
+      event.preventDefault();
+      setTeamRecordGroupPage(
+        teamRecordPage.dataset.teamRecordGroupId,
+        teamRecordPage.dataset.teamRecordKind,
+        Number(teamRecordPage.dataset.teamRecordPage),
+      );
       return;
     }
 
@@ -2632,51 +2661,163 @@ function renderPeopleTeamTab({ id, label, count, selected }) {
 }
 
 function renderTeamRecordGroup(team, scopedRecords) {
-  const teamRecords = teamRecordsForTeam(team.id, scopedRecords);
+  const teamId = text(team.id);
+  const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
+  const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
+  teamRecordGroupTabs[teamId] = activeKind;
+  const expanded = expandedTeamRecordGroupIds.has(teamId);
   const counts = [
     `${teamRecords.agents.length} agent${teamRecords.agents.length === 1 ? "" : "s"}`,
     `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
     `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
   ];
   return `
-    <article class="team-record-group" data-team-record-group-id="${escapeAttr(team.id)}">
+    <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}" data-team-record-group-id="${escapeAttr(teamId)}">
       <div class="team-record-group-header">
-        <div>
-          <p class="section-label">${escapeHtml(team.id)}</p>
-          <h3>${escapeHtml(team.name || team.id)}</h3>
-        </div>
+        <button
+          class="team-record-group-toggle"
+          type="button"
+          aria-expanded="${expanded ? "true" : "false"}"
+          data-team-record-toggle="${escapeAttr(teamId)}"
+        >
+          <span class="team-record-group-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
+          <span>
+            <span class="section-label">${escapeHtml(teamId)}</span>
+            <strong>${escapeHtml(team.name || teamId)}</strong>
+          </span>
+        </button>
         <div class="team-record-group-counts">
           ${counts.map((count) => `<span class="state-pill neutral">${escapeHtml(count)}</span>`).join("")}
         </div>
       </div>
-      <div class="team-record-grid">
-        ${renderTeamRecordSection("Agents", teamRecords.agents, renderSelectableAgent, "No agents.")}
-        ${renderTeamRecordSection("Projects", teamRecords.projects, renderSelectableProject, "No projects.")}
-        ${renderTeamRecordSection("Roles", teamRecords.roles, renderSelectableRole, "No roles.")}
-      </div>
+      ${
+        expanded
+          ? `<div class="team-record-group-body">
+              ${renderTeamRecordKindTabs(teamId, teamRecords, activeKind)}
+              ${renderTeamRecordSection(activeKind, teamRecords)}
+            </div>`
+          : ""
+      }
     </article>
   `;
 }
 
-function renderTeamRecordSection(title, records, renderRecord, emptyMessage) {
+function renderTeamRecordKindTabs(teamId, teamRecords, activeKind) {
+  const tabs = [
+    ["agent", "Agents", teamRecords.agents.length],
+    ["project", "Projects", teamRecords.projects.length],
+    ["role", "Roles", teamRecords.roles.length],
+  ];
   return `
-    <section class="team-record-section" aria-label="${escapeAttr(title)}">
+    <div class="team-record-kind-tabs" role="tablist" aria-label="${escapeAttr(`Records for ${teamId}`)}">
+      ${tabs
+        .map(([kind, label, count]) => {
+          const active = kind === activeKind;
+          return `
+            <button
+              type="button"
+              class="team-record-kind-tab${active ? " active" : ""}"
+              role="tab"
+              aria-selected="${active ? "true" : "false"}"
+              data-team-record-group-id="${escapeAttr(teamId)}"
+              data-team-record-tab="${escapeAttr(kind)}"
+            >
+              <span>${escapeHtml(label)}</span>
+              <strong>${escapeHtml(count)}</strong>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderTeamRecordSection(kind, teamRecords) {
+  const config = teamRecordSectionConfig(kind);
+  const records = teamRecords[config.collection] || [];
+  const pageKey = teamRecordPageKey(teamRecords.teamId, kind);
+  const totalPages = Math.max(1, Math.ceil(records.length / teamRecordPageSize));
+  const page = clampPage(teamRecordGroupPages[pageKey] || 1, totalPages);
+  teamRecordGroupPages[pageKey] = page;
+  const pageRecords = records.slice((page - 1) * teamRecordPageSize, page * teamRecordPageSize);
+  return `
+    <section class="team-record-section" aria-label="${escapeAttr(config.title)}">
       <div class="team-record-section-header">
-        <h3>${escapeHtml(title)}</h3>
+        <h3>${escapeHtml(config.title)}</h3>
         <span>${escapeHtml(records.length)}</span>
       </div>
       ${
         records.length
-          ? `<ul class="team-record-list compact-record-list">${records.map((record) => renderRecord(record)).join("")}</ul>`
-          : `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`
+          ? `<ul class="team-record-list compact-record-list">${pageRecords.map((record) => config.render(record)).join("")}</ul>
+             ${renderTeamRecordPager(teamRecords.teamId, kind, page, totalPages, records.length)}`
+          : `<p class="empty-state">${escapeHtml(config.emptyMessage)}</p>`
       }
     </section>
   `;
 }
 
+function teamRecordSectionConfig(kind) {
+  if (kind === "project") return { title: "Projects", collection: "projects", render: renderSelectableProject, emptyMessage: "No projects." };
+  if (kind === "role") return { title: "Roles", collection: "roles", render: renderSelectableRole, emptyMessage: "No roles." };
+  return { title: "Agents", collection: "agents", render: renderSelectableAgent, emptyMessage: "No agents." };
+}
+
+function renderTeamRecordPager(teamId, kind, page, totalPages, totalRecords) {
+  if (totalPages <= 1) {
+    return `<div class="team-record-pager-summary">Showing ${escapeHtml(totalRecords)} ${escapeHtml(kind)}${totalRecords === 1 ? "" : "s"}</div>`;
+  }
+  return `
+    <div class="team-record-pager" aria-label="${escapeAttr(kind)} pages">
+      <button type="button" data-team-record-group-id="${escapeAttr(teamId)}" data-team-record-kind="${escapeAttr(kind)}" data-team-record-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button>
+      <span>Page ${escapeHtml(page)} of ${escapeHtml(totalPages)} · ${escapeHtml(totalRecords)} total</span>
+      <button type="button" data-team-record-group-id="${escapeAttr(teamId)}" data-team-record-kind="${escapeAttr(kind)}" data-team-record-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>Next</button>
+    </div>
+  `;
+}
+
+function toggleTeamRecordGroup(teamId) {
+  const normalizedTeamId = text(teamId);
+  if (!normalizedTeamId) return;
+  if (expandedTeamRecordGroupIds.has(normalizedTeamId)) {
+    expandedTeamRecordGroupIds.delete(normalizedTeamId);
+  } else {
+    expandedTeamRecordGroupIds.add(normalizedTeamId);
+  }
+  renderAgents();
+}
+
+function setTeamRecordGroupTab(teamId, kind) {
+  const normalizedTeamId = text(teamId);
+  if (!normalizedTeamId) return;
+  teamRecordGroupTabs[normalizedTeamId] = normalizedTeamRecordKind(kind);
+  teamRecordGroupPages[teamRecordPageKey(normalizedTeamId, teamRecordGroupTabs[normalizedTeamId])] = 1;
+  renderAgents();
+}
+
+function setTeamRecordGroupPage(teamId, kind, page) {
+  const normalizedTeamId = text(teamId);
+  if (!normalizedTeamId || !Number.isFinite(page)) return;
+  teamRecordGroupPages[teamRecordPageKey(normalizedTeamId, normalizedTeamRecordKind(kind))] = Math.max(1, Math.floor(page));
+  renderAgents();
+}
+
+function normalizedTeamRecordKind(kind) {
+  if (kind === "project" || kind === "role") return kind;
+  return "agent";
+}
+
+function teamRecordPageKey(teamId, kind) {
+  return `${text(teamId)}:${normalizedTeamRecordKind(kind)}`;
+}
+
+function clampPage(page, totalPages) {
+  return Math.min(Math.max(1, Number(page) || 1), Math.max(1, totalPages));
+}
+
 function teamRecordsForTeam(teamId, records) {
   const normalizedTeamId = text(teamId);
   return {
+    teamId: normalizedTeamId,
     agents: (records.agents || []).filter((agent) => text(agent.team_id) === normalizedTeamId),
     projects: (records.projects || []).filter((project) => text(project.team_id) === normalizedTeamId),
     roles: (records.roles || []).filter((role) => text(role.team_id) === normalizedTeamId),
