@@ -1373,6 +1373,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".cost-counter--warning" in stylesheet.text
     assert ".team-cost-blocked-notice" in stylesheet.text
     assert ".state-pill.neutral" in stylesheet.text
+
+    org_flow_script = enabled.get("/addons/team-addon/team-org-flow.js")
+    assert org_flow_script.status_code == 200
+    assert "team-org-flow:edit-agent" in org_flow_script.text
+    assert "data-team-org-flow-canvas" in org_flow_script.text
+
+    org_flow_stylesheet = enabled.get("/addons/team-addon/team-org-flow.css")
+    assert org_flow_stylesheet.status_code == 200
+    assert ".team-org-flow-canvas" in org_flow_stylesheet.text
+    assert ".org-flow-governance-node" in org_flow_stylesheet.text
     assert ".agent-inbox-indicator" in stylesheet.text
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text

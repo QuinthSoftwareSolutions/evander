@@ -370,6 +370,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPlanningFilters();
   bindTaskBoardSelectors();
   bindOrgFocusTabs();
+  bindOrgFlowEvents();
   bindArchivedVisibilityToggle();
   bindInboxPopoverPositioning();
   elements.templateSelect?.addEventListener("change", () => {
@@ -1176,6 +1177,16 @@ function bindOrgFocusTabs() {
     }
     selectedOrgTeamId = button.dataset.orgTeamId || "all";
     renderFocusedOrgChart();
+  });
+}
+
+function bindOrgFlowEvents() {
+  window.addEventListener("team-org-flow:edit-agent", (event) => {
+    const agentId = text(event.detail?.agentId);
+    if (!agentId) {
+      return;
+    }
+    openEditDialog("agent", agentId);
   });
 }
 
@@ -2585,19 +2596,11 @@ function renderFocusedOrgChart() {
     return;
   }
 
-  const teams = values(state.teams);
-  const visibleTeams = teams.filter(isVisibleTeam);
+  const payload = buildFocusedOrgChartPayload();
+  const { teams, visibleTeams, focusedTeams, visibleAgents } = payload;
   if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
     selectedOrgTeamId = "all";
   }
-  const focusedTeams =
-    selectedOrgTeamId === "all"
-      ? visibleTeams
-      : visibleTeams.filter((team) => text(team.id) === text(selectedOrgTeamId));
-  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
-  const visibleAgents = values(state.agents).filter(
-    (agent) => isVisibleAgent(agent) && focusedTeamIds.has(text(agent.team_id)),
-  );
   const awakeCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
   const attentionCount = visibleAgents.filter((agent) => {
     const details = agentCardData(agent);
@@ -2637,50 +2640,373 @@ function renderFocusedOrgChart() {
     return;
   }
 
-  elements.orgFocusView.innerHTML = focusedTeams
-    .map((team) => {
-      const hierarchy = teamHierarchyGraph(team);
-      const teamAgents = values(state.agents).filter(
-        (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
-      );
-      const teamAwakeCount = teamAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
-      const teamAttentionCount = teamAgents.filter((agent) => {
-        const details = agentCardData(agent);
-        return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
-      }).length;
-      return `
-        <article class="org-focus-team">
-          <div class="org-focus-team-header">
-            <div>
-              <p class="section-label">${escapeHtml(team.id)}</p>
-              <h3>${escapeHtml(team.name)}</h3>
-              ${renderTeamCostCounter(team.id)}
-              ${renderTeamCostBlockedNotice(team.id)}
-            </div>
-            <div class="org-focus-team-status">
-              ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
-              ${renderTeamCostBlockedPill(team.id)}
-              <span class="state-pill info">${teamAwakeCount} awake</span>
-              <span class="state-pill ${teamAttentionCount ? "warning" : "accepted"}">${teamAttentionCount} attention</span>
-            </div>
-          </div>
-          <div class="org-focus-chart">
-            ${renderHierarchyForest(hierarchy.roots, { focused: true })}
-            ${
-              hierarchy.orphanRoots.length
-                ? `
-                  <section class="hierarchy-fallbacks" aria-label="Unreached agents">
-                    <p class="subheading">Unreached agents</p>
-                    ${renderHierarchyForest(hierarchy.orphanRoots, { focused: true })}
-                  </section>
-                `
-                : ""
-            }
-          </div>
-        </article>
-      `;
-    })
-    .join("");
+  renderTeamOrgFlow(payload.graph);
+}
+
+function buildFocusedOrgChartPayload() {
+  const teams = values(state.teams);
+  const visibleTeams = teams.filter(isVisibleTeam).sort(byId);
+  if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
+    selectedOrgTeamId = "all";
+  }
+  const focusedTeams =
+    selectedOrgTeamId === "all"
+      ? visibleTeams
+      : visibleTeams.filter((team) => text(team.id) === text(selectedOrgTeamId));
+  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
+  const visibleAgents = values(state.agents).filter(
+    (agent) => isVisibleAgent(agent) && focusedTeamIds.has(text(agent.team_id)),
+  );
+  return {
+    teams,
+    visibleTeams,
+    focusedTeams,
+    visibleAgents,
+    graph: buildOrgFlowGraph(focusedTeams),
+  };
+}
+
+function renderTeamOrgFlow(graph) {
+  let root = elements.orgFocusView.querySelector("#team-org-flow-root");
+  if (!root) {
+    elements.orgFocusView.innerHTML = `<div id="team-org-flow-root" class="team-org-flow-root"></div>`;
+    root = elements.orgFocusView.querySelector("#team-org-flow-root");
+  }
+  window.__TEAM_ORG_FLOW_PAYLOAD__ = graph;
+  if (typeof window.renderTeamOrgFlow === "function") {
+    window.renderTeamOrgFlow(graph);
+    return;
+  }
+  window.dispatchEvent(new CustomEvent("team-org-flow:render", { detail: graph }));
+}
+
+const orgFlowLayout = {
+  agentNodeWidth: 320,
+  teamNodeWidth: 352,
+  governanceNodeWidth: 352,
+  leafGap: 390,
+  teamGap: 110,
+  governanceRowGap: 150,
+  teamToAgentGap: 210,
+  hierarchyLevelGap: 195,
+};
+
+function buildOrgFlowGraph(focusedTeams) {
+  const nodes = [];
+  const edges = [];
+  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
+  const governanceGroups = values(state.governance_groups)
+    .filter(isVisibleGovernanceGroup)
+    .filter((group) => (group.member_team_ids || []).some((teamId) => focusedTeamIds.has(text(teamId))))
+    .sort(byId);
+  const teamLayouts = [];
+  let nextX = 0;
+  const governanceRows = governanceGroups.length;
+  const teamY = governanceRows ? governanceRows * orgFlowLayout.governanceRowGap + 32 : 0;
+  const agentStartY = teamY + orgFlowLayout.teamToAgentGap;
+
+  focusedTeams.forEach((team) => {
+    const hierarchy = teamHierarchyGraph(team);
+    const rootLeaves = Math.max(
+      1,
+      [...hierarchy.roots, ...hierarchy.orphanRoots]
+        .map(hierarchyLeafCount)
+        .reduce((total, count) => total + count, 0),
+    );
+    const width = Math.max(orgFlowLayout.leafGap, rootLeaves * orgFlowLayout.leafGap);
+    const centerX = nextX + width / 2;
+    const teamNodeId = orgFlowTeamNodeId(team.id);
+    const teamAgents = values(state.agents).filter(
+      (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
+    );
+    nodes.push({
+      id: teamNodeId,
+      type: "teamOrgNode",
+      position: {
+        x: centerX - orgFlowLayout.teamNodeWidth / 2,
+        y: teamY,
+      },
+      sourcePosition: "bottom",
+      targetPosition: "top",
+      data: orgTeamNodeData(team, teamAgents),
+    });
+    layoutHierarchyRoots({
+      roots: hierarchy.roots,
+      nodes,
+      edges,
+      teamId: text(team.id),
+      parentNodeId: teamNodeId,
+      startY: agentStartY,
+      leftX: centerX - (rootLeaves * orgFlowLayout.leafGap) / 2,
+      edgeKind: "manager",
+    });
+    const normalRootLeaves = hierarchy.roots
+      .map(hierarchyLeafCount)
+      .reduce((total, count) => total + count, 0);
+    layoutHierarchyRoots({
+      roots: hierarchy.orphanRoots,
+      nodes,
+      edges,
+      teamId: text(team.id),
+      parentNodeId: teamNodeId,
+      startY: agentStartY,
+      leftX: centerX - (rootLeaves * orgFlowLayout.leafGap) / 2 + normalRootLeaves * orgFlowLayout.leafGap,
+      edgeKind: "orphan",
+    });
+    teamLayouts.push({
+      team,
+      nodeId: teamNodeId,
+      centerX,
+    });
+    nextX += width + orgFlowLayout.teamGap;
+  });
+
+  governanceGroups.forEach((group, index) => {
+    const memberLayouts = teamLayouts.filter((layout) =>
+      (group.member_team_ids || []).some((teamId) => text(teamId) === text(layout.team.id)),
+    );
+    if (!memberLayouts.length) {
+      return;
+    }
+    const centerX =
+      memberLayouts.reduce((total, layout) => total + layout.centerX, 0) / memberLayouts.length;
+    const governanceNodeId = orgFlowGovernanceNodeId(group.id);
+    nodes.push({
+      id: governanceNodeId,
+      type: "teamOrgNode",
+      position: {
+        x: centerX - orgFlowLayout.governanceNodeWidth / 2,
+        y: index * orgFlowLayout.governanceRowGap,
+      },
+      sourcePosition: "bottom",
+      targetPosition: "top",
+      data: orgGovernanceNodeData(group, memberLayouts.length),
+    });
+    memberLayouts.forEach((layout) => {
+      edges.push(orgFlowEdge(governanceNodeId, layout.nodeId, "governance"));
+    });
+  });
+
+  return {
+    nodes,
+    edges,
+    fitKey: [
+      state.revision,
+      selectedOrgTeamId,
+      showArchived ? "archived" : "active",
+      costState.generated_at || "",
+      nodes.length,
+      edges.length,
+    ].join(":"),
+  };
+}
+
+function layoutHierarchyRoots({ roots, nodes, edges, teamId, parentNodeId, startY, leftX, edgeKind }) {
+  let cursorX = leftX;
+  roots.forEach((root) => {
+    const leaves = hierarchyLeafCount(root);
+    const rootNodeId = layoutHierarchyNode({
+      node: root,
+      nodes,
+      edges,
+      teamId,
+      depth: 0,
+      leftX: cursorX,
+      startY,
+      edgeKind,
+    });
+    if (rootNodeId) {
+      edges.push(orgFlowEdge(parentNodeId, rootNodeId, edgeKind));
+    }
+    cursorX += leaves * orgFlowLayout.leafGap;
+  });
+}
+
+function layoutHierarchyNode({ node, nodes, edges, teamId, depth, leftX, startY, edgeKind }) {
+  if (!node) {
+    return "";
+  }
+  const leaves = hierarchyLeafCount(node);
+  const nodeId = orgFlowHierarchyNodeId(node, teamId);
+  const isAgent = node.kind === "agent";
+  const nodeWidth = isAgent ? orgFlowLayout.agentNodeWidth : orgFlowLayout.agentNodeWidth;
+  nodes.push({
+    id: nodeId,
+    type: "teamOrgNode",
+    position: {
+      x: leftX + (leaves * orgFlowLayout.leafGap) / 2 - nodeWidth / 2,
+      y: startY + depth * orgFlowLayout.hierarchyLevelGap,
+    },
+    sourcePosition: "bottom",
+    targetPosition: "top",
+    data: orgHierarchyNodeData(node),
+  });
+
+  let childCursorX = leftX;
+  (node.children || []).forEach((child) => {
+    const childLeaves = hierarchyLeafCount(child);
+    const childNodeId = layoutHierarchyNode({
+      node: child,
+      nodes,
+      edges,
+      teamId,
+      depth: depth + 1,
+      leftX: childCursorX,
+      startY,
+      edgeKind,
+    });
+    if (childNodeId) {
+      edges.push(orgFlowEdge(nodeId, childNodeId, child.kind === "agent" ? "manager" : "warning"));
+    }
+    childCursorX += childLeaves * orgFlowLayout.leafGap;
+  });
+  return nodeId;
+}
+
+function hierarchyLeafCount(node) {
+  const children = (node?.children || []).filter(Boolean);
+  if (!children.length) {
+    return 1;
+  }
+  return Math.max(
+    1,
+    children.map(hierarchyLeafCount).reduce((total, count) => total + count, 0),
+  );
+}
+
+function orgFlowHierarchyNodeId(node, teamId) {
+  if (node.kind === "agent") {
+    return `agent:${text(node.id)}`;
+  }
+  return `warning:${text(teamId)}:${text(node.kind)}:${text(node.id)}:${text(node.parentId)}`;
+}
+
+function orgFlowTeamNodeId(teamId) {
+  return `team:${text(teamId)}`;
+}
+
+function orgFlowGovernanceNodeId(groupId) {
+  return `governance:${text(groupId)}`;
+}
+
+function orgFlowEdge(source, target, kind) {
+  return {
+    id: `edge:${source}:${target}:${kind}`,
+    source,
+    target,
+    type: "smoothstep",
+    className: `org-flow-edge--${kind}`,
+    animated: kind === "governance",
+  };
+}
+
+function orgTeamNodeData(team, teamAgents) {
+  const awakeCount = teamAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
+  const attentionCount = teamAgents.filter((agent) => {
+    const details = agentCardData(agent);
+    return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
+  }).length;
+  const cost = teamCostForTeam(team.id);
+  return {
+    kind: "team",
+    teamId: text(team.id),
+    name: text(team.name) || text(team.id),
+    archived: Boolean(team.archived),
+    awakeCount,
+    attentionCount,
+    costHtml: renderTeamCostCounter(team.id),
+    costBlockedNoticeHtml: renderTeamCostBlockedNotice(team.id),
+    costBlocked: Boolean(cost?.cost_limit_reached),
+  };
+}
+
+function orgGovernanceNodeData(group, visibleMemberTeamCount) {
+  const manager = state.agents?.[group.manager_agent_id] || null;
+  const agenda = governanceAgendaForGroup(group.id);
+  const pendingAgenda = agenda.filter((item) => item.state === "pending");
+  const cost = governanceCostForGroup(group.id);
+  const capReached = cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length > 0;
+  return {
+    kind: "governance",
+    groupId: text(group.id),
+    name: text(group.name) || text(group.id),
+    archived: Boolean(group.archived),
+    managerLabel: manager ? agentLabel(manager) : text(group.manager_agent_id) || "Unassigned",
+    managerAvatar: manager ? orgAgentAvatarData(agentCardData(manager)) : null,
+    memberTeamCount: visibleMemberTeamCount,
+    pendingAgendaCount: pendingAgenda.length,
+    costAttention: Boolean(capReached),
+    costHtml: cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : "",
+  };
+}
+
+function orgHierarchyNodeData(node) {
+  if (node.kind === "agent") {
+    return orgAgentNodeData(node.agentData);
+  }
+  const detailLines = [];
+  if (node.parentId) {
+    detailLines.push(`Referenced by ${node.parentId}`);
+  }
+  if (node.teamId) {
+    detailLines.push(`Team ${node.teamId}`);
+  }
+  return {
+    kind: "warning",
+    label: node.label,
+    detailLines,
+  };
+}
+
+function orgAgentNodeData(agentData) {
+  const awake = agentAwakeState(agentData);
+  const work = orgNodeWorkSummaryData(agentData);
+  const cardClasses = [
+    "hierarchy-node-card",
+    "org-focus-node-card",
+    `org-focus-node-card--${awake.kind}`,
+    agentData.taskStats.blockedWaitingCount || agentData.inboxCount ? "org-focus-node-card--attention" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const indicatorItems = agentData.inboxIndicatorItems || {};
+  return {
+    kind: "agent",
+    agentId: agentData.id,
+    label: agentData.label,
+    idLabel: agentData.label !== agentData.id ? agentData.id : null,
+    role: agentData.role,
+    status: agentData.status,
+    cardClassName: cardClasses,
+    avatar: orgAgentAvatarData(agentData),
+    awake,
+    inboxIndicators: [
+      {
+        itemType: "status_request",
+        direction: "down",
+        label: "Status requests",
+        count: (indicatorItems.status_request || []).length,
+      },
+      {
+        itemType: "progress_report",
+        direction: "up",
+        label: "Progress reports",
+        count: (indicatorItems.progress_report || []).length,
+      },
+    ],
+    work,
+    detailLines: hierarchyDetailLines(agentData, { focused: true }),
+  };
+}
+
+function orgAgentAvatarData(agentData) {
+  const label = agentLabel(agentData);
+  const src = avatarUrl(agentData);
+  return {
+    src,
+    alt: src ? `${label} avatar` : "",
+    initials: agentInitials(agentData),
+  };
 }
 
 function renderOrgFocusTeamTabs(visibleTeams) {
@@ -4684,27 +5010,34 @@ function agentRuntimeAttentionRows(agentId) {
 }
 
 function renderOrgNodeWorkSummary(agentData) {
-  const snapshot = agentWorkSnapshot(agentData);
-  const waitingLabel = snapshot.waiting.length
-    ? snapshot.waiting[0]
-    : snapshot.inboxItems.length
-      ? `${snapshot.inboxItems.length} pending inbox`
-      : "Clear";
+  const summary = orgNodeWorkSummaryData(agentData);
   return `
     <div class="org-node-work">
       <div class="org-node-work-line org-node-work-line--now">
         <span>Now</span>
-        <strong>${escapeHtml(snapshot.primary)}</strong>
+        <strong>${escapeHtml(summary.primary)}</strong>
       </div>
       <div class="org-node-work-line org-node-work-line--waiting">
         <span>Waiting</span>
-        <strong>${escapeHtml(waitingLabel)}</strong>
+        <strong>${escapeHtml(summary.waiting)}</strong>
       </div>
     </div>
   `;
 }
 
-function renderHierarchyDetails(agentData, { focused = false } = {}) {
+function orgNodeWorkSummaryData(agentData) {
+  const snapshot = agentWorkSnapshot(agentData);
+  return {
+    primary: snapshot.primary,
+    waiting: snapshot.waiting.length
+      ? snapshot.waiting[0]
+      : snapshot.inboxItems.length
+        ? `${snapshot.inboxItems.length} pending inbox`
+        : "Clear",
+  };
+}
+
+function hierarchyDetailLines(agentData, { focused = false } = {}) {
   const lines = [];
   const awake = agentAwakeState(agentData);
   const snapshot = agentWorkSnapshot(agentData);
@@ -4757,7 +5090,13 @@ function renderHierarchyDetails(agentData, { focused = false } = {}) {
   );
   lines.push(`Ephemeral ${agentData.ephemeralCurrentCount} / ${agentData.ephemeralCapacity}`);
 
-  return lines.map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`).join("");
+  return lines;
+}
+
+function renderHierarchyDetails(agentData, { focused = false } = {}) {
+  return hierarchyDetailLines(agentData, { focused })
+    .map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`)
+    .join("");
 }
 
 function teamHierarchyGraph(team) {

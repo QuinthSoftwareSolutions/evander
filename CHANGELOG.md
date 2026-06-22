@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Org Chart Canvas
+
+- Replaced the focused Team Add-on Org chart tab with an add-on-owned
+  ReactFlow canvas while preserving agent avatars, runtime indicators, work
+  summaries, hover details, and edit interactions.
+- Added governance group nodes above the member Teams they oversee, including
+  related governance visibility when filtering the org chart to one Team.
+
 ## 2026-06-22 - Team Add-on Runtime Due Badge
 
 - Fixed Team Add-on runtime payloads so idle agents with `next_wake_at = null`

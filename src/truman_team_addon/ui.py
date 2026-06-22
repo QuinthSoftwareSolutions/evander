@@ -9,7 +9,9 @@ from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
 
-_STATIC_ASSET_NAMES = frozenset({"team-ui.css", "team-ui.js"})
+_STATIC_ASSET_NAMES = frozenset(
+    {"team-ui.css", "team-ui.js", "team-org-flow.css", "team-org-flow.js"}
+)
 
 
 def admin_ui_routes(_context: AddonContext) -> Sequence[Route]:

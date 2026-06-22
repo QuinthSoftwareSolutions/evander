@@ -7,6 +7,7 @@
     "dev": "vite",
     "test": "node --test --experimental-strip-types test/**/*.test.mjs",
     "test:smoke": "node --test --experimental-strip-types test/**/*.smoke.mjs",
+    "build:team-org-flow": "vite build --config vite.team-org-flow.config.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

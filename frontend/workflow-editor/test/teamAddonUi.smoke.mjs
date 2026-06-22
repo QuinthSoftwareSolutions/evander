@@ -16,7 +16,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   const markup = await readFile(path.join(staticRoot, "index.html"), "utf8");
   const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
   const stylesheet = await readFile(path.join(staticRoot, "team-ui.css"), "utf8");
+  const orgFlowScript = await readFile(path.join(staticRoot, "team-org-flow.js"), "utf8");
+  const orgFlowStylesheet = await readFile(path.join(staticRoot, "team-org-flow.css"), "utf8");
 
+  assert.match(markup, /team-org-flow\.css/);
+  assert.match(markup, /team-org-flow\.js/);
   assert.match(script, /auto_context_clearing_enabled/);
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
@@ -47,11 +51,18 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
-  assert.match(script, /renderPeopleTeamTabs/);
-  assert.match(script, /data-people-team-id/);
+  assert.match(script, /peopleViewTeams/);
+  assert.match(script, /data-team-record-group-id/);
+  assert.match(script, /data-team-record-toggle/);
   assert.match(script, /renderPeopleAgentDetail/);
   assert.match(script, /renderCompactRuntimeAgentRow/);
   assert.match(script, /agentAwakeState/);
+  assert.match(script, /buildOrgFlowGraph/);
+  assert.match(script, /team-org-flow:edit-agent/);
+  assert.match(orgFlowScript, /team-org-flow:edit-agent/);
+  assert.match(orgFlowScript, /data-team-org-flow-canvas/);
+  assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
+  assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
   assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
   assert.doesNotMatch(markup, /content-panel people-agents-panel/);
   assert.match(markup, /data-governance-create-toggle/);
@@ -1104,6 +1115,14 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-ui.css") {
         await serveStatic(response, "team-ui.css", "text/css; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-org-flow.js") {
+        await serveStatic(response, "team-org-flow.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-org-flow.css") {
+        await serveStatic(response, "team-org-flow.css", "text/css; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/state") {
@@ -2227,8 +2246,16 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.getByRole("tab", { name: "Org chart" }).click();
   await page.locator("#team-org-page").waitFor({ state: "visible" });
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
+  await page.locator("#team-org-page .org-flow-governance-node", { hasText: "Portfolio Oversight" }).waitFor({
+    state: "visible",
+  });
   assert.equal(await page.locator(".org-focus-node-card").count(), 4);
   await page.locator(".org-focus-summary").getByText("Awake").waitFor({ state: "visible" });
+
+  const governanceBox = await page.locator("#team-org-page .org-flow-governance-node").boundingBox();
+  const teamBox = await page.locator("#team-org-page .org-focus-team").boundingBox();
+  assert.ok(governanceBox && teamBox && governanceBox.y < teamBox.y, "governance should render above its team");
 
   const focusedBackendCard = page.locator(".org-focus-node-card").filter({
     has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
@@ -2262,6 +2289,43 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
   });
+});
+
+test("team add-on Org chart keeps governance groups above related team filters", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
+
+  const governanceNode = page.locator("#team-org-page .org-flow-governance-node", {
+    hasText: "Platform Oversight",
+  });
+  await governanceNode.waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 2);
+  assert.equal(await page.locator("#team-org-page .org-flow-governance-node").count(), 1);
+  const governanceBox = await governanceNode.boundingBox();
+  const alphaBox = await page.locator("#team-org-page .org-focus-team", { hasText: "Alpha Team" }).boundingBox();
+  assert.ok(governanceBox && alphaBox && governanceBox.y < alphaBox.y, "governance should render above member teams");
+
+  await page.locator('#team-org-page [data-org-team-id="team-alpha"]').click();
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 1);
+  await governanceNode.waitFor({ state: "visible" });
+  await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Beta Team" }).count(), 0);
+
+  await page.locator('#team-org-page [data-org-team-id="team-beta"]').click();
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 1);
+  await governanceNode.waitFor({ state: "visible" });
+  await page.locator("#team-org-page").getByRole("heading", { name: "Beta Team" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).count(), 0);
 });
 
 test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
@@ -2630,6 +2694,34 @@ function seededGitState() {
         subordinate_agent_ids: [],
         ephemeral_policy: { max_concurrent: 0 },
         status: "active",
+      },
+    },
+    governance_groups: {
+      "platform-oversight": {
+        id: "platform-oversight",
+        name: "Platform Oversight",
+        manager_agent_id: "alpha-manager",
+        member_team_ids: ["team-alpha", "team-beta"],
+        goals: [],
+        max_cost_usd: 42.5,
+        archived: false,
+      },
+    },
+    governance_agenda: {
+      "platform-alpha-agenda": {
+        id: "platform-alpha-agenda",
+        governance_group_id: "platform-oversight",
+        item_type: "blocked_team",
+        priority: "high",
+        team_id: "team-alpha",
+        project_id: null,
+        agent_id: null,
+        title: "Review Alpha blockers",
+        summary: "Alpha needs oversight.",
+        payload: {},
+        state: "pending",
+        created_at: "2026-06-09T00:00:00Z",
+        updated_at: "2026-06-09T00:00:00Z",
       },
     },
     tasks: {
@@ -3478,6 +3570,34 @@ function seededOrgChartState() {
         status: "active",
       },
     },
+    governance_groups: {
+      portfolio: {
+        id: "portfolio",
+        name: "Portfolio Oversight",
+        manager_agent_id: "manager",
+        member_team_ids: ["team"],
+        goals: [],
+        max_cost_usd: null,
+        archived: false,
+      },
+    },
+    governance_agenda: {
+      "portfolio-agenda": {
+        id: "portfolio-agenda",
+        governance_group_id: "portfolio",
+        item_type: "scheduled_checkin",
+        priority: "normal",
+        team_id: "team",
+        project_id: null,
+        agent_id: null,
+        title: "Weekly team check-in",
+        summary: "Review team progress and blockers.",
+        payload: {},
+        state: "pending",
+        created_at: "2026-06-11T07:00:00Z",
+        updated_at: "2026-06-11T07:00:00Z",
+      },
+    },
     agent_runtimes: {
       backend: {
         active_dispatch_id: "dispatch-42",
@@ -3946,6 +4066,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Org chart" }).click();
   await page.locator("#team-org-page").waitFor({ state: "visible" });
+  await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
   assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 2);
   await page.locator('#team-org-page [data-org-team-id="all"][aria-selected="true"]').waitFor({
     state: "visible",
