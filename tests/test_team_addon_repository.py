@@ -729,6 +729,62 @@ def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path)
     assert RolePermission.CREATE_ROOT_TASK in state.roles["team__ops"].permissions
 
 
+def test_reassigned_project_lead_manager_can_create_tasks_across_team_projects(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    repo.create_project(
+        project_id="project-a",
+        team_id="team",
+        name="Project A",
+        lead_agent_id="lead-a",
+        lead_session_id="session-lead-a",
+        expected_revision=1,
+    )
+    repo.create_project(
+        project_id="project-b",
+        team_id="team",
+        name="Project B",
+        lead_agent_id="lead-b",
+        lead_session_id="session-lead-b",
+        expected_revision=2,
+    )
+    repo.update_team(
+        team_id="team",
+        manager_agent_id="lead-a",
+        expected_revision=3,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead-a",
+            "task_creations": [
+                {
+                    "id": "cross-project-task",
+                    "owner_agent_id": "lead-b",
+                    "project_id": "project-b",
+                    "priority": 1,
+                    "title": "Coordinate project B",
+                    "description": "Promoted manager assigns the other project lead.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["errors"] == []
+    assert state.tasks["cross-project-task"].owner_agent_id == "lead-b"
+    assert state.tasks["cross-project-task"].created_by_agent_id == "lead-a"
+
+
 def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> None:
     from truman_team_addon.models import AgentStatus
 

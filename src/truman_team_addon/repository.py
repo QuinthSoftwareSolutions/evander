@@ -5252,6 +5252,8 @@ def _agent_has_role_permission_for_project(
         return False
     if actor.team_id != project.team_id or role.team_id != project.team_id:
         return False
+    if _is_team_manager(state, actor):
+        return permission in role.permissions
     if role.project_id is not None and role.project_id != project_id:
         return False
     return permission in role.permissions

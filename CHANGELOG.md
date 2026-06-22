@@ -5,6 +5,8 @@
 - Added Team manager reassignment through the Team update API and edit UI,
   moving existing direct reports to the new manager while preserving the old
   manager as an active Team agent.
+- Preserved team-wide manager authority when a project-scoped lead is promoted
+  to Team manager.
 
 ## 2026-06-22 - Team Add-on Teamless Agent Review Fixes
 
