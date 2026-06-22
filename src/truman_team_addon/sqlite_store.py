@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 10
+SQLITE_SCHEMA_VERSION = 11
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -117,6 +117,7 @@ class TeamStateSqliteStore:
                     column_name="voice_profile_json",
                     definition="TEXT",
                 )
+                _ensure_team_agents_nullable_membership(connection)
                 _ensure_column(
                     connection,
                     table_name="team_governance_runtimes",
@@ -1648,6 +1649,62 @@ def _optional_text(value: Any) -> str | None:
     return str(value)
 
 
+def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"]): row
+        for row in connection.execute("PRAGMA table_info(team_agents)")
+    }
+    if not columns:
+        return
+    team_column = columns.get("team_id")
+    role_column = columns.get("role_id")
+    if (
+        team_column is not None
+        and role_column is not None
+        and not int(team_column["notnull"] or 0)
+        and not int(role_column["notnull"] or 0)
+    ):
+        return
+    connection.execute("ALTER TABLE team_agents RENAME TO team_agents_notnull_legacy")
+    connection.execute(
+        """
+        CREATE TABLE team_agents (
+            id TEXT PRIMARY KEY,
+            team_id TEXT,
+            project_id TEXT,
+            display_name TEXT,
+            avatar_json TEXT,
+            voice_profile_json TEXT,
+            role_id TEXT,
+            session_id TEXT NOT NULL,
+            reports_to_agent_id TEXT,
+            max_ephemeral_concurrent INTEGER NOT NULL,
+            status TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO team_agents(
+            id, team_id, project_id, display_name, avatar_json, voice_profile_json,
+            role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
+        )
+        SELECT
+            id, team_id, project_id, display_name, avatar_json, voice_profile_json,
+            role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
+        FROM team_agents_notnull_legacy
+        """
+    )
+    connection.execute("DROP TABLE team_agents_notnull_legacy")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_team_agents_status_scope "
+        "ON team_agents(status, team_id, project_id, id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_team_agents_session ON team_agents(session_id)"
+    )
+
+
 def _ensure_column(
     connection: sqlite3.Connection,
     *,
@@ -1878,12 +1935,12 @@ CREATE TABLE IF NOT EXISTS team_project_goals (
 
 CREATE TABLE IF NOT EXISTS team_agents (
     id TEXT PRIMARY KEY,
-    team_id TEXT NOT NULL,
+    team_id TEXT,
     project_id TEXT,
     display_name TEXT,
     avatar_json TEXT,
     voice_profile_json TEXT,
-    role_id TEXT NOT NULL,
+    role_id TEXT,
     session_id TEXT NOT NULL,
     reports_to_agent_id TEXT,
     max_ephemeral_concurrent INTEGER NOT NULL,

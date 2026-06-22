@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Teamless Agent Review Fixes
+
+- Kept terminal task ownership as historical attribution when detaching agents
+  from teams while preserving active-task team ownership validation.
+- Restored read-only Team fields on scoped edit forms whose save paths do not
+  support team reassignment.
+
+## 2026-06-22 - Team Add-on Teamless Agents
+
+- Allowed Team Add-on persistent agents to be registered without a Team, project,
+  role, or reporting parent, while preserving metadata, runtime records, avatars,
+  voice profiles, and chat history.
+- Added guarded Team removal for agents so operators can detach unreferenced
+  agents without deleting their record, with blocking errors for structural Team
+  references that must be reassigned first.
+
 This project does not currently use release tags. The historical sections below
 were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source

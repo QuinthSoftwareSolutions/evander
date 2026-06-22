@@ -11,7 +11,6 @@
     <div class="team-shell">
       <header class="team-header">
         <div>
-          <p class="section-label">Add-on</p>
           <h1>Teams</h1>
         </div>
         <div class="team-header-actions">
@@ -23,7 +22,28 @@
             <span>Show archived</span>
           </label>
           <span id="revision-badge" class="revision-badge">Revision 0</span>
-          <button id="refresh-button" type="button">Refresh</button>
+          <button
+            id="team-tab-create-governance-group-action"
+            type="button"
+            class="record-action"
+            aria-controls="governance-create-panel"
+            aria-expanded="false"
+            data-governance-create-toggle
+            data-team-view-action="governance"
+            hidden
+          >
+            Create governance group
+          </button>
+          <button
+            id="team-tab-create-team-action"
+            type="button"
+            class="record-action"
+            data-teams-create-team-open
+            data-team-view-action="people"
+            hidden
+          >
+            Create team
+          </button>
         </div>
       </header>
 
@@ -529,6 +549,7 @@
 
             <details>
               <summary>Register agent</summary>
+                <p class="form-note">Teamless agents can be registered with only a session ID, then assigned to a team later.</p>
               <form id="register-agent-form" data-endpoint="/agents" data-method="POST">
                 <label>
                   Existing agent defaults
@@ -545,12 +566,12 @@
                     data-max-concurrent-field="max_concurrent"
                   ></select>
                 </label>
-                <label>Team <select name="team_id" required data-options="teams"></select></label>
-                <label>Project <select name="project_id" required data-options="projects"></select></label>
-                <label>Role <select name="role_id" required data-options="roles"></select></label>
+                <label>Team <select name="team_id" data-options="teams" data-placeholder="No team"></select></label>
+                <label>Project <select name="project_id" data-options="projects" data-placeholder="No project"></select></label>
+                <label>Role <select name="role_id" data-options="roles" data-placeholder="No role"></select></label>
                 <label>Session ID <input name="session_id" required /></label>
                 <label>Display name <input name="display_name" /></label>
-                <label>Reports to <select name="reports_to_agent_id" required data-options="agents"></select></label>
+                <label>Reports to <select name="reports_to_agent_id" data-options="agents" data-placeholder="No superior"></select></label>
                 <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
                 <button type="submit">Register agent</button>
               </form>
@@ -735,15 +756,7 @@
       >
         <div class="people-layout">
           <section class="people-agents-panel" aria-labelledby="focused-teams-heading">
-            <div class="focused-section-header">
-              <div>
-                <p class="section-label">Teams</p>
-                <h2 id="focused-teams-heading">Teams</h2>
-              </div>
-              <div class="focused-section-header-actions">
-                <button type="button" data-teams-create-team-open>Create team</button>
-              </div>
-            </div>
+            <h2 id="focused-teams-heading" class="visually-hidden">Teams</h2>
             <section
               id="teams-create-team-panel"
               class="content-panel teams-create-team-panel"
@@ -855,15 +868,6 @@
               <p class="section-label">Governance</p>
               <h2 id="focused-governance-heading">Groups</h2>
             </div>
-            <button
-              type="button"
-              class="record-action"
-              aria-controls="governance-create-panel"
-              aria-expanded="false"
-              data-governance-create-toggle
-            >
-              New governance group
-            </button>
           </div>
           <div id="governance-create-panel" class="governance-create-panel" hidden>
             <form
@@ -873,7 +877,7 @@
               data-method="POST"
             >
               <label>Name <input name="name" required /></label>
-              <label>Manager <select name="manager_agent_id" required data-options="agents"></select></label>
+              <label>Manager <select name="manager_agent_id" required data-options="agents-by-display-name"></select></label>
               <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
               <label>Goals <textarea name="goals" rows="4" placeholder="id | description | state"></textarea></label>
               <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>

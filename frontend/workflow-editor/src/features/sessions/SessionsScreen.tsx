@@ -442,6 +442,8 @@ const TOOL_GROUP_ORDER = [
   "Teams",
   "Email",
   "Feedback",
+  "Assistant",
+  "Semantic store",
   "Other",
 ] as const;
 
@@ -465,9 +467,12 @@ function groupToolOption(tool: ToolOption): string {
     "post_ado_backlog_comment",
     "update_ado_backlog_text",
     "update_ado_backlog_title",
+    "update_ado_backlog_tags",
     "query_ado_backlog_items",
     "list_ado_current_iteration_backlog_items",
     "get_ado_backlog_item",
+    "delete_ado_backlog_item",
+    "get_ado_daily_status_report_data",
     "resolve_ado_identity",
     "query_ado_work_item_activity",
   ].includes(value)) {
@@ -499,8 +504,12 @@ function groupToolOption(tool: ToolOption): string {
     "cancel_scheduled_wake",
     "run_script",
     "copilot_host_auth",
+    "get_workflow_snapshot",
   ].includes(value)) {
     return "Agent control";
+  }
+  if (value.startsWith("assistant_")) {
+    return "Assistant";
   }
   if ([
     "discord_get_commands",
@@ -530,8 +539,8 @@ function groupToolOption(tool: ToolOption): string {
     "communication_stage_workspace_file",
     "discord_post_file",
     "teams_post_file",
-    "email_create_draft_with_attachments",
-    "email_send_approved_with_attachments",
+    "list_inline_media",
+    "download_inline_media",
   ].includes(value)) {
     return "Files";
   }
@@ -544,11 +553,14 @@ function groupToolOption(tool: ToolOption): string {
   ].includes(value)) {
     return "Teams";
   }
-  if (["email_list_unread", "email_get_message", "email_create_draft", "email_send_approved"].includes(value)) {
+  if (value.startsWith("email_")) {
     return "Email";
   }
   if (["has_pending_feedback", "list_unread_feedback", "list_all_feedback"].includes(value)) {
     return "Feedback";
+  }
+  if (value.startsWith("semantic_")) {
+    return "Semantic store";
   }
   return "Other";
 }
