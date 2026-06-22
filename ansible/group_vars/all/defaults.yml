@@ -257,6 +257,8 @@ agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds: 5
 agent_sandbox_admin_web_caddy_verification_max_time_seconds: 20
 agent_sandbox_admin_web_caddy_verification_retries: 6
 agent_sandbox_admin_web_caddy_verification_delay_seconds: 10
+agent_sandbox_admin_web_branding_asset_dir: "{{ agent_sandbox_admin_web_env.get('AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR', '') }}"
+agent_sandbox_admin_web_branding_assets: []
 
 # Workflow editor layout for a single-pack workflow is stored beside that pack.
 agent_sandbox_managed_workflow_pack_files:

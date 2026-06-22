@@ -115,6 +115,32 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "No built ${extension} asset found" in verification
 
 
+def test_ansible_admin_web_branding_assets_can_be_copied() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
+
+    assert "agent_sandbox_admin_web_branding_asset_dir:" in defaults
+    assert "AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR" in defaults
+    assert "agent_sandbox_admin_web_branding_assets: []" in defaults
+
+    assert "Ensure Admin Web branding asset directory exists" in service_config
+    assert "Ensure Admin Web branding asset subdirectories exist" in service_config
+    assert "Copy Admin Web branding assets" in service_config
+    assert "src: \"{{ item.source_path }}\"" in service_config
+    assert "dest: \"{{ agent_sandbox_admin_web_branding_asset_dir }}/{{ item.path }}\"" in service_config
+    assert "mode: \"{{ item.mode | default('0644') }}\"" in service_config
+    assert "agent_sandbox_admin_web_branding_asset_copy" in service_config
+
+    assert "agent_sandbox_admin_web_branding_assets" in docs
+    assert "operator-owned deployment config" in docs
+
+
 def test_ansible_site_announces_control_plane_deployment_status() -> None:
     repo = Path(__file__).resolve().parents[1]
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")

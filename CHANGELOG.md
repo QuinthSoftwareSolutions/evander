@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-22 - Admin Web Branding Asset Deployment
+
+- Added Ansible variables and service-config tasks for copying operator-owned
+  Admin Web branding image files into the configured runtime branding asset
+  directory, so environment-specific deployments can use local logo sets without
+  changing bundled product assets.
+
 ## 2026-06-22 - Ansible Current Service Config
 
 - Updated the Ansible deployment bundle to render Teams meeting ingest and

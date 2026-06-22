@@ -59,6 +59,45 @@
   when: not (agent_sandbox_render_shared_secrets_env | bool)
   register: agent_sandbox_shared_secrets_remove
 
+- name: Ensure Admin Web branding asset directory exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_admin_web_branding_asset_dir }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+    state: directory
+  when:
+    - agent_sandbox_admin_web_branding_asset_dir | length > 0
+    - agent_sandbox_admin_web_branding_assets | length > 0
+
+- name: Ensure Admin Web branding asset subdirectories exist
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_admin_web_branding_asset_dir }}/{{ item.path | dirname }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+    state: directory
+  loop: "{{ agent_sandbox_admin_web_branding_assets }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when:
+    - agent_sandbox_admin_web_branding_asset_dir | length > 0
+    - (item.path | dirname) != "."
+
+- name: Copy Admin Web branding assets
+  ansible.builtin.copy:
+    src: "{{ item.source_path }}"
+    dest: "{{ agent_sandbox_admin_web_branding_asset_dir }}/{{ item.path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "{{ item.mode | default('0644') }}"
+  loop: "{{ agent_sandbox_admin_web_branding_assets }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when:
+    - agent_sandbox_admin_web_branding_asset_dir | length > 0
+  register: agent_sandbox_admin_web_branding_asset_copy
+
 - name: Render managed worker/global JSON config
   ansible.builtin.template:
     src: json_file.j2

@@ -127,6 +127,11 @@ Admin Web public access:
 - Admin Web branding still comes from `agent_sandbox_admin_web_env` at runtime. For custom local
   logo files, set `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` and use relative logo paths so Caddy
   reaches them through the proxied `/api/admin/branding/assets/...` route.
+- To copy operator-owned logo files from the Ansible controller, set
+  `agent_sandbox_admin_web_branding_assets` to records with `source_path`, destination `path`, and
+  optional `mode`. The files are copied into
+  `agent_sandbox_admin_web_branding_asset_dir`, which defaults to the configured
+  `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR`.
 - `agent_sandbox_admin_web_caddy_hostname` defaults to the host from
   `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`; override it when the public hostname differs from the
   Admin Web base URL.
@@ -378,7 +383,9 @@ Caddy exposure, set `agent_sandbox_admin_web_caddy_enabled: true`; Caddy will pr
 entrypoints and API/health routes to the local Admin Web service while serving static hashed assets
 directly. Put environment-specific Admin Web title, header, and logo settings in
 `agent_sandbox_admin_web_env`; relative logo paths are served from
-`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through `/api/admin/branding/assets/...`.
+`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through `/api/admin/branding/assets/...`. Use
+`agent_sandbox_admin_web_branding_assets` when Ansible should also copy those logo files from the
+operator-owned deployment config into that branding asset directory.
 For Azure SSO deployments, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` is a first-run seed for
 `runtime/admin-web-users.json`; after the file exists, use the Admin Web Users tab for membership
 and role changes.
