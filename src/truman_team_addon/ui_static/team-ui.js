@@ -2627,9 +2627,7 @@ function renderFocusedOrgChart() {
       .join("");
   }
 
-  if (elements.orgFocusTeamTabs) {
-    elements.orgFocusTeamTabs.innerHTML = renderOrgFocusTeamTabs(visibleTeams);
-  }
+  syncOrgFocusTeamTabs(visibleTeams);
 
   if (!teams.length) {
     elements.orgFocusView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
@@ -2641,6 +2639,26 @@ function renderFocusedOrgChart() {
   }
 
   renderTeamOrgFlow(payload.graph);
+}
+
+function syncOrgFocusTeamTabs(visibleTeams) {
+  if (!elements.orgFocusTeamTabs) {
+    return;
+  }
+
+  if (visibleTeams.length <= 1) {
+    elements.orgFocusTeamTabs.innerHTML = "";
+    if (elements.orgFocusTeamTabs.isConnected) {
+      elements.orgFocusTeamTabs.remove();
+    }
+    return;
+  }
+
+  if (!elements.orgFocusTeamTabs.isConnected && elements.orgFocusSummary?.parentElement) {
+    elements.orgFocusSummary.insertAdjacentElement("afterend", elements.orgFocusTeamTabs);
+  }
+
+  elements.orgFocusTeamTabs.innerHTML = renderOrgFocusTeamTabs(visibleTeams);
 }
 
 function buildFocusedOrgChartPayload() {
