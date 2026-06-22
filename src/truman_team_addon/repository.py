@@ -316,6 +316,7 @@ class TeamStateRepository:
         *,
         team_id: str,
         name: str | None = None,
+        manager_agent_id: str | None = None,
         operator_communication_target_id: str | None = None,
         set_operator_communication_target_id: bool = False,
         max_cost_usd: object | None = None,
@@ -323,8 +324,109 @@ class TeamStateRepository:
         archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_manager_agent_id = _optional_text(manager_agent_id)
+
+        def _superior_depth(
+            state: TeamState,
+            *,
+            agent_id: str,
+            superior_id: str,
+        ) -> int | None:
+            depth = 0
+            current_id = state.agents.get(agent_id).reports_to_agent_id
+            seen: set[str] = set()
+            while current_id is not None:
+                if current_id in seen:
+                    return None
+                seen.add(current_id)
+                depth += 1
+                if current_id == superior_id:
+                    return depth
+                current = state.agents.get(current_id)
+                if current is None:
+                    return None
+                current_id = current.reports_to_agent_id
+            return None
+
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, team_id, "team")
+            if (
+                normalized_manager_agent_id is not None
+                and normalized_manager_agent_id != team.manager_agent_id
+            ):
+                old_manager = _require_present(
+                    state.agents,
+                    team.manager_agent_id,
+                    "current manager",
+                )
+                new_manager = _require_present(
+                    state.agents,
+                    normalized_manager_agent_id,
+                    "manager agent",
+                )
+                if new_manager.team_id != team.id:
+                    raise ValueError(
+                        f"manager agent {new_manager.id} is not in team {team.id}"
+                    )
+                if new_manager.status != AgentStatus.ACTIVE:
+                    raise ValueError(f"manager agent {new_manager.id} is not active")
+                new_under_old_depth = _superior_depth(
+                    state,
+                    agent_id=new_manager.id,
+                    superior_id=old_manager.id,
+                )
+                if new_under_old_depth is not None and new_under_old_depth > 1:
+                    raise ValueError(
+                        f"manager agent {new_manager.id} is nested under current "
+                        f"manager {old_manager.id}; reassign its current superior first"
+                    )
+                if (
+                    _superior_depth(
+                        state,
+                        agent_id=old_manager.id,
+                        superior_id=new_manager.id,
+                    )
+                    is not None
+                ):
+                    raise ValueError(
+                        f"manager agent {new_manager.id} would create a reporting cycle"
+                    )
+
+                previous_superior_id = new_manager.reports_to_agent_id
+                if previous_superior_id is not None and previous_superior_id in state.agents:
+                    previous_superior = state.agents[previous_superior_id]
+                    previous_superior.subordinate_agent_ids = _remove_value(
+                        previous_superior.subordinate_agent_ids,
+                        new_manager.id,
+                    )
+
+                moved_report_ids = [
+                    report_id
+                    for report_id in old_manager.subordinate_agent_ids
+                    if report_id != new_manager.id
+                ]
+                for report_id in moved_report_ids:
+                    report = state.agents.get(report_id)
+                    if report is None or report.team_id != team.id:
+                        continue
+                    report.reports_to_agent_id = new_manager.id
+
+                old_manager.subordinate_agent_ids = []
+                new_manager.reports_to_agent_id = None
+                for report_id in moved_report_ids:
+                    new_manager.subordinate_agent_ids = _append_unique(
+                        new_manager.subordinate_agent_ids,
+                        report_id,
+                    )
+                role = (
+                    state.roles.get(new_manager.role_id)
+                    if new_manager.role_id is not None
+                    else None
+                )
+                if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
+                    role.permissions.append(RolePermission.CREATE_ROOT_TASK)
+                    role.updated_at = utc_now()
+                team.manager_agent_id = new_manager.id
             if name is not None:
                 team.name = name
             if set_operator_communication_target_id:

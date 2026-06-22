@@ -8220,6 +8220,7 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
+      ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
@@ -8375,6 +8376,7 @@ function editPayloadForForm(type, form) {
   if (type === "team") {
     return {
       name: text(data.name),
+      manager_agent_id: text(data.manager_agent_id),
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),

@@ -2399,6 +2399,58 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
     assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
 
 
+def test_team_addon_admin_api_reassigns_team_manager(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    create_team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert create_team.status_code == 201
+    create_project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": create_team.json()["revision"],
+        },
+    )
+    assert create_project.status_code == 201
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "manager_agent_id": "lead",
+            "expected_revision": create_project.json()["revision"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["teams"]["team"]["manager_agent_id"] == "lead"
+    assert body["agents"]["lead"]["reports_to_agent_id"] is None
+    assert body["agents"]["manager"]["subordinate_agent_ids"] == []
+
+    directive = client.post(
+        "/api/addons/team-addon/operator-directives",
+        json={
+            "team_id": "team",
+            "message": "Check project state.",
+            "expected_revision": body["revision"],
+        },
+    )
+    assert directive.status_code == 201
+    assert directive.json()["operator_directive"]["recipient_agent_id"] == "lead"
+
+
 def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

@@ -664,6 +664,146 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.agents["backend"].display_name == "Backend Agent"
 
 
+def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=1,
+    )
+    repo.create_role(
+        role_id="team__ops",
+        team_id="team",
+        name="Ops",
+        expected_revision=2,
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=3,
+    )
+    repo.register_agent(
+        agent_id="ops",
+        team_id="team",
+        role_id="team__ops",
+        session_id="session-ops",
+        reports_to_agent_id="manager",
+        expected_revision=4,
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+        expected_revision=5,
+    )
+
+    state = repo.update_team(
+        team_id="team",
+        manager_agent_id="ops",
+        expected_revision=6,
+    )
+
+    assert state.teams["team"].manager_agent_id == "ops"
+    assert state.agents["ops"].reports_to_agent_id is None
+    assert state.agents["ops"].subordinate_agent_ids == ["lead"]
+    assert state.agents["manager"].reports_to_agent_id is None
+    assert state.agents["manager"].subordinate_agent_ids == []
+    assert state.agents["lead"].reports_to_agent_id == "ops"
+    assert state.agents["lead"].subordinate_agent_ids == ["backend"]
+    assert RolePermission.CREATE_ROOT_TASK in state.roles["team__ops"].permissions
+
+
+def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> None:
+    from truman_team_addon.models import AgentStatus
+
+    repo = TeamStateRepository(tmp_path)
+    repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=1,
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+        expected_revision=3,
+    )
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=4,
+    )
+
+    with pytest.raises(ValueError, match="manager agent missing"):
+        repo.update_team(
+            team_id="team",
+            manager_agent_id="missing",
+            expected_revision=5,
+        )
+    with pytest.raises(ValueError, match="manager agent other-manager is not in team team"):
+        repo.update_team(
+            team_id="team",
+            manager_agent_id="other-manager",
+            expected_revision=5,
+        )
+    with pytest.raises(ValueError, match="nested under current manager"):
+        repo.update_team(
+            team_id="team",
+            manager_agent_id="backend",
+            expected_revision=5,
+        )
+
+    def _pause_lead(state):
+        state.agents["lead"].status = AgentStatus.PAUSED
+        return state
+
+    repo.update(_pause_lead)
+    with pytest.raises(ValueError, match="manager agent lead is not active"):
+        repo.update_team(
+            team_id="team",
+            manager_agent_id="lead",
+            expected_revision=6,
+        )
+
+
 def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     tmp_path: Path,
 ) -> None:

@@ -176,6 +176,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         state = repository.update_team(
             team_id=request.path_params["team_id"],
             name=_optional(payload, "name"),
+            manager_agent_id=_optional(payload, "manager_agent_id"),
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
             ),
