@@ -12,6 +12,7 @@ import yaml
 from agent_sandbox.daemons.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
+    _load_ado_pr_feedback_session_bindings,
     _publish_directory_pr_completion_events,
     _publish_directory_pr_feedback_events,
     fetch_work_item_batch,
@@ -1739,6 +1740,66 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         cursor_payload["trigger-pr-feedback"]["stream_cursors"]["azure_devops:org/repo:6070"]
         == "2026-04-08T05:33:41.433000Z"
     )
+
+
+def test_load_ado_pr_feedback_session_bindings_matches_worker_directory_exactly(
+    worker_config: WorkerConfig,
+) -> None:
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6070": {
+                    "session_id": "session-6070",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-09T00:00:00Z",
+                },
+                "session-6071": {
+                    "session_id": "session-6071",
+                    "directory_path": "root/team-a/child",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-09T00:00:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:6070": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6070",
+                        "session_id": "session-6070",
+                    },
+                    "azure_devops:org/repo:6071": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6071",
+                        "session_id": "session-6071",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parent_bindings = _load_ado_pr_feedback_session_bindings(
+        runtime_dir=worker_config.runtime_dir,
+        pr_map_path=pr_map_path,
+        directory_path="root/team-a",
+    )
+    child_bindings = _load_ado_pr_feedback_session_bindings(
+        runtime_dir=worker_config.runtime_dir,
+        pr_map_path=pr_map_path,
+        directory_path="root/team-a/child",
+    )
+
+    assert sorted(parent_bindings) == [("org/repo", "6070")]
+    assert sorted(child_bindings) == [("org/repo", "6071")]
 
 
 @pytest.mark.parametrize(

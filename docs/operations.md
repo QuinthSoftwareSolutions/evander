@@ -2221,6 +2221,8 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   inherit through directory ancestry and appear in the Admin GUI automatically.
 - Global worker settings now live in `config/ado-worker/config.json` and are edited from the
   Admin GUI's Workers tab when the `ado` worker is selected.
+- The ADO worker `directories` list is exact-match. Add each child directory that should be
+  polled; a parent directory no longer implicitly observes sessions in its descendants.
 - `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
   warnings.
 - Materialize `root/ado-worker.json` with `agent-sandbox-cli migrate-ado-worker-env-to-root` or

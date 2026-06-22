@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-22 - ADO Worker Exact Directory Polling
+
+- Changed ADO worker directory matching for PR-map feedback and completion
+  streams to require exact directory paths, so configuring a parent directory no
+  longer implicitly observes child-directory sessions.
+
 ## 2026-06-22 - Team Add-on Org Chart Edge Fix
 
 - Restored ReactFlow org-chart relationship edges by rendering hidden custom-node
