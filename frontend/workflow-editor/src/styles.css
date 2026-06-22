@@ -1307,14 +1307,14 @@ body {
 
 .admin-login-company-logo {
   justify-self: start;
-  width: clamp(3.25rem, 6vw, 4.75rem);
-  height: clamp(3.25rem, 6vw, 4.75rem);
+  width: clamp(4.25rem, 8vw, 6rem);
+  height: clamp(4.25rem, 8vw, 6rem);
 }
 
 .admin-login-truman-logo {
   justify-self: end;
-  width: clamp(8rem, 14vw, 11rem);
-  height: clamp(3rem, 5vw, 4.25rem);
+  width: clamp(10.5rem, 18vw, 14rem);
+  height: clamp(4rem, 6.5vw, 5.5rem);
 }
 
 .admin-login-theme-toggle {
@@ -10416,13 +10416,13 @@ button.mobile-record-card:focus-visible,
   }
 
   .admin-login-company-logo {
-    width: clamp(2.75rem, 11vw, 4rem);
-    height: clamp(2.75rem, 11vw, 4rem);
+    width: clamp(3.5rem, 13vw, 4.75rem);
+    height: clamp(3.5rem, 13vw, 4.75rem);
   }
 
   .admin-login-truman-logo {
-    width: clamp(6.75rem, 25vw, 9rem);
-    height: clamp(2.5rem, 9vw, 3.5rem);
+    width: clamp(8.25rem, 30vw, 11.75rem);
+    height: clamp(3.25rem, 11vw, 4.5rem);
   }
 
   .admin-login-theme-toggle {
@@ -10443,13 +10443,13 @@ button.mobile-record-card:focus-visible,
   }
 
   .admin-login-company-logo {
-    width: 2.45rem;
-    height: 2.45rem;
+    width: 3rem;
+    height: 3rem;
   }
 
   .admin-login-truman-logo {
-    width: 5.75rem;
-    height: 2.5rem;
+    width: 7rem;
+    height: 3rem;
   }
 
   .admin-login-theme-toggle {

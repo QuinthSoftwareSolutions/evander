@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-22 - Admin Login Branding Scale
+
+- Increased the Admin Web login page logo sizing so environment-specific
+  product and company branding has stronger presence on the unauthenticated
+  landing page without changing the in-app header logo.
+
 ## 2026-06-22 - Admin Web Branding Asset Deployment
 
 - Added Ansible variables and service-config tasks for copying operator-owned
