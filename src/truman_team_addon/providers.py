@@ -902,6 +902,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     and bool(runtime_payload.get("context_rotation_pending"))
                 )
                 prompt = _build_prompt(lease, action_artifact_path=action_path)
+                _register_team_dispatch_model_usage_context(
+                    context,
+                    agent=agent,
+                    dispatch_id=lease["dispatch_id"],
+                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
+                )
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=prompt,
@@ -914,12 +920,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
-                _register_team_dispatch_model_usage_context(
-                    context,
-                    agent=agent,
-                    dispatch_id=lease["dispatch_id"],
-                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
-                )
                 feedback_source_dispatch_id = _action_feedback_source_dispatch_id(lease)
                 if feedback_source_dispatch_id is not None:
                     state = repo.mark_action_feedback_delivered(
@@ -1034,6 +1034,12 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                     session_id=agent["session_id"],
                     tool_names=[TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
                 )
+                _register_team_dispatch_model_usage_context(
+                    context,
+                    agent=agent,
+                    dispatch_id=lease["dispatch_id"],
+                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
+                )
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=_build_governance_prompt(lease),
@@ -1044,13 +1050,6 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 if _result_reports_failure(result_payload):
                     errors.append(
                         f"{group['id']}/{agent['id']}: {_resume_failure_message(result_payload)}"
-                    )
-                else:
-                    _register_team_dispatch_model_usage_context(
-                        context,
-                        agent=agent,
-                        dispatch_id=lease["dispatch_id"],
-                        effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
                     )
                 dispatches.append(
                     {

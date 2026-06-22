@@ -236,20 +236,9 @@ def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
         )
     )
     store.upsert_event(
-        _usage_event(
-            "relay-anthropic",
-            session_id="session-backend",
-            provider="anthropic",
-            model="claude-sonnet-4-6",
-            input_tokens=1_000_000,
-            request_id="req-shared",
-            dispatch_id="dispatch-backend",
-        )
-    )
-    store.upsert_event(
         ModelInferenceUsageEvent(
             event_id="claude-transcript:req-shared",
-            occurred_at=now + timedelta(seconds=1),
+            occurred_at=now,
             provider="anthropic",
             provider_endpoint_identifier="messages",
             model="claude-sonnet-4-6",
@@ -266,8 +255,8 @@ def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
                 },
                 "request_metadata": {
                     "source": costs_module.TRANSCRIPT_SOURCE_NAME,
-                    "team_id": None,
-                    "project_id": None,
+                    "team_id": "new-team",
+                    "project_id": "new-project",
                     "agent_id": "backend",
                 },
                 "response_metadata": {
@@ -278,6 +267,18 @@ def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
             session_id="session-backend",
             agent_harness="claude",
             request_id="req-shared",
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "relay-anthropic",
+            session_id="session-backend",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=1_000_000,
+            occurred_at=now + timedelta(seconds=1),
+            request_id="req-shared",
+            dispatch_id="dispatch-backend",
         )
     )
     repo.update_agent(
@@ -297,6 +298,8 @@ def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
     assert payload["team_costs"]["team"]["source_counts"] == {"transcript": 1}
     assert payload["team_costs"]["team"]["estimated_cost"] < 0.01
     assert payload["project_costs"]["project"]["source_counts"] == {"transcript": 1}
+    assert "new-team" not in payload["team_costs"]
+    assert "new-project" not in payload["project_costs"]
 
 
 def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None:

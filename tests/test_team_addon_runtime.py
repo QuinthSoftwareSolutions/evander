@@ -257,11 +257,18 @@ def _node_ids(nodes: object) -> list[str]:
 
 
 class FakeResumer:
-    def __init__(self, result: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        result: dict[str, object] | None = None,
+        on_resume: object | None = None,
+    ) -> None:
         self.calls: list[dict[str, object]] = []
         self.result = result or {"thread_id": "thread-1"}
+        self.on_resume = on_resume
 
     def resume_agent(self, **kwargs: object) -> dict[str, object]:
+        if callable(self.on_resume):
+            self.on_resume(dict(kwargs))
         self.calls.append(dict(kwargs))
         return dict(self.result)
 
@@ -707,7 +714,16 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         set_voice_profile=True,
         expected_revision=repo.read().revision,
     )
-    resumer = FakeResumer()
+    def assert_context_registered(call: dict[str, object]) -> None:
+        usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
+            call["dispatch_id"]
+        )
+        assert usage_context is not None
+        assert usage_context.team_id == "team"
+        assert usage_context.project_id == "project"
+        assert usage_context.agent_id == "backend"
+
+    resumer = FakeResumer(on_resume=assert_context_registered)
     session_store = FakeSessionStore()
     file_copier = FakeFileCopier()
     provider = TeamWakeDueAgentsEffectProvider()
@@ -958,7 +974,16 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         team_id="team",
         expected_revision=repo.read().revision,
     )
-    resumer = FakeResumer()
+    def assert_context_registered(call: dict[str, object]) -> None:
+        usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
+            call["dispatch_id"]
+        )
+        assert usage_context is not None
+        assert usage_context.team_id is None
+        assert usage_context.project_id is None
+        assert usage_context.agent_id == "portfolio-manager"
+
+    resumer = FakeResumer(on_resume=assert_context_registered)
     file_copier = FakeFileCopier()
     session_store = FakeSessionStore()
     session_store.sessions["session-portfolio-manager"] = SimpleNamespace(

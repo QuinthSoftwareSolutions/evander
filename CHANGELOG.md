@@ -26,6 +26,8 @@
 
 - Persisted Team Add-on model-usage attribution at wake dispatch time so moving
   agents between Teams or Governance does not rewrite historical spend.
+- Registered Team wake attribution before resuming agents so the first relay
+  request in a same-context wake can be correlated.
 - Made Team cost aggregation prefer persisted usage/correlation attribution,
   including transcript rows that supersede relay rows for Anthropic pricing.
 

@@ -433,11 +433,7 @@ class TeamCostService:
         request_key = _event_request_key(event)
         if request_key is not None:
             request_attribution = self._request_attribution_cache.get(request_key)
-        if request_attribution is not None and (
-            metadata_attribution is None
-            or _attribution_score(request_attribution)
-            >= _attribution_score(metadata_attribution)
-        ):
+        if request_attribution is not None:
             return request_attribution
         if metadata_attribution is not None:
             return metadata_attribution
@@ -497,6 +493,7 @@ class TeamCostService:
         self, events: Iterable[ModelInferenceUsageEvent]
     ) -> dict[tuple[str, str], TeamCostAttribution]:
         attributions: dict[tuple[str, str], TeamCostAttribution] = {}
+        ranks: dict[tuple[str, str], tuple[int, int, int]] = {}
         for event in events:
             request_key = _event_request_key(event)
             if request_key is None:
@@ -507,9 +504,11 @@ class TeamCostService:
                 attribution = self._dispatch_context_attribution(dispatch_id)
             if attribution is None:
                 continue
+            rank = _request_attribution_rank(event, attribution)
             existing = attributions.get(request_key)
-            if existing is None or _attribution_score(attribution) > _attribution_score(existing):
+            if existing is None or rank > ranks[request_key]:
                 attributions[request_key] = attribution
+                ranks[request_key] = rank
         return attributions
 
     def _dispatch_context_attribution(
@@ -1413,6 +1412,15 @@ def _attribution_score(attribution: TeamCostAttribution) -> int:
     if attribution.source == "usage_metadata":
         score += 1
     return score
+
+
+def _request_attribution_rank(
+    event: ModelInferenceUsageEvent,
+    attribution: TeamCostAttribution,
+) -> tuple[int, int, int]:
+    relay_rank = 1 if _usage_source(event) != "transcript" else 0
+    context_rank = 1 if attribution.source == "dispatch_correlation_context" else 0
+    return (relay_rank, context_rank, _attribution_score(attribution))
 
 
 def _dedupe_cost_events(
