@@ -1568,6 +1568,7 @@ async function submitChatMessage(form) {
   renderChat();
   setStatus("Sending chat message.", "loading");
   try {
+    const conversationId = text(conversation.id);
     const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
       method: "POST",
       headers: {
@@ -1590,7 +1591,17 @@ async function submitChatMessage(form) {
     if (selectedChatConversationId) {
       ensureChatStream(selectedChatConversationId);
     }
-    form.reset();
+    const activeForm = elements.chatThreadView?.querySelector("[data-chat-message-form]");
+    const activeConversationId = text(
+      activeForm?.closest(".chat-thread")?.querySelector("[data-chat-scroll-conversation-id]")
+        ?.dataset?.chatScrollConversationId,
+    );
+    const activeComposer = activeForm?.querySelector('textarea[name="body"]');
+    if (text(activeConversationId) === conversationId) {
+      if (activeComposer instanceof HTMLTextAreaElement) {
+        activeComposer.value = "";
+      }
+    }
     if (payload.dispatch?.success === false) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
