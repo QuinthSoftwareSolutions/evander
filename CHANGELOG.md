@@ -5,6 +5,12 @@
 - Fixed local-password Admin Web permission checks so mixed-case configured
   usernames retain built-in owner permissions after login.
 
+## 2026-06-22 - Team Add-on Chat Focus Preservation
+
+- Preserved the Team Add-on chat composer draft and focus across live
+  conversation rerenders so operators can continue typing while chat snapshots
+  stream in.
+
 ## 2026-06-22 - Team Add-on Governance Agent Guidance
 
 - Added durable managed `AGENTS.md` guidance for Team Add-on governance

@@ -63,6 +63,8 @@ const defaultPlanningTaskStates = new Set([
 ]);
 const defaultTeamView = "workspace";
 const teamViewStorageKey = "team-addon:active-view";
+const noTeamRecordId = "__teamless__";
+const noTeamRecordName = "No team";
 const teamViewIds = new Set([
   "workspace",
   "overview",
@@ -739,8 +741,15 @@ function bindRecordEditing() {
     const teamGroupToggle = event.target.closest("[data-team-record-toggle]");
     if (teamGroupToggle) {
       event.preventDefault();
-      selectTeamRecord("team", teamGroupToggle.dataset.teamRecordToggle);
-      toggleTeamRecordGroup(teamGroupToggle.dataset.teamRecordToggle);
+      const teamRecordId = text(teamGroupToggle.dataset.teamRecordToggle);
+      if (teamRecordId === noTeamRecordId) {
+        toggleTeamRecordGroup(teamRecordId);
+        clearSelectedTeamRecord();
+        renderAgents();
+        return;
+      }
+      selectTeamRecord("team", teamRecordId);
+      toggleTeamRecordGroup(teamRecordId);
       return;
     }
 
@@ -2830,9 +2839,9 @@ function renderAgents() {
 
 function renderPeopleAgents(allAgents, agents) {
   renderIntoActiveTargets("[data-agents-view]", "");
-  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const visibleTeams = peopleViewTeams();
   const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
-  const teamAgents = agents.filter((agent) => visibleTeamIds.has(text(agent.team_id)));
+  const teamAgents = agents.filter((agent) => isTeamInPeopleScope(agent, visibleTeamIds));
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter((project) => isVisibleProject(project) && visibleTeamIds.has(text(project.team_id)));
   const allRoles = values(state.roles).sort(byId);
@@ -2846,13 +2855,16 @@ function renderPeopleAgents(allAgents, agents) {
   }
 
   if (!selectedTeamRecordId) {
-    selectTeamRecord("team", visibleTeams[0].id, { rerender: false });
+    const firstTeam = visibleTeams.find((team) => text(team.id) !== noTeamRecordId);
+    if (firstTeam) {
+      selectTeamRecord("team", firstTeam.id, { rerender: false });
+    }
   }
 
   const scopedTeams = visibleTeams;
   const scopedTeamIds = visibleTeamIds;
   const scopedRecords = {
-    agents: teamAgents.filter((agent) => scopedTeamIds.has(text(agent.team_id))).sort(comparePeopleAgents),
+    agents: teamAgents.sort(comparePeopleAgents),
     projects: projects.filter((project) => scopedTeamIds.has(text(project.team_id))).sort(compareTeamProjects),
     roles: roles.filter((role) => scopedTeamIds.has(text(role.team_id))).sort(compareTeamRoles),
   };
@@ -2879,6 +2891,9 @@ function renderPeopleAgents(allAgents, agents) {
 
 function renderTeamRecordGroup(team, scopedRecords) {
   const teamId = text(team.id);
+  const teamLabel = isNoTeamRecord(team) ? noTeamRecordName : teamId;
+  const teamTitle = isNoTeamRecord(team) ? noTeamRecordName : text(team.name || teamId);
+  const isNoTeam = isNoTeamRecord(team);
   const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
   const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
   teamRecordGroupTabs[teamId] = activeKind;
@@ -2886,9 +2901,13 @@ function renderTeamRecordGroup(team, scopedRecords) {
   const selected = selectedTeamRecordKind === "team" && text(selectedTeamRecordId) === text(teamId);
   const counts = [
     `${teamRecords.agents.length} agent${teamRecords.agents.length === 1 ? "" : "s"}`,
-    `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
-    `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
   ];
+  if (!isNoTeam) {
+    counts.push(
+      `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
+      `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
+    );
+  }
   return `
     <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}${selected ? " is-selected" : ""}" data-team-record-group-id="${escapeAttr(teamId)}">
       <button
@@ -2899,8 +2918,8 @@ function renderTeamRecordGroup(team, scopedRecords) {
         data-team-record-toggle="${escapeAttr(teamId)}"
       >
         <span class="team-record-group-title">
-          <span class="section-label">${escapeHtml(teamId)}</span>
-          <strong>${escapeHtml(team.name || teamId)}</strong>
+          <span class="section-label">${escapeHtml(teamLabel)}</span>
+          <strong>${escapeHtml(teamTitle)}</strong>
         </span>
         <span class="team-record-group-counts">
           ${counts.map((count) => `<span class="state-pill neutral">${escapeHtml(count)}</span>`).join("")}
@@ -2919,11 +2938,14 @@ function renderTeamRecordGroup(team, scopedRecords) {
 }
 
 function renderTeamRecordKindTabs(teamId, teamRecords, activeKind) {
-  const tabs = [
-    ["agent", "Agents", teamRecords.agents.length],
-    ["project", "Projects", teamRecords.projects.length],
-    ["role", "Roles", teamRecords.roles.length],
-  ];
+  const isNoTeam = isNoTeamRecord({ id: text(teamId) });
+  const tabs = isNoTeam
+    ? [["agent", "Agents", teamRecords.agents.length]]
+    : [
+      ["agent", "Agents", teamRecords.agents.length],
+      ["project", "Projects", teamRecords.projects.length],
+      ["role", "Roles", teamRecords.roles.length],
+    ];
   return `
     <div class="team-record-kind-tabs" role="tablist" aria-label="${escapeAttr(`Records for ${teamId}`)}">
       ${tabs
@@ -3032,12 +3054,42 @@ function clampPage(page, totalPages) {
 
 function teamRecordsForTeam(teamId, records) {
   const normalizedTeamId = text(teamId);
+  if (isNoTeamRecord({ id: normalizedTeamId })) {
+    return {
+      teamId: normalizedTeamId,
+      agents: (records.agents || []).filter((agent) => !text(agent.team_id)),
+      projects: [],
+      roles: [],
+    };
+  }
   return {
     teamId: normalizedTeamId,
     agents: (records.agents || []).filter((agent) => text(agent.team_id) === normalizedTeamId),
     projects: (records.projects || []).filter((project) => text(project.team_id) === normalizedTeamId),
     roles: (records.roles || []).filter((role) => text(role.team_id) === normalizedTeamId),
   };
+}
+
+function isNoTeamRecord(team) {
+  return text(team?.id) === noTeamRecordId;
+}
+
+function isTeamInPeopleScope(agent, visibleTeamIds) {
+  const teamId = text(agent?.team_id);
+  if (!teamId) {
+    return visibleTeamIds.has(noTeamRecordId);
+  }
+  return visibleTeamIds.has(teamId);
+}
+
+function peopleViewTeams() {
+  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const visibleAgents = values(state.agents).filter(isVisibleAgent);
+  const hasNoTeamAgents = visibleAgents.some((agent) => !text(agent.team_id));
+  if (!hasNoTeamAgents) {
+    return visibleTeams;
+  }
+  return [...visibleTeams, { id: noTeamRecordId, name: noTeamRecordName, archived: false }];
 }
 
 function teamRecordCount(records) {
@@ -3483,6 +3535,7 @@ function renderChatThread() {
     `;
     return;
   }
+  const composerState = captureChatComposerState(conversation.id);
   const agent = conversation.agent || {};
   const messages = conversationMessages(conversation);
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
@@ -3526,8 +3579,52 @@ function renderChatThread() {
       </form>
     </div>
   `;
+  restoreChatComposerState(conversation.id, composerState);
   bindChatMessageListScroll(conversation.id);
   applyPendingChatScroll(conversation.id);
+}
+
+function captureChatComposerState(expectedConversationId) {
+  const form = elements.chatThreadView?.querySelector("[data-chat-message-form]");
+  const textarea = form?.querySelector('textarea[name="body"]');
+  if (!form || !(textarea instanceof HTMLTextAreaElement)) {
+    return null;
+  }
+  const messageList = elements.chatThreadView?.querySelector("[data-chat-scroll-conversation-id]");
+  if (text(messageList?.dataset.chatScrollConversationId) !== text(expectedConversationId)) {
+    return null;
+  }
+  return {
+    conversationId: text(expectedConversationId),
+    value: textarea.value,
+    hadFocus: document.activeElement === textarea,
+    selectionStart: typeof textarea.selectionStart === "number" ? textarea.selectionStart : 0,
+    selectionEnd: typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : 0,
+  };
+}
+
+function restoreChatComposerState(expectedConversationId, composerState) {
+  if (!composerState || composerState.conversationId !== text(expectedConversationId)) {
+    return;
+  }
+  const form = elements.chatThreadView?.querySelector("[data-chat-message-form]");
+  const textarea = form?.querySelector('textarea[name="body"]');
+  if (!(textarea instanceof HTMLTextAreaElement)) {
+    return;
+  }
+  textarea.value = composerState.value ?? "";
+  if (!composerState.hadFocus) {
+    return;
+  }
+  textarea.focus();
+  if (
+    typeof composerState.selectionStart === "number" &&
+    typeof composerState.selectionEnd === "number"
+  ) {
+    const start = Math.min(Math.max(composerState.selectionStart, 0), textarea.value.length);
+    const end = Math.min(Math.max(composerState.selectionEnd, start), textarea.value.length);
+    textarea.setSelectionRange(start, end);
+  }
 }
 
 function renderChatCallStrip(conversation) {
