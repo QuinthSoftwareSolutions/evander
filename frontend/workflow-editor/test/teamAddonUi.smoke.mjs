@@ -2252,10 +2252,21 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   });
   assert.equal(await page.locator(".org-focus-node-card").count(), 4);
   await page.locator(".org-focus-summary").getByText("Awake").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelectorAll("#team-org-page .react-flow__edge-path").length >= 5);
 
+  const orgPage = page.locator("#team-org-page");
   const governanceBox = await page.locator("#team-org-page .org-flow-governance-node").boundingBox();
   const teamBox = await page.locator("#team-org-page .org-focus-team").boundingBox();
   assert.ok(governanceBox && teamBox && governanceBox.y < teamBox.y, "governance should render above its team");
+  const focusedManagerBox = await orgPage.locator(".org-focus-node-card", { hasText: "Ops Manager" }).boundingBox();
+  assert.ok(
+    governanceBox && teamBox && governanceBox.y + governanceBox.height <= teamBox.y - 1,
+    "governance should not overlap its team",
+  );
+  assert.ok(
+    teamBox && focusedManagerBox && teamBox.y + teamBox.height <= focusedManagerBox.y - 1,
+    "team should not overlap its root agent",
+  );
 
   const focusedBackendCard = page.locator(".org-focus-node-card").filter({
     has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
@@ -2289,6 +2300,54 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
   });
+});
+
+test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.revision = 9;
+  initialState.agents.lead.subordinate_agent_ids.push("frontend");
+  initialState.agents.frontend = {
+    id: "frontend",
+    team_id: "team",
+    project_id: "project",
+    display_name: "Frontend Worker",
+    role_id: "project__worker",
+    session_id: "session-frontend",
+    reports_to_agent_id: "lead",
+    subordinate_agent_ids: [],
+    ephemeral_policy: { max_concurrent: 0 },
+    status: "active",
+  };
+  const { port } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 9);
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  const orgPage = page.locator("#team-org-page");
+  await orgPage.locator("[data-team-org-flow-canvas]").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelectorAll("#team-org-page .react-flow__edge-path").length >= 6);
+
+  const governanceBox = await orgPage.locator(".org-flow-governance-node").boundingBox();
+  const teamBox = await orgPage.locator(".org-focus-team").boundingBox();
+  const managerBox = await orgPage.locator(".org-focus-node-card", { hasText: "Ops Manager" }).boundingBox();
+  assert.ok(
+    governanceBox && teamBox && managerBox && governanceBox.y + governanceBox.height <= teamBox.y - 1,
+    "governance should be separated from the team row",
+  );
+  assert.ok(
+    teamBox && managerBox && teamBox.y + teamBox.height <= managerBox.y - 1,
+    "team row should be separated from the root agent row",
+  );
+
+  const backendBox = await orgPage.locator(".org-focus-node-card", { hasText: "Backend Worker" }).boundingBox();
+  const frontendBox = await orgPage.locator(".org-focus-node-card", { hasText: "Frontend Worker" }).boundingBox();
+  assert.ok(backendBox && frontendBox, "expected both sibling agent boxes");
+  const lateralOverlap =
+    Math.min(backendBox.x + backendBox.width, frontendBox.x + frontendBox.width) -
+    Math.max(backendBox.x, frontendBox.x);
+  assert.ok(lateralOverlap <= 0.5, `same-level agents should not overlap laterally: ${lateralOverlap}`);
 });
 
 test("team add-on Org chart keeps governance groups above related team filters", async (t) => {

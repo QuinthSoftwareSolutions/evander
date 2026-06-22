@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Org Chart Edge Fix
+
+- Restored ReactFlow org-chart relationship edges by rendering hidden custom-node
+  handles, and widened the graph layout so governance, Team, root-agent, and
+  sibling-agent cards no longer overlap.
+
 ## 2026-06-22 - Team Add-on Org Chart Canvas
 
 - Replaced the focused Team Add-on Org chart tab with an add-on-owned

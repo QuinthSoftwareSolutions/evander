@@ -28,6 +28,24 @@
   box-shadow: none;
 }
 
+.team-org-flow-node {
+  position: relative;
+  width: 22rem;
+}
+
+.team-org-flow-node--agent,
+.team-org-flow-node--warning {
+  width: 22rem;
+}
+
+.team-org-flow-canvas .org-focus-node-card,
+.team-org-flow-canvas .org-flow-warning-node {
+  width: 22rem;
+  min-width: 22rem;
+  max-width: 22rem;
+  box-sizing: border-box;
+}
+
 .team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:hover),
 .team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus),
 .team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus-visible),

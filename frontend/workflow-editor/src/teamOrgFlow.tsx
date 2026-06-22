@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   Background,
   Controls,
+  Handle,
   MarkerType,
   Position,
   ReactFlow,
@@ -161,16 +162,33 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
 }
 
 function TeamOrgNode({ data }: NodeProps<OrgNode>) {
+  let content: React.ReactNode;
   if (data.kind === "agent") {
-    return <AgentNode data={data} />;
+    content = <AgentNode data={data} />;
+  } else if (data.kind === "team") {
+    content = <TeamNode data={data} />;
+  } else if (data.kind === "governance") {
+    content = <GovernanceNode data={data} />;
+  } else {
+    content = <WarningNode data={data} />;
   }
-  if (data.kind === "team") {
-    return <TeamNode data={data} />;
-  }
-  if (data.kind === "governance") {
-    return <GovernanceNode data={data} />;
-  }
-  return <WarningNode data={data} />;
+  return (
+    <div className={`team-org-flow-node team-org-flow-node--${data.kind}`}>
+      <Handle
+        className="team-org-flow-handle team-org-flow-handle--target"
+        type="target"
+        position={Position.Top}
+        isConnectable={false}
+      />
+      {content}
+      <Handle
+        className="team-org-flow-handle team-org-flow-handle--source"
+        type="source"
+        position={Position.Bottom}
+        isConnectable={false}
+      />
+    </div>
+  );
 }
 
 function AgentNode({ data }: { data: AgentNodeData }) {

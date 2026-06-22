@@ -2681,14 +2681,14 @@ function renderTeamOrgFlow(graph) {
 }
 
 const orgFlowLayout = {
-  agentNodeWidth: 320,
+  agentNodeWidth: 352,
   teamNodeWidth: 352,
   governanceNodeWidth: 352,
-  leafGap: 390,
-  teamGap: 110,
-  governanceRowGap: 150,
-  teamToAgentGap: 210,
-  hierarchyLevelGap: 195,
+  leafGap: 452,
+  teamGap: 160,
+  governanceRowGap: 240,
+  teamToAgentGap: 280,
+  hierarchyLevelGap: 260,
 };
 
 function buildOrgFlowGraph(focusedTeams) {
@@ -2702,7 +2702,7 @@ function buildOrgFlowGraph(focusedTeams) {
   const teamLayouts = [];
   let nextX = 0;
   const governanceRows = governanceGroups.length;
-  const teamY = governanceRows ? governanceRows * orgFlowLayout.governanceRowGap + 32 : 0;
+  const teamY = governanceRows ? governanceRows * orgFlowLayout.governanceRowGap + 48 : 0;
   const agentStartY = teamY + orgFlowLayout.teamToAgentGap;
 
   focusedTeams.forEach((team) => {
@@ -2828,8 +2828,7 @@ function layoutHierarchyNode({ node, nodes, edges, teamId, depth, leftX, startY,
   }
   const leaves = hierarchyLeafCount(node);
   const nodeId = orgFlowHierarchyNodeId(node, teamId);
-  const isAgent = node.kind === "agent";
-  const nodeWidth = isAgent ? orgFlowLayout.agentNodeWidth : orgFlowLayout.agentNodeWidth;
+  const nodeWidth = orgFlowLayout.agentNodeWidth;
   nodes.push({
     id: nodeId,
     type: "teamOrgNode",
