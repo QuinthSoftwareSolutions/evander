@@ -5,6 +5,15 @@
 - Fixed local-password Admin Web permission checks so mixed-case configured
   usernames retain built-in owner permissions after login.
 
+## 2026-06-22 - Team Add-on Governance Agent Guidance
+
+- Added durable managed `AGENTS.md` guidance for Team Add-on governance
+  managers, including teamless governance managers, and seed it before
+  governance wakes.
+- Superseded normal Team-agent `AGENTS.md` guidance for teamless governance
+  managers with an inactive notice so stale task/action instructions do not
+  apply.
+
 ## 2026-06-22 - Team Add-on Manager Reassignment
 
 - Added Team manager reassignment through the Team update API and edit UI,

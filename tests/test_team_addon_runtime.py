@@ -57,6 +57,8 @@ from truman_team_addon.providers import (
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
     TEAM_AGENT_GUIDANCE_VERSION,
+    TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+    TEAM_GOVERNANCE_GUIDANCE_VERSION,
     TeamAgentActionArtifactQueryProvider,
     TeamApplyAgentActionEffectProvider,
     TeamApplyEphemeralActionEffectProvider,
@@ -907,10 +909,15 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
+    repo.register_agent(
+        agent_id="portfolio-manager",
+        session_id="session-portfolio-manager",
+        expected_revision=repo.read().revision,
+    )
     repo.create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
-        manager_agent_id="manager",
+        manager_agent_id="portfolio-manager",
         member_team_ids=["team"],
         goals=[{"id": "cost", "description": "Keep Team under budget"}],
         expected_revision=repo.read().revision,
@@ -926,6 +933,14 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     )
     resumer = FakeResumer()
     file_copier = FakeFileCopier()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-portfolio-manager"] = SimpleNamespace(
+        session_id="session-portfolio-manager",
+        vm_id="vm-portfolio-manager",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
     provider = TeamWakeGovernanceManagersEffectProvider()
     provider.initialize(
         TeamWakeGovernanceManagersEffectDefinition(
@@ -937,6 +952,8 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
             resolved_config={"runtime_dir": str(tmp_path)},
             agent_resumer=resumer,
             vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
         ),
     )
 
@@ -947,13 +964,59 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     assert result["leases"][0]["reason"] == "operator_directive"
     assert result["leases"][0]["governance_group"]["id"] == "portfolio"
     assert result["leases"][0]["agenda"][0]["id"] == "agenda-1"
-    assert file_copier.calls == []
+    assert len(file_copier.calls) == 1
+    guidance_files = file_copier.calls[0]["files"]
+    assert [file["section_id"] for file in guidance_files] == [
+        TEAM_AGENT_GUIDANCE_SECTION_ID,
+        TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+    ]
+    inactive_guidance = str(guidance_files[0]["content"])
+    assert "not currently assigned to a Team" in inactive_guidance
+    assert "Normal Team-agent task" in inactive_guidance
+    assert "/artifacts/team-action.json instructions do not apply" in inactive_guidance
+    guidance = str(guidance_files[1]["content"])
+    assert 'Persistent agent id: "portfolio-manager"' in guidance
+    assert "has no team_id" in guidance
+    assert "Member teams remain separate execution units" in guidance
+    assert "Do not take ownership of member-team project tasks" in guidance
+    assert "/artifacts/team-action.json" in guidance
     assert len(resumer.calls) == 1
-    assert resumer.calls[0]["target"] == "session-manager"
+    assert resumer.calls[0]["target"] == "session-portfolio-manager"
     assert "governance manager" in str(resumer.calls[0]["prompt"])
     assert "Do not take ownership of member-team project tasks" in str(
         resumer.calls[0]["prompt"]
     )
+    assert result["dispatches"][0]["governance_agent_guidance"] == {
+        "seeded": True,
+        "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
+        "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+        "section_id": TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+        "agent_id": "portfolio-manager",
+        "display_name": None,
+        "vm_ip": None,
+        "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
+    }
+    team_metadata = session_store.calls[0]["metadata"]["team_addon"]
+    assert team_metadata["governance_agent_guidance"] == {
+        "seeded": True,
+        "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
+        "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+        "section_id": TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+        "agent_id": "portfolio-manager",
+        "display_name": None,
+        "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
+    }
+    assert team_metadata["agent_guidance"] == {
+        "seeded": True,
+        "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+        "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+        "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+        "agent_id": "portfolio-manager",
+        "display_name": None,
+        "inactive": True,
+        "inactive_reason": "no_team_assignment",
+        "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
+    }
     assert repo.read().governance_runtimes["portfolio"].active_dispatch_id is None
 
 
