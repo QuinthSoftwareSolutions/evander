@@ -329,12 +329,13 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
 ) -> None:
     path = tmp_path / "runtime" / "discord-inbox-store.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    created_at = datetime(2026, 3, 21, tzinfo=timezone.utc)
+    created_at = datetime.now(timezone.utc).replace(microsecond=0)
+    cursor = created_at.isoformat().replace("+00:00", "Z")
     path.write_text(
         json.dumps(
             {
                 "cursors": {
-                    "chan-1": "2026-03-21T00:00:00Z",
+                    "chan-1": cursor,
                 },
                 "messages": {
                     "msg-1": _message(
@@ -345,7 +346,7 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
                 },
                 "session_reads": {
                     "session-1": {
-                        "chan-1": "2026-03-21T00:00:00Z",
+                        "chan-1": cursor,
                     }
                 },
             }
@@ -357,13 +358,13 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
 
     assert path.exists()
     assert store.path.exists()
-    assert store.get_cursor("chan-1") == "2026-03-21T00:00:00Z"
+    assert store.get_cursor("chan-1") == cursor
     assert [message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages] == [
         "msg-1"
     ]
-    assert store.get_session_cursor("session-1", "chan-1") == "2026-03-21T00:00:00Z"
+    assert store.get_session_cursor("session-1", "chan-1") == cursor
     assert store.read_raw() == {
-        "cursors": {"chan-1": "2026-03-21T00:00:00Z"},
+        "cursors": {"chan-1": cursor},
         "messages": {
             "msg-1": _message(
                 "msg-1",
@@ -372,7 +373,7 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
         },
         "session_reads": {
             "session-1": {
-                "chan-1": "2026-03-21T00:00:00Z",
+                "chan-1": cursor,
             }
         },
     }

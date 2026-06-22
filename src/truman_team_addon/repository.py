@@ -316,6 +316,7 @@ class TeamStateRepository:
         *,
         team_id: str,
         name: str | None = None,
+        manager_agent_id: str | None = None,
         operator_communication_target_id: str | None = None,
         set_operator_communication_target_id: bool = False,
         max_cost_usd: object | None = None,
@@ -323,8 +324,109 @@ class TeamStateRepository:
         archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_manager_agent_id = _optional_text(manager_agent_id)
+
+        def _superior_depth(
+            state: TeamState,
+            *,
+            agent_id: str,
+            superior_id: str,
+        ) -> int | None:
+            depth = 0
+            current_id = state.agents.get(agent_id).reports_to_agent_id
+            seen: set[str] = set()
+            while current_id is not None:
+                if current_id in seen:
+                    return None
+                seen.add(current_id)
+                depth += 1
+                if current_id == superior_id:
+                    return depth
+                current = state.agents.get(current_id)
+                if current is None:
+                    return None
+                current_id = current.reports_to_agent_id
+            return None
+
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, team_id, "team")
+            if (
+                normalized_manager_agent_id is not None
+                and normalized_manager_agent_id != team.manager_agent_id
+            ):
+                old_manager = _require_present(
+                    state.agents,
+                    team.manager_agent_id,
+                    "current manager",
+                )
+                new_manager = _require_present(
+                    state.agents,
+                    normalized_manager_agent_id,
+                    "manager agent",
+                )
+                if new_manager.team_id != team.id:
+                    raise ValueError(
+                        f"manager agent {new_manager.id} is not in team {team.id}"
+                    )
+                if new_manager.status != AgentStatus.ACTIVE:
+                    raise ValueError(f"manager agent {new_manager.id} is not active")
+                new_under_old_depth = _superior_depth(
+                    state,
+                    agent_id=new_manager.id,
+                    superior_id=old_manager.id,
+                )
+                if new_under_old_depth is not None and new_under_old_depth > 1:
+                    raise ValueError(
+                        f"manager agent {new_manager.id} is nested under current "
+                        f"manager {old_manager.id}; reassign its current superior first"
+                    )
+                if (
+                    _superior_depth(
+                        state,
+                        agent_id=old_manager.id,
+                        superior_id=new_manager.id,
+                    )
+                    is not None
+                ):
+                    raise ValueError(
+                        f"manager agent {new_manager.id} would create a reporting cycle"
+                    )
+
+                previous_superior_id = new_manager.reports_to_agent_id
+                if previous_superior_id is not None and previous_superior_id in state.agents:
+                    previous_superior = state.agents[previous_superior_id]
+                    previous_superior.subordinate_agent_ids = _remove_value(
+                        previous_superior.subordinate_agent_ids,
+                        new_manager.id,
+                    )
+
+                moved_report_ids = [
+                    report_id
+                    for report_id in old_manager.subordinate_agent_ids
+                    if report_id != new_manager.id
+                ]
+                for report_id in moved_report_ids:
+                    report = state.agents.get(report_id)
+                    if report is None or report.team_id != team.id:
+                        continue
+                    report.reports_to_agent_id = new_manager.id
+
+                old_manager.subordinate_agent_ids = []
+                new_manager.reports_to_agent_id = None
+                for report_id in moved_report_ids:
+                    new_manager.subordinate_agent_ids = _append_unique(
+                        new_manager.subordinate_agent_ids,
+                        report_id,
+                    )
+                role = (
+                    state.roles.get(new_manager.role_id)
+                    if new_manager.role_id is not None
+                    else None
+                )
+                if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
+                    role.permissions.append(RolePermission.CREATE_ROOT_TASK)
+                    role.updated_at = utc_now()
+                team.manager_agent_id = new_manager.id
             if name is not None:
                 team.name = name
             if set_operator_communication_target_id:
@@ -1073,10 +1175,17 @@ class TeamStateRepository:
         self,
         *,
         agent_id: str,
+        operator_user_id: str | None = None,
+        operator_display_name: str | None = None,
         created_by: str | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, TeamConversation, bool]:
         normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_operator_user_id = _normalize_operator_user_id(
+            operator_user_id,
+            created_by=created_by,
+        )
+        normalized_operator_display_name = _optional_text(operator_display_name)
         normalized_created_by = _optional_text(created_by)
 
         current_state = self.read()
@@ -1089,7 +1198,10 @@ class TeamStateRepository:
         if current_agent.status == AgentStatus.ARCHIVED:
             raise ValueError(f"agent {current_agent.id} is archived")
         for conversation in current_state.conversations.values():
-            if conversation.agent_id == current_agent.id:
+            if (
+                conversation.agent_id == current_agent.id
+                and conversation.operator_user_id == normalized_operator_user_id
+            ):
                 return current_state, conversation, False
 
         conversation_id: str | None = None
@@ -1101,18 +1213,23 @@ class TeamStateRepository:
             if agent.status == AgentStatus.ARCHIVED:
                 raise ValueError(f"agent {agent.id} is archived")
             for conversation in state.conversations.values():
-                if conversation.agent_id == agent.id:
+                if (
+                    conversation.agent_id == agent.id
+                    and conversation.operator_user_id == normalized_operator_user_id
+                ):
                     conversation_id = conversation.id
                     return state
             now = utc_now()
             conversation_id = _generated_id(
                 prefix="conversation",
-                labels=[agent.id],
+                labels=[agent.id, normalized_operator_user_id],
                 existing_ids=state.conversations,
             )
             state.conversations[conversation_id] = TeamConversation(
                 id=conversation_id,
                 agent_id=agent.id,
+                operator_user_id=normalized_operator_user_id,
+                operator_display_name=normalized_operator_display_name,
                 created_by=normalized_created_by,
                 last_message_preview="",
                 created_at=now,
@@ -1159,7 +1276,16 @@ class TeamStateRepository:
                 message_type="text",
                 body=normalized_body,
                 status="created",
-                metadata={"created_by": normalized_created_by} if normalized_created_by else {},
+                metadata={
+                    key: value
+                    for key, value in {
+                        "sender_kind": "human_operator",
+                        "operator_user_id": conversation.operator_user_id,
+                        "operator_display_name": conversation.operator_display_name,
+                        "created_by": normalized_created_by,
+                    }.items()
+                    if value
+                },
                 created_at=now,
                 updated_at=now,
             )
@@ -1727,15 +1853,21 @@ class TeamStateRepository:
                     state_model,
                     session_id=normalized_requesting_session_id,
                 )
-                if requester.id != team.manager_agent_id:
+                requester_is_team_manager = requester.id == team.manager_agent_id
+                requester_is_governance_manager = _agent_governs_team(
+                    state_model,
+                    agent_id=requester.id,
+                    team_id=team.id,
+                )
+                if not requester_is_team_manager and not requester_is_governance_manager:
                     raise ValueError(
                         "team operator directives from agent sessions require the "
-                        "team manager session"
+                        "team manager session or governance manager session"
                     )
                 if recipient.id != team.manager_agent_id:
                     raise ValueError(
-                        "team manager sessions can only enqueue operator directives "
-                        "for their own manager inbox"
+                        "team manager and governance manager sessions can only enqueue "
+                        "operator directives for the target team manager inbox"
                     )
 
             effective_project_id = normalized_project_id
@@ -2839,6 +2971,7 @@ class TeamStateRepository:
                         ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "recent_action_feedback": action_feedback,
+                        "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                     }
@@ -3099,6 +3232,7 @@ class TeamStateRepository:
             "revoked_stand_down_ids": [],
             "created_chat_reply_message_ids": [],
             "replied_chat_message_ids": [],
+            "created_operator_chat_message_ids": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -3474,6 +3608,24 @@ class TeamStateRepository:
                     )
                     continue
                 result["created_chat_reply_message_ids"].append(created_id)
+                _mark_progress()
+
+            for index, chat_message in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("operator_chat_messages"),
+                    "operator_chat_messages",
+                )
+            ):
+                try:
+                    created_id = _apply_operator_chat_message(
+                        state_model,
+                        actor=agent,
+                        message=chat_message,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "operator_chat_messages", index, exc)
+                    continue
+                result["created_operator_chat_message_ids"].append(created_id)
                 _mark_progress()
 
             for escalation in _list_of_mappings(
@@ -4440,6 +4592,66 @@ def _required_text(value: object, field_name: str) -> str:
     return text
 
 
+def _normalize_operator_user_id(
+    value: object | None,
+    *,
+    created_by: object | None = None,
+) -> str:
+    text = _optional_text(value)
+    if text is None:
+        created_by_text = _optional_text(created_by)
+        if created_by_text and created_by_text.startswith("operator:"):
+            text = created_by_text.removeprefix("operator:")
+        elif created_by_text:
+            text = created_by_text
+    if text is None:
+        text = "admin"
+    return _required_text(text, "operator_user_id").casefold()
+
+
+def _operator_display_name_for_user(
+    state: TeamState,
+    operator_user_id: str,
+) -> str | None:
+    normalized_operator_user_id = _normalize_operator_user_id(operator_user_id)
+    for conversation in sorted(
+        state.conversations.values(),
+        key=lambda item: (item.last_interaction_at, item.id),
+        reverse=True,
+    ):
+        if conversation.operator_user_id == normalized_operator_user_id:
+            return conversation.operator_display_name or conversation.operator_user_id
+    return None
+
+
+def _operator_chat_participant_payloads(
+    state: TeamState,
+    *,
+    agent_id: str | None = None,
+) -> list[dict[str, Any]]:
+    participants: dict[str, dict[str, Any]] = {}
+    for conversation in state.conversations.values():
+        if agent_id is not None and conversation.agent_id != agent_id:
+            continue
+        participant = participants.setdefault(
+            conversation.operator_user_id,
+            {
+                "operator_user_id": conversation.operator_user_id,
+                "operator_display_name": conversation.operator_display_name,
+                "conversation_ids": [],
+            },
+        )
+        participant["conversation_ids"].append(conversation.id)
+        if not participant.get("operator_display_name") and conversation.operator_display_name:
+            participant["operator_display_name"] = conversation.operator_display_name
+    return sorted(
+        participants.values(),
+        key=lambda item: str(
+            item.get("operator_display_name") or item.get("operator_user_id") or ""
+        ),
+    )
+
+
 def _optional_text(value: object) -> str | None:
     if value is None:
         return None
@@ -5046,6 +5258,18 @@ def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
     return team is not None and team.manager_agent_id == actor.id
 
 
+def _agent_governs_team(state: TeamState, *, agent_id: str, team_id: str) -> bool:
+    agent = state.agents.get(agent_id)
+    if agent is None or agent.status != AgentStatus.ACTIVE:
+        return False
+    return any(
+        not group.archived
+        and group.manager_agent_id == agent_id
+        and team_id in group.member_team_ids
+        for group in state.governance_groups.values()
+    )
+
+
 def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
     project = state.projects.get(project_id)
     return project is not None and project.lead_agent_id == agent_id
@@ -5103,6 +5327,79 @@ def _apply_chat_reply(
     return reply_id
 
 
+def _apply_operator_chat_message(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    message: Mapping[str, Any],
+) -> str:
+    recipient_operator_user_id = _normalize_operator_user_id(
+        message.get("recipient_operator_user_id")
+    )
+    known_display_name = _operator_display_name_for_user(
+        state,
+        recipient_operator_user_id,
+    )
+    known_operator_ids = {
+        conversation.operator_user_id for conversation in state.conversations.values()
+    }
+    if recipient_operator_user_id not in known_operator_ids:
+        raise ValueError(f"unknown operator {recipient_operator_user_id}")
+    conversation = next(
+        (
+            item
+            for item in state.conversations.values()
+            if item.agent_id == actor.id
+            and item.operator_user_id == recipient_operator_user_id
+        ),
+        None,
+    )
+    now = utc_now()
+    if conversation is None:
+        conversation_id = _generated_id(
+            prefix="conversation",
+            labels=[actor.id, recipient_operator_user_id],
+            existing_ids=state.conversations,
+        )
+        conversation = TeamConversation(
+            id=conversation_id,
+            agent_id=actor.id,
+            operator_user_id=recipient_operator_user_id,
+            operator_display_name=known_display_name,
+            created_by=f"agent:{actor.id}",
+            last_message_preview="",
+            created_at=now,
+            updated_at=now,
+            last_interaction_at=now,
+        )
+        state.conversations[conversation.id] = conversation
+    body = _required_text(message.get("body"), "body")
+    summary = _optional_text(message.get("summary"))
+    message_id = f"chatmsg-{uuid4().hex}"
+    state.conversation_messages[message_id] = TeamConversationMessage(
+        id=message_id,
+        conversation_id=conversation.id,
+        sender="agent",
+        message_type="text",
+        body=body,
+        status="sent",
+        metadata={
+            key: value
+            for key, value in {
+                "sender_kind": "team_agent",
+                "recipient_operator_user_id": recipient_operator_user_id,
+                "recipient_operator_display_name": known_display_name,
+                "summary": summary,
+            }.items()
+            if value
+        },
+        created_at=now,
+        updated_at=now,
+    )
+    _touch_conversation(conversation, now=now, preview=_chat_preview(body))
+    return message_id
+
+
 def _mark_chat_dispatch_message_failed(
     state: TeamState,
     *,
@@ -5150,6 +5447,8 @@ def _agent_has_role_permission_for_project(
         return False
     if actor.team_id != project.team_id or role.team_id != project.team_id:
         return False
+    if _is_team_manager(state, actor):
+        return permission in role.permissions
     if role.project_id is not None and role.project_id != project_id:
         return False
     return permission in role.permissions

@@ -31,6 +31,8 @@ REALTIME_BUILT_IN_VOICE_IDS = (
     "marin",
     "cedar",
 )
+_DEFAULT_LOW_PRIORITY_WAKE_AFTER_CYCLES = 4
+_DEFAULT_MAX_NO_PROGRESS_COUNT = 3
 
 
 class TeamTaskState(str, Enum):
@@ -823,18 +825,20 @@ class AgentActionRecord(TeamModel):
 class TeamConversation(TeamModel):
     id: str
     agent_id: str
+    operator_user_id: str = "admin"
+    operator_display_name: str | None = None
     created_by: str | None = None
     last_message_preview: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_interaction_at: datetime = Field(default_factory=utc_now)
 
-    @field_validator("id", "agent_id", mode="before")
+    @field_validator("id", "agent_id", "operator_user_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("created_by", "last_message_preview", mode="before")
+    @field_validator("operator_display_name", "created_by", "last_message_preview", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -1659,20 +1663,22 @@ class TeamState(TeamModel):
                 )
 
     def _validate_conversations(self, errors: list[str]) -> None:
-        conversation_agents: dict[str, str] = {}
+        conversation_pairs: dict[tuple[str, str], str] = {}
         for conversation in self.conversations.values():
             if conversation.agent_id not in self.agents:
                 errors.append(
                     f"conversation {conversation.id} references missing agent "
                     f"{conversation.agent_id}"
                 )
-            existing = conversation_agents.get(conversation.agent_id)
+            pair = (conversation.agent_id, conversation.operator_user_id)
+            existing = conversation_pairs.get(pair)
             if existing is not None:
                 errors.append(
-                    f"agent {conversation.agent_id} has multiple conversations: "
+                    f"agent {conversation.agent_id} and operator "
+                    f"{conversation.operator_user_id} have multiple conversations: "
                     f"{existing}, {conversation.id}"
                 )
-            conversation_agents[conversation.agent_id] = conversation.id
+            conversation_pairs[pair] = conversation.id
         for message in self.conversation_messages.values():
             if message.conversation_id not in self.conversations:
                 errors.append(
@@ -1934,16 +1940,18 @@ def _runtime_agent_payload(
     runtime = state.agent_runtimes.get(agent.id)
     wake_leased_until = runtime.wake_leased_until if runtime is not None else None
     next_wake_at = runtime.next_wake_at if runtime is not None else None
-    wake_due = runtime is not None and (
-        runtime.next_wake_at is None or _ensure_utc(runtime.next_wake_at) <= now
-    )
     lease_active = runtime is not None and (
         runtime.wake_leased_until is not None
         and _ensure_utc(runtime.wake_leased_until) > now
     )
     effective_stand_downs = _effective_stand_down_payloads(state, agent.id)
-    if effective_stand_downs:
-        wake_due = False
+    wake_due = _runtime_agent_wake_due(
+        state,
+        agent,
+        runtime=runtime,
+        now=now,
+        effective_stand_downs=effective_stand_downs,
+    )
     detail_parts = [f"session {agent.session_id}", f"status {agent.status.value}"]
     if agent.project_id is not None:
         detail_parts.append(f"project {agent.project_id}")
@@ -2015,6 +2023,93 @@ def _runtime_agent_payload(
         "wake_due": wake_due,
         "lease_active": lease_active,
     }
+
+
+def _runtime_agent_wake_due(
+    state: TeamState,
+    agent: PersistentAgent,
+    *,
+    runtime: AgentRuntime | None,
+    now: datetime,
+    effective_stand_downs: list[dict[str, Any]],
+) -> bool:
+    if runtime is None or agent.status != AgentStatus.ACTIVE or effective_stand_downs:
+        return False
+    pending_inbox = [
+        item
+        for item in state.inbox.values()
+        if item.recipient_agent_id == agent.id and item.state == TeamInboxItemState.PENDING
+    ]
+    immediate_inbox = [item for item in pending_inbox if item.priority != TeamInboxPriority.LOW]
+    low_priority_inbox = [item for item in pending_inbox if item.priority == TeamInboxPriority.LOW]
+    action_feedback = _latest_undelivered_action_feedback_for_agent(state, agent.id)
+    rotation_pending = runtime.context_rotation_pending
+    active_tasks = _active_tasks_for_runtime_agent(state, agent.id)
+    task_work_ready = any(
+        state.dependency_status(task.id) == "satisfied" for task in active_tasks
+    ) or any(state.subtask_counts(task.id)["open"] > 0 for task in active_tasks)
+    wake_eligible = (
+        rotation_pending or bool(pending_inbox) or bool(action_feedback) or task_work_ready
+    )
+    if not wake_eligible:
+        return False
+    due_by_time = runtime.next_wake_at is None or _ensure_utc(runtime.next_wake_at) <= now
+    if rotation_pending or immediate_inbox or action_feedback:
+        return True
+    if task_work_ready and due_by_time:
+        if (
+            _DEFAULT_MAX_NO_PROGRESS_COUNT >= 0
+            and runtime.no_progress_count >= _DEFAULT_MAX_NO_PROGRESS_COUNT
+            and not pending_inbox
+        ):
+            return False
+        return True
+    if low_priority_inbox:
+        return _runtime_low_priority_batch_due(runtime)
+    return False
+
+
+def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
+    terminal = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+    return [
+        task
+        for task in state.tasks.values()
+        if task.owner_agent_id == agent_id and task.state not in terminal
+    ]
+
+
+def _latest_undelivered_action_feedback_for_agent(
+    state: TeamState,
+    agent_id: str,
+) -> list[AgentActionRecord]:
+    records = [record for record in state.action_records.values() if record.agent_id == agent_id]
+    if not records:
+        return []
+    latest_record = max(records, key=lambda record: (record.created_at, record.id))
+    if latest_record.success:
+        return []
+    if latest_record.dismissed_at is not None:
+        return []
+    if latest_record.feedback_delivered_at is not None:
+        return []
+    return [
+        record
+        for record in records
+        if record.dispatch_id == latest_record.dispatch_id
+        and not record.success
+        and record.dismissed_at is None
+    ]
+
+
+def _runtime_low_priority_batch_due(runtime: AgentRuntime) -> bool:
+    if runtime.low_priority_batch_started_at is None:
+        return False
+    due_after_cycles = (
+        runtime.low_priority_batch_due_after_cycles
+        if runtime.low_priority_batch_due_after_cycles is not None
+        else _DEFAULT_LOW_PRIORITY_WAKE_AFTER_CYCLES
+    )
+    return runtime.low_priority_batch_cycle_count >= due_after_cycles
 
 
 def _runtime_attention_payload(state: TeamState) -> list[dict[str, Any]]:

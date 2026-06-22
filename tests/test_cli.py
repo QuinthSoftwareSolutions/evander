@@ -1967,6 +1967,7 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
         "playwright": True,
         "codex_skills": [],
         "model": "gpt-5.2-codex",
+        "model_provider_mode": None,
     }
 
 
@@ -2215,6 +2216,7 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(
         "playwright": True,
         "codex_skills": ["playwright", "playwright-interactive"],
         "directory_path": "root/team",
+        "model_provider_mode": None,
     }
 
 

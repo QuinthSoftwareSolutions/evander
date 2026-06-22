@@ -16,7 +16,11 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
-from truman_team_addon.api import _conversation_snapshot_events
+from truman_team_addon.api import (
+    _conversation_snapshot_events,
+    _team_state_payload_for_request,
+)
+from truman_team_addon.providers import ACTION_CONTRACT_SCHEMA_VERSION
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -561,6 +565,10 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     assert created.status_code == 201
     conversation = created.json()["conversations"][0]
     assert conversation["agent_id"] == "backend"
+    assert conversation["operator_user_id"] == "admin"
+    assert conversation["read_only"] is False
+    assert created.json()["current_operator"]["user_id"] == "admin"
+    assert created.json()["selected_operator"]["user_id"] == "admin"
     assert {agent["id"] for agent in created.json()["eligible_agents"]} >= {
         "backend",
         "lead",
@@ -579,16 +587,21 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     sent_payload = sent.json()
     assert sent_payload["dispatch"]["success"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
-    assert sent_payload["dispatch"]["agent_setup"]["action_contract"]["schema_version"] == 10
+    assert sent_payload["dispatch"]["agent_setup"]["action_contract"]["schema_version"] == (
+        ACTION_CONTRACT_SCHEMA_VERSION
+    )
     assert len(copy_calls) == 2
     message = sent_payload["message"]
     assert message["sender"] == "operator"
     assert message["status"] == "running"
     assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    assert message["metadata"]["sender_kind"] == "human_operator"
+    assert message["metadata"]["operator_user_id"] == "admin"
     assert resume_calls[0]["target"] == "session-backend"
     assert resume_calls[0]["resume_mode"] == "same_context"
     assert resume_calls[0]["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
     assert "chat_replies" in str(resume_calls[0]["prompt"])
+    assert "human operator" in str(resume_calls[0]["prompt"])
     assert conversation["id"] in str(resume_calls[0]["prompt"])
     assert message["id"] in str(resume_calls[0]["prompt"])
 
@@ -674,6 +687,106 @@ def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     assert [message["id"] for message in first_payload["messages"]] == [
         f"msg-{index:03d}" for index in range(0, 5)
     ]
+
+
+def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    _state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    client = _client(tmp_path)
+
+    mine = client.get("/api/addons/team-addon/conversations")
+    assert mine.status_code == 200
+    assert mine.json()["current_operator"]["user_id"] == "admin"
+    assert mine.json()["selected_operator"]["user_id"] == "admin"
+    assert mine.json()["read_only"] is False
+    assert mine.json()["conversations"] == []
+
+    inspected = client.get(
+        "/api/addons/team-addon/conversations?operator_user_id=alice@example.com"
+    )
+    assert inspected.status_code == 200
+    inspected_payload = inspected.json()
+    assert inspected_payload["selected_operator"]["user_id"] == "alice@example.com"
+    assert inspected_payload["read_only"] is True
+    assert inspected_payload["conversations"][0]["id"] == conversation.id
+    assert inspected_payload["conversations"][0]["read_only"] is True
+
+    blocked_send = client.post(
+        f"/api/addons/team-addon/conversations/{conversation.id}/messages",
+        json={"body": "I should not be able to send here."},
+    )
+    assert blocked_send.status_code == 403
+
+
+def test_team_addon_state_payload_filters_chats_without_read_all(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    _state, alice_conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    repo.record_operator_chat_message(
+        conversation_id=alice_conversation.id,
+        body="Alice private question",
+        created_by="operator:alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    _state, bob_conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        expected_revision=repo.read().revision,
+    )
+    repo.record_operator_chat_message(
+        conversation_id=bob_conversation.id,
+        body="Bob private question",
+        created_by="operator:bob@example.com",
+        expected_revision=repo.read().revision,
+    )
+
+    class AuthStub:
+        def __init__(self, *, can_read_all: bool) -> None:
+            self.can_read_all = can_read_all
+
+        def read_session(self, _request) -> dict[str, str]:
+            return {"login": "Alice@Example.com", "name": "Alice"}
+
+        def can(self, _request, _permission: str) -> bool:
+            return self.can_read_all
+
+    scoped_payload = _team_state_payload_for_request(
+        AuthStub(can_read_all=False),
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+    assert set(scoped_payload["conversations"]) == {alice_conversation.id}
+    assert bob_conversation.id not in scoped_payload["conversations"]
+    assert {
+        message["body"] for message in scoped_payload["conversation_messages"].values()
+    } == {"Alice private question"}
+    assert all(
+        message["conversation_id"] == alice_conversation.id
+        for message in scoped_payload["conversation_messages"].values()
+    )
+
+    read_all_payload = _team_state_payload_for_request(
+        AuthStub(can_read_all=True),
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+    assert {alice_conversation.id, bob_conversation.id}.issubset(
+        set(read_all_payload["conversations"])
+    )
 
 
 def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:
@@ -1260,6 +1373,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".cost-counter--warning" in stylesheet.text
     assert ".team-cost-blocked-notice" in stylesheet.text
     assert ".state-pill.neutral" in stylesheet.text
+
+    org_flow_script = enabled.get("/addons/team-addon/team-org-flow.js")
+    assert org_flow_script.status_code == 200
+    assert "team-org-flow:edit-agent" in org_flow_script.text
+    assert "data-team-org-flow-canvas" in org_flow_script.text
+
+    org_flow_stylesheet = enabled.get("/addons/team-addon/team-org-flow.css")
+    assert org_flow_stylesheet.status_code == 200
+    assert ".team-org-flow-canvas" in org_flow_stylesheet.text
+    assert ".org-flow-governance-node" in org_flow_stylesheet.text
     assert ".agent-inbox-indicator" in stylesheet.text
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text
@@ -2397,6 +2520,58 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
     assert item["payload"]["source_message_id"] == "discord-msg-1"
     assert item["payload"]["created_by"] == "operator:admin"
     assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
+
+
+def test_team_addon_admin_api_reassigns_team_manager(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    create_team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert create_team.status_code == 201
+    create_project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": create_team.json()["revision"],
+        },
+    )
+    assert create_project.status_code == 201
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "manager_agent_id": "lead",
+            "expected_revision": create_project.json()["revision"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["teams"]["team"]["manager_agent_id"] == "lead"
+    assert body["agents"]["lead"]["reports_to_agent_id"] is None
+    assert body["agents"]["manager"]["subordinate_agent_ids"] == []
+
+    directive = client.post(
+        "/api/addons/team-addon/operator-directives",
+        json={
+            "team_id": "team",
+            "message": "Check project state.",
+            "expected_revision": body["revision"],
+        },
+    )
+    assert directive.status_code == 201
+    assert directive.json()["operator_directive"]["recipient_agent_id"] == "lead"
 
 
 def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:

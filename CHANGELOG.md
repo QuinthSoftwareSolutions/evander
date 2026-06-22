@@ -1,5 +1,108 @@
 # Changelog
 
+## 2026-06-22 - ADO Worker Exact Directory Polling
+
+- Changed ADO worker directory matching for PR-map feedback and completion
+  streams to require exact directory paths, so configuring a parent directory no
+  longer implicitly observes child-directory sessions.
+
+## 2026-06-22 - Team Add-on Org Chart Edge Fix
+
+- Restored ReactFlow org-chart relationship edges by rendering hidden custom-node
+  handles, and widened the graph layout so governance, Team, root-agent, and
+  sibling-agent cards no longer overlap.
+
+## 2026-06-22 - Trigger Cursor File Locking
+
+- Added process-level file locking around trigger cursor JSON stores so ADO,
+  Teams, Discord, ticket, and other trigger cursor updates cannot lose writes
+  when multiple worker processes or operator tools touch the same cursor file.
+
+## 2026-06-22 - Team Add-on Org Chart Canvas
+
+- Replaced the focused Team Add-on Org chart tab with an add-on-owned
+  ReactFlow canvas while preserving agent avatars, runtime indicators, work
+  summaries, hover details, and edit interactions.
+- Added governance group nodes above the member Teams they oversee, including
+  related governance visibility when filtering the org chart to one Team.
+
+## 2026-06-22 - Team Add-on Runtime Due Badge
+
+- Fixed Team Add-on runtime payloads so idle agents with `next_wake_at = null`
+  are not shown as due unless they also have real wake-eligible work such as
+  pending inbox, action feedback, context rotation, or ready task work.
+
+## 2026-06-22 - Team Add-on Governance Directive Tool
+
+- Added an add-on-owned `team_create_operator_directive` MCP tool so governance
+  managers can route durable directives to member-team managers from governance
+  wakes without reintroducing Team-specific core gateway tool ownership.
+- Governance wakes now grant the directive MCP tool to the governance manager's
+  session before resuming it.
+- Allowed active governance managers to create operator directives for Teams in
+  their governance group while preserving manager-inbox-only delivery.
+- Rejected governance-manager directive requests after the governance manager
+  agent becomes paused or archived, even if its MCP session is still valid.
+
+## 2026-06-22 - Test Suite Expectation Refresh
+
+- Updated stale Admin Web, CLI, VM delegation, Discord inbox, and PR feedback
+  tests to match current composed workflow documents, Team chat permissions,
+  session provider overrides, and retention behavior.
+
+## 2026-06-22 - Team Add-on Cost Attribution Guard
+
+- Persisted Team Add-on model-usage attribution at wake dispatch time so moving
+  agents between Teams or Governance does not rewrite historical spend.
+- Registered Team wake attribution before resuming agents so the first relay
+  request in a same-context wake can be correlated.
+- Made Team cost aggregation prefer persisted usage/correlation attribution,
+  including transcript rows that supersede relay rows for Anthropic pricing.
+
+## 2026-06-22 - Team Add-on Per-Operator Chat
+
+- Scoped Team Add-on built-in chat conversations to one human operator and one
+  agent instead of one global conversation per agent.
+- Added read-only cross-operator chat inspection for users with
+  `team_chats.read_all`, plus explicit human-operator identity in agent chat
+  prompts and action metadata.
+- Added `operator_chat_messages[]` to the Team action contract so agents can
+  send a new Team Chat message to a known human operator.
+- Filtered Team state payload chat data for operators without
+  `team_chats.read_all`, and normalized migrated legacy chat operator IDs.
+- Normalized already-migrated Team chat operator IDs so existing mixed-case
+  chats remain visible under lower-case Admin Web logins.
+
+## 2026-06-22 - Admin Web Local User Permissions
+
+- Fixed local-password Admin Web permission checks so mixed-case configured
+  usernames retain built-in owner permissions after login.
+
+## 2026-06-22 - Team Add-on Chat Focus Preservation
+
+- Preserved the Team Add-on chat composer draft and focus across live
+  conversation rerenders so operators can continue typing while chat snapshots
+  stream in.
+
+## 2026-06-22 - Team Add-on Governance Agent Guidance
+
+- Added durable managed `AGENTS.md` guidance for Team Add-on governance
+  managers, including teamless governance managers, and seed it before
+  governance wakes.
+- Superseded normal Team-agent `AGENTS.md` guidance for teamless governance
+  managers with an inactive notice so stale task/action instructions do not
+  apply.
+- Cleared inactive guidance metadata when normal Team guidance is seeded again,
+  preventing repeated reseeds after a governance-only agent rejoins a Team.
+
+## 2026-06-22 - Team Add-on Manager Reassignment
+
+- Added Team manager reassignment through the Team update API and edit UI,
+  moving existing direct reports to the new manager while preserving the old
+  manager as an active Team agent.
+- Preserved team-wide manager authority when a project-scoped lead is promoted
+  to Team manager.
+
 ## 2026-06-22 - Team Add-on Teamless Agent Review Fixes
 
 - Kept terminal task ownership as historical attribution when detaching agents

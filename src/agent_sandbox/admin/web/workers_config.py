@@ -560,7 +560,10 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
 _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "runtime_dir": "Base runtime directory for the worker's state and default relative paths.",
     "poll_interval_seconds": "Base polling interval in seconds for the worker loop.",
-    "directories": "Canonical directory paths the worker should process on each cycle.",
+    "directories": (
+        "Exact canonical directory paths the worker should process on each cycle. "
+        "Child directories must be listed separately."
+    ),
     "yaml_output_dir": "Directory where fetched work items are rendered as YAML.",
     "processed_store_path": "JSON state file used to remember handled work items.",
     "fetch_retry_count": "How many times the worker retries Azure DevOps fetch calls.",

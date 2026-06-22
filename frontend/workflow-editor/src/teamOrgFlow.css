@@ -1,0 +1,169 @@
+.team-org-flow-root {
+  min-width: 0;
+}
+
+.team-org-flow-canvas {
+  width: 100%;
+  height: clamp(34rem, 68vh, 54rem);
+  min-height: 32rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-alt);
+}
+
+.team-org-flow-canvas .react-flow__renderer,
+.team-org-flow-canvas .react-flow__pane {
+  cursor: grab;
+}
+
+.team-org-flow-canvas .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.team-org-flow-canvas .react-flow__node {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.team-org-flow-node {
+  position: relative;
+  width: 22rem;
+}
+
+.team-org-flow-node--agent,
+.team-org-flow-node--warning {
+  width: 22rem;
+}
+
+.team-org-flow-canvas .org-focus-node-card,
+.team-org-flow-canvas .org-flow-warning-node {
+  width: 22rem;
+  min-width: 22rem;
+  max-width: 22rem;
+  box-sizing: border-box;
+}
+
+.team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:hover),
+.team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus),
+.team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus-visible),
+.team-org-flow-canvas .react-flow__node:has(.org-focus-node-card:focus-within) {
+  z-index: 30 !important;
+}
+
+.team-org-flow-canvas .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.team-org-flow-canvas .react-flow__controls {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 12px 28px var(--shadow);
+}
+
+.team-org-flow-canvas .react-flow__controls-button {
+  border-bottom-color: var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.team-org-flow-canvas .react-flow__edge-path {
+  stroke: rgba(23, 111, 122, 0.62);
+  stroke-width: 2;
+}
+
+.team-org-flow-canvas .react-flow__edge.org-flow-edge--governance .react-flow__edge-path {
+  stroke: rgba(103, 87, 36, 0.72);
+}
+
+.team-org-flow-canvas .react-flow__edge.org-flow-edge--orphan .react-flow__edge-path,
+.team-org-flow-canvas .react-flow__edge.org-flow-edge--warning .react-flow__edge-path {
+  stroke: rgba(154, 107, 19, 0.7);
+  stroke-dasharray: 6 5;
+}
+
+.org-flow-team-node,
+.org-flow-governance-node {
+  width: 22rem;
+  max-width: 22rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem;
+  background: var(--panel);
+  box-shadow: 0 14px 36px var(--shadow);
+}
+
+.org-flow-team-node {
+  border-color: rgba(23, 111, 122, 0.26);
+}
+
+.org-flow-governance-node {
+  border-color: rgba(103, 87, 36, 0.34);
+  background: linear-gradient(180deg, rgba(154, 107, 19, 0.08) 0%, var(--panel) 100%);
+}
+
+.org-flow-governance-header,
+.org-flow-team-header {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.org-flow-governance-title,
+.org-flow-team-title {
+  min-width: 0;
+}
+
+.org-flow-governance-title h3,
+.org-flow-team-title h3 {
+  margin: 0.1rem 0 0;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.org-flow-governance-manager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.org-flow-governance-manager span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.org-flow-governance-manager .agent-avatar-small {
+  width: 2rem;
+  height: 2rem;
+  font-size: 0.72rem;
+}
+
+.org-flow-node-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.org-flow-warning-node {
+  cursor: default;
+}
+
+@media (max-width: 780px) {
+  .team-org-flow-canvas {
+    height: 34rem;
+  }
+
+  .org-flow-team-node,
+  .org-flow-governance-node {
+    width: min(20rem, 82vw);
+  }
+}

@@ -494,7 +494,7 @@ class AdminWebAuth:
             )
         if self.config.auth_mode != "local_password":
             raise ValueError("Password sign-in is unavailable for the configured auth mode")
-        if username.strip() != self.config.username:
+        if normalize_admin_web_login(username) != normalize_admin_web_login(self.config.username):
             raise ValueError("Invalid username or password")
         expected = (self.config.password or "").encode("utf-8")
         if not hmac.compare_digest(password.encode("utf-8"), expected):
@@ -631,7 +631,7 @@ class AdminWebAuth:
             return ()
         if (
             self.config.auth_mode in {"none", "local_password"}
-            and normalized_login == self.config.username
+            and normalized_login == normalize_admin_web_login(self.config.username)
         ):
             return tuple(sorted(PERMISSION_CATALOG))
         if self.user_store is None:

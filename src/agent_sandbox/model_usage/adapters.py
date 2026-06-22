@@ -101,6 +101,9 @@ class MappingModelUsageExtractor:
         usage = response_payload.get("usage")
         usage_payload = usage if isinstance(usage, dict) else {}
         context = request.correlation_context
+        request_metadata = dict(request.request_metadata)
+        if context is not None:
+            _merge_context_attribution(request_metadata, context)
         input_tokens = _first_int(usage_payload, "input_tokens", "prompt_tokens")
         output_tokens = _first_int(usage_payload, "output_tokens", "completion_tokens")
         total_tokens = _first_int(usage_payload, "total_tokens")
@@ -130,7 +133,7 @@ class MappingModelUsageExtractor:
                 "provider_response_kind": response_payload.get("type"),
                 "usage": usage_payload,
                 "response_metadata": request.response_metadata,
-                "request_metadata": request.request_metadata,
+                "request_metadata": request_metadata,
             },
             request_body_bytes=request.request_body_bytes,
             request_body_sha256=request.request_body_sha256,
@@ -154,6 +157,17 @@ def extract_model_usage(
     extractor: ModelUsageExtractor, request: ModelUsageExtractionRequest
 ) -> ModelUsageExtractionResult:
     return extractor.extract(request)
+
+
+def _merge_context_attribution(
+    request_metadata: dict[str, Any],
+    context: ModelUsageCorrelationContext,
+) -> None:
+    if not any((context.team_id, context.project_id, context.agent_id)):
+        return
+    request_metadata["team_id"] = context.team_id
+    request_metadata["project_id"] = context.project_id
+    request_metadata["agent_id"] = context.agent_id
 
 
 def _first_int(payload: dict[str, Any], *keys: str) -> int | None:

@@ -868,6 +868,24 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
 
 
+def test_runtime_operations_do_not_mark_idle_null_next_wake_as_due() -> None:
+    state = _valid_state()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state.agent_runtimes["manager"] = AgentRuntime(
+        agent_id="manager",
+        last_wake_at=now - timedelta(minutes=5),
+        next_wake_at=None,
+        updated_at=now,
+    )
+
+    payload = runtime_operations_payload(state, now=now)
+
+    manager = next(row for row in payload["agents"] if row["id"] == "manager")
+    assert manager["wake_due"] is False
+    assert manager["lease_active"] is False
+    assert manager["severity"] == "info"
+
+
 def test_runtime_attention_hides_failed_action_after_later_success() -> None:
     state = _state_with_runtime_operations()
     state.action_records["action-2"] = AgentActionRecord(

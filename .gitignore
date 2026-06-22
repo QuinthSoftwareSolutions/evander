@@ -2,6 +2,19 @@
 __pycache__/
 .pytest_cache/
 runtime/
+# Host-local runtime config/state generated outside runtime/ by older/local setups.
+/host-config.json
+/approvals.json
+/audit.db
+/audit.jsonl
+/directories.json
+/discord_commands.json
+/drafts.json
+/email_cursors.json
+/emails.json
+/host-agent-control-state.json
+/pr-map.json
+/sessions.json
 *.pyc
 *.egg-info/
 .codex

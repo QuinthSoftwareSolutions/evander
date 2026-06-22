@@ -451,7 +451,7 @@ button.team-record-kind-tab strong {
 
 .chat-sidebar {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 0.75rem;
 }
 
@@ -480,6 +480,32 @@ button.team-record-kind-tab strong {
   border-radius: 8px;
   padding: 0.55rem;
   background: var(--panel-alt);
+}
+
+.chat-operator-scope {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.chat-operator-scope label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.chat-operator-scope label span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.chat-readonly-banner {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
 }
 
 .chat-agent-picker,
@@ -880,6 +906,7 @@ button.team-record-kind-tab strong {
   border-radius: 8px;
   padding: 0.65rem 0.75rem;
   background: var(--panel-alt);
+  margin-bottom: 0.75rem;
 }
 
 .task-board-context strong {

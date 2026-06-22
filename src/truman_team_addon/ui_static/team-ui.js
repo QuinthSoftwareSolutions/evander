@@ -63,6 +63,8 @@ const defaultPlanningTaskStates = new Set([
 ]);
 const defaultTeamView = "workspace";
 const teamViewStorageKey = "team-addon:active-view";
+const noTeamRecordId = "__teamless__";
+const noTeamRecordName = "No team";
 const teamViewIds = new Set([
   "workspace",
   "overview",
@@ -88,6 +90,7 @@ let chatState = emptyChatState();
 let chatRequestId = 0;
 let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
+let selectedChatOperatorUserId = null;
 let chatSending = false;
 let chatStream = null;
 let chatStreamConversationId = null;
@@ -174,6 +177,7 @@ const elements = {
   chatConversationsView: document.querySelector("#chat-conversations-view"),
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
+  chatOperatorView: document.querySelector("#chat-operator-view"),
   setupFormsPanel: document.querySelector("#setup-forms-panel"),
   workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
   focusedSetupMount: document.querySelector("#focused-setup-mount"),
@@ -366,6 +370,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPlanningFilters();
   bindTaskBoardSelectors();
   bindOrgFocusTabs();
+  bindOrgFlowEvents();
   bindArchivedVisibilityToggle();
   bindInboxPopoverPositioning();
   elements.templateSelect?.addEventListener("change", () => {
@@ -444,6 +449,11 @@ function emptyChatState() {
   return {
     revision: 0,
     selected_conversation_id: null,
+    current_operator: null,
+    selected_operator: null,
+    can_view_all_operators: false,
+    read_only: false,
+    operator_options: [],
     eligible_agents: [],
     conversations: [],
     loading: false,
@@ -711,6 +721,18 @@ function bindForms() {
     event.preventDefault();
     void submitChatMessage(form);
   });
+
+  document.addEventListener("change", (event) => {
+    const select = event.target?.closest?.("[data-chat-operator-select]");
+    if (!select) {
+      return;
+    }
+    selectedChatOperatorUserId = text(select.value) || null;
+    selectedChatConversationId = null;
+    chatNewPickerOpen = false;
+    closeChatStream();
+    void loadConversations({ preserveSelection: false });
+  });
 }
 
 function bindRecordEditing() {
@@ -739,8 +761,15 @@ function bindRecordEditing() {
     const teamGroupToggle = event.target.closest("[data-team-record-toggle]");
     if (teamGroupToggle) {
       event.preventDefault();
-      selectTeamRecord("team", teamGroupToggle.dataset.teamRecordToggle);
-      toggleTeamRecordGroup(teamGroupToggle.dataset.teamRecordToggle);
+      const teamRecordId = text(teamGroupToggle.dataset.teamRecordToggle);
+      if (teamRecordId === noTeamRecordId) {
+        toggleTeamRecordGroup(teamRecordId);
+        clearSelectedTeamRecord();
+        renderAgents();
+        return;
+      }
+      selectTeamRecord("team", teamRecordId);
+      toggleTeamRecordGroup(teamRecordId);
       return;
     }
 
@@ -793,6 +822,10 @@ function bindRecordEditing() {
     const chatNewButton = event.target.closest("[data-chat-new]");
     if (chatNewButton) {
       event.preventDefault();
+      if (chatState.read_only) {
+        setStatus("This chat history is read-only.", "error");
+        return;
+      }
       chatNewPickerOpen = !chatNewPickerOpen;
       renderChat();
       return;
@@ -1147,6 +1180,16 @@ function bindOrgFocusTabs() {
   });
 }
 
+function bindOrgFlowEvents() {
+  window.addEventListener("team-org-flow:edit-agent", (event) => {
+    const agentId = text(event.detail?.agentId);
+    if (!agentId) {
+      return;
+    }
+    openEditDialog("agent", agentId);
+  });
+}
+
 function updatePlanningFilterControls() {
   document.querySelectorAll("[data-planning-task-status]").forEach((input) => {
     const status = input.dataset.planningTaskStatus;
@@ -1239,10 +1282,26 @@ function normalizeChat(payload) {
   normalized.eligible_agents = Array.isArray(normalized.eligible_agents)
     ? normalized.eligible_agents
     : [];
+  normalized.operator_options = Array.isArray(normalized.operator_options)
+    ? normalized.operator_options.map(normalizeChatOperatorOption).filter((item) => item.user_id)
+    : [];
+  normalized.current_operator = normalizeChatOperatorOption(normalized.current_operator);
+  normalized.selected_operator = normalizeChatOperatorOption(normalized.selected_operator);
+  normalized.can_view_all_operators = Boolean(normalized.can_view_all_operators);
+  normalized.read_only = Boolean(normalized.read_only);
   normalized.conversations = Array.isArray(normalized.conversations)
     ? normalized.conversations.map(normalizeChatConversation)
     : [];
   return normalized;
+}
+
+function normalizeChatOperatorOption(operator) {
+  const userId = text(operator?.user_id);
+  const displayName = text(operator?.display_name) || userId;
+  return {
+    user_id: userId,
+    display_name: displayName,
+  };
 }
 
 function syncTeamStateFromChatPayload(payload) {
@@ -1290,12 +1349,32 @@ function syncTeamStateFromChatPayload(payload) {
   });
 }
 
+function chatApiUrl(path, query = null) {
+  const params = query instanceof URLSearchParams ? new URLSearchParams(query) : new URLSearchParams();
+  const operatorUserId = text(selectedChatOperatorUserId);
+  if (operatorUserId) {
+    params.set("operator_user_id", operatorUserId);
+  }
+  const suffix = params.toString();
+  return `${API_BASE}${path}${suffix ? `?${suffix}` : ""}`;
+}
+
+function chatScopeFields(payload) {
+  return {
+    current_operator: payload?.current_operator ?? chatState.current_operator,
+    selected_operator: payload?.selected_operator ?? chatState.selected_operator,
+    can_view_all_operators: payload?.can_view_all_operators ?? chatState.can_view_all_operators,
+    read_only: payload?.read_only ?? chatState.read_only,
+    operator_options: payload?.operator_options ?? chatState.operator_options,
+  };
+}
+
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
   const requestId = ++chatRequestId;
   chatState = { ...chatState, loading: true, error: null };
   renderChat();
   try {
-    const response = await fetch(`${API_BASE}/conversations`, {
+    const response = await fetch(chatApiUrl("/conversations"), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1306,6 +1385,7 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
       return;
     }
     chatState = normalizeChat(payload);
+    selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
     selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
     renderChat();
@@ -1334,7 +1414,7 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     return;
   }
   try {
-    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}`, {
+    const response = await fetch(chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}`), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1381,7 +1461,7 @@ async function loadOlderChatMessages(conversationId) {
       limit: String(chatMessagePageSize),
     });
     const response = await fetch(
-      `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/messages?${query.toString()}`,
+      chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}/messages`, query),
       { headers: { Accept: "application/json" } },
     );
     if (!response.ok) {
@@ -1445,7 +1525,7 @@ function ensureChatStream(conversationId) {
   chatStreamConversationId = normalizedConversationId;
   chatStreamErrorRefreshPending = false;
   const stream = new EventSource(
-    `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/stream`,
+    chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}/stream`),
   );
   chatStream = stream;
   stream.addEventListener("snapshot", (event) => {
@@ -1489,6 +1569,7 @@ function applyChatSnapshot(payload, expectedConversationId) {
   if (!conversation?.id || text(conversation.id) !== text(expectedConversationId)) {
     return;
   }
+  chatState = normalizeChat({ ...chatState, ...chatScopeFields(payload) });
   const scrollSnapshot = captureChatScroll(expectedConversationId);
   const shouldStickToBottom = chatIsScrolledNearBottom(expectedConversationId);
   syncTeamStateFromChatPayload(payload);
@@ -1531,6 +1612,7 @@ async function createOrFocusChat(agentId) {
     const payload = await response.json();
     syncTeamStateFromChatPayload(payload);
     chatState = normalizeChat(payload);
+    selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
     chatNewPickerOpen = false;
     renderChat();
@@ -1549,6 +1631,10 @@ async function submitChatMessage(form) {
   if (!conversation || chatSending) {
     return;
   }
+  if (chatState.read_only || conversation.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
   const formData = new FormData(form);
   const body = text(formData.get("body"));
   if (!body) {
@@ -1559,6 +1645,7 @@ async function submitChatMessage(form) {
   renderChat();
   setStatus("Sending chat message.", "loading");
   try {
+    const conversationId = text(conversation.id);
     const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
       method: "POST",
       headers: {
@@ -1575,13 +1662,25 @@ async function submitChatMessage(form) {
     }
     const payload = await response.json();
     syncTeamStateFromChatPayload(payload);
+    chatState = normalizeChat({ ...chatState, ...chatScopeFields(payload) });
+    selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     replaceChatConversation(payload.conversation);
     selectedChatConversationId = payload.conversation?.id || selectedChatConversationId;
     chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
     if (selectedChatConversationId) {
       ensureChatStream(selectedChatConversationId);
     }
-    form.reset();
+    const activeForm = elements.chatThreadView?.querySelector("[data-chat-message-form]");
+    const activeConversationId = text(
+      activeForm?.closest(".chat-thread")?.querySelector("[data-chat-scroll-conversation-id]")
+        ?.dataset?.chatScrollConversationId,
+    );
+    const activeComposer = activeForm?.querySelector('textarea[name="body"]');
+    if (text(activeConversationId) === conversationId) {
+      if (activeComposer instanceof HTMLTextAreaElement) {
+        activeComposer.value = "";
+      }
+    }
     if (payload.dispatch?.success === false) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
@@ -2497,19 +2596,11 @@ function renderFocusedOrgChart() {
     return;
   }
 
-  const teams = values(state.teams);
-  const visibleTeams = teams.filter(isVisibleTeam);
+  const payload = buildFocusedOrgChartPayload();
+  const { teams, visibleTeams, focusedTeams, visibleAgents } = payload;
   if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
     selectedOrgTeamId = "all";
   }
-  const focusedTeams =
-    selectedOrgTeamId === "all"
-      ? visibleTeams
-      : visibleTeams.filter((team) => text(team.id) === text(selectedOrgTeamId));
-  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
-  const visibleAgents = values(state.agents).filter(
-    (agent) => isVisibleAgent(agent) && focusedTeamIds.has(text(agent.team_id)),
-  );
   const awakeCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
   const attentionCount = visibleAgents.filter((agent) => {
     const details = agentCardData(agent);
@@ -2536,9 +2627,7 @@ function renderFocusedOrgChart() {
       .join("");
   }
 
-  if (elements.orgFocusTeamTabs) {
-    elements.orgFocusTeamTabs.innerHTML = renderOrgFocusTeamTabs(visibleTeams);
-  }
+  syncOrgFocusTeamTabs(visibleTeams);
 
   if (!teams.length) {
     elements.orgFocusView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
@@ -2549,50 +2638,392 @@ function renderFocusedOrgChart() {
     return;
   }
 
-  elements.orgFocusView.innerHTML = focusedTeams
-    .map((team) => {
-      const hierarchy = teamHierarchyGraph(team);
-      const teamAgents = values(state.agents).filter(
-        (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
-      );
-      const teamAwakeCount = teamAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
-      const teamAttentionCount = teamAgents.filter((agent) => {
-        const details = agentCardData(agent);
-        return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
-      }).length;
-      return `
-        <article class="org-focus-team">
-          <div class="org-focus-team-header">
-            <div>
-              <p class="section-label">${escapeHtml(team.id)}</p>
-              <h3>${escapeHtml(team.name)}</h3>
-              ${renderTeamCostCounter(team.id)}
-              ${renderTeamCostBlockedNotice(team.id)}
-            </div>
-            <div class="org-focus-team-status">
-              ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
-              ${renderTeamCostBlockedPill(team.id)}
-              <span class="state-pill info">${teamAwakeCount} awake</span>
-              <span class="state-pill ${teamAttentionCount ? "warning" : "accepted"}">${teamAttentionCount} attention</span>
-            </div>
-          </div>
-          <div class="org-focus-chart">
-            ${renderHierarchyForest(hierarchy.roots, { focused: true })}
-            ${
-              hierarchy.orphanRoots.length
-                ? `
-                  <section class="hierarchy-fallbacks" aria-label="Unreached agents">
-                    <p class="subheading">Unreached agents</p>
-                    ${renderHierarchyForest(hierarchy.orphanRoots, { focused: true })}
-                  </section>
-                `
-                : ""
-            }
-          </div>
-        </article>
-      `;
-    })
-    .join("");
+  renderTeamOrgFlow(payload.graph);
+}
+
+function syncOrgFocusTeamTabs(visibleTeams) {
+  if (!elements.orgFocusTeamTabs) {
+    return;
+  }
+
+  if (visibleTeams.length <= 1) {
+    elements.orgFocusTeamTabs.innerHTML = "";
+    if (elements.orgFocusTeamTabs.isConnected) {
+      elements.orgFocusTeamTabs.remove();
+    }
+    return;
+  }
+
+  if (!elements.orgFocusTeamTabs.isConnected && elements.orgFocusSummary?.parentElement) {
+    elements.orgFocusSummary.insertAdjacentElement("afterend", elements.orgFocusTeamTabs);
+  }
+
+  elements.orgFocusTeamTabs.innerHTML = renderOrgFocusTeamTabs(visibleTeams);
+}
+
+function buildFocusedOrgChartPayload() {
+  const teams = values(state.teams);
+  const visibleTeams = teams.filter(isVisibleTeam).sort(byId);
+  if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
+    selectedOrgTeamId = "all";
+  }
+  const focusedTeams =
+    selectedOrgTeamId === "all"
+      ? visibleTeams
+      : visibleTeams.filter((team) => text(team.id) === text(selectedOrgTeamId));
+  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
+  const visibleAgents = values(state.agents).filter(
+    (agent) => isVisibleAgent(agent) && focusedTeamIds.has(text(agent.team_id)),
+  );
+  return {
+    teams,
+    visibleTeams,
+    focusedTeams,
+    visibleAgents,
+    graph: buildOrgFlowGraph(focusedTeams),
+  };
+}
+
+function renderTeamOrgFlow(graph) {
+  let root = elements.orgFocusView.querySelector("#team-org-flow-root");
+  if (!root) {
+    elements.orgFocusView.innerHTML = `<div id="team-org-flow-root" class="team-org-flow-root"></div>`;
+    root = elements.orgFocusView.querySelector("#team-org-flow-root");
+  }
+  window.__TEAM_ORG_FLOW_PAYLOAD__ = graph;
+  if (typeof window.renderTeamOrgFlow === "function") {
+    window.renderTeamOrgFlow(graph);
+    return;
+  }
+  window.dispatchEvent(new CustomEvent("team-org-flow:render", { detail: graph }));
+}
+
+const orgFlowLayout = {
+  agentNodeWidth: 352,
+  teamNodeWidth: 352,
+  governanceNodeWidth: 352,
+  leafGap: 452,
+  teamGap: 160,
+  governanceRowGap: 240,
+  teamToAgentGap: 280,
+  hierarchyLevelGap: 260,
+};
+
+function buildOrgFlowGraph(focusedTeams) {
+  const nodes = [];
+  const edges = [];
+  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
+  const governanceGroups = values(state.governance_groups)
+    .filter(isVisibleGovernanceGroup)
+    .filter((group) => (group.member_team_ids || []).some((teamId) => focusedTeamIds.has(text(teamId))))
+    .sort(byId);
+  const teamLayouts = [];
+  let nextX = 0;
+  const governanceRows = governanceGroups.length;
+  const teamY = governanceRows ? governanceRows * orgFlowLayout.governanceRowGap + 48 : 0;
+  const agentStartY = teamY + orgFlowLayout.teamToAgentGap;
+
+  focusedTeams.forEach((team) => {
+    const hierarchy = teamHierarchyGraph(team);
+    const rootLeaves = Math.max(
+      1,
+      [...hierarchy.roots, ...hierarchy.orphanRoots]
+        .map(hierarchyLeafCount)
+        .reduce((total, count) => total + count, 0),
+    );
+    const width = Math.max(orgFlowLayout.leafGap, rootLeaves * orgFlowLayout.leafGap);
+    const centerX = nextX + width / 2;
+    const teamNodeId = orgFlowTeamNodeId(team.id);
+    const teamAgents = values(state.agents).filter(
+      (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
+    );
+    nodes.push({
+      id: teamNodeId,
+      type: "teamOrgNode",
+      position: {
+        x: centerX - orgFlowLayout.teamNodeWidth / 2,
+        y: teamY,
+      },
+      sourcePosition: "bottom",
+      targetPosition: "top",
+      data: orgTeamNodeData(team, teamAgents),
+    });
+    layoutHierarchyRoots({
+      roots: hierarchy.roots,
+      nodes,
+      edges,
+      teamId: text(team.id),
+      parentNodeId: teamNodeId,
+      startY: agentStartY,
+      leftX: centerX - (rootLeaves * orgFlowLayout.leafGap) / 2,
+      edgeKind: "manager",
+    });
+    const normalRootLeaves = hierarchy.roots
+      .map(hierarchyLeafCount)
+      .reduce((total, count) => total + count, 0);
+    layoutHierarchyRoots({
+      roots: hierarchy.orphanRoots,
+      nodes,
+      edges,
+      teamId: text(team.id),
+      parentNodeId: teamNodeId,
+      startY: agentStartY,
+      leftX: centerX - (rootLeaves * orgFlowLayout.leafGap) / 2 + normalRootLeaves * orgFlowLayout.leafGap,
+      edgeKind: "orphan",
+    });
+    teamLayouts.push({
+      team,
+      nodeId: teamNodeId,
+      centerX,
+    });
+    nextX += width + orgFlowLayout.teamGap;
+  });
+
+  governanceGroups.forEach((group, index) => {
+    const memberLayouts = teamLayouts.filter((layout) =>
+      (group.member_team_ids || []).some((teamId) => text(teamId) === text(layout.team.id)),
+    );
+    if (!memberLayouts.length) {
+      return;
+    }
+    const centerX =
+      memberLayouts.reduce((total, layout) => total + layout.centerX, 0) / memberLayouts.length;
+    const governanceNodeId = orgFlowGovernanceNodeId(group.id);
+    nodes.push({
+      id: governanceNodeId,
+      type: "teamOrgNode",
+      position: {
+        x: centerX - orgFlowLayout.governanceNodeWidth / 2,
+        y: index * orgFlowLayout.governanceRowGap,
+      },
+      sourcePosition: "bottom",
+      targetPosition: "top",
+      data: orgGovernanceNodeData(group, memberLayouts.length),
+    });
+    memberLayouts.forEach((layout) => {
+      edges.push(orgFlowEdge(governanceNodeId, layout.nodeId, "governance"));
+    });
+  });
+
+  return {
+    nodes,
+    edges,
+    fitKey: [
+      state.revision,
+      selectedOrgTeamId,
+      showArchived ? "archived" : "active",
+      costState.generated_at || "",
+      nodes.length,
+      edges.length,
+    ].join(":"),
+  };
+}
+
+function layoutHierarchyRoots({ roots, nodes, edges, teamId, parentNodeId, startY, leftX, edgeKind }) {
+  let cursorX = leftX;
+  roots.forEach((root) => {
+    const leaves = hierarchyLeafCount(root);
+    const rootNodeId = layoutHierarchyNode({
+      node: root,
+      nodes,
+      edges,
+      teamId,
+      depth: 0,
+      leftX: cursorX,
+      startY,
+      edgeKind,
+    });
+    if (rootNodeId) {
+      edges.push(orgFlowEdge(parentNodeId, rootNodeId, edgeKind));
+    }
+    cursorX += leaves * orgFlowLayout.leafGap;
+  });
+}
+
+function layoutHierarchyNode({ node, nodes, edges, teamId, depth, leftX, startY, edgeKind }) {
+  if (!node) {
+    return "";
+  }
+  const leaves = hierarchyLeafCount(node);
+  const nodeId = orgFlowHierarchyNodeId(node, teamId);
+  const nodeWidth = orgFlowLayout.agentNodeWidth;
+  nodes.push({
+    id: nodeId,
+    type: "teamOrgNode",
+    position: {
+      x: leftX + (leaves * orgFlowLayout.leafGap) / 2 - nodeWidth / 2,
+      y: startY + depth * orgFlowLayout.hierarchyLevelGap,
+    },
+    sourcePosition: "bottom",
+    targetPosition: "top",
+    data: orgHierarchyNodeData(node),
+  });
+
+  let childCursorX = leftX;
+  (node.children || []).forEach((child) => {
+    const childLeaves = hierarchyLeafCount(child);
+    const childNodeId = layoutHierarchyNode({
+      node: child,
+      nodes,
+      edges,
+      teamId,
+      depth: depth + 1,
+      leftX: childCursorX,
+      startY,
+      edgeKind,
+    });
+    if (childNodeId) {
+      edges.push(orgFlowEdge(nodeId, childNodeId, child.kind === "agent" ? "manager" : "warning"));
+    }
+    childCursorX += childLeaves * orgFlowLayout.leafGap;
+  });
+  return nodeId;
+}
+
+function hierarchyLeafCount(node) {
+  const children = (node?.children || []).filter(Boolean);
+  if (!children.length) {
+    return 1;
+  }
+  return Math.max(
+    1,
+    children.map(hierarchyLeafCount).reduce((total, count) => total + count, 0),
+  );
+}
+
+function orgFlowHierarchyNodeId(node, teamId) {
+  if (node.kind === "agent") {
+    return `agent:${text(node.id)}`;
+  }
+  return `warning:${text(teamId)}:${text(node.kind)}:${text(node.id)}:${text(node.parentId)}`;
+}
+
+function orgFlowTeamNodeId(teamId) {
+  return `team:${text(teamId)}`;
+}
+
+function orgFlowGovernanceNodeId(groupId) {
+  return `governance:${text(groupId)}`;
+}
+
+function orgFlowEdge(source, target, kind) {
+  return {
+    id: `edge:${source}:${target}:${kind}`,
+    source,
+    target,
+    type: "smoothstep",
+    className: `org-flow-edge--${kind}`,
+    animated: kind === "governance",
+  };
+}
+
+function orgTeamNodeData(team, teamAgents) {
+  const awakeCount = teamAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
+  const attentionCount = teamAgents.filter((agent) => {
+    const details = agentCardData(agent);
+    return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
+  }).length;
+  const cost = teamCostForTeam(team.id);
+  return {
+    kind: "team",
+    teamId: text(team.id),
+    name: text(team.name) || text(team.id),
+    archived: Boolean(team.archived),
+    awakeCount,
+    attentionCount,
+    costHtml: renderTeamCostCounter(team.id),
+    costBlockedNoticeHtml: renderTeamCostBlockedNotice(team.id),
+    costBlocked: Boolean(cost?.cost_limit_reached),
+  };
+}
+
+function orgGovernanceNodeData(group, visibleMemberTeamCount) {
+  const manager = state.agents?.[group.manager_agent_id] || null;
+  const agenda = governanceAgendaForGroup(group.id);
+  const pendingAgenda = agenda.filter((item) => item.state === "pending");
+  const cost = governanceCostForGroup(group.id);
+  const capReached = cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length > 0;
+  return {
+    kind: "governance",
+    groupId: text(group.id),
+    name: text(group.name) || text(group.id),
+    archived: Boolean(group.archived),
+    managerLabel: manager ? agentLabel(manager) : text(group.manager_agent_id) || "Unassigned",
+    managerAvatar: manager ? orgAgentAvatarData(agentCardData(manager)) : null,
+    memberTeamCount: visibleMemberTeamCount,
+    pendingAgendaCount: pendingAgenda.length,
+    costAttention: Boolean(capReached),
+    costHtml: cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : "",
+  };
+}
+
+function orgHierarchyNodeData(node) {
+  if (node.kind === "agent") {
+    return orgAgentNodeData(node.agentData);
+  }
+  const detailLines = [];
+  if (node.parentId) {
+    detailLines.push(`Referenced by ${node.parentId}`);
+  }
+  if (node.teamId) {
+    detailLines.push(`Team ${node.teamId}`);
+  }
+  return {
+    kind: "warning",
+    label: node.label,
+    detailLines,
+  };
+}
+
+function orgAgentNodeData(agentData) {
+  const awake = agentAwakeState(agentData);
+  const work = orgNodeWorkSummaryData(agentData);
+  const cardClasses = [
+    "hierarchy-node-card",
+    "org-focus-node-card",
+    `org-focus-node-card--${awake.kind}`,
+    agentData.taskStats.blockedWaitingCount || agentData.inboxCount ? "org-focus-node-card--attention" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const indicatorItems = agentData.inboxIndicatorItems || {};
+  return {
+    kind: "agent",
+    agentId: agentData.id,
+    label: agentData.label,
+    idLabel: agentData.label !== agentData.id ? agentData.id : null,
+    role: agentData.role,
+    status: agentData.status,
+    cardClassName: cardClasses,
+    avatar: orgAgentAvatarData(agentData),
+    awake,
+    inboxIndicators: [
+      {
+        itemType: "status_request",
+        direction: "down",
+        label: "Status requests",
+        count: (indicatorItems.status_request || []).length,
+      },
+      {
+        itemType: "progress_report",
+        direction: "up",
+        label: "Progress reports",
+        count: (indicatorItems.progress_report || []).length,
+      },
+    ],
+    work,
+    detailLines: hierarchyDetailLines(agentData, { focused: true }),
+  };
+}
+
+function orgAgentAvatarData(agentData) {
+  const label = agentLabel(agentData);
+  const src = avatarUrl(agentData);
+  return {
+    src,
+    alt: src ? `${label} avatar` : "",
+    initials: agentInitials(agentData),
+  };
 }
 
 function renderOrgFocusTeamTabs(visibleTeams) {
@@ -2830,9 +3261,9 @@ function renderAgents() {
 
 function renderPeopleAgents(allAgents, agents) {
   renderIntoActiveTargets("[data-agents-view]", "");
-  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const visibleTeams = peopleViewTeams();
   const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
-  const teamAgents = agents.filter((agent) => visibleTeamIds.has(text(agent.team_id)));
+  const teamAgents = agents.filter((agent) => isTeamInPeopleScope(agent, visibleTeamIds));
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter((project) => isVisibleProject(project) && visibleTeamIds.has(text(project.team_id)));
   const allRoles = values(state.roles).sort(byId);
@@ -2846,13 +3277,16 @@ function renderPeopleAgents(allAgents, agents) {
   }
 
   if (!selectedTeamRecordId) {
-    selectTeamRecord("team", visibleTeams[0].id, { rerender: false });
+    const firstTeam = visibleTeams.find((team) => text(team.id) !== noTeamRecordId);
+    if (firstTeam) {
+      selectTeamRecord("team", firstTeam.id, { rerender: false });
+    }
   }
 
   const scopedTeams = visibleTeams;
   const scopedTeamIds = visibleTeamIds;
   const scopedRecords = {
-    agents: teamAgents.filter((agent) => scopedTeamIds.has(text(agent.team_id))).sort(comparePeopleAgents),
+    agents: teamAgents.sort(comparePeopleAgents),
     projects: projects.filter((project) => scopedTeamIds.has(text(project.team_id))).sort(compareTeamProjects),
     roles: roles.filter((role) => scopedTeamIds.has(text(role.team_id))).sort(compareTeamRoles),
   };
@@ -2879,6 +3313,9 @@ function renderPeopleAgents(allAgents, agents) {
 
 function renderTeamRecordGroup(team, scopedRecords) {
   const teamId = text(team.id);
+  const teamLabel = isNoTeamRecord(team) ? noTeamRecordName : teamId;
+  const teamTitle = isNoTeamRecord(team) ? noTeamRecordName : text(team.name || teamId);
+  const isNoTeam = isNoTeamRecord(team);
   const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
   const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
   teamRecordGroupTabs[teamId] = activeKind;
@@ -2886,9 +3323,13 @@ function renderTeamRecordGroup(team, scopedRecords) {
   const selected = selectedTeamRecordKind === "team" && text(selectedTeamRecordId) === text(teamId);
   const counts = [
     `${teamRecords.agents.length} agent${teamRecords.agents.length === 1 ? "" : "s"}`,
-    `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
-    `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
   ];
+  if (!isNoTeam) {
+    counts.push(
+      `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
+      `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
+    );
+  }
   return `
     <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}${selected ? " is-selected" : ""}" data-team-record-group-id="${escapeAttr(teamId)}">
       <button
@@ -2899,8 +3340,8 @@ function renderTeamRecordGroup(team, scopedRecords) {
         data-team-record-toggle="${escapeAttr(teamId)}"
       >
         <span class="team-record-group-title">
-          <span class="section-label">${escapeHtml(teamId)}</span>
-          <strong>${escapeHtml(team.name || teamId)}</strong>
+          <span class="section-label">${escapeHtml(teamLabel)}</span>
+          <strong>${escapeHtml(teamTitle)}</strong>
         </span>
         <span class="team-record-group-counts">
           ${counts.map((count) => `<span class="state-pill neutral">${escapeHtml(count)}</span>`).join("")}
@@ -2919,11 +3360,14 @@ function renderTeamRecordGroup(team, scopedRecords) {
 }
 
 function renderTeamRecordKindTabs(teamId, teamRecords, activeKind) {
-  const tabs = [
-    ["agent", "Agents", teamRecords.agents.length],
-    ["project", "Projects", teamRecords.projects.length],
-    ["role", "Roles", teamRecords.roles.length],
-  ];
+  const isNoTeam = isNoTeamRecord({ id: text(teamId) });
+  const tabs = isNoTeam
+    ? [["agent", "Agents", teamRecords.agents.length]]
+    : [
+      ["agent", "Agents", teamRecords.agents.length],
+      ["project", "Projects", teamRecords.projects.length],
+      ["role", "Roles", teamRecords.roles.length],
+    ];
   return `
     <div class="team-record-kind-tabs" role="tablist" aria-label="${escapeAttr(`Records for ${teamId}`)}">
       ${tabs
@@ -3032,12 +3476,42 @@ function clampPage(page, totalPages) {
 
 function teamRecordsForTeam(teamId, records) {
   const normalizedTeamId = text(teamId);
+  if (isNoTeamRecord({ id: normalizedTeamId })) {
+    return {
+      teamId: normalizedTeamId,
+      agents: (records.agents || []).filter((agent) => !text(agent.team_id)),
+      projects: [],
+      roles: [],
+    };
+  }
   return {
     teamId: normalizedTeamId,
     agents: (records.agents || []).filter((agent) => text(agent.team_id) === normalizedTeamId),
     projects: (records.projects || []).filter((project) => text(project.team_id) === normalizedTeamId),
     roles: (records.roles || []).filter((role) => text(role.team_id) === normalizedTeamId),
   };
+}
+
+function isNoTeamRecord(team) {
+  return text(team?.id) === noTeamRecordId;
+}
+
+function isTeamInPeopleScope(agent, visibleTeamIds) {
+  const teamId = text(agent?.team_id);
+  if (!teamId) {
+    return visibleTeamIds.has(noTeamRecordId);
+  }
+  return visibleTeamIds.has(teamId);
+}
+
+function peopleViewTeams() {
+  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const visibleAgents = values(state.agents).filter(isVisibleAgent);
+  const hasNoTeamAgents = visibleAgents.some((agent) => !text(agent.team_id));
+  if (!hasNoTeamAgents) {
+    return visibleTeams;
+  }
+  return [...visibleTeams, { id: noTeamRecordId, name: noTeamRecordName, archived: false }];
 }
 
 function teamRecordCount(records) {
@@ -3386,8 +3860,50 @@ function agentsForRole(roleId) {
 }
 
 function renderChat() {
+  renderChatOperatorView();
   renderChatConversationList();
   renderChatThread();
+}
+
+function renderChatOperatorView() {
+  if (!elements.chatOperatorView) {
+    return;
+  }
+  const current = chatState.current_operator || {};
+  const selected = chatState.selected_operator || current;
+  const currentUserId = text(current.user_id);
+  const selectedUserId = text(selected.user_id) || text(selectedChatOperatorUserId) || currentUserId;
+  const selectedLabel = text(selected.display_name) || selectedUserId || "Operator";
+  const options = chatState.operator_options.length
+    ? chatState.operator_options
+    : selectedUserId
+      ? [selected]
+      : [];
+  const modeLabel = chatState.read_only ? "Read-only inspection" : "My chats";
+  elements.chatOperatorView.innerHTML = `
+    <div class="chat-operator-scope">
+      <span class="state-pill ${chatState.read_only ? "paused" : "active"}">${escapeHtml(modeLabel)}</span>
+      ${
+        chatState.can_view_all_operators && options.length
+          ? `
+            <label>
+              <span>Operator</span>
+              <select data-chat-operator-select>
+                ${options.map((option) => {
+                  const value = text(option.user_id);
+                  const label = text(option.display_name) || value;
+                  return `<option value="${escapeAttr(value)}" ${value === selectedUserId ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                }).join("")}
+              </select>
+            </label>
+          `
+          : `<span class="meta-line">${escapeHtml(selectedLabel)}</span>`
+      }
+    </div>
+  `;
+  document.querySelectorAll("[data-chat-new]").forEach((button) => {
+    button.disabled = Boolean(chatState.read_only);
+  });
 }
 
 function renderChatConversationList() {
@@ -3412,6 +3928,11 @@ function renderChatConversationList() {
 
 function renderChatNewPicker() {
   if (!elements.chatNewPicker) {
+    return;
+  }
+  if (chatState.read_only) {
+    elements.chatNewPicker.hidden = true;
+    elements.chatNewPicker.innerHTML = "";
     return;
   }
   elements.chatNewPicker.hidden = !chatNewPickerOpen;
@@ -3483,11 +4004,13 @@ function renderChatThread() {
     `;
     return;
   }
+  const composerState = captureChatComposerState(conversation.id);
   const agent = conversation.agent || {};
   const messages = conversationMessages(conversation);
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
   const olderLoading = chatOlderMessageLoads.has(text(conversation.id));
   const callStrip = renderChatCallStrip(conversation);
+  const readOnly = Boolean(chatState.read_only || conversation.read_only);
   elements.chatThreadView.innerHTML = `
     <div class="chat-thread${callStrip ? " has-call-strip" : ""}">
       <header class="chat-thread-header">
@@ -3503,10 +4026,12 @@ function renderChatThread() {
             type="button"
             data-agent-call-agent-id="${escapeAttr(conversation.agent_id)}"
             data-agent-call-conversation-id="${escapeAttr(conversation.id)}"
+            ${readOnly ? "disabled" : ""}
           >Call</button>
           <button type="button" data-chat-refresh>Refresh</button>
         </div>
       </header>
+      ${readOnly ? `<div class="chat-readonly-banner">Viewing ${escapeHtml(conversation.operator_display_name || conversation.operator_user_id || "another operator")} read-only.</div>` : ""}
       ${callStrip}
       <div class="chat-message-list" role="log" aria-live="polite" data-chat-scroll-conversation-id="${escapeAttr(conversation.id)}">
         ${
@@ -3521,13 +4046,57 @@ function renderChatThread() {
         }
       </div>
       <form class="chat-composer" data-chat-message-form>
-        <textarea name="body" rows="3" placeholder="Message ${escapeAttr(label)}" ${chatSending ? "disabled" : ""}></textarea>
-        <button type="submit" ${chatSending ? "disabled" : ""}>Send</button>
+        <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
+        <button type="submit" ${chatSending || readOnly ? "disabled" : ""}>Send</button>
       </form>
     </div>
   `;
+  restoreChatComposerState(conversation.id, composerState);
   bindChatMessageListScroll(conversation.id);
   applyPendingChatScroll(conversation.id);
+}
+
+function captureChatComposerState(expectedConversationId) {
+  const form = elements.chatThreadView?.querySelector("[data-chat-message-form]");
+  const textarea = form?.querySelector('textarea[name="body"]');
+  if (!form || !(textarea instanceof HTMLTextAreaElement)) {
+    return null;
+  }
+  const messageList = elements.chatThreadView?.querySelector("[data-chat-scroll-conversation-id]");
+  if (text(messageList?.dataset.chatScrollConversationId) !== text(expectedConversationId)) {
+    return null;
+  }
+  return {
+    conversationId: text(expectedConversationId),
+    value: textarea.value,
+    hadFocus: document.activeElement === textarea,
+    selectionStart: typeof textarea.selectionStart === "number" ? textarea.selectionStart : 0,
+    selectionEnd: typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : 0,
+  };
+}
+
+function restoreChatComposerState(expectedConversationId, composerState) {
+  if (!composerState || composerState.conversationId !== text(expectedConversationId)) {
+    return;
+  }
+  const form = elements.chatThreadView?.querySelector("[data-chat-message-form]");
+  const textarea = form?.querySelector('textarea[name="body"]');
+  if (!(textarea instanceof HTMLTextAreaElement)) {
+    return;
+  }
+  textarea.value = composerState.value ?? "";
+  if (!composerState.hadFocus) {
+    return;
+  }
+  textarea.focus();
+  if (
+    typeof composerState.selectionStart === "number" &&
+    typeof composerState.selectionEnd === "number"
+  ) {
+    const start = Math.min(Math.max(composerState.selectionStart, 0), textarea.value.length);
+    const end = Math.min(Math.max(composerState.selectionEnd, start), textarea.value.length);
+    textarea.setSelectionRange(start, end);
+  }
 }
 
 function renderChatCallStrip(conversation) {
@@ -3546,6 +4115,7 @@ function renderChatCallStrip(conversation) {
 
 function renderChatMessage(message) {
   const sender = text(message.sender) || "system";
+  const metadata = message.metadata || {};
   const status = text(message.status);
   const type = text(message.message_type) || "text";
   return `
@@ -3553,7 +4123,7 @@ function renderChatMessage(message) {
       <div class="chat-message-bubble">
         <p>${escapeHtml(message.body || "")}</p>
         <div class="chat-message-meta">
-          <span>${escapeHtml(chatMessageSenderLabel(sender))}</span>
+          <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
         </div>
@@ -3762,9 +4332,10 @@ function compareChatConversations(left, right) {
   );
 }
 
-function chatMessageSenderLabel(sender) {
+function chatMessageSenderLabel(sender, metadata = {}) {
   if (sender === "operator") {
-    return "Operator";
+    const label = text(metadata.operator_display_name) || text(metadata.operator_user_id);
+    return label ? `Human operator: ${label}` : "Human operator";
   }
   if (sender === "agent") {
     return "Agent";
@@ -4456,27 +5027,34 @@ function agentRuntimeAttentionRows(agentId) {
 }
 
 function renderOrgNodeWorkSummary(agentData) {
-  const snapshot = agentWorkSnapshot(agentData);
-  const waitingLabel = snapshot.waiting.length
-    ? snapshot.waiting[0]
-    : snapshot.inboxItems.length
-      ? `${snapshot.inboxItems.length} pending inbox`
-      : "Clear";
+  const summary = orgNodeWorkSummaryData(agentData);
   return `
     <div class="org-node-work">
       <div class="org-node-work-line org-node-work-line--now">
         <span>Now</span>
-        <strong>${escapeHtml(snapshot.primary)}</strong>
+        <strong>${escapeHtml(summary.primary)}</strong>
       </div>
       <div class="org-node-work-line org-node-work-line--waiting">
         <span>Waiting</span>
-        <strong>${escapeHtml(waitingLabel)}</strong>
+        <strong>${escapeHtml(summary.waiting)}</strong>
       </div>
     </div>
   `;
 }
 
-function renderHierarchyDetails(agentData, { focused = false } = {}) {
+function orgNodeWorkSummaryData(agentData) {
+  const snapshot = agentWorkSnapshot(agentData);
+  return {
+    primary: snapshot.primary,
+    waiting: snapshot.waiting.length
+      ? snapshot.waiting[0]
+      : snapshot.inboxItems.length
+        ? `${snapshot.inboxItems.length} pending inbox`
+        : "Clear",
+  };
+}
+
+function hierarchyDetailLines(agentData, { focused = false } = {}) {
   const lines = [];
   const awake = agentAwakeState(agentData);
   const snapshot = agentWorkSnapshot(agentData);
@@ -4529,7 +5107,13 @@ function renderHierarchyDetails(agentData, { focused = false } = {}) {
   );
   lines.push(`Ephemeral ${agentData.ephemeralCurrentCount} / ${agentData.ephemeralCapacity}`);
 
-  return lines.map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`).join("");
+  return lines;
+}
+
+function renderHierarchyDetails(agentData, { focused = false } = {}) {
+  return hierarchyDetailLines(agentData, { focused })
+    .map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`)
+    .join("");
 }
 
 function teamHierarchyGraph(team) {
@@ -8220,6 +8804,7 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
+      ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
@@ -8375,6 +8960,7 @@ function editPayloadForForm(type, form) {
   if (type === "team") {
     return {
       name: text(data.name),
+      manager_agent_id: text(data.manager_agent_id),
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),

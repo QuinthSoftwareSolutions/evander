@@ -11,6 +11,7 @@ WORKFLOWS_READ_PERMISSION = "workflows.read"
 WORKFLOWS_WRITE_PERMISSION = "workflows.write"
 WORKFLOW_RUNS_READ_PERMISSION = "workflow_runs.read"
 WORKFLOW_RUNS_CONTROL_PERMISSION = "workflow_runs.control"
+TEAM_CHATS_READ_ALL_PERMISSION = "team_chats.read_all"
 
 DIRECT_WORKFLOW_PERMISSIONS = frozenset(
     {
@@ -28,6 +29,7 @@ PERMISSION_CATALOG = frozenset(
         WORKFLOWS_WRITE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_READ_ALL_PERMISSION,
     }
 )
 
@@ -58,6 +60,7 @@ BUILTIN_GROUP_DEFINITIONS: dict[str, dict[str, object]] = {
                 WORKFLOWS_WRITE_PERMISSION,
                 WORKFLOW_RUNS_READ_PERMISSION,
                 WORKFLOW_RUNS_CONTROL_PERMISSION,
+                TEAM_CHATS_READ_ALL_PERMISSION,
             }
         ),
     },

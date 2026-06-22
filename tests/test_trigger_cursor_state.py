@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -8,6 +10,19 @@ from agent_sandbox.triggers.providers._cursor_state import (
     latest_cursor_timestamp_text,
     merge_cursor_ids,
 )
+
+
+def _update_cursor_from_process(path: str, label: str) -> None:
+    store = TriggerCursorStore(Path(path))
+
+    def append_label(state: dict[str, object]) -> dict[str, object]:
+        labels = list(state.get("labels", []))
+        time.sleep(0.2)
+        labels.append(label)
+        state["labels"] = labels
+        return state
+
+    store.update("trigger-a", append_label)
 
 
 def test_cursor_state_helpers_merge_unique_ids_and_latest_timestamp() -> None:
@@ -69,3 +84,23 @@ def test_trigger_cursor_store_update_merges_without_overwriting_other_keys(
 
     assert repeated == updated
     assert store.get("trigger-a") == updated
+
+
+def test_trigger_cursor_store_serializes_updates_across_processes(tmp_path: Path) -> None:
+    path = tmp_path / "trigger-cursors.json"
+    TriggerCursorStore(path).put("trigger-a", {"labels": []})
+
+    context = multiprocessing.get_context("fork")
+    processes = [
+        context.Process(target=_update_cursor_from_process, args=(str(path), "one")),
+        context.Process(target=_update_cursor_from_process, args=(str(path), "two")),
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=5)
+
+    for process in processes:
+        assert process.exitcode == 0
+
+    assert sorted(TriggerCursorStore(path).get("trigger-a")["labels"]) == ["one", "two"]

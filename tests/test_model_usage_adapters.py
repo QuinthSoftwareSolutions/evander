@@ -127,6 +127,47 @@ def test_mapping_model_usage_extractor_marks_missing_usage_as_unavailable() -> N
     }
 
 
+def test_mapping_model_usage_extractor_persists_context_attribution() -> None:
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    context = ModelUsageCorrelationContext(
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        agent_harness="codex",
+        team_id="team-a",
+        project_id="project-a",
+        agent_id="agent-a",
+        started_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    extractor = MappingModelUsageExtractor(provider_name="openai")
+    request = ModelUsageExtractionRequest(
+        provider="openai",
+        provider_endpoint_identifier="responses",
+        request_status="success",
+        occurred_at=now,
+        response_payload={
+            "id": "resp-attribution",
+            "type": "response",
+            "model": "gpt-5.2-codex",
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2,
+            },
+        },
+        request_metadata={"method": "POST"},
+        correlation_context=context,
+    )
+
+    result = extractor.extract(request)
+
+    assert result.event.raw_usage_metadata["request_metadata"] == {
+        "method": "POST",
+        "team_id": "team-a",
+        "project_id": "project-a",
+        "agent_id": "agent-a",
+    }
+
+
 def test_mapping_model_usage_extractor_uses_context_model_when_response_omits_model() -> None:
     now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
     context = ModelUsageCorrelationContext(

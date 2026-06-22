@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 11
+SQLITE_SCHEMA_VERSION = 12
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -118,6 +118,7 @@ class TeamStateSqliteStore:
                     definition="TEXT",
                 )
                 _ensure_team_agents_nullable_membership(connection)
+                _ensure_team_conversations_operator_scope(connection)
                 _ensure_column(
                     connection,
                     table_name="team_governance_runtimes",
@@ -1290,6 +1291,8 @@ class TeamStateSqliteStore:
             payload["conversations"][row["id"]] = {
                 "id": row["id"],
                 "agent_id": row["agent_id"],
+                "operator_user_id": row["operator_user_id"],
+                "operator_display_name": row["operator_display_name"],
                 "created_by": row["created_by"],
                 "last_message_preview": row["last_message_preview"],
                 "created_at": row["created_at"],
@@ -1306,14 +1309,17 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_conversations(
-                    id, agent_id, created_by, last_message_preview,
+                    id, agent_id, operator_user_id, operator_display_name,
+                    created_by, last_message_preview,
                     created_at, updated_at, last_interaction_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation["id"],
                     conversation["agent_id"],
+                    conversation.get("operator_user_id") or "admin",
+                    conversation.get("operator_display_name"),
                     conversation.get("created_by"),
                     conversation.get("last_message_preview"),
                     conversation["created_at"],
@@ -1703,6 +1709,137 @@ def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> N
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_team_agents_session ON team_agents(session_id)"
     )
+
+
+def _ensure_team_conversations_operator_scope(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"]): row
+        for row in connection.execute("PRAGMA table_info(team_conversations)")
+    }
+    if not columns:
+        return
+    has_operator_columns = (
+        "operator_user_id" in columns and "operator_display_name" in columns
+    )
+    needs_rebuild = not has_operator_columns or _team_conversations_has_agent_unique_index(
+        connection
+    )
+    if not needs_rebuild:
+        connection.execute(
+            """
+            UPDATE team_conversations
+            SET operator_user_id = lower(trim(
+                COALESCE(NULLIF(trim(operator_user_id), ''), 'admin')
+            ))
+            WHERE operator_user_id IS NULL
+               OR trim(operator_user_id) = ''
+               OR operator_user_id <> lower(trim(operator_user_id))
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_team_conversations_agent_operator
+            ON team_conversations(agent_id, operator_user_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_team_conversations_operator_recent
+            ON team_conversations(operator_user_id, last_interaction_at DESC, id)
+            """
+        )
+        return
+
+    connection.execute("ALTER TABLE team_conversations RENAME TO team_conversations_legacy")
+    connection.execute(
+        """
+        CREATE TABLE team_conversations (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            operator_user_id TEXT NOT NULL,
+            operator_display_name TEXT,
+            created_by TEXT,
+            last_message_preview TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_interaction_at TEXT NOT NULL
+        )
+        """
+    )
+    legacy_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(team_conversations_legacy)")
+    }
+    legacy_operator_user_expr = (
+        "COALESCE(NULLIF(trim(operator_user_id), ''), "
+        "CASE "
+        "WHEN trim(created_by) LIKE 'operator:%' THEN substr(trim(created_by), 10) "
+        "WHEN created_by IS NOT NULL AND trim(created_by) <> '' THEN trim(created_by) "
+        "ELSE 'admin' END)"
+        if "operator_user_id" in legacy_columns
+        else (
+            "CASE "
+            "WHEN trim(created_by) LIKE 'operator:%' THEN substr(trim(created_by), 10) "
+            "WHEN created_by IS NOT NULL AND trim(created_by) <> '' THEN trim(created_by) "
+            "ELSE 'admin' END"
+        )
+    )
+    operator_user_expr = f"lower(trim({legacy_operator_user_expr}))"
+    operator_display_expr = (
+        "operator_display_name" if "operator_display_name" in legacy_columns else "NULL"
+    )
+    connection.execute(
+        f"""
+        INSERT OR IGNORE INTO team_conversations(
+            id, agent_id, operator_user_id, operator_display_name, created_by,
+            last_message_preview, created_at, updated_at, last_interaction_at
+        )
+        SELECT
+            id,
+            agent_id,
+            {operator_user_expr},
+            {operator_display_expr},
+            created_by,
+            last_message_preview,
+            created_at,
+            updated_at,
+            last_interaction_at
+        FROM team_conversations_legacy
+        """
+    )
+    connection.execute("DROP TABLE team_conversations_legacy")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_team_conversations_recent
+        ON team_conversations(last_interaction_at DESC, id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_team_conversations_agent_operator
+        ON team_conversations(agent_id, operator_user_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_team_conversations_operator_recent
+        ON team_conversations(operator_user_id, last_interaction_at DESC, id)
+        """
+    )
+
+
+def _team_conversations_has_agent_unique_index(connection: sqlite3.Connection) -> bool:
+    for index in connection.execute("PRAGMA index_list(team_conversations)"):
+        if not int(index["unique"] or 0):
+            continue
+        index_name = str(index["name"])
+        columns = [
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA index_info({index_name})")
+        ]
+        if columns == ["agent_id"]:
+            return True
+    return False
 
 
 def _ensure_column(
@@ -2169,7 +2306,9 @@ CREATE INDEX IF NOT EXISTS idx_team_action_records_attention
 
 CREATE TABLE IF NOT EXISTS team_conversations (
     id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL UNIQUE,
+    agent_id TEXT NOT NULL,
+    operator_user_id TEXT NOT NULL,
+    operator_display_name TEXT,
     created_by TEXT,
     last_message_preview TEXT,
     created_at TEXT NOT NULL,

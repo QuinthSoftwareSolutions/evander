@@ -46,6 +46,22 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+    columns: dict[str, str],
+) -> None:
+    existing = {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+    }
+    for column_name, column_type in columns.items():
+        if column_name not in existing:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+            )
+
+
 class ModelUsageStore:
     def __init__(self, path: Path) -> None:
         self.path = model_usage_store_db_path(Path(path))
@@ -125,6 +141,9 @@ class ModelUsageStore:
                     execution_backend TEXT,
                     directory_path TEXT,
                     model TEXT,
+                    team_id TEXT,
+                    project_id TEXT,
+                    agent_id TEXT,
                     trace_id TEXT,
                     started_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
@@ -144,6 +163,15 @@ class ModelUsageStore:
                 CREATE INDEX IF NOT EXISTS idx_model_usage_contexts_directory_path
                     ON model_usage_correlation_contexts(directory_path, started_at, dispatch_id);
                 """
+            )
+            _ensure_columns(
+                connection,
+                "model_usage_correlation_contexts",
+                {
+                    "team_id": "TEXT",
+                    "project_id": "TEXT",
+                    "agent_id": "TEXT",
+                },
             )
 
     def upsert_event(self, event: ModelInferenceUsageEvent) -> None:
@@ -322,12 +350,15 @@ class ModelUsageStore:
                     execution_backend,
                     directory_path,
                     model,
+                    team_id,
+                    project_id,
+                    agent_id,
                     trace_id,
                     started_at,
                     expires_at,
                     payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dispatch_id) DO UPDATE SET
                     session_id = excluded.session_id,
                     workflow_run_id = excluded.workflow_run_id,
@@ -337,6 +368,9 @@ class ModelUsageStore:
                     execution_backend = excluded.execution_backend,
                     directory_path = excluded.directory_path,
                     model = excluded.model,
+                    team_id = excluded.team_id,
+                    project_id = excluded.project_id,
+                    agent_id = excluded.agent_id,
                     trace_id = excluded.trace_id,
                     started_at = excluded.started_at,
                     expires_at = excluded.expires_at,
@@ -386,6 +420,26 @@ class ModelUsageStore:
             if row is not None:
                 return ModelUsageCorrelationContext.model_validate_json(row["payload_json"])
         return None
+
+    def get_correlation_context(
+        self,
+        dispatch_id: object,
+    ) -> ModelUsageCorrelationContext | None:
+        normalized_dispatch_id = _storage_optional_text(dispatch_id)
+        if normalized_dispatch_id is None:
+            return None
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM model_usage_correlation_contexts
+                WHERE dispatch_id = ?
+                """,
+                (normalized_dispatch_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ModelUsageCorrelationContext.model_validate_json(row["payload_json"])
 
     def clear_correlation_context(
         self,
@@ -478,6 +532,9 @@ class ModelUsageStore:
             context.execution_backend,
             context.directory_path,
             context.model,
+            context.team_id,
+            context.project_id,
+            context.agent_id,
             context.trace_id,
             _storage_datetime(context.started_at),
             _storage_datetime(context.expires_at),

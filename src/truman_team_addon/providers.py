@@ -22,6 +22,8 @@ from agent_sandbox.events.provider_models import (
     ArtifactPublishArtifactsEffectDefinition,
 )
 from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.models import tool_name_value
+from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.catalog import (
@@ -33,6 +35,7 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
+from .mcp import TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
 from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -56,12 +59,14 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 10
+ACTION_CONTRACT_SCHEMA_VERSION = 11
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 TEAM_AGENT_GUIDANCE_VERSION = 2
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
+TEAM_GOVERNANCE_GUIDANCE_VERSION = 1
+TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "truman-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
 
@@ -897,6 +902,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     and bool(runtime_payload.get("context_rotation_pending"))
                 )
                 prompt = _build_prompt(lease, action_artifact_path=action_path)
+                _register_team_dispatch_model_usage_context(
+                    context,
+                    agent=agent,
+                    dispatch_id=lease["dispatch_id"],
+                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
+                )
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=prompt,
@@ -1017,6 +1028,18 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             agent = lease["agent"]
             group = lease["governance_group"]
             try:
+                guidance_result = _seed_team_governance_guidance(context, agent=agent)
+                tool_grant_result = _ensure_session_allows_mcp_tools(
+                    context,
+                    session_id=agent["session_id"],
+                    tool_names=[TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+                )
+                _register_team_dispatch_model_usage_context(
+                    context,
+                    agent=agent,
+                    dispatch_id=lease["dispatch_id"],
+                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
+                )
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=_build_governance_prompt(lease),
@@ -1035,6 +1058,8 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                         "session_id": agent["session_id"],
                         "dispatch_id": lease["dispatch_id"],
                         "reason": lease["reason"],
+                        "governance_agent_guidance": guidance_result,
+                        "governance_mcp_tools": tool_grant_result,
                         "result": result_payload,
                     }
                 )
@@ -1135,7 +1160,18 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             result["published_event_ids"] = published_event_ids
         if artifact_publish_records:
             result["published_deliverable_artifacts"] = artifact_publish_records
-        return {**result, "state": team_state_payload(state)}
+        if isinstance(agent_id, str):
+            state_payload = _filtered_team_state_payload(
+                state,
+                team_id=None,
+                project_id=None,
+                agent_id=agent_id,
+            )
+        else:
+            state_payload = team_state_payload(state, include_agent_avatars=False)
+            state_payload["conversations"] = {}
+            state_payload["conversation_messages"] = {}
+        return {**result, "state": state_payload}
 
 
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
@@ -2148,10 +2184,75 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "FYI updates that can be batched, normal for ordinary coordination, and "
         "high only for urgent blockers. Low-priority inbox may be delivered with "
         "other work instead of waking the recipient immediately.\n"
+        "- Team Chat messages are direct conversations with human operators, not "
+        "agent-to-agent inbox items. Use chat_replies only when a wake prompt "
+        "gives you a conversation_id and message_id from a human operator. Use "
+        "operator_chat_messages only for human operators listed in the current "
+        "Team context as operator_chat_participants.\n"
         "- Use stand_downs when you need a direct subordinate and that "
         "subordinate's subtree to stop future Team work. Use "
         "stand_down_revocations to clear a stand-down you set. Do not encode "
         "stand-downs as prose-only status_requests.\n"
+    )
+
+
+def _team_governance_guidance_content(*, agent: Mapping[str, Any]) -> str:
+    identity = _agent_guidance_identity(agent)
+    display_name = identity["display_name"]
+    display_line = (
+        f"- Current display name: {json.dumps(display_name)}\n"
+        if display_name is not None
+        else "- Current display name: not configured; use your agent id when a name is needed.\n"
+    )
+    return (
+        "# Team Add-on Governance Guidance\n\n"
+        f"Guidance version: {TEAM_GOVERNANCE_GUIDANCE_VERSION}\n\n"
+        "Identity:\n"
+        f"- Persistent agent id: {json.dumps(identity['agent_id'])}\n"
+        f"{display_line}\n"
+        "Governance role:\n"
+        "- You are a Team Add-on governance manager. You may oversee governance "
+        "groups even when your persistent agent record has no team_id.\n"
+        "- Treat each governance wake prompt as the source of current governance "
+        "group, agenda, member-team summaries, cost signals, and blocker "
+        "signals. Do not assume stale group or member-team state from memory.\n"
+        "- Member teams remain separate execution units. Do not take ownership "
+        "of member-team project tasks, deliverables, reviews, releases, or "
+        "direct-report chains.\n"
+        "- Use governance wakes to make policy, priority, escalation, cost, and "
+        "blocked-team decisions. Route directives to the relevant member-team "
+        f"manager with the {TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool when "
+        "action is needed.\n"
+        "- Governance wakes are not normal Team action-artifact dispatches unless "
+        "the wake prompt explicitly says otherwise. Do not write or rely on "
+        "/artifacts/team-action.json for governance-only decisions.\n"
+        "- Keep decisions concise. If no governance action is needed, say so "
+        "briefly and do not invent member-team project work.\n"
+    )
+
+
+def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
+    identity = _agent_guidance_identity(agent)
+    display_name = identity["display_name"]
+    display_line = (
+        f"- Current display name: {json.dumps(display_name)}\n"
+        if display_name is not None
+        else "- Current display name: not configured; use your agent id when a name is needed.\n"
+    )
+    return (
+        "# Team Add-on Guidance\n\n"
+        f"Guidance version: {TEAM_AGENT_GUIDANCE_VERSION}\n\n"
+        "Identity:\n"
+        f"- Persistent agent id: {json.dumps(identity['agent_id'])}\n"
+        f"{display_line}\n"
+        "Current Team assignment:\n"
+        "- This persistent agent is not currently assigned to a Team.\n"
+        "- Normal Team-agent task, deliverable, review, release, subordinate, "
+        "and /artifacts/team-action.json instructions do not apply unless a "
+        "future wake prompt explicitly assigns normal Team work.\n"
+        "- If this agent also manages governance groups, follow the separate "
+        f"{TEAM_GOVERNANCE_GUIDANCE_SECTION_ID} section and the current "
+        "governance wake prompt instead.\n"
     )
 
 
@@ -2166,6 +2267,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
         "recent_action_feedback": lease.get("recent_action_feedback") or [],
+        "operator_chat_participants": lease.get("operator_chat_participants") or [],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
     project_repo = lease.get("project_repo")
@@ -2202,6 +2304,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "status_requests": [],
         "questions": [],
         "status_reports": [],
+        "operator_chat_messages": [],
         "deliverables": [],
         "review_requests": [],
         "review_decisions": [],
@@ -2261,9 +2364,9 @@ def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
         "Use this wake to inspect agenda items, cost-cap signals, blocked-team "
         "signals, and member-team summaries. Respond with concise decisions, "
         "recommended operator actions, and any directives that should be routed "
-        "to the relevant member-team managers through the Team Add-on governance "
-        "or operator-directive APIs. If no governance action is needed, say so "
-        "briefly and do not invent project work.\n\n"
+        "to the relevant member-team managers with the "
+        f"{TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool. If no governance "
+        "action is needed, say so briefly and do not invent project work.\n\n"
         f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
     )
 
@@ -2560,6 +2663,87 @@ def _seed_team_agent_guidance(
     }
 
 
+def _seed_team_governance_guidance(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+) -> dict[str, Any]:
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    identity = _agent_guidance_identity(agent)
+    metadata = _session_metadata(context, session_id=session_id)
+    known_vm_ip = _session_known_vm_ip(metadata)
+    if _metadata_has_current_governance_guidance(metadata, agent=agent):
+        return {
+            "seeded": False,
+            "reason": "already_seeded",
+            "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+            **identity,
+        }
+
+    files: list[dict[str, Any]] = []
+    inactive_team_guidance = _optional_text(agent.get("team_id")) is None
+    if inactive_team_guidance:
+        files.append(
+            {
+                "content": _team_agent_guidance_inactive_content(agent=agent),
+                "destination_path": TEAM_AGENT_GUIDANCE_PATH,
+                "mode": "0644",
+                "overwrite": True,
+                "merge_strategy": "managed_section",
+                "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            }
+        )
+    files.append(
+        {
+            "content": _team_governance_guidance_content(agent=agent),
+            "destination_path": TEAM_AGENT_GUIDANCE_PATH,
+            "mode": "0644",
+            "overwrite": True,
+            "merge_strategy": "managed_section",
+            "section_id": TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+        }
+    )
+
+    provider = AgentCopyFilesEffectProvider()
+    provider.initialize(
+        AgentCopyFilesEffectDefinition(
+            id="team-seed-governance-guidance",
+            display_name="Seed Team governance guidance",
+            type="effect:agent:copy-files",
+            session_id=session_id,
+            vm_user="agent",
+            files=files,
+        ),
+        context,
+    )
+    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
+    copy_result = provider.execute(resolved_config=resolved_config)
+    if not bool(copy_result.get("success")):
+        message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
+        raise RuntimeError(message or "failed to seed Team governance guidance")
+
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    _mark_governance_guidance_seeded(
+        context,
+        session_id=session_id,
+        agent=agent,
+        copy_result=copy_result,
+        vm_ip=copied_vm_ip,
+        inactive_team_guidance=inactive_team_guidance,
+    )
+    return {
+        "seeded": True,
+        "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
+        "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+        "section_id": TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+        **identity,
+        "vm_ip": copied_vm_ip,
+        "copied_paths": list(copy_result.get("copied_paths") or []),
+    }
+
+
 def _session_has_current_action_contract(
     context: Any,
     *,
@@ -2588,6 +2772,8 @@ def _metadata_has_current_agent_guidance(
     guidance = team_addon.get("agent_guidance")
     if not isinstance(guidance, Mapping):
         return False
+    if guidance.get("inactive") is True:
+        return False
     identity = _agent_guidance_identity(agent)
     return (
         int(guidance.get("guidance_version") or 0) == TEAM_AGENT_GUIDANCE_VERSION
@@ -2596,6 +2782,57 @@ def _metadata_has_current_agent_guidance(
         and guidance.get("agent_id") == identity["agent_id"]
         and guidance.get("display_name") == identity["display_name"]
         and guidance.get("seeded") is True
+    )
+
+
+def _metadata_has_current_governance_guidance(
+    metadata: Mapping[str, Any],
+    *,
+    agent: Mapping[str, Any],
+) -> bool:
+    team_addon = metadata.get("team_addon")
+    if not isinstance(team_addon, Mapping):
+        return False
+    guidance = team_addon.get("governance_agent_guidance")
+    if not isinstance(guidance, Mapping):
+        return False
+    identity = _agent_guidance_identity(agent)
+    governance_guidance_is_current = (
+        int(guidance.get("guidance_version") or 0) == TEAM_GOVERNANCE_GUIDANCE_VERSION
+        and guidance.get("guidance_path") == TEAM_AGENT_GUIDANCE_PATH
+        and guidance.get("section_id") == TEAM_GOVERNANCE_GUIDANCE_SECTION_ID
+        and guidance.get("agent_id") == identity["agent_id"]
+        and guidance.get("display_name") == identity["display_name"]
+        and guidance.get("seeded") is True
+    )
+    if not governance_guidance_is_current:
+        return False
+    if _optional_text(agent.get("team_id")) is None:
+        return _metadata_has_current_inactive_agent_guidance(metadata, agent=agent)
+    return True
+
+
+def _metadata_has_current_inactive_agent_guidance(
+    metadata: Mapping[str, Any],
+    *,
+    agent: Mapping[str, Any],
+) -> bool:
+    team_addon = metadata.get("team_addon")
+    if not isinstance(team_addon, Mapping):
+        return False
+    guidance = team_addon.get("agent_guidance")
+    if not isinstance(guidance, Mapping):
+        return False
+    identity = _agent_guidance_identity(agent)
+    return (
+        int(guidance.get("guidance_version") or 0) == TEAM_AGENT_GUIDANCE_VERSION
+        and guidance.get("guidance_path") == TEAM_AGENT_GUIDANCE_PATH
+        and guidance.get("section_id") == TEAM_AGENT_GUIDANCE_SECTION_ID
+        and guidance.get("agent_id") == identity["agent_id"]
+        and guidance.get("display_name") == identity["display_name"]
+        and guidance.get("seeded") is True
+        and guidance.get("inactive") is True
+        and guidance.get("inactive_reason") == "no_team_assignment"
     )
 
 
@@ -2712,9 +2949,53 @@ def _mark_agent_guidance_seeded(
             "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
             **_agent_guidance_identity(agent),
+            "inactive": False,
+            "inactive_reason": None,
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }
+    if vm_ip:
+        team_metadata["last_known_vm_ip"] = vm_ip
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": team_metadata},
+    )
+
+
+def _mark_governance_guidance_seeded(
+    context: Any,
+    *,
+    session_id: str,
+    agent: Mapping[str, Any],
+    copy_result: Mapping[str, Any],
+    vm_ip: str | None,
+    inactive_team_guidance: bool,
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    team_metadata: dict[str, Any] = {
+        "governance_agent_guidance": {
+            "seeded": True,
+            "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
+            **_agent_guidance_identity(agent),
+            "copied_paths": list(copy_result.get("copied_paths") or []),
+        }
+    }
+    if inactive_team_guidance:
+        team_metadata["agent_guidance"] = {
+            "seeded": True,
+            "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+            "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+            "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            **_agent_guidance_identity(agent),
+            "inactive": True,
+            "inactive_reason": "no_team_assignment",
+            "copied_paths": list(copy_result.get("copied_paths") or []),
+        }
     if vm_ip:
         team_metadata["last_known_vm_ip"] = vm_ip
     update_fn(
@@ -2853,6 +3134,28 @@ def _persistent_action_schema() -> dict[str, Any]:
                     "properties": {
                         "conversation_id": {"type": "string", "minLength": 1},
                         "message_id": {"type": "string", "minLength": 1},
+                        "body": {"type": "string", "minLength": 1},
+                        "summary": text_or_null,
+                    },
+                },
+            },
+            "operator_chat_messages": {
+                "type": "array",
+                "description": (
+                    "Send a new Team Chat message to a known human operator. "
+                    "Use only recipient_operator_user_id values listed in the "
+                    "current Team context as operator_chat_participants."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["recipient_operator_user_id", "body"],
+                    "properties": {
+                        "recipient_operator_user_id": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
                         "body": {"type": "string", "minLength": 1},
                         "summary": text_or_null,
                     },
@@ -3126,6 +3429,13 @@ def _persistent_action_example() -> dict[str, Any]:
                 "summary": "Short reply summary.",
             }
         ],
+        "operator_chat_messages": [
+            {
+                "recipient_operator_user_id": "known-human-operator-login",
+                "body": "New chat message for a human operator.",
+                "summary": "Short outbound chat summary.",
+            }
+        ],
         "operator_escalations": [],
         "stand_downs": [],
         "stand_down_revocations": [],
@@ -3280,6 +3590,111 @@ def _session_repository_from_context(context: Any) -> Any | None:
     service = getattr(context, "admin_service", None)
     service_runtime = getattr(service, "runtime", None)
     return getattr(service_runtime, "session_repository", None)
+
+
+def _session_repository_for_manifest_updates(context: Any) -> Any | None:
+    candidates = [
+        getattr(context, "session_repository", None),
+        getattr(context, "session_lookup", None),
+        getattr(getattr(context, "runtime", None), "session_repository", None),
+        getattr(getattr(getattr(context, "admin_service", None), "runtime", None), "session_repository", None),
+    ]
+    for repository in candidates:
+        if repository is None:
+            continue
+        if callable(getattr(repository, "get_session", None)) and callable(
+            getattr(repository, "upsert_session", None)
+        ):
+            return repository
+    return None
+
+
+def _ensure_session_allows_mcp_tools(
+    context: Any,
+    *,
+    session_id: object,
+    tool_names: list[str],
+) -> dict[str, Any]:
+    normalized_session_id = _required_text(session_id, "session_id")
+    requested_tools = [
+        tool
+        for tool in (str(tool_name or "").strip() for tool_name in tool_names)
+        if tool
+    ]
+    result: dict[str, Any] = {
+        "session_id": normalized_session_id,
+        "requested_tools": requested_tools,
+        "already_allowed_tools": [],
+        "granted_tools": [],
+        "error": None,
+    }
+    if not requested_tools:
+        return result
+    repository = _session_repository_for_manifest_updates(context)
+    if repository is None:
+        result["error"] = "session repository is not available"
+        return result
+    session = repository.get_session(normalized_session_id)
+    if session is None:
+        result["error"] = f"session {normalized_session_id} was not found"
+        return result
+    allowed_values = [tool_name_value(tool) for tool in getattr(session, "allowed_tools", [])]
+    seen = set(allowed_values)
+    added: list[str] = []
+    already_allowed: list[str] = []
+    for tool_name in requested_tools:
+        if tool_name in seen:
+            already_allowed.append(tool_name)
+            continue
+        seen.add(tool_name)
+        allowed_values.append(tool_name)
+        added.append(tool_name)
+    if added:
+        if callable(getattr(session, "model_copy", None)):
+            updated_session = session.model_copy(update={"allowed_tools": allowed_values})
+        else:
+            setattr(session, "allowed_tools", allowed_values)
+            updated_session = session
+        repository.upsert_session(updated_session)
+    result["already_allowed_tools"] = already_allowed
+    result["granted_tools"] = added
+    return result
+
+
+def _register_team_dispatch_model_usage_context(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+    dispatch_id: object,
+    effect_id: str | None,
+) -> None:
+    register_model_usage_correlation_context(
+        runtime_dir=_runtime_dir(context),
+        session_id=_optional_text(agent.get("session_id")),
+        dispatch_id=_optional_text(dispatch_id),
+        workflow_run_id=_context_metadata_text(
+            context,
+            "workflow_run_id",
+            "workflow_trace_id",
+            "trace_id",
+        ),
+        effect_id=effect_id,
+        team_id=_optional_text(agent.get("team_id")),
+        project_id=_optional_text(agent.get("project_id")),
+        agent_id=_optional_text(agent.get("id")),
+        trace_id=_context_metadata_text(context, "trace_id", "workflow_trace_id"),
+    )
+
+
+def _context_metadata_text(context: Any, *keys: str) -> str | None:
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in keys:
+        text = _optional_text(metadata.get(key))
+        if text:
+            return text
+    return None
 
 
 def _record_wake_failure(
@@ -3596,6 +4011,17 @@ def _filtered_team_state_payload(
         key: value
         for key, value in filtered.get("action_records", {}).items()
         if value.get("agent_id") in visible_agent_ids
+    }
+    filtered["conversations"] = {
+        key: value
+        for key, value in filtered.get("conversations", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+    }
+    visible_conversation_ids = set(filtered["conversations"])
+    filtered["conversation_messages"] = {
+        key: value
+        for key, value in filtered.get("conversation_messages", {}).items()
+        if value.get("conversation_id") in visible_conversation_ids
     }
     filtered["release_packages"] = {
         key: {

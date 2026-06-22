@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import stat
+import tempfile
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -23,28 +28,32 @@ class TriggerCursorRepository(Protocol):
 
 
 class TriggerCursorStore:
-    """Simple atomic JSON cursor store keyed by trigger_id."""
+    """Atomic JSON cursor store keyed by trigger_id."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.write_text("{}", encoding="utf-8")
+        with self._lock:
+            with self._file_lock():
+                if not self.path.exists():
+                    self._atomic_write({})
 
     def get(self, trigger_id: str) -> dict[str, Any]:
         with self._lock:
-            payload = self._read_raw()
-            raw = payload.get(trigger_id)
-            if isinstance(raw, dict):
-                return dict(raw)
-            return {}
+            with self._file_lock():
+                payload = self._read_raw()
+                raw = payload.get(trigger_id)
+                if isinstance(raw, dict):
+                    return dict(raw)
+                return {}
 
     def put(self, trigger_id: str, value: dict[str, Any]) -> None:
         with self._lock:
-            payload = self._read_raw()
-            payload[trigger_id] = value
-            self._atomic_write(payload)
+            with self._file_lock():
+                payload = self._read_raw()
+                payload[trigger_id] = value
+                self._atomic_write(payload)
 
     def update(
         self,
@@ -52,25 +61,80 @@ class TriggerCursorStore:
         updater: Callable[[dict[str, Any]], dict[str, Any] | None],
     ) -> dict[str, Any]:
         with self._lock:
-            payload = self._read_raw()
-            current = payload.get(trigger_id)
-            state = dict(current) if isinstance(current, dict) else {}
-            updated = updater(state)
-            if updated is None:
-                updated = state
-            if not isinstance(updated, dict):
-                raise TypeError("Trigger cursor updater must return a mapping or None")
-            payload[trigger_id] = updated
-            self._atomic_write(payload)
-            return dict(updated)
+            with self._file_lock():
+                payload = self._read_raw()
+                current = payload.get(trigger_id)
+                state = dict(current) if isinstance(current, dict) else {}
+                updated = updater(state)
+                if updated is None:
+                    updated = state
+                if not isinstance(updated, dict):
+                    raise TypeError("Trigger cursor updater must return a mapping or None")
+                payload[trigger_id] = updated
+                self._atomic_write(payload)
+                return dict(updated)
 
     def _read_raw(self) -> dict[str, Any]:
         return json.loads(self.path.read_text(encoding="utf-8"))
 
+    @contextmanager
+    def _file_lock(self) -> Iterable[None]:
+        lock_path = self.path.with_name(f".{self.path.name}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            if os.geteuid() == 0:
+                owner_source = self.path if self.path.exists() else self.path.parent
+                owner_stat = owner_source.stat()
+                os.fchown(lock_file.fileno(), owner_stat.st_uid, owner_stat.st_gid)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
     def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        serialized = json.dumps(payload, indent=2, sort_keys=True)
+        owner_source = self.path if self.path.exists() else self.path.parent
+        owner_stat = owner_source.stat()
+        mode = (
+            stat.S_IMODE(self.path.stat().st_mode)
+            if self.path.exists()
+            else _default_file_mode()
+        )
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+            dir=self.path.parent,
+            text=True,
+        )
+        tmp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_path, mode)
+            if os.geteuid() == 0:
+                os.chown(tmp_path, owner_stat.st_uid, owner_stat.st_gid)
+            os.replace(tmp_path, self.path)
+            dir_fd = os.open(
+                self.path.parent,
+                getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY,
+            )
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+
+def _default_file_mode() -> int:
+    current_umask = os.umask(0)
+    try:
+        return 0o666 & ~current_umask
+    finally:
+        os.umask(current_umask)
 
 
 def merge_cursor_ids(
