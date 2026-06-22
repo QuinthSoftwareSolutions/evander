@@ -3460,7 +3460,8 @@ def _filtered_team_state_payload(
         if agent_id in visible_agent_ids and agent_id in agents:
             agent = agents[agent_id]
             visible_agent_ids = {agent_id}
-            visible_team_ids &= {_required_text(agent.get("team_id"), "team_id")}
+            agent_team_id = _optional_text(agent.get("team_id"))
+            visible_team_ids = visible_team_ids & {agent_team_id} if agent_team_id is not None else set()
             agent_project_id = _optional_text(agent.get("project_id"))
             visible_project_ids = (
                 visible_project_ids & {agent_project_id}
@@ -3495,9 +3496,9 @@ def _filtered_team_state_payload(
         if key in visible_agent_ids
     }
     visible_role_ids = {
-        _required_text(value.get("role_id"), "role_id")
+        role_id
         for value in filtered["agents"].values()
-        if value.get("role_id") is not None
+        if (role_id := _optional_text(value.get("role_id"))) is not None
     }
     filtered["agent_runtimes"] = {
         key: value

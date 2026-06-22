@@ -100,7 +100,6 @@ let showArchived = false;
 let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
-let selectedPeopleTeamId = "all";
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -166,9 +165,9 @@ const elements = {
   timelineStatusFilter: document.querySelector("#timeline-status-filter"),
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
   showArchivedToggle: document.querySelector("#show-archived-toggle"),
-  refreshButton: document.querySelector("#refresh-button"),
   teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
+  teamViewActionButtons: Array.from(document.querySelectorAll("[data-team-view-action]")),
   orgFocusSummary: document.querySelector("#org-focus-summary"),
   orgFocusTeamTabs: document.querySelector("#org-focus-team-tabs"),
   orgFocusView: document.querySelector("#org-focus-view"),
@@ -374,9 +373,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   bindTimelineFilters();
   bindTimelinePagination();
-  elements.refreshButton?.addEventListener("click", () => {
-    void loadState({ preserveForms: true });
-  });
   window.addEventListener("beforeunload", () => {
     closeChatStream();
   });
@@ -506,6 +502,9 @@ function storeTeamView(view) {
 
 function setTeamView(view) {
   const nextView = normalizedTeamView(view);
+  if (nextView === "people" && activeTeamView !== "people") {
+    clearSelectedTeamRecord();
+  }
   const enteringChat = activeTeamView !== "chat" && nextView === "chat";
   activeTeamView = nextView;
   storeTeamView(activeTeamView);
@@ -525,6 +524,14 @@ function updateTeamViewTabs() {
   elements.teamViewPanels.forEach((panel) => {
     const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
     panel.hidden = !active;
+  });
+  syncTeamViewActions();
+}
+
+function syncTeamViewActions() {
+  elements.teamViewActionButtons.forEach((button) => {
+    const actionView = button.dataset.teamViewAction || "";
+    button.hidden = actionView !== activeTeamView;
   });
 }
 
@@ -708,14 +715,6 @@ function bindForms() {
 
 function bindRecordEditing() {
   document.addEventListener("click", (event) => {
-    const peopleTeamButton = event.target.closest("[data-people-team-id]");
-    if (peopleTeamButton) {
-      event.preventDefault();
-      selectedPeopleTeamId = peopleTeamButton.dataset.peopleTeamId || "all";
-      renderAgents();
-      return;
-    }
-
     const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
     if (openCreateTeamButton) {
       event.preventDefault();
@@ -740,6 +739,7 @@ function bindRecordEditing() {
     const teamGroupToggle = event.target.closest("[data-team-record-toggle]");
     if (teamGroupToggle) {
       event.preventDefault();
+      selectTeamRecord("team", teamGroupToggle.dataset.teamRecordToggle);
       toggleTeamRecordGroup(teamGroupToggle.dataset.teamRecordToggle);
       return;
     }
@@ -2832,15 +2832,11 @@ function renderPeopleAgents(allAgents, agents) {
   renderIntoActiveTargets("[data-agents-view]", "");
   const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
   const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
-  if (selectedPeopleTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedPeopleTeamId))) {
-    selectedPeopleTeamId = "all";
-  }
   const teamAgents = agents.filter((agent) => visibleTeamIds.has(text(agent.team_id)));
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter((project) => isVisibleProject(project) && visibleTeamIds.has(text(project.team_id)));
   const allRoles = values(state.roles).sort(byId);
   const roles = allRoles.filter((role) => isVisibleRole(role) && visibleTeamIds.has(text(role.team_id)));
-  const teamTabs = renderPeopleTeamTabs(visibleTeams, { agents: teamAgents, projects, roles });
 
   if (!visibleTeams.length) {
     clearSelectedTeamRecord();
@@ -2849,10 +2845,12 @@ function renderPeopleAgents(allAgents, agents) {
     return;
   }
 
-  const scopedTeams = selectedPeopleTeamId === "all"
-    ? visibleTeams
-    : visibleTeams.filter((team) => text(team.id) === text(selectedPeopleTeamId));
-  const scopedTeamIds = new Set(scopedTeams.map((team) => text(team.id)));
+  if (!selectedTeamRecordId) {
+    selectTeamRecord("team", visibleTeams[0].id, { rerender: false });
+  }
+
+  const scopedTeams = visibleTeams;
+  const scopedTeamIds = visibleTeamIds;
   const scopedRecords = {
     agents: teamAgents.filter((agent) => scopedTeamIds.has(text(agent.team_id))).sort(comparePeopleAgents),
     projects: projects.filter((project) => scopedTeamIds.has(text(project.team_id))).sort(compareTeamProjects),
@@ -2861,62 +2859,22 @@ function renderPeopleAgents(allAgents, agents) {
   const selectedRecord = selectedTeamRecordFrom(scopedRecords);
   const hasRecords = scopedRecords.agents.length || scopedRecords.projects.length || scopedRecords.roles.length;
 
-  if (!hasRecords) {
+  if (!hasRecords && selectedRecord?.kind !== "team") {
     clearSelectedTeamRecord();
     renderIntoActiveTargets(
       "[data-teams-records-view]",
-      `${teamTabs}<p class="empty-state">No visible records in this team.</p>`,
+      "<p class=\"empty-state\">No visible records.</p>",
     );
     renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(null));
     return;
   }
 
   renderIntoActiveTargets("[data-teams-records-view]", `
-    ${teamTabs}
     <div class="team-record-groups">
       ${scopedTeams.map((team) => renderTeamRecordGroup(team, scopedRecords)).join("")}
     </div>
   `);
   renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(selectedRecord));
-}
-
-function renderPeopleTeamTabs(visibleTeams, records) {
-  if (visibleTeams.length <= 1) {
-    return "";
-  }
-  const buttons = [
-    renderPeopleTeamTab({
-      id: "all",
-      label: "All teams",
-      count: teamRecordCount(records),
-      selected: selectedPeopleTeamId === "all",
-    }),
-    ...visibleTeams.map((team) => {
-      const teamRecords = teamRecordsForTeam(team.id, records);
-      return renderPeopleTeamTab({
-        id: team.id,
-        label: team.name || team.id,
-        count: teamRecordCount(teamRecords),
-        selected: text(selectedPeopleTeamId) === text(team.id),
-      });
-    }),
-  ];
-  return `<div class="people-team-tabs" role="tablist" aria-label="Teams">${buttons.join("")}</div>`;
-}
-
-function renderPeopleTeamTab({ id, label, count, selected }) {
-  return `
-    <button
-      type="button"
-      class="people-team-tab${selected ? " active" : ""}"
-      role="tab"
-      aria-selected="${selected ? "true" : "false"}"
-      data-people-team-id="${escapeAttr(id)}"
-    >
-      <span>${escapeHtml(label)}</span>
-      <strong>${escapeHtml(count)}</strong>
-    </button>
-  `;
 }
 
 function renderTeamRecordGroup(team, scopedRecords) {
@@ -2925,17 +2883,19 @@ function renderTeamRecordGroup(team, scopedRecords) {
   const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
   teamRecordGroupTabs[teamId] = activeKind;
   const expanded = expandedTeamRecordGroupIds.has(teamId);
+  const selected = selectedTeamRecordKind === "team" && text(selectedTeamRecordId) === text(teamId);
   const counts = [
     `${teamRecords.agents.length} agent${teamRecords.agents.length === 1 ? "" : "s"}`,
     `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
     `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
   ];
   return `
-    <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}" data-team-record-group-id="${escapeAttr(teamId)}">
+    <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}${selected ? " is-selected" : ""}" data-team-record-group-id="${escapeAttr(teamId)}">
       <button
         class="team-record-group-header"
         type="button"
         aria-expanded="${expanded ? "true" : "false"}"
+        aria-pressed="${selected ? "true" : "false"}"
         data-team-record-toggle="${escapeAttr(teamId)}"
       >
         <span class="team-record-group-title">
@@ -3088,6 +3048,17 @@ function selectedTeamRecordFrom(records) {
   if (!selectedTeamRecordId) {
     return null;
   }
+  if (selectedTeamRecordKind === "team") {
+    const selectedTeam = state.teams[selectedTeamRecordId];
+    if (!selectedTeam || !isVisibleTeam(selectedTeam)) {
+      clearSelectedTeamRecord();
+      return null;
+    }
+    return {
+      kind: selectedTeamRecordKind,
+      record: selectedTeam,
+    };
+  }
   const selectedRecord = teamRecordCollection(records, selectedTeamRecordKind)
     .find((record) => text(record.id) === text(selectedTeamRecordId));
   if (!selectedRecord) {
@@ -3101,6 +3072,9 @@ function selectedTeamRecordFrom(records) {
 }
 
 function teamRecordCollection(records, kind) {
+  if (kind === "team") {
+    return [];
+  }
   if (kind === "project") {
     return records.projects || [];
   }
@@ -3153,17 +3127,23 @@ function selectPeopleAgent(agentId) {
   selectTeamRecord("agent", agentId);
 }
 
-function selectTeamRecord(kind, recordId) {
+function selectTeamRecord(kind, recordId, { rerender = true } = {}) {
   const normalizedRecordId = text(recordId);
   if (!normalizedRecordId || !teamRecordExists(kind, normalizedRecordId)) {
     return;
   }
   selectedTeamRecordKind = kind;
   selectedTeamRecordId = normalizedRecordId;
-  renderAgents();
+  if (rerender) {
+    renderAgents();
+  }
 }
 
 function teamRecordExists(kind, recordId) {
+  if (kind === "team") {
+    const team = state.teams[recordId];
+    return Boolean(team && isVisibleTeam(team));
+  }
   if (kind === "project") {
     return Boolean(state.projects[recordId]);
   }
@@ -3244,7 +3224,10 @@ function renderSelectableRole(role) {
 
 function renderTeamRecordDetail(selectedRecord) {
   if (!selectedRecord) {
-    return renderPeopleAgentDetail(null, "Select an agent, project, or role.");
+    return renderPeopleAgentDetail(null, "Select a team, agent, project, or role.");
+  }
+  if (selectedRecord.kind === "team") {
+    return renderTeamRecordDetailContent(selectedRecord.record);
   }
   if (selectedRecord.kind === "project") {
     return renderTeamProjectDetail(selectedRecord.record);
@@ -3299,6 +3282,45 @@ function renderTeamProjectDetail(project) {
       <section class="agent-detail-section">
         <h3>Deliverables</h3>
         ${renderDeliverables(projectDeliverables, { compact: true })}
+      </section>
+    </div>
+  `;
+}
+
+function renderTeamRecordDetailContent(team) {
+  const manager = state.agents[team.manager_agent_id] || null;
+  const teamRecords = teamRecordsForTeam(team.id, {
+    teamId: text(team.id),
+    agents: values(state.agents).filter((agent) => isVisibleAgent(agent) && text(agent.team_id) === text(team.id)),
+    projects: values(state.projects).filter((project) => isVisibleProject(project) && text(project.team_id) === text(team.id)),
+    roles: values(state.roles).filter((role) => isVisibleRole(role) && text(role.team_id) === text(team.id)),
+  });
+  return `
+    <div class="agent-detail team-record-detail">
+      <div class="agent-detail-header">
+        <div class="agent-detail-title">
+          <h3>${escapeHtml(team.name || team.id)}</h3>
+          <div class="meta-line">${escapeHtml(team.id)}</div>
+        </div>
+        <div class="agent-detail-badges">
+          ${team.archived ? `<span class="state-pill archived">archived</span>` : `<span class="state-pill accepted">active</span>`}
+          ${renderTeamCostBlockedPill(team.id)}
+        </div>
+      </div>
+      <div class="record-actions agent-detail-actions">
+        ${editButton("team", team.id)}
+      </div>
+      <div class="agent-detail-grid">
+        ${renderAgentDetailField("Manager", manager ? `${agentLabel(manager)} (${manager.id})` : text(team.manager_agent_id) || "None")}
+        ${renderAgentDetailField("Agents", teamRecords.agents.length)}
+        ${renderAgentDetailField("Projects", teamRecords.projects.length)}
+        ${renderAgentDetailField("Roles", teamRecords.roles.length)}
+        ${renderAgentDetailField("Operator communication target", text(team.operator_communication_target_id) || "None")}
+        ${renderAgentDetailField("Estimated max cost USD", text(team.max_cost_usd) || "None")}
+      </div>
+      <section class="agent-detail-section">
+        <h3>Team cost</h3>
+        ${renderTeamCostCounter(team.id) || "<p class=\"empty-state\">No cost estimate available.</p>"}
       </section>
     </div>
   `;
@@ -6626,6 +6648,10 @@ function buildSelectOptionSets() {
   const projects = values(state.projects).filter(isVisibleProject).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
   const roles = values(state.roles).filter(isVisibleRole).sort(byId).map((role) => [role.id, `${role.name} (${role.id})`]);
   const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
+  const agentsByDisplayName = values(state.agents)
+    .filter(isVisibleAgent)
+    .map((agent) => [agent.id, text(agent.display_name) || text(agent.id)])
+    .sort((left, right) => text(left[1]).localeCompare(text(right[1])) || text(left[0]).localeCompare(text(right[0])));
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
@@ -6644,6 +6670,7 @@ function buildSelectOptionSets() {
     projects,
     roles,
     agents,
+    "agents-by-display-name": agentsByDisplayName,
     tasks,
     deliverables,
     "review-profiles": reviewProfiles,
@@ -6674,8 +6701,9 @@ function buildSelectOptionSets() {
 
 function fillSelect(select, options) {
   const currentValue = select.dataset.currentValue ?? select.value;
+  const includePlaceholder = !select.multiple;
   const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
-  select.innerHTML = `<option value="">${placeholder}</option>${options
+  select.innerHTML = `${includePlaceholder ? `<option value="">${placeholder}</option>` : ""}${options
     .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
     .join("")}`;
   if (select.multiple) {
@@ -6713,7 +6741,6 @@ async function submitCreateForm(form) {
   const saved = await submitMutation(form, endpoint, method, payload);
   const formId = formIdentifier(form);
   if (saved && formId === "create-team-from-teams-form") {
-    selectedPeopleTeamId = "all";
     closeTeamsCreateTeamPanel({ reset: true });
     renderAgents();
   }
@@ -7962,11 +7989,11 @@ function payloadForForm(form, data = formData(form)) {
   }
   if (formId === "register-agent-form") {
     const payload = {
-      team_id: text(data.team_id),
-      project_id: text(data.project_id),
-      role_id: text(data.role_id),
+      team_id: text(data.team_id) || null,
+      project_id: text(data.project_id) || null,
+      role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
-      reports_to_agent_id: text(data.reports_to_agent_id),
+      reports_to_agent_id: text(data.reports_to_agent_id) || null,
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
     };
     const displayName = text(data.display_name);
@@ -8215,7 +8242,7 @@ function renderEditFields(type, record) {
   if (type === "project") {
     return `
       ${readonlyField("Project ID", record.id)}
-      ${readonlyField("Team", record.team_id)}
+      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
       ${textField("Name", "name", record.name, { required: true })}
       ${selectField("Status", "status", "project-statuses", record.status || "active", { required: true })}
       ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
@@ -8237,9 +8264,9 @@ function renderEditFields(type, record) {
     const runtime = state.agent_runtimes?.[record.id] || {};
     return `
       ${readonlyField("Agent ID", record.id)}
-      ${readonlyField("Team", record.team_id)}
+      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "No project" })}
-      ${selectField("Role", "role_id", "roles", record.role_id || "", { required: true })}
+      ${selectField("Role", "role_id", "roles", record.role_id || "", { placeholder: "No role" })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
       ${renderAvatarEditControls(record)}
@@ -8253,7 +8280,7 @@ function renderEditFields(type, record) {
   if (type === "role") {
     return `
       ${readonlyField("Role ID", record.id)}
-      ${readonlyField("Team", record.team_id)}
+      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
@@ -8278,7 +8305,7 @@ function renderEditFields(type, record) {
   if (type === "review-profile") {
     return `
       ${readonlyField("Profile ID", record.id)}
-      ${readonlyField("Team", record.team_id)}
+      ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
@@ -8373,8 +8400,9 @@ function editPayloadForForm(type, form) {
   }
   if (type === "agent") {
     return {
+      team_id: text(data.team_id) || null,
       project_id: text(data.project_id) || null,
-      role_id: text(data.role_id),
+      role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id) || null,
       display_name: text(data.display_name) || null,
@@ -8754,7 +8782,15 @@ function roleLabel(roleOrId) {
 }
 
 function agentRoleLabel(agent) {
-  return text(agent?.role_name) || roleLabel(agent?.role_id);
+  const roleId = text(agent?.role_id);
+  return text(agent?.role_name) || (roleId ? roleLabel(roleId) : "No role");
+}
+
+function agentTeamLabel(agent) {
+  const teamId = text(agent?.team_id);
+  if (!teamId) return "No team";
+  const team = state.teams[teamId];
+  return team ? `${team.name} (${team.id})` : teamId;
 }
 
 function permissionLabel(permission) {

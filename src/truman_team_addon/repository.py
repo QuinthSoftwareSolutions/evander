@@ -261,7 +261,12 @@ class TeamStateRepository:
                 ],
                 existing_ids=state.agents,
             )
-            _require_absent(state.agents, effective_manager_agent_id, "agent")
+            existing_manager = state.agents.get(effective_manager_agent_id)
+            if existing_manager is not None and existing_manager.team_id is not None:
+                raise ValueError(
+                    f"agent {effective_manager_agent_id} already belongs to team "
+                    f"{existing_manager.team_id}"
+                )
             now = utc_now()
             role = TeamRole(
                 id=role_id,
@@ -272,16 +277,27 @@ class TeamStateRepository:
                 updated_at=now,
             )
             state.roles[role.id] = role
-            manager = PersistentAgent(
-                id=effective_manager_agent_id,
-                team_id=effective_team_id,
-                display_name=normalized_manager_display_name,
-                role_id=role.id,
-                session_id=normalized_manager_session_id,
-                reports_to_agent_id=None,
-                ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
-            )
-            state.agents[manager.id] = manager
+            if existing_manager is not None:
+                manager = existing_manager
+                manager.team_id = effective_team_id
+                manager.project_id = None
+                manager.display_name = normalized_manager_display_name or manager.display_name
+                manager.role_id = role.id
+                manager.session_id = normalized_manager_session_id
+                manager.reports_to_agent_id = None
+                manager.subordinate_agent_ids = []
+                manager.ephemeral_policy = role.ephemeral_policy.model_copy(deep=True)
+            else:
+                manager = PersistentAgent(
+                    id=effective_manager_agent_id,
+                    team_id=effective_team_id,
+                    display_name=normalized_manager_display_name,
+                    role_id=role.id,
+                    session_id=normalized_manager_session_id,
+                    reports_to_agent_id=None,
+                    ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
+                )
+                state.agents[manager.id] = manager
             state.teams[effective_team_id] = Team(
                 id=effective_team_id,
                 name=normalized_name,
@@ -594,7 +610,18 @@ class TeamStateRepository:
                 ],
                 existing_ids=state.agents,
             )
-            _require_absent(state.agents, effective_lead_agent_id, "agent")
+            existing_lead = state.agents.get(effective_lead_agent_id)
+            if existing_lead is not None:
+                if existing_lead.team_id not in {None, normalized_team_id}:
+                    raise ValueError(
+                        f"agent {effective_lead_agent_id} belongs to team "
+                        f"{existing_lead.team_id}"
+                    )
+                if existing_lead.project_id is not None:
+                    raise ValueError(
+                        f"agent {effective_lead_agent_id} already belongs to project "
+                        f"{existing_lead.project_id}"
+                    )
             project_goals = _project_goals_with_generated_ids(
                 goal_inputs,
                 project_id=effective_project_id,
@@ -610,17 +637,34 @@ class TeamStateRepository:
                 updated_at=now,
             )
             state.roles[role.id] = role
-            lead = PersistentAgent(
-                id=effective_lead_agent_id,
-                team_id=normalized_team_id,
-                project_id=effective_project_id,
-                display_name=normalized_lead_display_name,
-                role_id=role.id,
-                session_id=normalized_lead_session_id,
-                reports_to_agent_id=team.manager_agent_id,
-                ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
-            )
-            state.agents[lead.id] = lead
+            if existing_lead is not None:
+                lead = existing_lead
+                old_superior_id = lead.reports_to_agent_id
+                if old_superior_id and old_superior_id in state.agents:
+                    old_superior = state.agents[old_superior_id]
+                    old_superior.subordinate_agent_ids = _remove_value(
+                        old_superior.subordinate_agent_ids,
+                        lead.id,
+                    )
+                lead.team_id = normalized_team_id
+                lead.project_id = effective_project_id
+                lead.display_name = normalized_lead_display_name or lead.display_name
+                lead.role_id = role.id
+                lead.session_id = normalized_lead_session_id
+                lead.reports_to_agent_id = team.manager_agent_id
+                lead.ephemeral_policy = role.ephemeral_policy.model_copy(deep=True)
+            else:
+                lead = PersistentAgent(
+                    id=effective_lead_agent_id,
+                    team_id=normalized_team_id,
+                    project_id=effective_project_id,
+                    display_name=normalized_lead_display_name,
+                    role_id=role.id,
+                    session_id=normalized_lead_session_id,
+                    reports_to_agent_id=team.manager_agent_id,
+                    ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
+                )
+                state.agents[lead.id] = lead
             manager = state.agents[team.manager_agent_id]
             manager.subordinate_agent_ids = _append_unique(manager.subordinate_agent_ids, lead.id)
             state.projects[effective_project_id] = Project(
@@ -768,73 +812,99 @@ class TeamStateRepository:
         self,
         *,
         agent_id: str | None,
-        team_id: str,
-        project_id: str,
-        role_id: str,
         session_id: str,
-        reports_to_agent_id: str,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        role_id: str | None = None,
+        reports_to_agent_id: str | None = None,
         display_name: str | None = None,
         ephemeral_policy: EphemeralAgentPolicy | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_agent_id = _optional_text(agent_id)
-        normalized_team_id = _required_text(team_id, "team_id")
-        normalized_project_id = _required_text(project_id, "project_id")
-        normalized_role_id = _required_text(role_id, "role_id")
+        normalized_team_id = _optional_text(team_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_role_id = _optional_text(role_id)
         normalized_session_id = _required_text(session_id, "session_id")
-        normalized_reports_to_agent_id = _required_text(
-            reports_to_agent_id,
-            "reports_to_agent_id",
-        )
+        normalized_reports_to_agent_id = _optional_text(reports_to_agent_id)
         normalized_display_name = _optional_text(display_name)
 
         def _mutate(state: TeamState) -> TeamState:
-            _require_present(state.teams, normalized_team_id, "team")
-            project = _require_present(state.projects, normalized_project_id, "project")
-            if project.team_id != normalized_team_id:
-                raise ValueError(
-                    f"project {normalized_project_id} does not belong to team {normalized_team_id}"
-                )
-            role = _require_present(state.roles, normalized_role_id, "role")
-            _validate_role_assignment(
-                role,
-                team_id=normalized_team_id,
-                project_id=normalized_project_id,
+            generated_agent_labels = (
+                [
+                    normalized_project_id or normalized_team_id,
+                    normalized_display_name or normalized_role_id or normalized_session_id,
+                ]
+                if normalized_team_id is not None
+                else [normalized_display_name or normalized_session_id]
             )
-            superior = _require_present(
-                state.agents,
-                normalized_reports_to_agent_id,
-                "superior agent",
-            )
-            if superior.team_id != normalized_team_id:
-                raise ValueError(
-                    f"superior agent {normalized_reports_to_agent_id} is not in team {normalized_team_id}"
-                )
             effective_agent_id = normalized_agent_id or _generated_id(
                 prefix="agent",
-                labels=[
-                    normalized_project_id,
-                    normalized_display_name or role.name or normalized_session_id,
-                ],
+                labels=generated_agent_labels,
                 existing_ids=state.agents,
             )
             _require_absent(state.agents, effective_agent_id, "agent")
+            role: TeamRole | None = None
+            if normalized_team_id is None:
+                if normalized_project_id is not None:
+                    raise ValueError("project_id requires team_id")
+                if normalized_role_id is not None:
+                    raise ValueError("role_id requires team_id")
+                if normalized_reports_to_agent_id is not None:
+                    raise ValueError("reports_to_agent_id requires team_id")
+            else:
+                _require_present(state.teams, normalized_team_id, "team")
+                if normalized_project_id is not None:
+                    project = _require_present(state.projects, normalized_project_id, "project")
+                    if project.team_id != normalized_team_id:
+                        raise ValueError(
+                            f"project {normalized_project_id} does not belong to team "
+                            f"{normalized_team_id}"
+                        )
+                if normalized_role_id is None:
+                    raise ValueError("role_id is required when registering an agent to a team")
+                role = _require_present(state.roles, normalized_role_id, "role")
+                _validate_role_assignment(
+                    role,
+                    team_id=normalized_team_id,
+                    project_id=normalized_project_id,
+                )
+                if normalized_reports_to_agent_id is not None:
+                    superior = _require_present(
+                        state.agents,
+                        normalized_reports_to_agent_id,
+                        "superior agent",
+                    )
+                    if superior.team_id != normalized_team_id:
+                        raise ValueError(
+                            f"superior agent {normalized_reports_to_agent_id} is not in team "
+                            f"{normalized_team_id}"
+                        )
             agent = PersistentAgent(
                 id=effective_agent_id,
                 team_id=normalized_team_id,
                 project_id=normalized_project_id,
                 display_name=normalized_display_name,
-                role_id=role.id,
+                role_id=normalized_role_id,
                 session_id=normalized_session_id,
                 reports_to_agent_id=normalized_reports_to_agent_id,
                 ephemeral_policy=(
-                    ephemeral_policy
+                    ephemeral_policy.model_copy(deep=True)
                     if ephemeral_policy is not None
-                    else role.ephemeral_policy.model_copy(deep=True)
+                    else (
+                        role.ephemeral_policy.model_copy(deep=True)
+                        if role is not None
+                        else EphemeralAgentPolicy()
+                    )
                 ),
             )
             state.agents[agent.id] = agent
-            superior.subordinate_agent_ids = _append_unique(superior.subordinate_agent_ids, agent.id)
+            if normalized_reports_to_agent_id and normalized_reports_to_agent_id in state.agents:
+                superior = state.agents[normalized_reports_to_agent_id]
+                superior.subordinate_agent_ids = _append_unique(
+                    superior.subordinate_agent_ids,
+                    agent.id,
+                )
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -843,9 +913,12 @@ class TeamStateRepository:
         self,
         *,
         agent_id: str,
+        team_id: str | None = None,
+        set_team_id: bool = False,
         project_id: str | None = None,
         set_project_id: bool = False,
         role_id: str | None = None,
+        set_role_id: bool = False,
         session_id: str | None = None,
         reports_to_agent_id: str | None = None,
         set_reports_to_agent_id: bool = False,
@@ -859,32 +932,69 @@ class TeamStateRepository:
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_team_id = _optional_text(team_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_role_id = _optional_text(role_id)
+        normalized_reports_to_agent_id = _optional_text(reports_to_agent_id)
+
         def _mutate(state: TeamState) -> TeamState:
             now = utc_now()
-            agent = _require_present(state.agents, agent_id, "agent")
-            if set_project_id:
-                if project_id is not None:
-                    project = _require_present(state.projects, project_id, "project")
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            detached_from_team = False
+            if set_team_id:
+                if normalized_team_id is None:
+                    blockers = _agent_team_removal_blockers(state, agent)
+                    if blockers:
+                        raise ValueError(
+                            f"agent {agent.id} cannot be removed from team: "
+                            + "; ".join(blockers)
+                        )
+                    old_superior_id = agent.reports_to_agent_id
+                    if old_superior_id and old_superior_id in state.agents:
+                        old_superior = state.agents[old_superior_id]
+                        old_superior.subordinate_agent_ids = _remove_value(
+                            old_superior.subordinate_agent_ids,
+                            agent.id,
+                        )
+                    agent.team_id = None
+                    agent.project_id = None
+                    agent.role_id = None
+                    agent.reports_to_agent_id = None
+                    agent.subordinate_agent_ids = []
+                    detached_from_team = True
+                else:
+                    _require_present(state.teams, normalized_team_id, "team")
+                    agent.team_id = normalized_team_id
+            if set_project_id and not detached_from_team:
+                if normalized_project_id is not None:
+                    if agent.team_id is None:
+                        raise ValueError("project_id cannot be set for a teamless agent")
+                    project = _require_present(state.projects, normalized_project_id, "project")
                     if project.team_id != agent.team_id:
                         raise ValueError(
-                            f"project {project_id} does not belong to team {agent.team_id}"
+                            f"project {normalized_project_id} does not belong to team {agent.team_id}"
                         )
-                agent.project_id = project_id
-            if role_id is not None:
-                role = _require_present(state.roles, role_id, "role")
+                agent.project_id = normalized_project_id
+            if set_role_id and not detached_from_team:
+                if normalized_role_id is not None:
+                    if agent.team_id is None:
+                        raise ValueError("role_id cannot be set for a teamless agent")
+                    role = _require_present(state.roles, normalized_role_id, "role")
+                    _validate_role_assignment(
+                        role,
+                        team_id=agent.team_id,
+                        project_id=agent.project_id,
+                    )
+                agent.role_id = normalized_role_id
+            elif role_id is not None and not detached_from_team:
+                role = _require_present(state.roles, normalized_role_id or role_id, "role")
                 _validate_role_assignment(
                     role,
                     team_id=agent.team_id,
                     project_id=agent.project_id,
                 )
                 agent.role_id = role.id
-            elif set_project_id:
-                role = _require_present(state.roles, agent.role_id, "role")
-                _validate_role_assignment(
-                    role,
-                    team_id=agent.team_id,
-                    project_id=agent.project_id,
-                )
             if session_id is not None:
                 agent.session_id = session_id
             if set_display_name:
@@ -914,27 +1024,47 @@ class TeamStateRepository:
                     )
                 else:
                     _clear_pending_idle_context_rotation(runtime)
-            if set_reports_to_agent_id:
+            if set_reports_to_agent_id and not detached_from_team:
                 old_superior_id = agent.reports_to_agent_id
-                if reports_to_agent_id is not None:
+                if normalized_reports_to_agent_id is not None:
+                    if agent.team_id is None:
+                        raise ValueError("reports_to_agent_id cannot be set for a teamless agent")
                     superior = _require_present(
-                        state.agents, reports_to_agent_id, "superior agent"
+                        state.agents, normalized_reports_to_agent_id, "superior agent"
                     )
                     if superior.team_id != agent.team_id:
                         raise ValueError(
-                            f"superior agent {reports_to_agent_id} is not in team {agent.team_id}"
+                            f"superior agent {normalized_reports_to_agent_id} is not in team {agent.team_id}"
                         )
                 if old_superior_id and old_superior_id in state.agents:
                     old_superior = state.agents[old_superior_id]
                     old_superior.subordinate_agent_ids = _remove_value(
                         old_superior.subordinate_agent_ids, agent.id
                     )
-                agent.reports_to_agent_id = reports_to_agent_id
-                if reports_to_agent_id and reports_to_agent_id in state.agents:
-                    superior = state.agents[reports_to_agent_id]
+                agent.reports_to_agent_id = normalized_reports_to_agent_id
+                if normalized_reports_to_agent_id and normalized_reports_to_agent_id in state.agents:
+                    superior = state.agents[normalized_reports_to_agent_id]
                     superior.subordinate_agent_ids = _append_unique(
                         superior.subordinate_agent_ids, agent.id
                     )
+            if agent.team_id is None:
+                if agent.project_id is not None:
+                    raise ValueError("teamless agent cannot belong to a project")
+                if agent.role_id is not None:
+                    raise ValueError("teamless agent cannot have a team-scoped role")
+                if agent.reports_to_agent_id is not None:
+                    raise ValueError("teamless agent cannot report to another agent")
+                if agent.subordinate_agent_ids:
+                    raise ValueError("teamless agent cannot have subordinate agents")
+            else:
+                if agent.role_id is None:
+                    raise ValueError("role_id is required when assigning an agent to a team")
+                role = _require_present(state.roles, agent.role_id, "role")
+                _validate_role_assignment(
+                    role,
+                    team_id=agent.team_id,
+                    project_id=agent.project_id,
+                )
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -3922,12 +4052,67 @@ def _normalize_role_permissions(
     return normalized
 
 
+def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> list[str]:
+    if agent.team_id is None:
+        return []
+    blockers: list[str] = []
+    for team in state.teams.values():
+        if team.manager_agent_id == agent.id:
+            blockers.append(f"manager of team {team.id}")
+    for project in state.projects.values():
+        if project.lead_agent_id == agent.id:
+            blockers.append(f"lead of project {project.id}")
+    if agent.subordinate_agent_ids:
+        blockers.append(
+            "has subordinate agents " + ", ".join(sorted(agent.subordinate_agent_ids))
+        )
+    for other in state.agents.values():
+        if other.reports_to_agent_id == agent.id:
+            blockers.append(f"superior of agent {other.id}")
+    terminal_task_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+    }
+    for task in state.tasks.values():
+        if task.state in terminal_task_states:
+            continue
+        if task.owner_agent_id == agent.id:
+            blockers.append(f"owns task {task.id}")
+        if task.created_by_agent_id == agent.id:
+            blockers.append(f"created task {task.id}")
+    terminal_record_states = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+    for deliverable in state.deliverables.values():
+        if deliverable.state in terminal_record_states:
+            continue
+        if deliverable.producer_agent_id == agent.id:
+            blockers.append(f"produced deliverable {deliverable.id}")
+    for review in state.review_requests.values():
+        if review.state in terminal_record_states:
+            continue
+        if review.reviewer_agent_id == agent.id:
+            blockers.append(f"reviews request {review.id}")
+    for item in state.inbox.values():
+        if item.state != TeamInboxItemState.PENDING:
+            continue
+        if item.recipient_agent_id == agent.id:
+            blockers.append(f"recipient of inbox item {item.id}")
+        if item.sender_agent_id == agent.id:
+            blockers.append(f"sender of inbox item {item.id}")
+    runtime = state.agent_runtimes.get(agent.id)
+    if runtime is not None and runtime.active_dispatch_id is not None:
+        blockers.append(f"active dispatch {runtime.active_dispatch_id}")
+    return list(dict.fromkeys(blockers))
+
+
 def _validate_role_assignment(
     role: TeamRole,
     *,
-    team_id: str,
+    team_id: str | None,
     project_id: str | None,
 ) -> None:
+    if team_id is None:
+        raise ValueError(f"role {role.id} cannot be assigned to a teamless agent")
     if role.team_id != team_id:
         raise ValueError(f"role {role.id} does not belong to team {team_id}")
     if role.project_id is not None and role.project_id != project_id:
@@ -3943,7 +4128,7 @@ def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) 
 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     payload = agent.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
-    role = state.roles.get(agent.role_id)
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (
         [permission.value for permission in role.permissions]

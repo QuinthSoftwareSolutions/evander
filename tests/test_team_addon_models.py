@@ -1123,3 +1123,19 @@ def test_git_promotion_rejects_missing_project() -> None:
 
     with pytest.raises(ValidationError, match="missing project missing-project"):
         TeamState.model_validate(state)
+
+
+
+def test_persistent_agent_can_be_teamless() -> None:
+    agent = PersistentAgent(id="unassigned", session_id="session-unassigned")
+
+    assert agent.team_id is None
+    assert agent.role_id is None
+
+
+def test_teamless_persistent_agent_rejects_team_scoped_links() -> None:
+    with pytest.raises(ValidationError, match="teamless agent cannot have a team-scoped role"):
+        PersistentAgent(id="unassigned", session_id="session-unassigned", role_id="role")
+
+    with pytest.raises(ValidationError, match="teamless agent cannot belong to a project"):
+        PersistentAgent(id="unassigned", session_id="session-unassigned", project_id="project")

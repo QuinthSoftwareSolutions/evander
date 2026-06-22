@@ -472,24 +472,31 @@ class Project(TeamModel):
 
 class PersistentAgent(TeamModel):
     id: str
-    team_id: str
+    team_id: str | None = None
     project_id: str | None = None
     display_name: str | None = None
     avatar: AgentAvatar | None = None
     voice_profile: AgentVoiceProfile | None = None
-    role_id: str
+    role_id: str | None = None
     session_id: str
     reports_to_agent_id: str | None = None
     subordinate_agent_ids: list[str] = Field(default_factory=list)
     ephemeral_policy: EphemeralAgentPolicy = Field(default_factory=EphemeralAgentPolicy)
     status: AgentStatus = AgentStatus.ACTIVE
 
-    @field_validator("id", "team_id", "role_id", "session_id", mode="before")
+    @field_validator("id", "session_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("project_id", "display_name", "reports_to_agent_id", mode="before")
+    @field_validator(
+        "team_id",
+        "project_id",
+        "display_name",
+        "role_id",
+        "reports_to_agent_id",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -505,7 +512,20 @@ class PersistentAgent(TeamModel):
             raise ValueError("agent cannot report to itself")
         if self.id in self.subordinate_agent_ids:
             raise ValueError("agent cannot list itself as a subordinate")
+        if self.team_id is None:
+            if self.project_id is not None:
+                raise ValueError("teamless agent cannot belong to a project")
+            if self.role_id is not None:
+                raise ValueError("teamless agent cannot have a team-scoped role")
+            if self.reports_to_agent_id is not None:
+                raise ValueError("teamless agent cannot report to another agent")
+            if self.subordinate_agent_ids:
+                raise ValueError("teamless agent cannot have subordinate agents")
+        elif self.role_id is None:
+            raise ValueError("team-bound agent must have a role")
         return self
+
+
 
 
 class AgentRuntime(TeamModel):
@@ -1302,14 +1322,14 @@ class TeamState(TeamModel):
 
     def _validate_agents(self, errors: list[str]) -> None:
         for agent in self.agents.values():
-            if agent.team_id not in self.teams:
+            if agent.team_id is not None and agent.team_id not in self.teams:
                 errors.append(f"agent {agent.id} references missing team {agent.team_id}")
-            role = self.roles.get(agent.role_id)
-            if role is None:
+            role = self.roles.get(agent.role_id) if agent.role_id is not None else None
+            if agent.role_id is not None and role is None:
                 errors.append(f"agent {agent.id} references missing role {agent.role_id}")
-            elif role.team_id != agent.team_id:
+            elif role is not None and role.team_id != agent.team_id:
                 errors.append(f"agent {agent.id} role {role.id} belongs to team {role.team_id}")
-            elif role.project_id is not None and role.project_id != agent.project_id:
+            elif role is not None and role.project_id is not None and role.project_id != agent.project_id:
                 errors.append(
                     f"agent {agent.id} role {role.id} belongs to project {role.project_id}"
                 )
@@ -1838,7 +1858,7 @@ def _agent_payload_with_role(
     if not include_voice_profile:
         exclude.add("voice_profile")
     payload = agent.model_dump(mode="json", exclude=exclude)
-    role = state.roles.get(agent.role_id)
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = (
         [permission.value for permission in role.permissions]
@@ -1917,7 +1937,7 @@ def _runtime_agent_payload(
     detail_parts = [f"session {agent.session_id}", f"status {agent.status.value}"]
     if agent.project_id is not None:
         detail_parts.append(f"project {agent.project_id}")
-    role = state.roles.get(agent.role_id)
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     if role is not None:
         detail_parts.append(f"role {role.name}")
     if runtime is None:

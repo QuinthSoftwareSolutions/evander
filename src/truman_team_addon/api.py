@@ -354,11 +354,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ephemeral_policy = payload.get("ephemeral_policy")
         state = repository.register_agent(
             agent_id=_optional(payload, "id") or _optional(payload, "agent_id"),
-            team_id=_required(payload, "team_id"),
-            project_id=_required(payload, "project_id"),
-            role_id=_required(payload, "role_id"),
+            team_id=_optional(payload, "team_id"),
+            project_id=_optional(payload, "project_id"),
+            role_id=_optional(payload, "role_id"),
             session_id=_required(payload, "session_id"),
-            reports_to_agent_id=_required(payload, "reports_to_agent_id"),
+            reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
             display_name=_optional(payload, "display_name"),
             ephemeral_policy=(
                 EphemeralAgentPolicy.model_validate(ephemeral_policy)
@@ -376,9 +376,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         raw_status = _optional(payload, "status")
         state = repository.update_agent(
             agent_id=request.path_params["agent_id"],
+            team_id=_optional(payload, "team_id"),
+            set_team_id="team_id" in payload,
             project_id=_optional(payload, "project_id"),
             set_project_id="project_id" in payload,
             role_id=_optional(payload, "role_id"),
+            set_role_id="role_id" in payload,
             session_id=_optional(payload, "session_id"),
             reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
             set_reports_to_agent_id="reports_to_agent_id" in payload,
@@ -414,8 +417,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent = state.agents.get(agent_id)
         if agent is None:
             return JSONResponse({"error": "agent not found"}, status_code=404)
-        role = state.roles.get(agent.role_id)
-        team = state.teams.get(agent.team_id)
+        role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+        team = state.teams.get(agent.team_id) if agent.team_id is not None else None
         style_preset = normalize_style_preset(payload.get("style_preset"))
         prompt_note = normalize_prompt_note(payload.get("prompt_note"))
         prompt = build_avatar_prompt(
@@ -1955,7 +1958,7 @@ def _build_agent_voice_projection(
 ) -> dict[str, Any]:
     team = state.teams.get(agent.team_id)
     project = state.projects.get(agent.project_id) if agent.project_id else None
-    role = state.roles.get(agent.role_id)
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     runtime = state.agent_runtimes.get(agent.id)
     subordinates = [
         state.agents[subordinate_id]
