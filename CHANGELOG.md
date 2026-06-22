@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-22 - Admin Login Oversized Branding
+
+- Doubled the desktop Admin Web login page branding dimensions again and
+  adjusted the login-page top spacing and mobile brandbar layout so larger
+  environment-specific logos have room without changing the in-app header.
+
 ## 2026-06-22 - Admin Login Branding Scale
 
 - Increased the Admin Web login page logo sizing so environment-specific

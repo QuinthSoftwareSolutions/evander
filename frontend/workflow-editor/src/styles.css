@@ -1214,7 +1214,7 @@ body {
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 7rem 2rem 2rem;
+  padding: 12rem 2rem 2rem;
   position: relative;
   overflow: hidden;
   background: var(--admin-login-bg);
@@ -1307,14 +1307,14 @@ body {
 
 .admin-login-company-logo {
   justify-self: start;
-  width: clamp(4.25rem, 8vw, 6rem);
-  height: clamp(4.25rem, 8vw, 6rem);
+  width: clamp(8.5rem, 16vw, 12rem);
+  height: clamp(8.5rem, 16vw, 12rem);
 }
 
 .admin-login-truman-logo {
   justify-self: end;
-  width: clamp(10.5rem, 18vw, 14rem);
-  height: clamp(4rem, 6.5vw, 5.5rem);
+  width: clamp(21rem, 36vw, 28rem);
+  height: clamp(8rem, 13vw, 11rem);
 }
 
 .admin-login-theme-toggle {
@@ -10408,7 +10408,7 @@ button.mobile-record-card:focus-visible,
 
 @media (max-width: 980px) {
   .admin-login-shell {
-    padding: 6.25rem 1rem 1rem;
+    padding: 9.5rem 1rem 1rem;
   }
 
   .admin-login-brandbar {
@@ -10416,13 +10416,13 @@ button.mobile-record-card:focus-visible,
   }
 
   .admin-login-company-logo {
-    width: clamp(3.5rem, 13vw, 4.75rem);
-    height: clamp(3.5rem, 13vw, 4.75rem);
+    width: clamp(5rem, 16vw, 7rem);
+    height: clamp(5rem, 16vw, 7rem);
   }
 
   .admin-login-truman-logo {
-    width: clamp(8.25rem, 30vw, 11.75rem);
-    height: clamp(3.25rem, 11vw, 4.5rem);
+    width: clamp(11rem, 34vw, 18rem);
+    height: clamp(4.5rem, 14vw, 7rem);
   }
 
   .admin-login-theme-toggle {
@@ -10435,24 +10435,32 @@ button.mobile-record-card:focus-visible,
 
 @media (max-width: 640px) {
   .admin-login-shell {
-    padding-top: 5.8rem;
+    padding-top: 11rem;
   }
 
   .admin-login-brandbar {
+    grid-template-columns: auto auto;
+    grid-template-areas:
+      "company product"
+      "toggle toggle";
+    justify-content: space-between;
     gap: 0.5rem;
   }
 
   .admin-login-company-logo {
-    width: 3rem;
-    height: 3rem;
+    grid-area: company;
+    width: clamp(4.25rem, 20vw, 6rem);
+    height: clamp(4.25rem, 20vw, 6rem);
   }
 
   .admin-login-truman-logo {
-    width: 7rem;
-    height: 3rem;
+    grid-area: product;
+    width: clamp(10rem, 52vw, 14rem);
+    height: clamp(4.5rem, 20vw, 6rem);
   }
 
   .admin-login-theme-toggle {
+    grid-area: toggle;
     min-width: 6.5rem;
     min-height: 2.6rem;
     padding: 0.55rem 0.7rem;
