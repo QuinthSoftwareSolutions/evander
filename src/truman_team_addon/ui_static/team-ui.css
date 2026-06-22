@@ -906,6 +906,7 @@ button.team-record-kind-tab strong {
   border-radius: 8px;
   padding: 0.65rem 0.75rem;
   background: var(--panel-alt);
+  margin-bottom: 0.75rem;
 }
 
 .task-board-context strong {
