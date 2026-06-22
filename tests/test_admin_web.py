@@ -7546,6 +7546,28 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     assert authorized.status_code == 200
 
 
+def test_admin_web_local_password_username_permissions_are_case_insensitive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "Jonathan")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    login = client.post("/api/auth/login", json={"username": "jonathan", "password": "swordfish"})
+    session = client.get("/api/auth/session")
+    authorized = client.get("/api/workflow-editor/document")
+
+    assert login.status_code == 200
+    assert login.json()["username"] == "Jonathan"
+    assert login.json()["role"] == "admin"
+    assert ADMIN_OWNER_PERMISSION in login.json()["permissions"]
+    assert session.status_code == 200
+    assert session.json()["role"] == "admin"
+    assert WORKFLOWS_READ_PERMISSION in session.json()["effective_permissions"]
+    assert authorized.status_code == 200
+
+
 def test_workflow_event_api_mints_token_and_publishes_external_event(
     tmp_path: Path, monkeypatch
 ) -> None:
