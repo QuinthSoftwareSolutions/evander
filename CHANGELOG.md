@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-22 - Ansible Current Service Config
+
+- Updated the Ansible deployment bundle to render Teams meeting ingest and
+  DIDWW SIP bridge config files expected by systemd preflight, manage their
+  systemd units through service toggles, and hide secret-bearing env template
+  task output.
+
 ## 2026-06-22 - ADO Worker Exact Directory Polling
 
 - Changed ADO worker directory matching for PR-map feedback and completion

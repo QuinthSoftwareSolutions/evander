@@ -99,6 +99,7 @@ Service toggles:
 - `agent_sandbox_services.gateway`
 - `agent_sandbox_services.firewall`
 - `agent_sandbox_services.openai_relay`
+- `agent_sandbox_services.didww_sip_bridge`
 - `agent_sandbox_services.nuget_relay`
 - `agent_sandbox_services.npm_audit_facade`
 - `agent_sandbox_services.package_cache`
@@ -111,6 +112,7 @@ Service toggles:
 - `agent_sandbox_services.discord_wake`
 - `agent_sandbox_services.scheduled_wake`
 - `agent_sandbox_services.teams_ingest`
+- `agent_sandbox_services.teams_meeting_ingest`
 - `agent_sandbox_services.effect_orchestrator`
 - `agent_sandbox_services.trigger_orchestrator`
 
@@ -162,11 +164,13 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/npm-audit-facade.env`
 - `config/http-target-relay.env`
 - `config/ado-worker.env`
+- `config/didww-sip-bridge.env`
 - `config/ado-worker/config.json`
 - `config/discord-ingest/config.json`
 - `config/discord-wake/config.json`
 - `config/scheduled-wake/config.json`
 - `config/teams-ingest/config.json`
+- `config/teams-meeting-ingest/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `secrets.env`
 

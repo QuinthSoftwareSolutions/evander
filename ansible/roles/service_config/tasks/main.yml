@@ -8,6 +8,7 @@
     mode: "{{ item.mode }}"
   vars:
     env_map: "{{ item.env }}"
+  no_log: true
   loop:
     - path: "config/firewall.env"
       env: "{{ agent_sandbox_firewall_env }}"
@@ -33,6 +34,9 @@
     - path: "config/ado-worker.env"
       env: "{{ agent_sandbox_ado_worker_env }}"
       mode: "0600"
+    - path: "config/didww-sip-bridge.env"
+      env: "{{ agent_sandbox_didww_sip_bridge_env }}"
+      mode: "0600"
   register: agent_sandbox_env_file_render
 
 - name: Render optional shared secrets.env
@@ -45,6 +49,7 @@
   vars:
     env_map: "{{ agent_sandbox_shared_secrets_env }}"
   when: agent_sandbox_render_shared_secrets_env | bool
+  no_log: true
   register: agent_sandbox_shared_secrets_render
 
 - name: Remove secrets.env when disabled
@@ -79,6 +84,9 @@
       mode: "0640"
     - path: "config/teams-ingest/config.json"
       payload: "{{ agent_sandbox_teams_ingest_config }}"
+      mode: "0640"
+    - path: "config/teams-meeting-ingest/config.json"
+      payload: "{{ agent_sandbox_teams_meeting_ingest_config }}"
       mode: "0640"
     - path: "config/trigger-orchestrator/config.json"
       payload: "{{ agent_sandbox_trigger_orchestrator_config }}"

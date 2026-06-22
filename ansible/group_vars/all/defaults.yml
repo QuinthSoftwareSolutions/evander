@@ -30,6 +30,7 @@ agent_sandbox_repo_managed_tracked_config_paths: >-
 agent_sandbox_repo_managed_base_untracked_config_paths:
   - config/admin-web.env
   - config/ado-worker.env
+  - config/didww-sip-bridge.env
   - config/firewall.env
   - config/gateway.env
   - config/http-target-relay.env
@@ -302,6 +303,52 @@ agent_sandbox_http_target_relay_env: {}
 agent_sandbox_ado_worker_env:
   ADO_WORK_ITEMS_AZURE_DEVOPS_PAT: ""
 
+agent_sandbox_didww_sip_bridge_env:
+  DIDWW_SIP_BRIDGE_HOST: "127.0.0.1"
+  DIDWW_SIP_BRIDGE_PORT: "11888"
+  DIDWW_SIP_BRIDGE_TOKEN_ENV: "DIDWW_SIP_BRIDGE_TOKEN"
+  DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: "false"
+  DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL: "http://127.0.0.1:8000"
+  DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV: "VOICE_MEDIA_CONTROLLER_TOKEN"
+  OPENAI_REALTIME_API_KEY_ENV: "OPENAI_API_KEY"
+  OPENAI_REALTIME_MODEL: "gpt-realtime-2"
+  OPENAI_REALTIME_API_BASE_URL: "https://api.openai.com/v1"
+  OPENAI_REALTIME_VOICE: "marin"
+  OPENAI_REALTIME_IDLE_TIMEOUT_MS: "10000"
+  OPENAI_REALTIME_TRANSCRIPTION_MODEL: "gpt-4o-transcribe"
+  OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE: "near_field"
+  OPENAI_REALTIME_TURN_DETECTION_TYPE: "server_vad"
+  OPENAI_REALTIME_VAD_THRESHOLD: "0.70"
+  OPENAI_REALTIME_VAD_PREFIX_PADDING_MS: "300"
+  OPENAI_REALTIME_VAD_SILENCE_DURATION_MS: "800"
+  ASTERISK_ARI_URL: "http://127.0.0.1:8088/ari"
+  ASTERISK_ARI_USER: "agent-sandbox"
+  ASTERISK_ARI_PASSWORD_ENV: "ASTERISK_ARI_PASSWORD"
+  ASTERISK_ARI_APP: "agent_sandbox_didww"
+  ASTERISK_PJSIP_ENDPOINT: "didww"
+  ASTERISK_ENDPOINT_TEMPLATE: "PJSIP/{number}@{trunk}"
+  DIDWW_SIP_BRIDGE_EXTERNAL_MEDIA_HOST: "127.0.0.1"
+  DIDWW_SIP_BRIDGE_RTP_BIND_HOST: "127.0.0.1"
+  DIDWW_SIP_BRIDGE_RTP_PORT_MIN: "41000"
+  DIDWW_SIP_BRIDGE_RTP_PORT_MAX: "41100"
+  DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE: "8"
+  DIDWW_SIP_BRIDGE_MEDIA_FORMAT: "alaw"
+  DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ: "8000"
+  DIDWW_SIP_BRIDGE_FRAME_DURATION_MS: "20"
+  DIDWW_SIP_BRIDGE_CALL_TIMEOUT_SECONDS: "45"
+  DIDWW_SIP_BRIDGE_MAX_CALL_SECONDS: "1800"
+  DIDWW_SIP_BRIDGE_REQUEST_TIMEOUT_SECONDS: "15"
+  DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS: "4"
+  DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS: "1"
+  DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS: "18"
+  DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS: "90"
+  DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS: "700"
+  DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS: "120"
+  DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS: "0"
+  DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS: "3"
+  DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD: "0.84"
+  DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES: "ok,okay,yep,yup,right,sure,uh-huh,mhm,mm-hmm,yeah,yes,good,great,thanks,thank you"
+
 # Worker/global JSON config files.
 agent_sandbox_ado_worker_config:
   runtime_dir: "runtime"
@@ -363,6 +410,13 @@ agent_sandbox_teams_ingest_config:
   backoff_seconds: 60
   lock_path: null
 
+agent_sandbox_teams_meeting_ingest_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 5
+  jitter_seconds: 2
+  backoff_seconds: 60
+
 agent_sandbox_trigger_orchestrator_config:
   runtime_dir: "runtime"
   poll_interval_seconds: 5
@@ -385,6 +439,7 @@ agent_sandbox_services:
   gateway: true
   firewall: "{{ agent_sandbox_service_profile == 'full' }}"
   openai_relay: true
+  didww_sip_bridge: true
   nuget_relay: true
   npm_audit_facade: true
   package_cache: true
@@ -397,5 +452,6 @@ agent_sandbox_services:
   discord_wake: true
   scheduled_wake: true
   teams_ingest: true
+  teams_meeting_ingest: true
   effect_orchestrator: true
   trigger_orchestrator: true

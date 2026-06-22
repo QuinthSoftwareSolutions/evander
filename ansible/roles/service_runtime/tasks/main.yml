@@ -10,6 +10,8 @@
         unit: agent-sandbox-firewall.service
       - key: openai_relay
         unit: agent-sandbox-openai-relay.service
+      - key: didww_sip_bridge
+        unit: agent-sandbox-didww-sip-bridge.service
       - key: nuget_relay
         unit: agent-sandbox-nuget-relay.service
       - key: npm_audit_facade
@@ -28,6 +30,8 @@
         unit: agent-sandbox-scheduled-wake.service
       - key: teams_ingest
         unit: agent-sandbox-teams-ingest.service
+      - key: teams_meeting_ingest
+        unit: agent-sandbox-teams-meeting-ingest.service
       - key: effect_orchestrator
         unit: agent-sandbox-effect-orchestrator.service
       - key: trigger_orchestrator

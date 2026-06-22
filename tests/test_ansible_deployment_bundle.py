@@ -695,6 +695,7 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
         "config/discord-wake/config.json",
         "config/scheduled-wake/config.json",
         "config/teams-ingest/config.json",
+        "config/teams-meeting-ingest/config.json",
         "config/trigger-orchestrator/config.json",
     ]
 
@@ -702,9 +703,41 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
     assert "agent_sandbox_force_render_worker_config" not in service_config
     assert "force: false" in service_config
     assert "Render managed worker/global JSON config" in service_config
+    assert "no_log: true" in service_config
+    assert 'path: "config/didww-sip-bridge.env"' in service_config
     for path in worker_config_paths:
         assert f'path: "{path}"' in service_config
         assert f"  - {path}" not in defaults
+
+
+def test_ansible_manages_current_optional_systemd_units() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    runtime_bootstrap = (
+        repo / "ansible" / "roles" / "runtime_bootstrap" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "didww_sip_bridge: true" in defaults
+    assert "teams_meeting_ingest: true" in defaults
+    assert "agent_sandbox_didww_sip_bridge_env" in defaults
+    assert "agent_sandbox_teams_meeting_ingest_config" in defaults
+    assert "config/teams-meeting-ingest" in runtime_bootstrap
+    for key, unit in [
+        ("didww_sip_bridge", "agent-sandbox-didww-sip-bridge.service"),
+        ("teams_meeting_ingest", "agent-sandbox-teams-meeting-ingest.service"),
+    ]:
+        assert f"key: {key}" in runtime
+        assert f"unit: {unit}" in runtime
+        assert f"key: {key}" in verification
+        assert f"unit: {unit}" in verification
 
 
 def test_ansible_env_template_shell_quotes_values() -> None:
