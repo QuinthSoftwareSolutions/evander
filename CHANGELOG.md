@@ -19,6 +19,8 @@
 - Superseded normal Team-agent `AGENTS.md` guidance for teamless governance
   managers with an inactive notice so stale task/action instructions do not
   apply.
+- Cleared inactive guidance metadata when normal Team guidance is seeded again,
+  preventing repeated reseeds after a governance-only agent rejoins a Team.
 
 ## 2026-06-22 - Team Add-on Manager Reassignment
 

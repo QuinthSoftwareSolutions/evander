@@ -900,6 +900,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
         "agent_id": "backend",
         "display_name": None,
+        "inactive": False,
+        "inactive_reason": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
@@ -1606,6 +1608,59 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION
+
+
+def test_wake_due_agents_provider_clears_inactive_agent_guidance_metadata(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].metadata = {
+        "team_addon": {
+            "action_contract": {
+                "seeded": True,
+                "schema_version": 10,
+                "schema_path": "/artifacts/team-action.schema.json",
+                "example_path": "/artifacts/team-action.example.json",
+                "action_artifact_path": "/artifacts/team-action.json",
+            },
+            "agent_guidance": {
+                "seeded": True,
+                "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
+                "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
+                "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "agent_id": "backend",
+                "display_name": None,
+                "inactive": True,
+                "inactive_reason": "no_team_assignment",
+            },
+        }
+    }
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
+    assert len(file_copier.calls) == 1
+    metadata = session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"]
+    assert metadata["inactive"] is False
+    assert metadata["inactive_reason"] is None
 
 
 def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_change(

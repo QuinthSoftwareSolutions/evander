@@ -2910,6 +2910,8 @@ def _mark_agent_guidance_seeded(
             "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
             **_agent_guidance_identity(agent),
+            "inactive": False,
+            "inactive_reason": None,
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }
