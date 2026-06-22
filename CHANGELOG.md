@@ -5,6 +5,32 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-22 - Team Add-on Teams Tab Team Creation
+
+- Added a top-level Teams tab `Create team` action with an in-tab team creation
+  form that reuses the existing Team Add-on `/teams` API payload.
+
+## 2026-06-22 - Team Add-on Navigation Persistence
+
+- Fixed Team Add-on top-level navigation so the selected view is remembered
+  across page refreshes.
+
+## 2026-06-22 - Team Add-on Teams Tab Headers
+
+- Changed Team Add-on Teams tab record groups so the full team header toggles
+  expansion, removed the separate caret indicator, dropped the header divider,
+  kept header hover styling local to the Teams tab surface, and removed the
+  extra parent panel around the team groups.
+- Left-aligned the Teams tab selected-agent detail header's name, role, and ID
+  block beside the avatar.
+- Moved governance group creation out of the Setup tab into a top-level
+  Governance tab button and inline create panel.
+
+## 2026-06-21 - Team Add-on Teams Tab Collapsible Lists
+
+- Changed the Team Add-on Teams tab so each team starts collapsed and expands into a single active records tab for agents, projects, or roles.
+- Added per-team record paging controls to keep long team lists compact.
+
 ## 2026-06-21 - Team Add-on Chat Virtual Scrolling
 
 - Bounded the Team Add-on Chat panel so long histories scroll inside the chat

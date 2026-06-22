@@ -61,6 +61,22 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
+const defaultTeamView = "workspace";
+const teamViewStorageKey = "team-addon:active-view";
+const teamViewIds = new Set([
+  "workspace",
+  "overview",
+  "operations",
+  "delivery",
+  "task-board",
+  "people",
+  "chat",
+  "governance",
+  "planning",
+  "setup",
+  "timeline",
+  "org",
+]);
 
 let state = emptyState();
 let costState = emptyCostState();
@@ -81,30 +97,22 @@ let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
 let showArchived = false;
-let activeTeamView = "workspace";
+let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedPeopleTeamId = "all";
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
+const expandedTeamRecordGroupIds = new Set();
+const teamRecordGroupTabs = {};
+const teamRecordGroupPages = {};
+const teamRecordPageSize = 6;
 let selectedTaskBoardTeamId = "";
 let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
+let teamsCreateTeamPanelOpen = false;
+let governanceCreateGroupPanelOpen = false;
 
-const teamViewIds = new Set([
-  "workspace",
-  "overview",
-  "operations",
-  "delivery",
-  "task-board",
-  "people",
-  "chat",
-  "governance",
-  "planning",
-  "setup",
-  "timeline",
-  "org",
-]);
 const runtimeFilterChoices = [
   ["all", "All"],
   ["needs_attention", "Needs attention"],
@@ -170,6 +178,11 @@ const elements = {
   setupFormsPanel: document.querySelector("#setup-forms-panel"),
   workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
   focusedSetupMount: document.querySelector("#focused-setup-mount"),
+  teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
+  teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
+  governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
+  governanceCreateGroupForm: document.querySelector("#create-governance-group-form"),
+  governanceCreateGroupToggle: document.querySelector("[data-governance-create-toggle]"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
@@ -471,10 +484,31 @@ function bindTopLevelTabs() {
   updateTeamViewTabs();
 }
 
+function normalizedTeamView(view) {
+  return teamViewIds.has(view) ? view : defaultTeamView;
+}
+
+function readStoredTeamView() {
+  try {
+    return normalizedTeamView(window.localStorage.getItem(teamViewStorageKey));
+  } catch {
+    return defaultTeamView;
+  }
+}
+
+function storeTeamView(view) {
+  try {
+    window.localStorage.setItem(teamViewStorageKey, normalizedTeamView(view));
+  } catch {
+    // Storage can be unavailable in hardened browser contexts.
+  }
+}
+
 function setTeamView(view) {
-  const nextView = teamViewIds.has(view) ? view : "workspace";
+  const nextView = normalizedTeamView(view);
   const enteringChat = activeTeamView !== "chat" && nextView === "chat";
   activeTeamView = nextView;
+  storeTeamView(activeTeamView);
   if (enteringChat && selectedChatConversationId) {
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
@@ -583,6 +617,62 @@ function placeSetupFormsPanel() {
   }
 }
 
+function openTeamsCreateTeamPanel() {
+  teamsCreateTeamPanelOpen = true;
+  syncTeamsCreateTeamPanel();
+  window.requestAnimationFrame(() => {
+    elements.teamsCreateTeamForm?.elements.name?.focus();
+  });
+}
+
+function closeTeamsCreateTeamPanel({ reset = false } = {}) {
+  teamsCreateTeamPanelOpen = false;
+  if (reset) {
+    elements.teamsCreateTeamForm?.reset();
+  }
+  syncTeamsCreateTeamPanel();
+}
+
+function syncTeamsCreateTeamPanel() {
+  if (!elements.teamsCreateTeamPanel) {
+    return;
+  }
+  elements.teamsCreateTeamPanel.hidden = !teamsCreateTeamPanelOpen || activeTeamView !== "people";
+}
+
+function openGovernanceCreateGroupPanel() {
+  governanceCreateGroupPanelOpen = true;
+  syncGovernanceCreateGroupPanel();
+  window.requestAnimationFrame(() => {
+    elements.governanceCreateGroupForm?.elements.name?.focus();
+  });
+}
+
+function closeGovernanceCreateGroupPanel({ reset = false } = {}) {
+  governanceCreateGroupPanelOpen = false;
+  if (reset) {
+    elements.governanceCreateGroupForm?.reset();
+  }
+  syncGovernanceCreateGroupPanel();
+}
+
+function toggleGovernanceCreateGroupPanel() {
+  if (governanceCreateGroupPanelOpen) {
+    closeGovernanceCreateGroupPanel();
+    return;
+  }
+  openGovernanceCreateGroupPanel();
+}
+
+function syncGovernanceCreateGroupPanel() {
+  if (!elements.governanceCreateGroupPanel) {
+    return;
+  }
+  const open = governanceCreateGroupPanelOpen && activeTeamView === "governance";
+  elements.governanceCreateGroupPanel.hidden = !open;
+  elements.governanceCreateGroupToggle?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function bindForms() {
   document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
@@ -623,6 +713,52 @@ function bindRecordEditing() {
       event.preventDefault();
       selectedPeopleTeamId = peopleTeamButton.dataset.peopleTeamId || "all";
       renderAgents();
+      return;
+    }
+
+    const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
+    if (openCreateTeamButton) {
+      event.preventDefault();
+      openTeamsCreateTeamPanel();
+      return;
+    }
+
+    const closeCreateTeamButton = event.target.closest("[data-teams-create-team-close]");
+    if (closeCreateTeamButton) {
+      event.preventDefault();
+      closeTeamsCreateTeamPanel();
+      return;
+    }
+
+    const governanceCreateGroupButton = event.target.closest("[data-governance-create-toggle]");
+    if (governanceCreateGroupButton) {
+      event.preventDefault();
+      toggleGovernanceCreateGroupPanel();
+      return;
+    }
+
+    const teamGroupToggle = event.target.closest("[data-team-record-toggle]");
+    if (teamGroupToggle) {
+      event.preventDefault();
+      toggleTeamRecordGroup(teamGroupToggle.dataset.teamRecordToggle);
+      return;
+    }
+
+    const teamRecordTab = event.target.closest("[data-team-record-tab]");
+    if (teamRecordTab) {
+      event.preventDefault();
+      setTeamRecordGroupTab(teamRecordTab.dataset.teamRecordGroupId, teamRecordTab.dataset.teamRecordTab);
+      return;
+    }
+
+    const teamRecordPage = event.target.closest("[data-team-record-page]");
+    if (teamRecordPage) {
+      event.preventDefault();
+      setTeamRecordGroupPage(
+        teamRecordPage.dataset.teamRecordGroupId,
+        teamRecordPage.dataset.teamRecordKind,
+        Number(teamRecordPage.dataset.teamRecordPage),
+      );
       return;
     }
 
@@ -871,6 +1007,7 @@ function decorateFieldTooltips(root = document) {
 function tooltipForField(label, field) {
   const form = field.form;
   const formId = formIdentifier(form);
+  const aliasedFormId = formId === "create-team-from-teams-form" ? "create-team-form" : "";
   const fieldName = text(field.name);
   const editType = text(form?.dataset?.editType);
   const keys = [];
@@ -879,6 +1016,9 @@ function tooltipForField(label, field) {
   }
   if (formId) {
     keys.push(`${formId}:${fieldName}`);
+  }
+  if (aliasedFormId) {
+    keys.push(`${aliasedFormId}:${fieldName}`);
   }
   keys.push(fieldName);
   const labelText = text(label.textContent);
@@ -1483,6 +1623,8 @@ function render() {
   decorateFieldTooltips(document);
   updateTeamViewTabs();
   placeSetupFormsPanel();
+  syncTeamsCreateTeamPanel();
+  syncGovernanceCreateGroupPanel();
 }
 
 function renderFocusedOrgChartIfActive() {
@@ -2778,51 +2920,160 @@ function renderPeopleTeamTab({ id, label, count, selected }) {
 }
 
 function renderTeamRecordGroup(team, scopedRecords) {
-  const teamRecords = teamRecordsForTeam(team.id, scopedRecords);
+  const teamId = text(team.id);
+  const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
+  const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
+  teamRecordGroupTabs[teamId] = activeKind;
+  const expanded = expandedTeamRecordGroupIds.has(teamId);
   const counts = [
     `${teamRecords.agents.length} agent${teamRecords.agents.length === 1 ? "" : "s"}`,
     `${teamRecords.projects.length} project${teamRecords.projects.length === 1 ? "" : "s"}`,
     `${teamRecords.roles.length} role${teamRecords.roles.length === 1 ? "" : "s"}`,
   ];
   return `
-    <article class="team-record-group" data-team-record-group-id="${escapeAttr(team.id)}">
-      <div class="team-record-group-header">
-        <div>
-          <p class="section-label">${escapeHtml(team.id)}</p>
-          <h3>${escapeHtml(team.name || team.id)}</h3>
-        </div>
-        <div class="team-record-group-counts">
+    <article class="team-record-group${expanded ? " is-expanded" : " is-collapsed"}" data-team-record-group-id="${escapeAttr(teamId)}">
+      <button
+        class="team-record-group-header"
+        type="button"
+        aria-expanded="${expanded ? "true" : "false"}"
+        data-team-record-toggle="${escapeAttr(teamId)}"
+      >
+        <span class="team-record-group-title">
+          <span class="section-label">${escapeHtml(teamId)}</span>
+          <strong>${escapeHtml(team.name || teamId)}</strong>
+        </span>
+        <span class="team-record-group-counts">
           ${counts.map((count) => `<span class="state-pill neutral">${escapeHtml(count)}</span>`).join("")}
-        </div>
-      </div>
-      <div class="team-record-grid">
-        ${renderTeamRecordSection("Agents", teamRecords.agents, renderSelectableAgent, "No agents.")}
-        ${renderTeamRecordSection("Projects", teamRecords.projects, renderSelectableProject, "No projects.")}
-        ${renderTeamRecordSection("Roles", teamRecords.roles, renderSelectableRole, "No roles.")}
-      </div>
+        </span>
+      </button>
+      ${
+        expanded
+          ? `<div class="team-record-group-body">
+              ${renderTeamRecordKindTabs(teamId, teamRecords, activeKind)}
+              ${renderTeamRecordSection(activeKind, teamRecords)}
+            </div>`
+          : ""
+      }
     </article>
   `;
 }
 
-function renderTeamRecordSection(title, records, renderRecord, emptyMessage) {
+function renderTeamRecordKindTabs(teamId, teamRecords, activeKind) {
+  const tabs = [
+    ["agent", "Agents", teamRecords.agents.length],
+    ["project", "Projects", teamRecords.projects.length],
+    ["role", "Roles", teamRecords.roles.length],
+  ];
   return `
-    <section class="team-record-section" aria-label="${escapeAttr(title)}">
+    <div class="team-record-kind-tabs" role="tablist" aria-label="${escapeAttr(`Records for ${teamId}`)}">
+      ${tabs
+        .map(([kind, label, count]) => {
+          const active = kind === activeKind;
+          return `
+            <button
+              type="button"
+              class="team-record-kind-tab${active ? " active" : ""}"
+              role="tab"
+              aria-selected="${active ? "true" : "false"}"
+              data-team-record-group-id="${escapeAttr(teamId)}"
+              data-team-record-tab="${escapeAttr(kind)}"
+            >
+              <span>${escapeHtml(label)}</span>
+              <strong>${escapeHtml(count)}</strong>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderTeamRecordSection(kind, teamRecords) {
+  const config = teamRecordSectionConfig(kind);
+  const records = teamRecords[config.collection] || [];
+  const pageKey = teamRecordPageKey(teamRecords.teamId, kind);
+  const totalPages = Math.max(1, Math.ceil(records.length / teamRecordPageSize));
+  const page = clampPage(teamRecordGroupPages[pageKey] || 1, totalPages);
+  teamRecordGroupPages[pageKey] = page;
+  const pageRecords = records.slice((page - 1) * teamRecordPageSize, page * teamRecordPageSize);
+  return `
+    <section class="team-record-section" aria-label="${escapeAttr(config.title)}">
       <div class="team-record-section-header">
-        <h3>${escapeHtml(title)}</h3>
+        <h3>${escapeHtml(config.title)}</h3>
         <span>${escapeHtml(records.length)}</span>
       </div>
       ${
         records.length
-          ? `<ul class="team-record-list compact-record-list">${records.map((record) => renderRecord(record)).join("")}</ul>`
-          : `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`
+          ? `<ul class="team-record-list compact-record-list">${pageRecords.map((record) => config.render(record)).join("")}</ul>
+             ${renderTeamRecordPager(teamRecords.teamId, kind, page, totalPages, records.length)}`
+          : `<p class="empty-state">${escapeHtml(config.emptyMessage)}</p>`
       }
     </section>
   `;
 }
 
+function teamRecordSectionConfig(kind) {
+  if (kind === "project") return { title: "Projects", collection: "projects", render: renderSelectableProject, emptyMessage: "No projects." };
+  if (kind === "role") return { title: "Roles", collection: "roles", render: renderSelectableRole, emptyMessage: "No roles." };
+  return { title: "Agents", collection: "agents", render: renderSelectableAgent, emptyMessage: "No agents." };
+}
+
+function renderTeamRecordPager(teamId, kind, page, totalPages, totalRecords) {
+  if (totalPages <= 1) {
+    return `<div class="team-record-pager-summary">Showing ${escapeHtml(totalRecords)} ${escapeHtml(kind)}${totalRecords === 1 ? "" : "s"}</div>`;
+  }
+  return `
+    <div class="team-record-pager" aria-label="${escapeAttr(kind)} pages">
+      <button type="button" data-team-record-group-id="${escapeAttr(teamId)}" data-team-record-kind="${escapeAttr(kind)}" data-team-record-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button>
+      <span>Page ${escapeHtml(page)} of ${escapeHtml(totalPages)} · ${escapeHtml(totalRecords)} total</span>
+      <button type="button" data-team-record-group-id="${escapeAttr(teamId)}" data-team-record-kind="${escapeAttr(kind)}" data-team-record-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>Next</button>
+    </div>
+  `;
+}
+
+function toggleTeamRecordGroup(teamId) {
+  const normalizedTeamId = text(teamId);
+  if (!normalizedTeamId) return;
+  if (expandedTeamRecordGroupIds.has(normalizedTeamId)) {
+    expandedTeamRecordGroupIds.delete(normalizedTeamId);
+  } else {
+    expandedTeamRecordGroupIds.add(normalizedTeamId);
+  }
+  renderAgents();
+}
+
+function setTeamRecordGroupTab(teamId, kind) {
+  const normalizedTeamId = text(teamId);
+  if (!normalizedTeamId) return;
+  teamRecordGroupTabs[normalizedTeamId] = normalizedTeamRecordKind(kind);
+  teamRecordGroupPages[teamRecordPageKey(normalizedTeamId, teamRecordGroupTabs[normalizedTeamId])] = 1;
+  renderAgents();
+}
+
+function setTeamRecordGroupPage(teamId, kind, page) {
+  const normalizedTeamId = text(teamId);
+  if (!normalizedTeamId || !Number.isFinite(page)) return;
+  teamRecordGroupPages[teamRecordPageKey(normalizedTeamId, normalizedTeamRecordKind(kind))] = Math.max(1, Math.floor(page));
+  renderAgents();
+}
+
+function normalizedTeamRecordKind(kind) {
+  if (kind === "project" || kind === "role") return kind;
+  return "agent";
+}
+
+function teamRecordPageKey(teamId, kind) {
+  return `${text(teamId)}:${normalizedTeamRecordKind(kind)}`;
+}
+
+function clampPage(page, totalPages) {
+  return Math.min(Math.max(1, Number(page) || 1), Math.max(1, totalPages));
+}
+
 function teamRecordsForTeam(teamId, records) {
   const normalizedTeamId = text(teamId);
   return {
+    teamId: normalizedTeamId,
     agents: (records.agents || []).filter((agent) => text(agent.team_id) === normalizedTeamId),
     projects: (records.projects || []).filter((project) => text(project.team_id) === normalizedTeamId),
     roles: (records.roles || []).filter((role) => text(role.team_id) === normalizedTeamId),
@@ -6459,7 +6710,16 @@ async function submitCreateForm(form) {
     return;
   }
   const payload = payloadForForm(form, data);
-  await submitMutation(form, endpoint, method, payload);
+  const saved = await submitMutation(form, endpoint, method, payload);
+  const formId = formIdentifier(form);
+  if (saved && formId === "create-team-from-teams-form") {
+    selectedPeopleTeamId = "all";
+    closeTeamsCreateTeamPanel({ reset: true });
+    renderAgents();
+  }
+  if (saved && formId === "create-governance-group-form") {
+    closeGovernanceCreateGroupPanel({ reset: true });
+  }
 }
 
 async function submitTaskUpdate(form) {
@@ -7606,7 +7866,7 @@ function payloadForForm(form, data = formData(form)) {
     }
     return payload;
   }
-  if (formId === "create-team-form") {
+  if (formId === "create-team-form" || formId === "create-team-from-teams-form") {
     const payload = {
       name: text(data.name),
       manager_session_id: text(data.manager_session_id),

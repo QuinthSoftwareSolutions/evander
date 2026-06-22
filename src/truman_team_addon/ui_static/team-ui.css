@@ -226,6 +226,12 @@ button.team-view-tab[aria-selected="true"] {
   min-width: 0;
 }
 
+.people-agents-panel {
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
 .people-agent-detail-panel {
   min-height: 18rem;
 }
@@ -237,7 +243,6 @@ button.team-view-tab[aria-selected="true"] {
 .team-record-groups {
   display: grid;
   gap: 1rem;
-  margin-top: 0.85rem;
 }
 
 .team-record-group {
@@ -253,8 +258,41 @@ button.team-view-tab[aria-selected="true"] {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  padding-bottom: 0.7rem;
-  border-bottom: 1px solid var(--line);
+  width: 100%;
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.team-record-group-header:hover,
+.team-record-group-header:focus-visible {
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+}
+
+.team-record-group-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.team-record-group-title {
+  min-width: 0;
+}
+
+.team-record-group-title .section-label {
+  display: block;
+  margin-bottom: 0.12rem;
+}
+
+.team-record-group-title strong {
+  display: block;
+  font-size: 1.05rem;
 }
 
 .team-record-group-header h3 {
@@ -269,11 +307,77 @@ button.team-view-tab[aria-selected="true"] {
   flex-wrap: wrap;
 }
 
-.team-record-grid {
+.team-record-group-body {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
   margin-top: 0.75rem;
+}
+
+.team-record-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.team-record-kind-tabs {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 100%;
+}
+
+button.team-record-kind-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0.32rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+button.team-record-kind-tab:hover {
+  border-color: rgba(23, 111, 122, 0.3);
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+}
+
+button.team-record-kind-tab.active,
+button.team-record-kind-tab[aria-selected="true"] {
+  border-color: rgba(23, 111, 122, 0.34);
+  background: rgba(23, 111, 122, 0.12);
+  color: var(--accent-strong);
+}
+
+button.team-record-kind-tab strong {
+  min-width: 1.35rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+  text-align: center;
+}
+
+.team-record-pager,
+.team-record-pager-summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.team-record-pager button {
+  min-height: 1.85rem;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.78rem;
 }
 
 .team-record-section {
@@ -640,6 +744,64 @@ button.team-view-tab[aria-selected="true"] {
   gap: 0.45rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.focused-section-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.teams-create-team-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.teams-create-team-panel[hidden] {
+  display: none;
+}
+
+.teams-create-team-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.teams-create-team-header h3 {
+  margin: 0;
+  line-height: 1.15;
+}
+
+.governance-create-panel {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.governance-create-panel[hidden] {
+  display: none;
+}
+
+.governance-create-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem 0.75rem;
+}
+
+.governance-create-form label:nth-child(3),
+.governance-create-form label:nth-child(4),
+.governance-create-form button {
+  grid-column: 1 / -1;
+}
+
+.governance-create-form button {
+  width: fit-content;
 }
 
 .planning-filters {
@@ -2525,7 +2687,9 @@ button.people-agent-select:focus-visible,
 }
 
 .agent-detail-title {
+  flex: 1 1 auto;
   min-width: 0;
+  text-align: left;
 }
 
 .agent-detail-title h3 {
@@ -2864,6 +3028,7 @@ form {
 }
 
 .archived-toggle {
+  position: relative;
   min-height: 2.2rem;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -2873,6 +3038,68 @@ form {
   font-size: 0.86rem;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.archived-toggle-track {
+  position: relative;
+  width: 2.75rem;
+  height: 1.35rem;
+  flex-shrink: 0;
+}
+
+.archived-toggle-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.archived-toggle-slider::before {
+  content: "";
+  position: absolute;
+  top: 0.1rem;
+  left: 0.1rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 2px var(--shadow);
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.archived-toggle-track input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  z-index: 1;
+  cursor: pointer;
+}
+
+.archived-toggle-track input[type="checkbox"]:checked + .archived-toggle-slider {
+  border-color: var(--accent);
+  background: rgba(23, 111, 122, 0.2);
+}
+
+.archived-toggle-track input[type="checkbox"]:checked + .archived-toggle-slider::before {
+  transform: translateX(1.35rem);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.archived-toggle-track input[type="checkbox"]:focus-visible + .archived-toggle-slider {
+  outline: 2px solid rgba(23, 111, 122, 0.55);
+  outline-offset: 2px;
 }
 
 .edit-modal[hidden] {
@@ -2935,6 +3162,13 @@ form {
   justify-content: flex-end;
   gap: 0.55rem;
   flex-wrap: wrap;
+}
+
+.edit-modal-actions button {
+  min-height: 2.2rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .review-decision-form {
@@ -3046,6 +3280,7 @@ label textarea {
   .content-grid,
   .people-layout,
   .team-record-grid,
+  .governance-create-form,
   .project-columns,
   .delivery-buckets,
   .delivery-detail-grid,
@@ -3063,6 +3298,7 @@ label textarea {
   .delivery-project-title,
   .delivery-bucket-title,
   .agent-detail-header,
+  .teams-create-team-header,
   .org-focus-header,
   .org-focus-team-header,
   .team-record-group-header {
@@ -3150,6 +3386,7 @@ label textarea {
   .agent-detail-badges,
   .planning-filters,
   .task-board-selectors,
+  .focused-section-header-actions,
   .team-record-group-counts {
     justify-content: flex-start;
   }
