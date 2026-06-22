@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Runtime Due Badge
+
+- Fixed Team Add-on runtime payloads so idle agents with `next_wake_at = null`
+  are not shown as due unless they also have real wake-eligible work such as
+  pending inbox, action feedback, context rotation, or ready task work.
+
 ## 2026-06-22 - Team Add-on Governance Directive Tool
 
 - Added an add-on-owned `team_create_operator_directive` MCP tool so governance
