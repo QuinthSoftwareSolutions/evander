@@ -428,25 +428,6 @@ function validateLeadingDotExtensions(values: readonly string[], fieldLabel: str
 
 const sessionListCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
-const TOOL_GROUP_ORDER = [
-  "Issue intake",
-  "Azure DevOps",
-  "Pull requests",
-  "Approvals",
-  "Agent control",
-  "Messaging",
-  "Voice calling",
-  "SQL Server",
-  "Files",
-  "Discord",
-  "Teams",
-  "Email",
-  "Feedback",
-  "Assistant",
-  "Semantic store",
-  "Other",
-] as const;
-
 function groupToolOption(tool: ToolOption): string {
   const { value } = tool;
   if ([
@@ -573,9 +554,13 @@ function groupTools(toolOptions: ToolOption[]) {
     if (current) current.push(tool);
     else groups.set(group, [tool]);
   }
-  return TOOL_GROUP_ORDER
+  const groupNames = [...groups.keys()].sort((left, right) => {
+    if (left === "Other") return 1;
+    if (right === "Other") return -1;
+    return left.localeCompare(right, undefined, { sensitivity: "base" });
+  });
+  return groupNames
     .map((name) => ({ name, items: groups.get(name) ?? [] }))
-    .filter((group) => group.items.length > 0)
     .map((group) => ({
       ...group,
       items: [...group.items].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })),
