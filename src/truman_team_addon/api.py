@@ -75,8 +75,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
     avatar_storage = AvatarStorage(context.runtime_dir)
 
-    async def get_state(_request: Request) -> JSONResponse:
-        return JSONResponse(team_state_payload(repository.read()))
+    def _state_payload(request: Request, state: TeamState) -> dict[str, Any]:
+        return _team_state_payload_for_request(context.auth, request, state)
+
+    async def get_state(request: Request) -> JSONResponse:
+        return JSONResponse(_state_payload(request, repository.read()))
 
     async def list_templates(_request: Request) -> JSONResponse:
         return JSONResponse(
@@ -103,7 +106,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             inputs=payload,
             expected_revision=_expected_revision(payload),
         )
-        response_payload = team_state_payload(state)
+        response_payload = _state_payload(request, state)
         response_payload["materialized"] = result
         return JSONResponse(response_payload, status_code=201)
 
@@ -171,7 +174,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -189,7 +192,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -203,7 +206,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -225,7 +228,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_governance_agenda_item(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -243,7 +246,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             priority=TeamInboxPriority(raw_priority),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def handle_governance_agenda_item(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -251,7 +254,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             agenda_item_id=request.path_params["agenda_item_id"],
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -269,7 +272,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             git=_optional_git_config(payload),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -290,7 +293,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             status=ProjectStatus(raw_status) if raw_status else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_role(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -309,7 +312,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             ),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_role(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -335,7 +338,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def list_roles(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -371,7 +374,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             ),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -412,7 +415,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             ),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_avatar_preview(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -480,7 +483,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             )
             raise
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def accept_agent_avatar_preview(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -509,7 +512,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         avatar_storage.promote_preview(preview_id=avatar.preview_id or avatar.asset_id)
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def delete_agent_avatar(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -522,7 +525,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             expected_revision=_expected_revision(payload),
         )
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def list_conversations(request: Request) -> JSONResponse:
         state = repository.read()
@@ -1162,7 +1165,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request_note=_optional(payload, "reason"),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def stand_down_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1173,7 +1176,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             or _operator_actor_from_request(context.auth, request),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def revoke_agent_stand_down(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1183,7 +1186,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             or _operator_actor_from_request(context.auth, request),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1208,7 +1211,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1224,7 +1227,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def record_deliverable(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1238,7 +1241,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def record_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1255,7 +1258,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             decision_at=datetime.fromisoformat(raw_decision_at) if raw_decision_at else None,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def decide_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1269,7 +1272,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             criteria=criteria,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_operator_directive(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1290,7 +1293,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             requesting_session_id=_optional(payload, "requesting_session_id"),
             expected_revision=_expected_revision(payload),
         )
-        response_payload = team_state_payload(state)
+        response_payload = _state_payload(request, state)
         response_payload["operator_directive"] = item.model_dump(mode="json")
         return JSONResponse(response_payload, status_code=201)
 
@@ -1302,7 +1305,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             dismissed_reason=_optional(payload, "dismissed_reason"),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def create_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1320,7 +1323,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             criteria=criteria,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        return JSONResponse(_state_payload(request, state), status_code=201)
 
     async def patch_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1350,7 +1353,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             set_project_id=has_project,
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state))
+        return JSONResponse(_state_payload(request, state))
 
     async def list_review_profiles(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -1381,7 +1384,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             canonical_branch=_optional(payload, "canonical_branch"),
             expected_revision=_expected_revision(payload),
         )
-        response_payload = team_state_payload(state)
+        response_payload = _state_payload(request, state)
         published_event_ids = _publish_team_events(context, result.get("events"))
         if published_event_ids:
             response_payload["published_event_ids"] = published_event_ids
@@ -1653,6 +1656,34 @@ def _runtime_from_context(context: AddonContext) -> Any:
     if runtime is None:
         raise RuntimeError("Admin runtime is unavailable")
     return runtime
+
+
+def _team_state_payload_for_request(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+) -> dict[str, Any]:
+    payload = team_state_payload(state)
+    if _can_view_all_team_chats(auth, request):
+        return payload
+    identity = _operator_identity_from_request(auth, request)
+    allowed_conversation_ids = {
+        conversation.id
+        for conversation in state.conversations.values()
+        if conversation.operator_user_id == identity["user_id"]
+    }
+    payload["conversations"] = {
+        conversation_id: conversation_payload
+        for conversation_id, conversation_payload in payload.get("conversations", {}).items()
+        if conversation_id in allowed_conversation_ids
+    }
+    payload["conversation_messages"] = {
+        message_id: message_payload
+        for message_id, message_payload in payload.get("conversation_messages", {}).items()
+        if isinstance(message_payload, Mapping)
+        and message_payload.get("conversation_id") in allowed_conversation_ids
+    }
+    return payload
 
 
 def _chat_list_scope(

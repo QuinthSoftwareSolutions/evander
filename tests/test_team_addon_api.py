@@ -16,7 +16,10 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
-from truman_team_addon.api import _conversation_snapshot_events
+from truman_team_addon.api import (
+    _conversation_snapshot_events,
+    _team_state_payload_for_request,
+)
 from truman_team_addon.providers import ACTION_CONTRACT_SCHEMA_VERSION
 from truman_team_addon.models import (
     AgentActionRecord,
@@ -720,6 +723,70 @@ def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_o
         json={"body": "I should not be able to send here."},
     )
     assert blocked_send.status_code == 403
+
+
+def test_team_addon_state_payload_filters_chats_without_read_all(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    _state, alice_conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    repo.record_operator_chat_message(
+        conversation_id=alice_conversation.id,
+        body="Alice private question",
+        created_by="operator:alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    _state, bob_conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        expected_revision=repo.read().revision,
+    )
+    repo.record_operator_chat_message(
+        conversation_id=bob_conversation.id,
+        body="Bob private question",
+        created_by="operator:bob@example.com",
+        expected_revision=repo.read().revision,
+    )
+
+    class AuthStub:
+        def __init__(self, *, can_read_all: bool) -> None:
+            self.can_read_all = can_read_all
+
+        def read_session(self, _request) -> dict[str, str]:
+            return {"login": "Alice@Example.com", "name": "Alice"}
+
+        def can(self, _request, _permission: str) -> bool:
+            return self.can_read_all
+
+    scoped_payload = _team_state_payload_for_request(
+        AuthStub(can_read_all=False),
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+    assert set(scoped_payload["conversations"]) == {alice_conversation.id}
+    assert bob_conversation.id not in scoped_payload["conversations"]
+    assert {
+        message["body"] for message in scoped_payload["conversation_messages"].values()
+    } == {"Alice private question"}
+    assert all(
+        message["conversation_id"] == alice_conversation.id
+        for message in scoped_payload["conversation_messages"].values()
+    )
+
+    read_all_payload = _team_state_payload_for_request(
+        AuthStub(can_read_all=True),
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+    assert {alice_conversation.id, bob_conversation.id}.issubset(
+        set(read_all_payload["conversations"])
+    )
 
 
 def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:

@@ -1139,7 +1139,18 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             result["published_event_ids"] = published_event_ids
         if artifact_publish_records:
             result["published_deliverable_artifacts"] = artifact_publish_records
-        return {**result, "state": team_state_payload(state)}
+        if isinstance(agent_id, str):
+            state_payload = _filtered_team_state_payload(
+                state,
+                team_id=None,
+                project_id=None,
+                agent_id=agent_id,
+            )
+        else:
+            state_payload = team_state_payload(state, include_agent_avatars=False)
+            state_payload["conversations"] = {}
+            state_payload["conversation_messages"] = {}
+        return {**result, "state": state_payload}
 
 
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
@@ -3874,6 +3885,17 @@ def _filtered_team_state_payload(
         key: value
         for key, value in filtered.get("action_records", {}).items()
         if value.get("agent_id") in visible_agent_ids
+    }
+    filtered["conversations"] = {
+        key: value
+        for key, value in filtered.get("conversations", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+    }
+    visible_conversation_ids = set(filtered["conversations"])
+    filtered["conversation_messages"] = {
+        key: value
+        for key, value in filtered.get("conversation_messages", {}).items()
+        if value.get("conversation_id") in visible_conversation_ids
     }
     filtered["release_packages"] = {
         key: {

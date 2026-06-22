@@ -31,7 +31,10 @@ from truman_team_addon.models import (
     TeamTaskState,
 )
 from truman_team_addon.repository import TeamStateConflictError, TeamStateRepository
-from truman_team_addon.sqlite_store import SQLITE_SCHEMA_VERSION
+from truman_team_addon.sqlite_store import (
+    SQLITE_SCHEMA_VERSION,
+    _ensure_team_conversations_operator_scope,
+)
 
 
 def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
@@ -642,6 +645,48 @@ def test_repository_migrates_global_chat_conversation_unique_constraint(
     assert "operator_display_name" in columns
     assert ["agent_id"] not in unique_index_columns
     assert ["agent_id", "operator_user_id"] in unique_index_columns
+
+
+def test_repository_migrates_legacy_chat_operator_ids_to_lowercase() -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE team_conversations (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL UNIQUE,
+                created_by TEXT,
+                last_message_preview TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_interaction_at TEXT NOT NULL
+            );
+            INSERT INTO team_conversations(
+                id, agent_id, created_by, last_message_preview,
+                created_at, updated_at, last_interaction_at
+            )
+            VALUES (
+                'conversation-backend',
+                'backend',
+                'operator:Alice@Example.com',
+                '',
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00'
+            );
+            """
+        )
+
+        _ensure_team_conversations_operator_scope(connection)
+        row = connection.execute(
+            """
+            SELECT operator_user_id
+            FROM team_conversations
+            WHERE id = 'conversation-backend'
+            """
+        ).fetchone()
+
+    assert row["operator_user_id"] == "alice@example.com"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:

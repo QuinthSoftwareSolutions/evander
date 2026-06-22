@@ -1766,20 +1766,21 @@ def _ensure_team_conversations_operator_scope(connection: sqlite3.Connection) ->
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(team_conversations_legacy)")
     }
-    operator_user_expr = (
-        "COALESCE(NULLIF(operator_user_id, ''), "
+    legacy_operator_user_expr = (
+        "COALESCE(NULLIF(trim(operator_user_id), ''), "
         "CASE "
-        "WHEN created_by LIKE 'operator:%' THEN substr(created_by, 10) "
-        "WHEN created_by IS NOT NULL AND created_by <> '' THEN created_by "
+        "WHEN trim(created_by) LIKE 'operator:%' THEN substr(trim(created_by), 10) "
+        "WHEN created_by IS NOT NULL AND trim(created_by) <> '' THEN trim(created_by) "
         "ELSE 'admin' END)"
         if "operator_user_id" in legacy_columns
         else (
             "CASE "
-            "WHEN created_by LIKE 'operator:%' THEN substr(created_by, 10) "
-            "WHEN created_by IS NOT NULL AND created_by <> '' THEN created_by "
+            "WHEN trim(created_by) LIKE 'operator:%' THEN substr(trim(created_by), 10) "
+            "WHEN created_by IS NOT NULL AND trim(created_by) <> '' THEN trim(created_by) "
             "ELSE 'admin' END"
         )
     )
+    operator_user_expr = f"lower(trim({legacy_operator_user_expr}))"
     operator_display_expr = (
         "operator_display_name" if "operator_display_name" in legacy_columns else "NULL"
     )

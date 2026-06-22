@@ -9,6 +9,8 @@
   prompts and action metadata.
 - Added `operator_chat_messages[]` to the Team action contract so agents can
   send a new Team Chat message to a known human operator.
+- Filtered Team state payload chat data for operators without
+  `team_chats.read_all`, and normalized migrated legacy chat operator IDs.
 
 ## 2026-06-22 - Admin Web Local User Permissions
 

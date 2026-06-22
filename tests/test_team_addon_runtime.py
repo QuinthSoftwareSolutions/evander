@@ -35,6 +35,8 @@ from truman_team_addon.models import (
     ReleasePackage,
     ReviewRequest,
     Team,
+    TeamConversation,
+    TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRole,
@@ -1839,8 +1841,45 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
 
 def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+    repo.register_agent(
+        agent_id="reviewer",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-reviewer",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+    _state, backend_conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    _state, backend_message = repo.record_operator_chat_message(
+        conversation_id=backend_conversation.id,
+        body="Backend private chat",
+        created_by="operator:alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    _state, reviewer_conversation, _created = repo.create_or_get_conversation(
+        agent_id="reviewer",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        expected_revision=repo.read().revision,
+    )
+    repo.record_operator_chat_message(
+        conversation_id=reviewer_conversation.id,
+        body="Reviewer private chat",
+        created_by="operator:bob@example.com",
+        expected_revision=repo.read().revision,
+    )
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
+    dispatch_id = next(
+        lease["dispatch_id"]
+        for lease in leases
+        if lease["agent"]["id"] == "backend"
+    )
     action = {
         "agent_id": "backend",
         "dispatch_id": dispatch_id,
@@ -1887,6 +1926,8 @@ def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
     result = apply.execute()
 
     assert result["success"] is True
+    assert set(result["state"]["conversations"]) == {backend_conversation.id}
+    assert set(result["state"]["conversation_messages"]) == {backend_message.id}
     reread = TeamStateRepository(tmp_path).read()
     assert len(reread.deliverables) == 1
     assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
@@ -2846,6 +2887,8 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["review_requests"]) == {"alpha-review"}
     assert set(project_state["inbox"]) == {"alpha-inbox"}
     assert set(project_state["action_records"]) == {"alpha-action"}
+    assert set(project_state["conversations"]) == {"conversation-alpha"}
+    assert set(project_state["conversation_messages"]) == {"message-alpha"}
     assert set(project_state["release_packages"]) == {"alpha-release"}
     assert set(project_state["git_promotions"]) == {
         "alpha-promotion",
@@ -2905,6 +2948,8 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["review_requests"]) == set()
     assert set(agent_state["inbox"]) == {"alpha-inbox"}
     assert set(agent_state["action_records"]) == {"alpha-action"}
+    assert set(agent_state["conversations"]) == {"conversation-alpha"}
+    assert set(agent_state["conversation_messages"]) == {"message-alpha"}
     assert set(agent_state["release_packages"]) == {"alpha-release"}
     assert set(agent_state["git_promotions"]) == {
         "alpha-promotion",
@@ -3356,6 +3401,34 @@ def _multi_team_state() -> TeamState:
                 agent_id="beta-dev",
                 dispatch_id="beta-dispatch",
                 action={"notes": "beta"},
+            ),
+        },
+        conversations={
+            "conversation-alpha": TeamConversation(
+                id="conversation-alpha",
+                agent_id="alpha-dev",
+                operator_user_id="alice@example.com",
+                operator_display_name="Alice",
+            ),
+            "conversation-beta": TeamConversation(
+                id="conversation-beta",
+                agent_id="beta-dev",
+                operator_user_id="bob@example.com",
+                operator_display_name="Bob",
+            ),
+        },
+        conversation_messages={
+            "message-alpha": TeamConversationMessage(
+                id="message-alpha",
+                conversation_id="conversation-alpha",
+                sender="operator",
+                body="Alpha private chat",
+            ),
+            "message-beta": TeamConversationMessage(
+                id="message-beta",
+                conversation_id="conversation-beta",
+                sender="operator",
+                body="Beta private chat",
             ),
         },
         release_packages={
