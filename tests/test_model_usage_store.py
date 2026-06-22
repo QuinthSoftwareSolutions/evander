@@ -166,6 +166,9 @@ def test_model_usage_store_manages_expiring_correlation_contexts(tmp_path: Path)
         execution_backend="libvirt_vm",
         directory_path="root/team-a",
         model="gpt-5.2-codex",
+        team_id="team-a",
+        project_id="project-a",
+        agent_id="agent-a",
         trace_id="trace-1",
         started_at=now,
         expires_at=now + timedelta(minutes=15),
@@ -197,6 +200,12 @@ def test_model_usage_store_manages_expiring_correlation_contexts(tmp_path: Path)
     assert lookup is not None
     assert lookup.dispatch_id == "dispatch-1"
     assert lookup.model == "gpt-5.2-codex"
+    assert lookup.team_id == "team-a"
+    assert lookup.project_id == "project-a"
+    assert lookup.agent_id == "agent-a"
+    direct_lookup = store.get_correlation_context("dispatch-1")
+    assert direct_lookup is not None
+    assert direct_lookup.team_id == "team-a"
 
     assert (
         store.get_active_correlation_context(

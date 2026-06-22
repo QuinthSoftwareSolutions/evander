@@ -22,6 +22,7 @@ from agent_sandbox.events.provider_models import (
     ArtifactPublishArtifactsEffectDefinition,
 )
 from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.catalog import (
@@ -911,6 +912,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                _register_team_dispatch_model_usage_context(
+                    context,
+                    agent=agent,
+                    dispatch_id=lease["dispatch_id"],
+                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
+                )
                 feedback_source_dispatch_id = _action_feedback_source_dispatch_id(lease)
                 if feedback_source_dispatch_id is not None:
                     state = repo.mark_action_feedback_delivered(
@@ -1030,6 +1037,13 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 if _result_reports_failure(result_payload):
                     errors.append(
                         f"{group['id']}/{agent['id']}: {_resume_failure_message(result_payload)}"
+                    )
+                else:
+                    _register_team_dispatch_model_usage_context(
+                        context,
+                        agent=agent,
+                        dispatch_id=lease["dispatch_id"],
+                        effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
                     )
                 dispatches.append(
                     {
@@ -3569,6 +3583,42 @@ def _session_repository_from_context(context: Any) -> Any | None:
     service = getattr(context, "admin_service", None)
     service_runtime = getattr(service, "runtime", None)
     return getattr(service_runtime, "session_repository", None)
+
+
+def _register_team_dispatch_model_usage_context(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+    dispatch_id: object,
+    effect_id: str | None,
+) -> None:
+    register_model_usage_correlation_context(
+        runtime_dir=_runtime_dir(context),
+        session_id=_optional_text(agent.get("session_id")),
+        dispatch_id=_optional_text(dispatch_id),
+        workflow_run_id=_context_metadata_text(
+            context,
+            "workflow_run_id",
+            "workflow_trace_id",
+            "trace_id",
+        ),
+        effect_id=effect_id,
+        team_id=_optional_text(agent.get("team_id")),
+        project_id=_optional_text(agent.get("project_id")),
+        agent_id=_optional_text(agent.get("id")),
+        trace_id=_context_metadata_text(context, "trace_id", "workflow_trace_id"),
+    )
+
+
+def _context_metadata_text(context: Any, *keys: str) -> str | None:
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in keys:
+        text = _optional_text(metadata.get(key))
+        if text:
+            return text
+    return None
 
 
 def _record_wake_failure(

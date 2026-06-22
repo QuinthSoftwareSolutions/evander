@@ -13,7 +13,10 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.models import (
+    ModelInferenceUsageEvent,
+    ModelUsageCorrelationContext,
+)
 from agent_sandbox.model_usage.pricing import (
     ModelCostEstimate,
     ModelPricingCatalog,
@@ -311,12 +314,16 @@ class TeamCostService:
         self.session_repository = session_repository
         self.usage_store = usage_store or ModelUsageStore(self.runtime_dir / "model-usage.db")
         self._pricing_catalog = pricing_catalog
+        self._context_cache: dict[str, ModelUsageCorrelationContext | None] = {}
+        self._request_attribution_cache: dict[tuple[str, str], TeamCostAttribution] = {}
 
     def costs_payload(self, *, backfill_transcripts: bool = True) -> dict[str, Any]:
         backfill_result = (
             self.backfill_claude_transcripts() if backfill_transcripts else None
         )
-        events = _dedupe_cost_events(self.usage_store.list_events())
+        raw_events = self.usage_store.list_events()
+        self._request_attribution_cache = self._request_attributions(raw_events)
+        events = _dedupe_cost_events(raw_events)
         catalog = self._load_pricing_catalog()
 
         team_buckets: dict[str, dict[str, Any]] = {}
@@ -421,6 +428,24 @@ class TeamCostService:
     def _attribute_event(self, event: ModelInferenceUsageEvent) -> TeamCostAttribution:
         session_id = _optional_text(event.session_id)
         dispatch_id = _optional_text(event.dispatch_id)
+        metadata_attribution = _usage_metadata_attribution(event)
+        request_attribution = None
+        request_key = _event_request_key(event)
+        if request_key is not None:
+            request_attribution = self._request_attribution_cache.get(request_key)
+        if request_attribution is not None and (
+            metadata_attribution is None
+            or _attribution_score(request_attribution)
+            >= _attribution_score(metadata_attribution)
+        ):
+            return request_attribution
+        if metadata_attribution is not None:
+            return metadata_attribution
+
+        if dispatch_id:
+            context_attribution = self._dispatch_context_attribution(dispatch_id)
+            if context_attribution is not None:
+                return context_attribution
 
         if session_id:
             assignment = _ephemeral_assignment_for_session(self.state, session_id)
@@ -467,6 +492,53 @@ class TeamCostService:
             source="unattributed",
             project_confident=False,
         )
+
+    def _request_attributions(
+        self, events: Iterable[ModelInferenceUsageEvent]
+    ) -> dict[tuple[str, str], TeamCostAttribution]:
+        attributions: dict[tuple[str, str], TeamCostAttribution] = {}
+        for event in events:
+            request_key = _event_request_key(event)
+            if request_key is None:
+                continue
+            attribution = _usage_metadata_attribution(event)
+            dispatch_id = _optional_text(event.dispatch_id)
+            if attribution is None and dispatch_id is not None:
+                attribution = self._dispatch_context_attribution(dispatch_id)
+            if attribution is None:
+                continue
+            existing = attributions.get(request_key)
+            if existing is None or _attribution_score(attribution) > _attribution_score(existing):
+                attributions[request_key] = attribution
+        return attributions
+
+    def _dispatch_context_attribution(
+        self, dispatch_id: str
+    ) -> TeamCostAttribution | None:
+        context = self._dispatch_context(dispatch_id)
+        if context is None:
+            return None
+        if not any((context.team_id, context.project_id, context.agent_id)):
+            return None
+        return TeamCostAttribution(
+            team_id=context.team_id,
+            project_id=context.project_id,
+            agent_id=context.agent_id,
+            source="dispatch_correlation_context",
+            project_confident=bool(context.project_id),
+        )
+
+    def _dispatch_context(
+        self, dispatch_id: str
+    ) -> ModelUsageCorrelationContext | None:
+        if dispatch_id not in self._context_cache:
+            try:
+                self._context_cache[dispatch_id] = self.usage_store.get_correlation_context(
+                    dispatch_id
+                )
+            except Exception:
+                self._context_cache[dispatch_id] = None
+        return self._context_cache[dispatch_id]
 
     def _claude_transcript_sources(self) -> list[ClaudeTranscriptSource]:
         sources: list[ClaudeTranscriptSource] = []
@@ -1308,6 +1380,39 @@ def _governance_group_costs(
 
 def _increment(counter: dict[str, int], key: str) -> None:
     counter[key] = int(counter.get(key, 0)) + 1
+
+
+def _usage_metadata_attribution(
+    event: ModelInferenceUsageEvent,
+) -> TeamCostAttribution | None:
+    request_metadata = event.raw_usage_metadata.get("request_metadata")
+    if not isinstance(request_metadata, Mapping):
+        return None
+    if not any(key in request_metadata for key in ("team_id", "project_id", "agent_id")):
+        return None
+    team_id = _optional_text(request_metadata.get("team_id"))
+    project_id = _optional_text(request_metadata.get("project_id"))
+    agent_id = _optional_text(request_metadata.get("agent_id"))
+    return TeamCostAttribution(
+        team_id=team_id,
+        project_id=project_id,
+        agent_id=agent_id,
+        source="usage_metadata",
+        project_confident=bool(project_id),
+    )
+
+
+def _attribution_score(attribution: TeamCostAttribution) -> int:
+    score = 0
+    if attribution.team_id:
+        score += 4
+    if attribution.project_id and attribution.project_confident:
+        score += 2
+    if attribution.agent_id:
+        score += 1
+    if attribution.source == "usage_metadata":
+        score += 1
+    return score
 
 
 def _dedupe_cost_events(

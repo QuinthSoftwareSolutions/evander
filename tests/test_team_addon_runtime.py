@@ -13,6 +13,7 @@ from agent_sandbox.artifact_spaces import ArtifactSpaceStore
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
@@ -853,6 +854,13 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
+    usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
+        result["dispatches"][0]["dispatch_id"]
+    )
+    assert usage_context is not None
+    assert usage_context.team_id == "team"
+    assert usage_context.project_id == "project"
+    assert usage_context.agent_id == "backend"
     prompt = str(resumer.calls[0]["prompt"])
     assert "wakeprivate" not in prompt
     assert "private runtime prompt note" not in prompt
@@ -1007,6 +1015,13 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         "vm_ip": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
     }
+    usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
+        result["dispatches"][0]["dispatch_id"]
+    )
+    assert usage_context is not None
+    assert usage_context.team_id is None
+    assert usage_context.project_id is None
+    assert usage_context.agent_id == "portfolio-manager"
     team_metadata = session_store.calls[0]["metadata"]["team_addon"]
     assert team_metadata["governance_agent_guidance"] == {
         "seeded": True,

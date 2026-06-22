@@ -140,6 +140,9 @@ class ModelUsageCorrelationContext(BaseModel):
     execution_backend: str | None = None
     directory_path: str | None = None
     model: str | None = None
+    team_id: str | None = None
+    project_id: str | None = None
+    agent_id: str | None = None
     trace_id: str | None = None
     started_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
@@ -154,6 +157,9 @@ class ModelUsageCorrelationContext(BaseModel):
         "execution_backend",
         "directory_path",
         "model",
+        "team_id",
+        "project_id",
+        "agent_id",
         "trace_id",
         mode="before",
     )

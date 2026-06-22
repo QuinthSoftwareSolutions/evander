@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Cost Attribution Guard
+
+- Persisted Team Add-on model-usage attribution at wake dispatch time so moving
+  agents between Teams or Governance does not rewrite historical spend.
+- Made Team cost aggregation prefer persisted usage/correlation attribution,
+  including transcript rows that supersede relay rows for Anthropic pricing.
+
 ## 2026-06-22 - Team Add-on Per-Operator Chat
 
 - Scoped Team Add-on built-in chat conversations to one human operator and one

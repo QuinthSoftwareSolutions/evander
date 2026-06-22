@@ -5,7 +5,10 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.models import (
+    ModelInferenceUsageEvent,
+    ModelUsageCorrelationContext,
+)
 from agent_sandbox.model_usage.pricing import load_model_pricing_catalog_payload
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
@@ -104,6 +107,8 @@ def _usage_event(
     output_tokens: int = 0,
     occurred_at: datetime | None = None,
     request_id: str | None = None,
+    dispatch_id: str | None = None,
+    raw_usage_metadata: dict | None = None,
 ) -> ModelInferenceUsageEvent:
     total_tokens = input_tokens + output_tokens
     return ModelInferenceUsageEvent(
@@ -117,7 +122,7 @@ def _usage_event(
         total_tokens=total_tokens,
         request_status="success",
         normalized_usage_status="available",
-        raw_usage_metadata={
+        raw_usage_metadata=raw_usage_metadata or {
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -125,6 +130,7 @@ def _usage_event(
             }
         },
         session_id=session_id,
+        dispatch_id=dispatch_id,
         agent_harness="codex",
         request_id=request_id,
     )
@@ -165,6 +171,132 @@ def test_team_costs_count_team_roles_and_project_confident_usage(tmp_path: Path)
     assert team_cost["unattributed_costs"]["events_count"] == 2
     assert payload["unattributed_costs"]["estimated_cost"] == 2.0
     assert payload["unattributed_costs"]["events_count"] == 3
+
+
+def test_team_costs_use_persisted_usage_attribution_after_agent_detached(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "backend-before-detach",
+            session_id="session-backend",
+            raw_usage_metadata={
+                "usage": {
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 0,
+                    "total_tokens": 1_000_000,
+                },
+                "request_metadata": {
+                    "team_id": "team",
+                    "project_id": "project",
+                    "agent_id": "backend",
+                },
+            },
+        )
+    )
+    repo.update_agent(
+        agent_id="backend",
+        team_id=None,
+        set_team_id=True,
+        expected_revision=repo.read().revision,
+    )
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    assert payload["team_costs"]["team"]["estimated_cost"] == 1.0
+    assert payload["project_costs"]["project"]["estimated_cost"] == 1.0
+    assert payload["unattributed_costs"]["estimated_cost"] == 0.0
+
+
+def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    store.upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-backend",
+            dispatch_id="dispatch-backend",
+            agent_harness="claude",
+            team_id="team",
+            project_id="project",
+            agent_id="backend",
+            started_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "relay-anthropic",
+            session_id="session-backend",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=1_000_000,
+            request_id="req-shared",
+            dispatch_id="dispatch-backend",
+        )
+    )
+    store.upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="claude-transcript:req-shared",
+            occurred_at=now + timedelta(seconds=1),
+            provider="anthropic",
+            provider_endpoint_identifier="messages",
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=100,
+            total_tokens=1100,
+            request_status="success",
+            normalized_usage_status="available",
+            raw_usage_metadata={
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 100,
+                    "total_tokens": 1100,
+                },
+                "request_metadata": {
+                    "source": costs_module.TRANSCRIPT_SOURCE_NAME,
+                    "team_id": None,
+                    "project_id": None,
+                    "agent_id": "backend",
+                },
+                "response_metadata": {
+                    "source": costs_module.TRANSCRIPT_SOURCE_NAME,
+                    "provider_request_id": "req-shared",
+                },
+            },
+            session_id="session-backend",
+            agent_harness="claude",
+            request_id="req-shared",
+        )
+    )
+    repo.update_agent(
+        agent_id="backend",
+        team_id=None,
+        set_team_id=True,
+        expected_revision=repo.read().revision,
+    )
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    assert payload["team_costs"]["team"]["source_counts"] == {"transcript": 1}
+    assert payload["team_costs"]["team"]["estimated_cost"] < 0.01
+    assert payload["project_costs"]["project"]["source_counts"] == {"transcript": 1}
 
 
 def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None:
