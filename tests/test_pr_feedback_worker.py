@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -283,6 +283,10 @@ def test_pr_feedback_store_prune_streams_removes_matching_feedback_and_cursor(
 ) -> None:
     path = tmp_path / "runtime" / "pr-feedback-store.json"
     store = PrFeedbackStore(path)
+    created_at = datetime.now(timezone.utc).replace(microsecond=0)
+    other_created_at = created_at + timedelta(seconds=1)
+    cursor = created_at.isoformat().replace("+00:00", "Z")
+    other_cursor = other_created_at.isoformat().replace("+00:00", "Z")
     assert store.add_feedback_if_new(
         FeedbackEnvelope(
             feedback_id="github:issue_comment:1",
@@ -293,7 +297,7 @@ def test_pr_feedback_store_prune_streams_removes_matching_feedback_and_cursor(
             comment_id="1",
             author="octocat",
             body="Needs tests",
-            created_at=datetime(2026, 3, 21, tzinfo=timezone.utc),
+            created_at=created_at,
         )
     )
     assert store.add_feedback_if_new(
@@ -306,18 +310,18 @@ def test_pr_feedback_store_prune_streams_removes_matching_feedback_and_cursor(
             comment_id="2",
             author="octocat",
             body="Keep me",
-            created_at=datetime(2026, 3, 22, tzinfo=timezone.utc),
+            created_at=other_created_at,
         )
     )
-    store.set_cursor("github:org/repo:123", "2026-03-21T00:00:00Z")
-    store.set_cursor("github:other/repo:999", "2026-03-22T00:00:00Z")
+    store.set_cursor("github:org/repo:123", cursor)
+    store.set_cursor("github:other/repo:999", other_cursor)
 
     removed_cursors, removed_feedback = store.prune_streams({("github", "org/repo", "123")})
 
     assert removed_cursors == 1
     assert removed_feedback == 1
     payload = store.read_raw()
-    assert payload["cursors"] == {"github:other/repo:999": "2026-03-22T00:00:00Z"}
+    assert payload["cursors"] == {"github:other/repo:999": other_cursor}
     assert list(payload["feedback"]) == ["github:issue_comment:2"]
 
 
@@ -943,6 +947,8 @@ def test_ado_adapter_normalizes_composite_repo_identifier() -> None:
 def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
     store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
     audit = AuditLogger(tmp_path / "runtime" / "audit.log")
+    created_at = datetime.now(timezone.utc).replace(microsecond=0)
+    cursor = created_at.isoformat().replace("+00:00", "Z")
 
     class StubAdapter:
         provider_name = "github"
@@ -962,10 +968,10 @@ def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
                             comment_id="17",
                             author="octocat",
                             body="looks good",
-                            created_at=datetime(2026, 3, 21, 0, 0, 0, tzinfo=timezone.utc),
+                            created_at=created_at,
                         )
                     ],
-                    "next_cursor": "2026-03-21T00:00:00Z",
+                    "next_cursor": cursor,
                 },
             )()
 

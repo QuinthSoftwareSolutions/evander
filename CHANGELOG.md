@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-22 - Test Suite Expectation Refresh
+
+- Updated stale Admin Web, CLI, VM delegation, Discord inbox, and PR feedback
+  tests to match current composed workflow documents, Team chat permissions,
+  session provider overrides, and retention behavior.
+
 ## 2026-06-22 - Team Add-on Cost Attribution Guard
 
 - Persisted Team Add-on model-usage attribution at wake dispatch time so moving

@@ -45,6 +45,7 @@ from agent_sandbox.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
+    TEAM_CHATS_READ_ALL_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
@@ -3882,7 +3883,7 @@ def test_admin_web_workflow_failure_clusters_returns_empty_result(
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
         service,
-        "read_workflow_editor_document",
+        "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(graphs=[]),
     )
     monkeypatch.setattr(
@@ -3916,7 +3917,7 @@ def test_admin_web_workflow_failure_clusters_requires_workflow_runs_read_for_roo
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
         service,
-        "read_workflow_editor_document",
+        "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(graphs=[]),
     )
     monkeypatch.setattr(
@@ -3968,7 +3969,7 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
     ]
     monkeypatch.setattr(
         service,
-        "read_workflow_editor_document",
+        "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(graphs=graphs),
     )
     captured_kwargs: dict[str, object] = {}
@@ -4116,7 +4117,7 @@ def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_r
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
         service,
-        "read_workflow_editor_document",
+        "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(
             graphs=[
                 {
@@ -8256,6 +8257,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
         WORKFLOWS_WRITE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_READ_ALL_PERMISSION,
     }
     assert session.json()["permissions"] == session.json()["effective_permissions"]
     assert admin_state.status_code == 200
@@ -8266,6 +8268,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
         WORKFLOWS_WRITE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
+        TEAM_CHATS_READ_ALL_PERMISSION,
     }
 
 
