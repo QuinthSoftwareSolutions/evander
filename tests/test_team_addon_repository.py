@@ -388,7 +388,7 @@ def test_repository_gets_existing_team_chat_conversation_without_revision_bump(
 
     state, same_conversation, created = repo.create_or_get_conversation(
         agent_id="backend",
-        created_by="operator:bob",
+        created_by="operator:alice",
         expected_revision=revision,
     )
 
@@ -396,6 +396,33 @@ def test_repository_gets_existing_team_chat_conversation_without_revision_bump(
     assert same_conversation.id == conversation.id
     assert state.revision == revision
     assert repo.read().revision == revision
+
+
+def test_repository_creates_separate_team_chat_conversations_per_operator(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, alice_conversation, created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        created_by="operator:alice@example.com",
+        expected_revision=repo.read().revision,
+    )
+    assert created is True
+
+    state, bob_conversation, created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        created_by="operator:bob@example.com",
+        expected_revision=state.revision,
+    )
+
+    assert created is True
+    assert bob_conversation.id != alice_conversation.id
+    assert state.conversations[alice_conversation.id].operator_user_id == "alice@example.com"
+    assert state.conversations[bob_conversation.id].operator_user_id == "bob@example.com"
 
 
 def test_repository_rejects_chat_reply_from_wrong_agent(tmp_path: Path) -> None:
@@ -428,6 +455,66 @@ def test_repository_rejects_chat_reply_from_wrong_agent(tmp_path: Path) -> None:
     assert not result["created_chat_reply_message_ids"]
     assert "chat_replies[0]" in result["errors"][0]
     assert state.conversation_messages[message.id].status == "created"
+
+
+def test_repository_agent_action_sends_chat_message_to_known_operator(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, _conversation, _created = repo.create_or_get_conversation(
+        agent_id="lead",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "operator_chat_messages": [
+                {
+                    "recipient_operator_user_id": "alice@example.com",
+                    "body": "I found the issue.",
+                    "summary": "Issue found",
+                }
+            ],
+        },
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is True
+    assert result["created_operator_chat_message_ids"]
+    message = state.conversation_messages[result["created_operator_chat_message_ids"][0]]
+    conversation = state.conversations[message.conversation_id]
+    assert conversation.agent_id == "backend"
+    assert conversation.operator_user_id == "alice@example.com"
+    assert message.sender == "agent"
+    assert message.body == "I found the issue."
+    assert message.metadata["recipient_operator_user_id"] == "alice@example.com"
+
+
+def test_repository_agent_action_rejects_unknown_operator_chat_recipient(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "operator_chat_messages": [
+                {
+                    "recipient_operator_user_id": "nobody@example.com",
+                    "body": "I found the issue.",
+                }
+            ],
+        },
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is False
+    assert result["created_operator_chat_message_ids"] == []
+    assert "operator_chat_messages[0]" in result["errors"][0]
+    assert state.conversation_messages == {}
 
 
 def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
@@ -502,6 +589,59 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
     assert "state_entered_at" in task_columns
     assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
+
+
+def test_repository_migrates_global_chat_conversation_unique_constraint(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE team_state_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO team_state_metadata(key, value)
+            VALUES ('sqlite_schema_version', '11');
+            CREATE TABLE team_conversations (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL UNIQUE,
+                created_by TEXT,
+                last_message_preview TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_interaction_at TEXT NOT NULL
+            );
+            """
+        )
+
+    TeamStateRepository(tmp_path)
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(team_conversations)")
+        }
+        unique_indexes = [
+            str(row["name"])
+            for row in connection.execute("PRAGMA index_list(team_conversations)")
+            if int(row["unique"] or 0)
+        ]
+        unique_index_columns = [
+            [
+                str(info_row["name"])
+                for info_row in connection.execute(f"PRAGMA index_info({index_name})")
+            ]
+            for index_name in unique_indexes
+        ]
+
+    assert "operator_user_id" in columns
+    assert "operator_display_name" in columns
+    assert ["agent_id"] not in unique_index_columns
+    assert ["agent_id", "operator_user_id"] in unique_index_columns
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:

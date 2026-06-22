@@ -90,6 +90,7 @@ let chatState = emptyChatState();
 let chatRequestId = 0;
 let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
+let selectedChatOperatorUserId = null;
 let chatSending = false;
 let chatStream = null;
 let chatStreamConversationId = null;
@@ -176,6 +177,7 @@ const elements = {
   chatConversationsView: document.querySelector("#chat-conversations-view"),
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
+  chatOperatorView: document.querySelector("#chat-operator-view"),
   setupFormsPanel: document.querySelector("#setup-forms-panel"),
   workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
   focusedSetupMount: document.querySelector("#focused-setup-mount"),
@@ -446,6 +448,11 @@ function emptyChatState() {
   return {
     revision: 0,
     selected_conversation_id: null,
+    current_operator: null,
+    selected_operator: null,
+    can_view_all_operators: false,
+    read_only: false,
+    operator_options: [],
     eligible_agents: [],
     conversations: [],
     loading: false,
@@ -713,6 +720,18 @@ function bindForms() {
     event.preventDefault();
     void submitChatMessage(form);
   });
+
+  document.addEventListener("change", (event) => {
+    const select = event.target?.closest?.("[data-chat-operator-select]");
+    if (!select) {
+      return;
+    }
+    selectedChatOperatorUserId = text(select.value) || null;
+    selectedChatConversationId = null;
+    chatNewPickerOpen = false;
+    closeChatStream();
+    void loadConversations({ preserveSelection: false });
+  });
 }
 
 function bindRecordEditing() {
@@ -802,6 +821,10 @@ function bindRecordEditing() {
     const chatNewButton = event.target.closest("[data-chat-new]");
     if (chatNewButton) {
       event.preventDefault();
+      if (chatState.read_only) {
+        setStatus("This chat history is read-only.", "error");
+        return;
+      }
       chatNewPickerOpen = !chatNewPickerOpen;
       renderChat();
       return;
@@ -1248,10 +1271,26 @@ function normalizeChat(payload) {
   normalized.eligible_agents = Array.isArray(normalized.eligible_agents)
     ? normalized.eligible_agents
     : [];
+  normalized.operator_options = Array.isArray(normalized.operator_options)
+    ? normalized.operator_options.map(normalizeChatOperatorOption).filter((item) => item.user_id)
+    : [];
+  normalized.current_operator = normalizeChatOperatorOption(normalized.current_operator);
+  normalized.selected_operator = normalizeChatOperatorOption(normalized.selected_operator);
+  normalized.can_view_all_operators = Boolean(normalized.can_view_all_operators);
+  normalized.read_only = Boolean(normalized.read_only);
   normalized.conversations = Array.isArray(normalized.conversations)
     ? normalized.conversations.map(normalizeChatConversation)
     : [];
   return normalized;
+}
+
+function normalizeChatOperatorOption(operator) {
+  const userId = text(operator?.user_id);
+  const displayName = text(operator?.display_name) || userId;
+  return {
+    user_id: userId,
+    display_name: displayName,
+  };
 }
 
 function syncTeamStateFromChatPayload(payload) {
@@ -1299,12 +1338,32 @@ function syncTeamStateFromChatPayload(payload) {
   });
 }
 
+function chatApiUrl(path, query = null) {
+  const params = query instanceof URLSearchParams ? new URLSearchParams(query) : new URLSearchParams();
+  const operatorUserId = text(selectedChatOperatorUserId);
+  if (operatorUserId) {
+    params.set("operator_user_id", operatorUserId);
+  }
+  const suffix = params.toString();
+  return `${API_BASE}${path}${suffix ? `?${suffix}` : ""}`;
+}
+
+function chatScopeFields(payload) {
+  return {
+    current_operator: payload?.current_operator ?? chatState.current_operator,
+    selected_operator: payload?.selected_operator ?? chatState.selected_operator,
+    can_view_all_operators: payload?.can_view_all_operators ?? chatState.can_view_all_operators,
+    read_only: payload?.read_only ?? chatState.read_only,
+    operator_options: payload?.operator_options ?? chatState.operator_options,
+  };
+}
+
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
   const requestId = ++chatRequestId;
   chatState = { ...chatState, loading: true, error: null };
   renderChat();
   try {
-    const response = await fetch(`${API_BASE}/conversations`, {
+    const response = await fetch(chatApiUrl("/conversations"), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1315,6 +1374,7 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
       return;
     }
     chatState = normalizeChat(payload);
+    selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
     selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
     renderChat();
@@ -1343,7 +1403,7 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     return;
   }
   try {
-    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}`, {
+    const response = await fetch(chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}`), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1390,7 +1450,7 @@ async function loadOlderChatMessages(conversationId) {
       limit: String(chatMessagePageSize),
     });
     const response = await fetch(
-      `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/messages?${query.toString()}`,
+      chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}/messages`, query),
       { headers: { Accept: "application/json" } },
     );
     if (!response.ok) {
@@ -1454,7 +1514,7 @@ function ensureChatStream(conversationId) {
   chatStreamConversationId = normalizedConversationId;
   chatStreamErrorRefreshPending = false;
   const stream = new EventSource(
-    `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/stream`,
+    chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}/stream`),
   );
   chatStream = stream;
   stream.addEventListener("snapshot", (event) => {
@@ -1498,6 +1558,7 @@ function applyChatSnapshot(payload, expectedConversationId) {
   if (!conversation?.id || text(conversation.id) !== text(expectedConversationId)) {
     return;
   }
+  chatState = normalizeChat({ ...chatState, ...chatScopeFields(payload) });
   const scrollSnapshot = captureChatScroll(expectedConversationId);
   const shouldStickToBottom = chatIsScrolledNearBottom(expectedConversationId);
   syncTeamStateFromChatPayload(payload);
@@ -1540,6 +1601,7 @@ async function createOrFocusChat(agentId) {
     const payload = await response.json();
     syncTeamStateFromChatPayload(payload);
     chatState = normalizeChat(payload);
+    selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
     chatNewPickerOpen = false;
     renderChat();
@@ -1556,6 +1618,10 @@ async function createOrFocusChat(agentId) {
 async function submitChatMessage(form) {
   const conversation = selectedChatConversation();
   if (!conversation || chatSending) {
+    return;
+  }
+  if (chatState.read_only || conversation.read_only) {
+    setStatus("This chat history is read-only.", "error");
     return;
   }
   const formData = new FormData(form);
@@ -1585,6 +1651,8 @@ async function submitChatMessage(form) {
     }
     const payload = await response.json();
     syncTeamStateFromChatPayload(payload);
+    chatState = normalizeChat({ ...chatState, ...chatScopeFields(payload) });
+    selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     replaceChatConversation(payload.conversation);
     selectedChatConversationId = payload.conversation?.id || selectedChatConversationId;
     chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
@@ -3449,8 +3517,50 @@ function agentsForRole(roleId) {
 }
 
 function renderChat() {
+  renderChatOperatorView();
   renderChatConversationList();
   renderChatThread();
+}
+
+function renderChatOperatorView() {
+  if (!elements.chatOperatorView) {
+    return;
+  }
+  const current = chatState.current_operator || {};
+  const selected = chatState.selected_operator || current;
+  const currentUserId = text(current.user_id);
+  const selectedUserId = text(selected.user_id) || text(selectedChatOperatorUserId) || currentUserId;
+  const selectedLabel = text(selected.display_name) || selectedUserId || "Operator";
+  const options = chatState.operator_options.length
+    ? chatState.operator_options
+    : selectedUserId
+      ? [selected]
+      : [];
+  const modeLabel = chatState.read_only ? "Read-only inspection" : "My chats";
+  elements.chatOperatorView.innerHTML = `
+    <div class="chat-operator-scope">
+      <span class="state-pill ${chatState.read_only ? "paused" : "active"}">${escapeHtml(modeLabel)}</span>
+      ${
+        chatState.can_view_all_operators && options.length
+          ? `
+            <label>
+              <span>Operator</span>
+              <select data-chat-operator-select>
+                ${options.map((option) => {
+                  const value = text(option.user_id);
+                  const label = text(option.display_name) || value;
+                  return `<option value="${escapeAttr(value)}" ${value === selectedUserId ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                }).join("")}
+              </select>
+            </label>
+          `
+          : `<span class="meta-line">${escapeHtml(selectedLabel)}</span>`
+      }
+    </div>
+  `;
+  document.querySelectorAll("[data-chat-new]").forEach((button) => {
+    button.disabled = Boolean(chatState.read_only);
+  });
 }
 
 function renderChatConversationList() {
@@ -3475,6 +3585,11 @@ function renderChatConversationList() {
 
 function renderChatNewPicker() {
   if (!elements.chatNewPicker) {
+    return;
+  }
+  if (chatState.read_only) {
+    elements.chatNewPicker.hidden = true;
+    elements.chatNewPicker.innerHTML = "";
     return;
   }
   elements.chatNewPicker.hidden = !chatNewPickerOpen;
@@ -3552,6 +3667,7 @@ function renderChatThread() {
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
   const olderLoading = chatOlderMessageLoads.has(text(conversation.id));
   const callStrip = renderChatCallStrip(conversation);
+  const readOnly = Boolean(chatState.read_only || conversation.read_only);
   elements.chatThreadView.innerHTML = `
     <div class="chat-thread${callStrip ? " has-call-strip" : ""}">
       <header class="chat-thread-header">
@@ -3567,10 +3683,12 @@ function renderChatThread() {
             type="button"
             data-agent-call-agent-id="${escapeAttr(conversation.agent_id)}"
             data-agent-call-conversation-id="${escapeAttr(conversation.id)}"
+            ${readOnly ? "disabled" : ""}
           >Call</button>
           <button type="button" data-chat-refresh>Refresh</button>
         </div>
       </header>
+      ${readOnly ? `<div class="chat-readonly-banner">Viewing ${escapeHtml(conversation.operator_display_name || conversation.operator_user_id || "another operator")} read-only.</div>` : ""}
       ${callStrip}
       <div class="chat-message-list" role="log" aria-live="polite" data-chat-scroll-conversation-id="${escapeAttr(conversation.id)}">
         ${
@@ -3585,8 +3703,8 @@ function renderChatThread() {
         }
       </div>
       <form class="chat-composer" data-chat-message-form>
-        <textarea name="body" rows="3" placeholder="Message ${escapeAttr(label)}" ${chatSending ? "disabled" : ""}></textarea>
-        <button type="submit" ${chatSending ? "disabled" : ""}>Send</button>
+        <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
+        <button type="submit" ${chatSending || readOnly ? "disabled" : ""}>Send</button>
       </form>
     </div>
   `;
@@ -3654,6 +3772,7 @@ function renderChatCallStrip(conversation) {
 
 function renderChatMessage(message) {
   const sender = text(message.sender) || "system";
+  const metadata = message.metadata || {};
   const status = text(message.status);
   const type = text(message.message_type) || "text";
   return `
@@ -3661,7 +3780,7 @@ function renderChatMessage(message) {
       <div class="chat-message-bubble">
         <p>${escapeHtml(message.body || "")}</p>
         <div class="chat-message-meta">
-          <span>${escapeHtml(chatMessageSenderLabel(sender))}</span>
+          <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
           ${status ? `<span>${escapeHtml(chatStatusLabel(status))}</span>` : ""}
         </div>
@@ -3870,9 +3989,10 @@ function compareChatConversations(left, right) {
   );
 }
 
-function chatMessageSenderLabel(sender) {
+function chatMessageSenderLabel(sender, metadata = {}) {
   if (sender === "operator") {
-    return "Operator";
+    const label = text(metadata.operator_display_name) || text(metadata.operator_user_id);
+    return label ? `Human operator: ${label}` : "Human operator";
   }
   if (sender === "agent") {
     return "Agent";

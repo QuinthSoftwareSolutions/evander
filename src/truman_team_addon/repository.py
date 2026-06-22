@@ -1175,10 +1175,17 @@ class TeamStateRepository:
         self,
         *,
         agent_id: str,
+        operator_user_id: str | None = None,
+        operator_display_name: str | None = None,
         created_by: str | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, TeamConversation, bool]:
         normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_operator_user_id = _normalize_operator_user_id(
+            operator_user_id,
+            created_by=created_by,
+        )
+        normalized_operator_display_name = _optional_text(operator_display_name)
         normalized_created_by = _optional_text(created_by)
 
         current_state = self.read()
@@ -1191,7 +1198,10 @@ class TeamStateRepository:
         if current_agent.status == AgentStatus.ARCHIVED:
             raise ValueError(f"agent {current_agent.id} is archived")
         for conversation in current_state.conversations.values():
-            if conversation.agent_id == current_agent.id:
+            if (
+                conversation.agent_id == current_agent.id
+                and conversation.operator_user_id == normalized_operator_user_id
+            ):
                 return current_state, conversation, False
 
         conversation_id: str | None = None
@@ -1203,18 +1213,23 @@ class TeamStateRepository:
             if agent.status == AgentStatus.ARCHIVED:
                 raise ValueError(f"agent {agent.id} is archived")
             for conversation in state.conversations.values():
-                if conversation.agent_id == agent.id:
+                if (
+                    conversation.agent_id == agent.id
+                    and conversation.operator_user_id == normalized_operator_user_id
+                ):
                     conversation_id = conversation.id
                     return state
             now = utc_now()
             conversation_id = _generated_id(
                 prefix="conversation",
-                labels=[agent.id],
+                labels=[agent.id, normalized_operator_user_id],
                 existing_ids=state.conversations,
             )
             state.conversations[conversation_id] = TeamConversation(
                 id=conversation_id,
                 agent_id=agent.id,
+                operator_user_id=normalized_operator_user_id,
+                operator_display_name=normalized_operator_display_name,
                 created_by=normalized_created_by,
                 last_message_preview="",
                 created_at=now,
@@ -1261,7 +1276,16 @@ class TeamStateRepository:
                 message_type="text",
                 body=normalized_body,
                 status="created",
-                metadata={"created_by": normalized_created_by} if normalized_created_by else {},
+                metadata={
+                    key: value
+                    for key, value in {
+                        "sender_kind": "human_operator",
+                        "operator_user_id": conversation.operator_user_id,
+                        "operator_display_name": conversation.operator_display_name,
+                        "created_by": normalized_created_by,
+                    }.items()
+                    if value
+                },
                 created_at=now,
                 updated_at=now,
             )
@@ -2941,6 +2965,7 @@ class TeamStateRepository:
                         ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "recent_action_feedback": action_feedback,
+                        "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                     }
@@ -3201,6 +3226,7 @@ class TeamStateRepository:
             "revoked_stand_down_ids": [],
             "created_chat_reply_message_ids": [],
             "replied_chat_message_ids": [],
+            "created_operator_chat_message_ids": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -3576,6 +3602,24 @@ class TeamStateRepository:
                     )
                     continue
                 result["created_chat_reply_message_ids"].append(created_id)
+                _mark_progress()
+
+            for index, chat_message in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("operator_chat_messages"),
+                    "operator_chat_messages",
+                )
+            ):
+                try:
+                    created_id = _apply_operator_chat_message(
+                        state_model,
+                        actor=agent,
+                        message=chat_message,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "operator_chat_messages", index, exc)
+                    continue
+                result["created_operator_chat_message_ids"].append(created_id)
                 _mark_progress()
 
             for escalation in _list_of_mappings(
@@ -4542,6 +4586,66 @@ def _required_text(value: object, field_name: str) -> str:
     return text
 
 
+def _normalize_operator_user_id(
+    value: object | None,
+    *,
+    created_by: object | None = None,
+) -> str:
+    text = _optional_text(value)
+    if text is None:
+        created_by_text = _optional_text(created_by)
+        if created_by_text and created_by_text.startswith("operator:"):
+            text = created_by_text.removeprefix("operator:")
+        elif created_by_text:
+            text = created_by_text
+    if text is None:
+        text = "admin"
+    return _required_text(text, "operator_user_id").casefold()
+
+
+def _operator_display_name_for_user(
+    state: TeamState,
+    operator_user_id: str,
+) -> str | None:
+    normalized_operator_user_id = _normalize_operator_user_id(operator_user_id)
+    for conversation in sorted(
+        state.conversations.values(),
+        key=lambda item: (item.last_interaction_at, item.id),
+        reverse=True,
+    ):
+        if conversation.operator_user_id == normalized_operator_user_id:
+            return conversation.operator_display_name or conversation.operator_user_id
+    return None
+
+
+def _operator_chat_participant_payloads(
+    state: TeamState,
+    *,
+    agent_id: str | None = None,
+) -> list[dict[str, Any]]:
+    participants: dict[str, dict[str, Any]] = {}
+    for conversation in state.conversations.values():
+        if agent_id is not None and conversation.agent_id != agent_id:
+            continue
+        participant = participants.setdefault(
+            conversation.operator_user_id,
+            {
+                "operator_user_id": conversation.operator_user_id,
+                "operator_display_name": conversation.operator_display_name,
+                "conversation_ids": [],
+            },
+        )
+        participant["conversation_ids"].append(conversation.id)
+        if not participant.get("operator_display_name") and conversation.operator_display_name:
+            participant["operator_display_name"] = conversation.operator_display_name
+    return sorted(
+        participants.values(),
+        key=lambda item: str(
+            item.get("operator_display_name") or item.get("operator_user_id") or ""
+        ),
+    )
+
+
 def _optional_text(value: object) -> str | None:
     if value is None:
         return None
@@ -5203,6 +5307,79 @@ def _apply_chat_reply(
     _touch_conversation(conversation, now=now, preview=_chat_preview(body))
     result["replied_chat_message_ids"].append(source_message.id)
     return reply_id
+
+
+def _apply_operator_chat_message(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    message: Mapping[str, Any],
+) -> str:
+    recipient_operator_user_id = _normalize_operator_user_id(
+        message.get("recipient_operator_user_id")
+    )
+    known_display_name = _operator_display_name_for_user(
+        state,
+        recipient_operator_user_id,
+    )
+    known_operator_ids = {
+        conversation.operator_user_id for conversation in state.conversations.values()
+    }
+    if recipient_operator_user_id not in known_operator_ids:
+        raise ValueError(f"unknown operator {recipient_operator_user_id}")
+    conversation = next(
+        (
+            item
+            for item in state.conversations.values()
+            if item.agent_id == actor.id
+            and item.operator_user_id == recipient_operator_user_id
+        ),
+        None,
+    )
+    now = utc_now()
+    if conversation is None:
+        conversation_id = _generated_id(
+            prefix="conversation",
+            labels=[actor.id, recipient_operator_user_id],
+            existing_ids=state.conversations,
+        )
+        conversation = TeamConversation(
+            id=conversation_id,
+            agent_id=actor.id,
+            operator_user_id=recipient_operator_user_id,
+            operator_display_name=known_display_name,
+            created_by=f"agent:{actor.id}",
+            last_message_preview="",
+            created_at=now,
+            updated_at=now,
+            last_interaction_at=now,
+        )
+        state.conversations[conversation.id] = conversation
+    body = _required_text(message.get("body"), "body")
+    summary = _optional_text(message.get("summary"))
+    message_id = f"chatmsg-{uuid4().hex}"
+    state.conversation_messages[message_id] = TeamConversationMessage(
+        id=message_id,
+        conversation_id=conversation.id,
+        sender="agent",
+        message_type="text",
+        body=body,
+        status="sent",
+        metadata={
+            key: value
+            for key, value in {
+                "sender_kind": "team_agent",
+                "recipient_operator_user_id": recipient_operator_user_id,
+                "recipient_operator_display_name": known_display_name,
+                "summary": summary,
+            }.items()
+            if value
+        },
+        created_at=now,
+        updated_at=now,
+    )
+    _touch_conversation(conversation, now=now, preview=_chat_preview(body))
+    return message_id
 
 
 def _mark_chat_dispatch_message_failed(

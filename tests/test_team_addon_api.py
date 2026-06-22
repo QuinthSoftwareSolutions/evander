@@ -17,6 +17,7 @@ from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
 from truman_team_addon.api import _conversation_snapshot_events
+from truman_team_addon.providers import ACTION_CONTRACT_SCHEMA_VERSION
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -561,6 +562,10 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     assert created.status_code == 201
     conversation = created.json()["conversations"][0]
     assert conversation["agent_id"] == "backend"
+    assert conversation["operator_user_id"] == "admin"
+    assert conversation["read_only"] is False
+    assert created.json()["current_operator"]["user_id"] == "admin"
+    assert created.json()["selected_operator"]["user_id"] == "admin"
     assert {agent["id"] for agent in created.json()["eligible_agents"]} >= {
         "backend",
         "lead",
@@ -579,16 +584,21 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     sent_payload = sent.json()
     assert sent_payload["dispatch"]["success"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
-    assert sent_payload["dispatch"]["agent_setup"]["action_contract"]["schema_version"] == 10
+    assert sent_payload["dispatch"]["agent_setup"]["action_contract"]["schema_version"] == (
+        ACTION_CONTRACT_SCHEMA_VERSION
+    )
     assert len(copy_calls) == 2
     message = sent_payload["message"]
     assert message["sender"] == "operator"
     assert message["status"] == "running"
     assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    assert message["metadata"]["sender_kind"] == "human_operator"
+    assert message["metadata"]["operator_user_id"] == "admin"
     assert resume_calls[0]["target"] == "session-backend"
     assert resume_calls[0]["resume_mode"] == "same_context"
     assert resume_calls[0]["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
     assert "chat_replies" in str(resume_calls[0]["prompt"])
+    assert "human operator" in str(resume_calls[0]["prompt"])
     assert conversation["id"] in str(resume_calls[0]["prompt"])
     assert message["id"] in str(resume_calls[0]["prompt"])
 
@@ -674,6 +684,42 @@ def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     assert [message["id"] for message in first_payload["messages"]] == [
         f"msg-{index:03d}" for index in range(0, 5)
     ]
+
+
+def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    _state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    client = _client(tmp_path)
+
+    mine = client.get("/api/addons/team-addon/conversations")
+    assert mine.status_code == 200
+    assert mine.json()["current_operator"]["user_id"] == "admin"
+    assert mine.json()["selected_operator"]["user_id"] == "admin"
+    assert mine.json()["read_only"] is False
+    assert mine.json()["conversations"] == []
+
+    inspected = client.get(
+        "/api/addons/team-addon/conversations?operator_user_id=alice@example.com"
+    )
+    assert inspected.status_code == 200
+    inspected_payload = inspected.json()
+    assert inspected_payload["selected_operator"]["user_id"] == "alice@example.com"
+    assert inspected_payload["read_only"] is True
+    assert inspected_payload["conversations"][0]["id"] == conversation.id
+    assert inspected_payload["conversations"][0]["read_only"] is True
+
+    blocked_send = client.post(
+        f"/api/addons/team-addon/conversations/{conversation.id}/messages",
+        json={"body": "I should not be able to send here."},
+    )
+    assert blocked_send.status_code == 403
 
 
 def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:

@@ -823,18 +823,20 @@ class AgentActionRecord(TeamModel):
 class TeamConversation(TeamModel):
     id: str
     agent_id: str
+    operator_user_id: str = "admin"
+    operator_display_name: str | None = None
     created_by: str | None = None
     last_message_preview: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_interaction_at: datetime = Field(default_factory=utc_now)
 
-    @field_validator("id", "agent_id", mode="before")
+    @field_validator("id", "agent_id", "operator_user_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("created_by", "last_message_preview", mode="before")
+    @field_validator("operator_display_name", "created_by", "last_message_preview", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -1659,20 +1661,22 @@ class TeamState(TeamModel):
                 )
 
     def _validate_conversations(self, errors: list[str]) -> None:
-        conversation_agents: dict[str, str] = {}
+        conversation_pairs: dict[tuple[str, str], str] = {}
         for conversation in self.conversations.values():
             if conversation.agent_id not in self.agents:
                 errors.append(
                     f"conversation {conversation.id} references missing agent "
                     f"{conversation.agent_id}"
                 )
-            existing = conversation_agents.get(conversation.agent_id)
+            pair = (conversation.agent_id, conversation.operator_user_id)
+            existing = conversation_pairs.get(pair)
             if existing is not None:
                 errors.append(
-                    f"agent {conversation.agent_id} has multiple conversations: "
+                    f"agent {conversation.agent_id} and operator "
+                    f"{conversation.operator_user_id} have multiple conversations: "
                     f"{existing}, {conversation.id}"
                 )
-            conversation_agents[conversation.agent_id] = conversation.id
+            conversation_pairs[pair] = conversation.id
         for message in self.conversation_messages.values():
             if message.conversation_id not in self.conversations:
                 errors.append(

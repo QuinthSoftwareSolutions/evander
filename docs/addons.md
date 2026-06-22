@@ -234,6 +234,14 @@ When the voice projection needs details outside the projected context, it can
 delegate a durable `query_origin_agent` request back to the originating text
 agent.
 
+The Chat tab stores conversations as one human operator plus one persistent
+agent. Operators see their own conversations by default. Users with
+`team_chats.read_all` may select another operator's chat history for read-only
+inspection; the UI labels that mode separately from "My chats" and blocks
+sending while inspecting. Team chat messages recorded by the Admin API carry
+human-operator metadata, and chat wake prompts tell the agent that the source is
+a human operator rather than another Team agent.
+
 Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for
@@ -504,6 +512,11 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   not agent-authored action items. The manager handles them during its normal
   Team dispatch by taking the requested Team actions and listing the inbox id in
   `handled_inbox_item_ids`.
+- `operator_chat_messages[]` — send a built-in Team Chat message to a known
+  human operator. Shape: `{"recipient_operator_user_id", "body", "summary"?}`.
+  Recipients must be listed in the dispatch context's
+  `operator_chat_participants`; this is direct human chat, not an agent-to-agent
+  inbox item. Returned in `created_operator_chat_message_ids`.
 - `deliverables[]` — record finished work for an owned task. Shape:
   `{"id"?, "task_id", "summary", "artifact_paths"?, "artifact_refs"?,
   "artifact_space_ref"?, "git_refs"?}`. `artifact_paths` are relative paths
@@ -577,6 +590,11 @@ Team communication is directional and enforced by the repository, not by prose:
   `operator_directive` inbox item for the manager and mark the manager due, so
   an operator instruction like "ask the lead for status on next dispatch"
   becomes normal Team work instead of an out-of-band `team-action.json` write.
+- **Team Chat to a human** — use `chat_replies` only to answer a specific human
+  operator message from the built-in Chat tab. Use `operator_chat_messages[]`
+  only for human operators listed in the current dispatch context. Do not use
+  `questions`, `status_reports`, or `operator_chat_messages[]` for normal
+  agent-to-agent coordination.
 - `Team.operator_communication_target_id` is outbound-only. It does not grant the
   manager's real session inbound Discord or Teams access and does not wake that
   session by itself. If the operator should message or wake the manager through

@@ -56,7 +56,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 10
+ACTION_CONTRACT_SCHEMA_VERSION = 11
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 TEAM_AGENT_GUIDANCE_VERSION = 2
@@ -2152,6 +2152,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "FYI updates that can be batched, normal for ordinary coordination, and "
         "high only for urgent blockers. Low-priority inbox may be delivered with "
         "other work instead of waking the recipient immediately.\n"
+        "- Team Chat messages are direct conversations with human operators, not "
+        "agent-to-agent inbox items. Use chat_replies only when a wake prompt "
+        "gives you a conversation_id and message_id from a human operator. Use "
+        "operator_chat_messages only for human operators listed in the current "
+        "Team context as operator_chat_participants.\n"
         "- Use stand_downs when you need a direct subordinate and that "
         "subordinate's subtree to stop future Team work. Use "
         "stand_down_revocations to clear a stand-down you set. Do not encode "
@@ -2230,6 +2235,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
         "recent_action_feedback": lease.get("recent_action_feedback") or [],
+        "operator_chat_participants": lease.get("operator_chat_participants") or [],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
     project_repo = lease.get("project_repo")
@@ -2266,6 +2272,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "status_requests": [],
         "questions": [],
         "status_reports": [],
+        "operator_chat_messages": [],
         "deliverables": [],
         "review_requests": [],
         "review_decisions": [],
@@ -3100,6 +3107,28 @@ def _persistent_action_schema() -> dict[str, Any]:
                     },
                 },
             },
+            "operator_chat_messages": {
+                "type": "array",
+                "description": (
+                    "Send a new Team Chat message to a known human operator. "
+                    "Use only recipient_operator_user_id values listed in the "
+                    "current Team context as operator_chat_participants."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["recipient_operator_user_id", "body"],
+                    "properties": {
+                        "recipient_operator_user_id": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "body": {"type": "string", "minLength": 1},
+                        "summary": text_or_null,
+                    },
+                },
+            },
             "operator_escalations": {
                 "type": "array",
                 "default": [],
@@ -3366,6 +3395,13 @@ def _persistent_action_example() -> dict[str, Any]:
                 "message_id": "operator-chat-message-id",
                 "body": "Concise reply for the operator.",
                 "summary": "Short reply summary.",
+            }
+        ],
+        "operator_chat_messages": [
+            {
+                "recipient_operator_user_id": "known-human-operator-login",
+                "body": "New chat message for a human operator.",
+                "summary": "Short outbound chat summary.",
             }
         ],
         "operator_escalations": [],

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-22 - Team Add-on Per-Operator Chat
+
+- Scoped Team Add-on built-in chat conversations to one human operator and one
+  agent instead of one global conversation per agent.
+- Added read-only cross-operator chat inspection for users with
+  `team_chats.read_all`, plus explicit human-operator identity in agent chat
+  prompts and action metadata.
+- Added `operator_chat_messages[]` to the Team action contract so agents can
+  send a new Team Chat message to a known human operator.
+
 ## 2026-06-22 - Admin Web Local User Permissions
 
 - Fixed local-password Admin Web permission checks so mixed-case configured

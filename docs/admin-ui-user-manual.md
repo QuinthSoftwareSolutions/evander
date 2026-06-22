@@ -524,7 +524,9 @@ Common group tasks:
 Users with `groups.manage` can edit reusable permission groups. Users with `users.manage` can edit
 user records, group assignments, and direct workflow grants. Other users can sign in and use
 surfaces allowed by their effective permissions. Group directory scopes inherit downward, and direct
-workflow write grants imply read.
+workflow write grants imply read. The `team_chats.read_all` permission allows read-only inspection
+of other operators' Team Add-on Chat histories; normal Team Chat use remains scoped to the signed-in
+operator.
 
 ## Workers
 

@@ -14,6 +14,8 @@ from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
+from agent_sandbox.admin.web.rbac import TEAM_CHATS_READ_ALL_PERMISSION
+from agent_sandbox.admin.web.user_store import normalize_admin_web_login
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import (
     InternalEventBus,
@@ -59,6 +61,7 @@ from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
 from .providers import (
+    ACTION_CONTRACT_SCHEMA_VERSION,
     DEFAULT_ACTION_ARTIFACT_PATH,
     _seed_action_contract_files,
     _seed_team_agent_guidance,
@@ -521,20 +524,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
         return JSONResponse(team_state_payload(state))
 
-    async def list_conversations(_request: Request) -> JSONResponse:
+    async def list_conversations(request: Request) -> JSONResponse:
         state = repository.read()
-        return JSONResponse(_conversation_collection_payload(state))
+        scope = _chat_list_scope(context.auth, request, state)
+        return JSONResponse(_conversation_collection_payload(state, scope=scope))
 
     async def create_conversation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
+        identity = _operator_identity_from_request(context.auth, request)
         state, conversation, created = repository.create_or_get_conversation(
             agent_id=_required(payload, "agent_id"),
-            created_by=_optional(payload, "created_by")
-            or _operator_actor_from_request(context.auth, request),
+            operator_user_id=identity["user_id"],
+            operator_display_name=identity["display_name"],
+            created_by=identity["actor"],
             expected_revision=_expected_revision(payload),
         )
+        scope = _chat_scope_for_operator(context.auth, request, state, identity["user_id"])
         response_payload = _conversation_collection_payload(
             state,
+            scope=scope,
             selected_conversation_id=conversation.id,
         )
         response_payload["created"] = created
@@ -546,6 +554,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
             return JSONResponse({"error": "conversation not found"}, status_code=404)
+        scope = _require_conversation_chat_scope(
+            context.auth,
+            request,
+            state,
+            conversation,
+            write=False,
+        )
         return JSONResponse(
             {
                 "revision": state.revision,
@@ -553,7 +568,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     state,
                     conversation,
                     include_messages=True,
+                    current_operator_user_id=scope["current_operator"]["user_id"],
                 ),
+                **_chat_scope_payload(state, scope),
             }
         )
 
@@ -563,10 +580,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
             return JSONResponse({"error": "conversation not found"}, status_code=404)
+        scope = _require_conversation_chat_scope(
+            context.auth,
+            request,
+            state,
+            conversation,
+            write=False,
+        )
         return JSONResponse(
             _conversation_message_page_payload(
                 state,
                 conversation,
+                current_operator_user_id=scope["current_operator"]["user_id"],
                 before_message_id=_query_text(request, "before"),
                 limit=_query_chat_message_limit(request),
             )
@@ -575,11 +600,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def stream_conversation(request: Request) -> StreamingResponse | JSONResponse:
         conversation_id = request.path_params["conversation_id"]
         try:
-            _conversation_snapshot_payload(repository, conversation_id)
+            _conversation_snapshot_payload(
+                repository,
+                conversation_id,
+                auth=context.auth,
+                request=request,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
         return StreamingResponse(
-            _conversation_snapshot_events(repository, request, conversation_id),
+            _conversation_snapshot_events(
+                repository,
+                request,
+                conversation_id,
+                auth=context.auth,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -587,11 +624,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def send_conversation_message(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         conversation_id = request.path_params["conversation_id"]
+        before = repository.read()
+        conversation = before.conversations.get(conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        identity = _operator_identity_from_request(context.auth, request)
+        _require_conversation_chat_scope(
+            context.auth,
+            request,
+            before,
+            conversation,
+            write=True,
+            identity=identity,
+        )
         state, message = repository.record_operator_chat_message(
             conversation_id=conversation_id,
             body=_required(payload, "body"),
-            created_by=_optional(payload, "created_by")
-            or _operator_actor_from_request(context.auth, request),
+            created_by=identity["actor"],
             expected_revision=_expected_revision(payload),
         )
         conversation = state.conversations[conversation_id]
@@ -646,6 +695,17 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     state,
                     conversation,
                     include_messages=True,
+                    current_operator_user_id=identity["user_id"],
+                ),
+                **_chat_scope_payload(
+                    state,
+                    _chat_scope_for_operator(
+                        context.auth,
+                        request,
+                        state,
+                        conversation.operator_user_id,
+                        identity=identity,
+                    ),
                 ),
                 "message": _conversation_message_payload(message),
                 "dispatch": dispatch_payload,
@@ -662,12 +722,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse({"error": "agent not found"}, status_code=404)
         if _enum_value(agent.status) == AgentStatus.ARCHIVED.value:
             return JSONResponse({"error": "archived agents cannot be called"}, status_code=403)
+        identity = _operator_identity_from_request(context.auth, request)
         conversation_id = _optional(payload, "conversation_id")
         conversation = None
         if conversation_id is not None:
             conversation = state.conversations.get(conversation_id)
             if conversation is None:
                 return JSONResponse({"error": "conversation not found"}, status_code=404)
+            _require_conversation_chat_scope(
+                context.auth,
+                request,
+                state,
+                conversation,
+                write=True,
+                identity=identity,
+            )
             if conversation.agent_id != agent.id:
                 return JSONResponse(
                     {"error": "conversation belongs to a different agent"},
@@ -766,6 +835,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                             state,
                             state.conversations[conversation.id],
                             include_messages=True,
+                            current_operator_user_id=identity["user_id"],
                         )
                         if conversation is not None
                         else None
@@ -880,6 +950,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                         state,
                         state.conversations[conversation.id],
                         include_messages=True,
+                        current_operator_user_id=identity["user_id"],
                     )
                     if conversation is not None
                     else None
@@ -1557,6 +1628,8 @@ def _with_errors(handler):
                 },
                 status_code=409,
             )
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
         except (ValueError, TypeError, ValidationError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -1582,13 +1655,222 @@ def _runtime_from_context(context: AddonContext) -> Any:
     return runtime
 
 
+def _chat_list_scope(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+) -> dict[str, Any]:
+    identity = _operator_identity_from_request(auth, request)
+    requested_operator_user_id = _query_text(request, "operator_user_id") or _query_text(
+        request,
+        "view_operator_user_id",
+    )
+    if requested_operator_user_id is None:
+        return _chat_scope_for_operator(auth, request, state, identity["user_id"], identity=identity)
+    normalized_requested = _normalize_operator_user_id(requested_operator_user_id)
+    if normalized_requested != identity["user_id"] and not _can_view_all_team_chats(
+        auth,
+        request,
+    ):
+        raise PermissionError(f"Permission required: {TEAM_CHATS_READ_ALL_PERMISSION}")
+    return _chat_scope_for_operator(
+        auth,
+        request,
+        state,
+        normalized_requested,
+        identity=identity,
+    )
+
+
+def _chat_scope_for_operator(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+    operator_user_id: str,
+    *,
+    identity: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    current = dict(identity or _operator_identity_from_request(auth, request))
+    selected_user_id = _normalize_operator_user_id(operator_user_id)
+    selected_display_name = _operator_display_name(
+        state,
+        selected_user_id,
+        fallback=selected_user_id,
+    )
+    return {
+        "current_operator": current,
+        "selected_operator": {
+            "user_id": selected_user_id,
+            "display_name": selected_display_name,
+        },
+        "can_view_all_operators": _can_view_all_team_chats(auth, request),
+        "operator_directory_options": _operator_directory_options(auth),
+        "read_only": selected_user_id != current["user_id"],
+    }
+
+
+def _require_conversation_chat_scope(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+    conversation: Any,
+    *,
+    write: bool,
+    identity: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    scope = _chat_scope_for_operator(
+        auth,
+        request,
+        state,
+        conversation.operator_user_id,
+        identity=identity,
+    )
+    if conversation.operator_user_id == scope["current_operator"]["user_id"]:
+        return scope
+    if write:
+        raise PermissionError("Cannot send messages in another operator's Team chat")
+    if not bool(scope["can_view_all_operators"]):
+        raise PermissionError(f"Permission required: {TEAM_CHATS_READ_ALL_PERMISSION}")
+    return scope
+
+
+def _chat_scope_payload(
+    state: TeamState,
+    scope: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "current_operator": dict(scope["current_operator"]),
+        "selected_operator": dict(scope["selected_operator"]),
+        "can_view_all_operators": bool(scope.get("can_view_all_operators")),
+        "read_only": bool(scope.get("read_only")),
+        "operator_options": _operator_options(state, scope=scope),
+    }
+
+
+def _operator_options(
+    state: TeamState,
+    *,
+    scope: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    options: dict[str, dict[str, str]] = {}
+
+    def _add(user_id: object, display_name: object | None = None) -> None:
+        normalized = _normalize_operator_user_id(user_id)
+        label = str(display_name or normalized).strip() or normalized
+        existing = options.setdefault(
+            normalized,
+            {"user_id": normalized, "display_name": label},
+        )
+        if existing["display_name"] == normalized and label != normalized:
+            existing["display_name"] = label
+
+    current = scope["current_operator"]
+    selected = scope["selected_operator"]
+    _add(current["user_id"], current.get("display_name"))
+    _add(selected["user_id"], selected.get("display_name"))
+    if scope.get("can_view_all_operators"):
+        for option in scope.get("operator_directory_options") or []:
+            if isinstance(option, Mapping):
+                _add(option.get("user_id"), option.get("display_name"))
+        for conversation in state.conversations.values():
+            _add(conversation.operator_user_id, conversation.operator_display_name)
+    return sorted(options.values(), key=lambda item: item["display_name"].casefold())
+
+
+def _operator_display_name(
+    state: TeamState,
+    operator_user_id: str,
+    *,
+    fallback: str,
+) -> str:
+    for conversation in sorted(
+        state.conversations.values(),
+        key=lambda item: (item.last_interaction_at, item.id),
+        reverse=True,
+    ):
+        if conversation.operator_user_id == operator_user_id and conversation.operator_display_name:
+            return conversation.operator_display_name
+    return fallback
+
+
+def _operator_identity_from_request(auth: Any | None, request: Request) -> dict[str, str]:
+    session = _session_from_request(auth, request)
+    raw_login = None
+    for key in ("login", "preferred_username", "username", "sub", "name"):
+        value = str((session or {}).get(key) or "").strip()
+        if value:
+            raw_login = value
+            break
+    user_id = _normalize_operator_user_id(raw_login or "admin")
+    display_name = str((session or {}).get("name") or raw_login or user_id).strip() or user_id
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "actor": f"operator:{user_id}",
+    }
+
+
+def _session_from_request(auth: Any | None, request: Request) -> Mapping[str, Any] | None:
+    for method_name in ("read_session", "require"):
+        method = getattr(auth, method_name, None)
+        if not callable(method):
+            continue
+        raw_session = method(request)
+        if isinstance(raw_session, Mapping):
+            return raw_session
+    return None
+
+
+def _can_view_all_team_chats(auth: Any | None, request: Request) -> bool:
+    can = getattr(auth, "can", None)
+    if not callable(can):
+        return False
+    try:
+        return bool(can(request, TEAM_CHATS_READ_ALL_PERMISSION))
+    except Exception:
+        return False
+
+
+def _operator_directory_options(auth: Any | None) -> list[dict[str, str]]:
+    user_store = getattr(auth, "user_store", None)
+    list_users = getattr(user_store, "list_users", None)
+    if not callable(list_users):
+        return []
+    options: list[dict[str, str]] = []
+    try:
+        users = list_users()
+    except Exception:
+        return []
+    for user in users:
+        user_id = _normalize_operator_user_id(getattr(user, "login", None))
+        display_name = str(getattr(user, "display_name", "") or user_id).strip() or user_id
+        options.append({"user_id": user_id, "display_name": display_name})
+    return options
+
+
+def _normalize_operator_user_id(value: object | None) -> str:
+    normalized = normalize_admin_web_login(value)
+    if normalized is not None:
+        return normalized
+    text = str(value or "").strip().casefold()
+    return text or "admin"
+
+
 def _conversation_collection_payload(
     state: TeamState,
     *,
+    scope: Mapping[str, Any],
     selected_conversation_id: str | None = None,
 ) -> dict[str, Any]:
+    selected_operator = scope["selected_operator"]
+    selected_operator_user_id = str(selected_operator["user_id"])
+    current_operator_user_id = str(scope["current_operator"]["user_id"])
     conversations = sorted(
-        state.conversations.values(),
+        [
+            conversation
+            for conversation in state.conversations.values()
+            if conversation.operator_user_id == selected_operator_user_id
+        ],
         key=lambda conversation: (
             conversation.last_interaction_at,
             conversation.id,
@@ -1598,13 +1880,19 @@ def _conversation_collection_payload(
     return {
         "revision": state.revision,
         "selected_conversation_id": selected_conversation_id,
+        **_chat_scope_payload(state, scope),
         "eligible_agents": [
             _chat_agent_payload(agent)
             for agent in sorted(state.agents.values(), key=lambda item: _agent_display_name(item))
             if _chat_agent_is_eligible(agent)
         ],
         "conversations": [
-            _conversation_payload(state, conversation, include_messages=False)
+            _conversation_payload(
+                state,
+                conversation,
+                include_messages=False,
+                current_operator_user_id=current_operator_user_id,
+            )
             for conversation in conversations
         ],
     }
@@ -1616,13 +1904,20 @@ def _conversation_payload(
     *,
     include_messages: bool,
     message_limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
+    current_operator_user_id: str | None = None,
 ) -> dict[str, Any]:
     messages = _conversation_messages(state, conversation.id)
     payload = {
         "id": conversation.id,
         "agent_id": conversation.agent_id,
         "agent": _chat_agent_payload(state.agents.get(conversation.agent_id)),
+        "operator_user_id": conversation.operator_user_id,
+        "operator_display_name": conversation.operator_display_name,
         "created_by": conversation.created_by,
+        "read_only": (
+            current_operator_user_id is not None
+            and conversation.operator_user_id != current_operator_user_id
+        ),
         "last_message_preview": conversation.last_message_preview,
         "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
         "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
@@ -1687,6 +1982,7 @@ def _conversation_message_page_payload(
     state: TeamState,
     conversation: Any,
     *,
+    current_operator_user_id: str | None = None,
     before_message_id: str | None = None,
     limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
 ) -> dict[str, Any]:
@@ -1701,6 +1997,10 @@ def _conversation_message_page_payload(
     return {
         "revision": state.revision,
         "conversation_id": conversation.id,
+        "read_only": (
+            current_operator_user_id is not None
+            and conversation.operator_user_id != current_operator_user_id
+        ),
         "before_message_id": before_message_id,
         **payload,
     }
@@ -1709,18 +2009,34 @@ def _conversation_message_page_payload(
 def _conversation_snapshot_payload(
     repository: TeamStateRepository,
     conversation_id: str,
+    *,
+    auth: Any | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     state = repository.read()
     conversation = state.conversations.get(conversation_id)
     if conversation is None:
         raise ValueError("conversation not found")
+    scope = None
+    current_operator_user_id = None
+    if auth is not None and request is not None:
+        scope = _require_conversation_chat_scope(
+            auth,
+            request,
+            state,
+            conversation,
+            write=False,
+        )
+        current_operator_user_id = str(scope["current_operator"]["user_id"])
     return {
         "revision": state.revision,
         "conversation": _conversation_payload(
             state,
             conversation,
             include_messages=True,
+            current_operator_user_id=current_operator_user_id,
         ),
+        **(_chat_scope_payload(state, scope) if scope is not None else {}),
     }
 
 
@@ -1729,12 +2045,18 @@ async def _conversation_snapshot_events(
     request: Request,
     conversation_id: str,
     *,
+    auth: Any | None = None,
     poll_interval_seconds: float = 1.0,
 ) -> AsyncIterator[str]:
     last_serialized = ""
     try:
-        snapshot = _conversation_snapshot_payload(repository, conversation_id)
-    except ValueError:
+        snapshot = _conversation_snapshot_payload(
+            repository,
+            conversation_id,
+            auth=auth,
+            request=request,
+        )
+    except (ValueError, PermissionError):
         return
     last_serialized = json.dumps(snapshot, sort_keys=True)
     yield f"event: snapshot\ndata: {last_serialized}\n\n"
@@ -1743,8 +2065,13 @@ async def _conversation_snapshot_events(
             break
         await asyncio.sleep(max(0.0, poll_interval_seconds))
         try:
-            snapshot = _conversation_snapshot_payload(repository, conversation_id)
-        except ValueError:
+            snapshot = _conversation_snapshot_payload(
+                repository,
+                conversation_id,
+                auth=auth,
+                request=request,
+            )
+        except (ValueError, PermissionError):
             break
         serialized = json.dumps(snapshot, sort_keys=True)
         if serialized == last_serialized:
@@ -1803,6 +2130,7 @@ def _build_team_chat_prompt(
     message: Any,
 ) -> str:
     agent = state.agents[conversation.agent_id]
+    operator_label = conversation.operator_display_name or conversation.operator_user_id
     recent_messages = [
         item
         for item in state.conversation_messages.values()
@@ -1814,21 +2142,29 @@ def _build_team_chat_prompt(
         body = str(item.body or "").strip()
         if not body:
             continue
-        transcript_lines.append(f"{item.sender}: {body}")
+        if item.sender == "operator":
+            sender_label = f"human operator {operator_label}"
+        elif item.sender == "agent":
+            sender_label = _agent_display_name(agent)
+        else:
+            sender_label = "system"
+        transcript_lines.append(f"{sender_label}: {body}")
     transcript = "\n".join(transcript_lines)
     return (
-        "You have received an operator message in the Team Add-on Chat tab.\n"
-        "Treat this as the current operator request. Reply to the operator by writing "
+        "You have received a message from a human operator in the Team Add-on Chat tab.\n"
+        "This is not an agent-to-agent inbox message. Treat it as the current human "
+        "operator request. Reply to this human operator by writing "
         "/artifacts/team-action.json with a chat_replies entry. Do not use questions "
-        "or status_reports for this operator reply; those are for agent-to-agent inbox "
-        "communication.\n\n"
+        "or status_reports for this human chat reply; those are for agent-to-agent "
+        "inbox communication.\n\n"
         f"Current agent: {_agent_display_name(agent)} ({agent.id})\n"
+        f"Human operator: {operator_label} ({conversation.operator_user_id})\n"
         f"Conversation ID: {conversation.id}\n"
-        f"Operator message ID: {message.id}\n"
+        f"Human operator message ID: {message.id}\n"
         f"Dispatch ID: {message.dispatch_id or ''}\n\n"
         "Required reply shape:\n"
         "{\n"
-        f'  "schema_version": 10,\n'
+        f'  "schema_version": {ACTION_CONTRACT_SCHEMA_VERSION},\n'
         f'  "agent_id": "{agent.id}",\n'
         f'  "dispatch_id": "{message.dispatch_id or ""}",\n'
         '  "chat_replies": [\n'
@@ -1841,7 +2177,7 @@ def _build_team_chat_prompt(
         "}\n\n"
         "Recent conversation:\n"
         f"{transcript or '(no earlier messages)'}\n\n"
-        "Operator message:\n"
+        "Human operator message:\n"
         f"{message.body}"
     )
 
@@ -2358,23 +2694,7 @@ def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
 
 
 def _operator_actor_from_request(auth: Any | None, request: Request) -> str:
-    session: Mapping[str, Any] | None = None
-    read_session = getattr(auth, "read_session", None)
-    if callable(read_session):
-        raw_session = read_session(request)
-        if isinstance(raw_session, Mapping):
-            session = raw_session
-    if session is None:
-        require = getattr(auth, "require", None)
-        if callable(require):
-            raw_session = require(request)
-            if isinstance(raw_session, Mapping):
-                session = raw_session
-    for key in ("login", "preferred_username", "username", "name", "sub"):
-        value = str((session or {}).get(key) or "").strip()
-        if value:
-            return f"operator:{value}"
-    return "operator"
+    return _operator_identity_from_request(auth, request)["actor"]
 
 
 def _optional_present_text(payload: Mapping[str, Any], field_name: str) -> str | None:
