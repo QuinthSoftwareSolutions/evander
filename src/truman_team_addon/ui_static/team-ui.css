@@ -412,11 +412,20 @@ button.team-record-kind-tab strong {
 .chat-layout {
   grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
   align-items: stretch;
+  height: min(42rem, calc(100vh - 13.5rem));
+  min-height: 22rem;
+  min-width: 0;
 }
 
 .chat-sidebar,
 .chat-main {
-  min-height: min(42rem, calc(100vh - 12rem));
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .chat-sidebar {
@@ -464,6 +473,7 @@ button.team-record-kind-tab strong {
   padding: 0;
   list-style: none;
   overflow: auto;
+  min-height: 0;
 }
 
 .chat-conversation-row,
@@ -533,10 +543,24 @@ button.team-record-kind-tab strong {
 }
 
 .chat-thread {
-  min-height: min(42rem, calc(100vh - 12rem));
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0.85rem;
+}
+
+.chat-thread.has-call-strip {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.chat-thread-view {
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-thread-header {
+  grid-row: 1;
 }
 
 .chat-thread-title {
@@ -555,6 +579,7 @@ button.team-record-kind-tab strong {
 }
 
 .chat-call-strip {
+  grid-row: 2;
   justify-content: flex-end;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -563,9 +588,32 @@ button.team-record-kind-tab strong {
 }
 
 .chat-message-list {
+  grid-row: 2;
   align-content: start;
   overflow: auto;
+  min-height: 0;
   padding-right: 0.25rem;
+  overscroll-behavior: contain;
+}
+
+.chat-thread.has-call-strip .chat-message-list {
+  grid-row: 3;
+}
+
+.chat-composer {
+  grid-row: 3;
+}
+
+.chat-thread.has-call-strip .chat-composer {
+  grid-row: 4;
+}
+
+.chat-history-sentinel {
+  min-height: 1.2rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-align: center;
 }
 
 .chat-message {
@@ -583,10 +631,12 @@ button.team-record-kind-tab strong {
 
 .chat-message-bubble {
   max-width: min(42rem, 82%);
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.65rem 0.75rem;
   background: var(--panel);
+  overflow-wrap: anywhere;
 }
 
 .chat-message--operator .chat-message-bubble {

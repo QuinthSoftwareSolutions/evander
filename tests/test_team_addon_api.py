@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
+from truman_team_addon.api import _conversation_snapshot_events
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -25,6 +27,7 @@ from truman_team_addon.models import (
     EphemeralAssignmentState,
     GitPromotionRecord,
     ReleasePackage,
+    TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
@@ -260,6 +263,44 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
 
     repo.update(_mutate)
     return repo
+
+
+def _seed_long_chat_history(
+    runtime_dir: Path,
+    *,
+    message_count: int = 75,
+) -> tuple[TeamStateRepository, str]:
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator",
+        expected_revision=repo.read().revision,
+    )
+    conversation_id = conversation.id
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _add_messages(state):
+        for index in range(message_count):
+            created_at = base_time + timedelta(minutes=index)
+            state.conversation_messages[f"msg-{index:03d}"] = TeamConversationMessage(
+                id=f"msg-{index:03d}",
+                conversation_id=conversation_id,
+                sender="operator" if index % 2 == 0 else "agent",
+                body=f"Message {index:03d}",
+                status="sent",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        state.conversations[conversation_id].last_message_preview = (
+            f"Message {message_count - 1:03d}"
+        )
+        state.conversations[conversation_id].last_interaction_at = (
+            base_time + timedelta(minutes=message_count - 1)
+        )
+        return state
+
+    repo.update(_add_messages)
+    return repo, conversation_id
 
 
 class _FakeAvatarGenerator:
@@ -577,6 +618,167 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     assert [item["sender"] for item in messages] == ["operator", "agent"]
     assert messages[0]["status"] == "replied"
     assert messages[1]["body"] == "The dependency task is still open."
+
+
+def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
+    _repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    detail = client.get(f"/api/addons/team-addon/conversations/{conversation_id}")
+    assert detail.status_code == 200
+    detail_conversation = detail.json()["conversation"]
+    assert detail_conversation["message_count"] == 75
+    assert detail_conversation["has_older"] is True
+    assert detail_conversation["oldest_message_id"] == "msg-025"
+    assert detail_conversation["newest_message_id"] == "msg-074"
+    assert [message["body"] for message in detail_conversation["messages"][:2]] == [
+        "Message 025",
+        "Message 026",
+    ]
+    assert detail_conversation["messages"][-1]["body"] == "Message 074"
+    assert len(detail_conversation["messages"]) == 50
+
+    latest_page = client.get(
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages?limit=10"
+    )
+    assert latest_page.status_code == 200
+    latest_payload = latest_page.json()
+    assert latest_payload["message_count"] == 75
+    assert latest_payload["has_older"] is True
+    assert latest_payload["oldest_message_id"] == "msg-065"
+    assert latest_payload["newest_message_id"] == "msg-074"
+    assert [message["id"] for message in latest_payload["messages"]] == [
+        f"msg-{index:03d}" for index in range(65, 75)
+    ]
+
+    older_page = client.get(
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages"
+        "?before=msg-065&limit=10"
+    )
+    assert older_page.status_code == 200
+    older_payload = older_page.json()
+    assert older_payload["has_older"] is True
+    assert older_payload["oldest_message_id"] == "msg-055"
+    assert older_payload["newest_message_id"] == "msg-064"
+    assert [message["id"] for message in older_payload["messages"]] == [
+        f"msg-{index:03d}" for index in range(55, 65)
+    ]
+
+    first_page = client.get(
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages"
+        "?before=msg-005&limit=10"
+    )
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert first_payload["has_older"] is False
+    assert [message["id"] for message in first_payload["messages"]] == [
+        f"msg-{index:03d}" for index in range(0, 5)
+    ]
+
+
+def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:
+    repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def read_first_event() -> str:
+        stream = _conversation_snapshot_events(
+            repo,
+            RequestStub(),  # type: ignore[arg-type]
+            conversation_id,
+            poll_interval_seconds=0,
+        )
+        try:
+            return await asyncio.wait_for(anext(stream), timeout=1.0)
+        finally:
+            await stream.aclose()
+
+    event = asyncio.run(read_first_event())
+    line = next(line for line in event.splitlines() if line.startswith("data: "))
+    payload = json.loads(line.removeprefix("data: "))
+
+    assert event.startswith("event: snapshot\n")
+    assert payload["conversation"]["message_count"] == 75
+    assert len(payload["conversation"]["messages"]) == 50
+    assert payload["conversation"]["messages"][0]["id"] == "msg-025"
+    assert payload["conversation"]["messages"][-1]["id"] == "msg-074"
+
+
+def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    def _clear_backend_runtime(state):
+        state.agent_runtimes.pop("backend", None)
+        return state
+
+    repo.update(_clear_backend_runtime)
+    _state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator",
+    )
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    def _payload_from_event(event: str) -> dict:
+        line = next(line for line in event.splitlines() if line.startswith("data: "))
+        return json.loads(line.removeprefix("data: "))
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _conversation_snapshot_events(
+            repo,
+            RequestStub(),  # type: ignore[arg-type]
+            conversation.id,
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            _, message = repo.record_operator_chat_message(
+                conversation_id=conversation.id,
+                body="Can you summarize the blocker?",
+                expected_revision=repo.read().revision,
+            )
+            dispatch_id = f"team-chat:{message.id}"
+            repo.begin_chat_message_dispatch(
+                message_id=message.id,
+                dispatch_id=dispatch_id,
+            )
+            repo.apply_agent_action(
+                action={
+                    "agent_id": "backend",
+                    "dispatch_id": dispatch_id,
+                    "chat_replies": [
+                        {
+                            "conversation_id": conversation.id,
+                            "message_id": message.id,
+                            "body": "The dependency task is still open.",
+                        }
+                    ],
+                },
+                dispatch_id=dispatch_id,
+                expected_revision=repo.read().revision,
+            )
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+    first_payload = _payload_from_event(first_event)
+    second_payload = _payload_from_event(second_event)
+
+    assert first_event.startswith("event: snapshot\n")
+    assert first_payload["conversation"]["messages"] == []
+    assert [item["sender"] for item in second_payload["conversation"]["messages"]] == [
+        "operator",
+        "agent",
+    ]
+    assert second_payload["conversation"]["messages"][1]["body"] == (
+        "The dependency task is still open."
+    )
 
 
 def test_agent_voice_session_create_query_and_end(
@@ -1037,6 +1239,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'closest?.("[data-chat-message-form]")' in script.text
     assert "data-agent-call-conversation-id" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
+    assert "new EventSource" in script.text
+    assert "ensureChatStream" in script.text
+    assert "/stream" in script.text
+    assert "revision: state.revision,\n    conversations" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200

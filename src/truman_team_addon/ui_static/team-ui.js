@@ -89,6 +89,9 @@ let chatRequestId = 0;
 let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
 let chatSending = false;
+let chatStream = null;
+let chatStreamConversationId = null;
+let chatStreamErrorRefreshPending = false;
 let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
@@ -132,6 +135,11 @@ const ephemeralWorkKinds = new Set([
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 const timelinePageSize = 10;
+const chatMessagePageSize = 50;
+const chatTopLoadThresholdPx = 48;
+const chatBottomStickinessPx = 96;
+let pendingChatScroll = null;
+const chatOlderMessageLoads = new Set();
 
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
@@ -369,6 +377,9 @@ document.addEventListener("DOMContentLoaded", () => {
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
+  window.addEventListener("beforeunload", () => {
+    closeChatStream();
+  });
   decorateFieldTooltips(document);
   void loadState();
 });
@@ -494,8 +505,13 @@ function storeTeamView(view) {
 }
 
 function setTeamView(view) {
-  activeTeamView = normalizedTeamView(view);
+  const nextView = normalizedTeamView(view);
+  const enteringChat = activeTeamView !== "chat" && nextView === "chat";
+  activeTeamView = nextView;
   storeTeamView(activeTeamView);
+  if (enteringChat && selectedChatConversationId) {
+    scheduleChatScrollToBottom(selectedChatConversationId);
+  }
   render();
 }
 
@@ -789,12 +805,13 @@ function bindRecordEditing() {
       return;
     }
 
-    const chatConversationButton = event.target.closest("[data-chat-conversation-id]");
+    const chatConversationButton = event.target.closest(".chat-conversation-row[data-chat-conversation-id]");
     if (chatConversationButton) {
       event.preventDefault();
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
       renderChat();
       if (selectedChatConversationId) {
+        ensureChatStream(selectedChatConversationId);
         void loadConversationDetail(selectedChatConversationId);
       }
       return;
@@ -1223,7 +1240,7 @@ function normalizeChat(payload) {
     ? normalized.eligible_agents
     : [];
   normalized.conversations = Array.isArray(normalized.conversations)
-    ? normalized.conversations
+    ? normalized.conversations.map(normalizeChatConversation)
     : [];
   return normalized;
 }
@@ -1267,13 +1284,10 @@ function syncTeamStateFromChatPayload(payload) {
   }
   state = normalizeState({
     ...state,
-    revision: payload.revision,
+    revision: state.revision,
     conversations,
     conversation_messages: conversationMessages,
   });
-  if (elements.revisionBadge) {
-    elements.revisionBadge.textContent = `Revision ${state.revision}`;
-  }
 }
 
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
@@ -1296,7 +1310,10 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
     selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
     renderChat();
     if (selectedChatConversationId) {
+      ensureChatStream(selectedChatConversationId);
       void loadConversationDetail(selectedChatConversationId, requestId);
+    } else {
+      closeChatStream();
     }
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -1329,6 +1346,7 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     }
     replaceChatConversation(payload.conversation);
     chatState = { ...chatState, loading: false, error: null, revision: payload.revision ?? chatState.revision };
+    scheduleChatScrollToBottom(normalizedConversationId);
     renderChat();
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -1339,6 +1357,52 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
       loading: false,
       error: error instanceof Error ? error.message : "Conversation failed to load.",
     };
+    renderChat();
+  }
+}
+
+async function loadOlderChatMessages(conversationId) {
+  const normalizedConversationId = text(conversationId);
+  const conversation = chatConversationById(normalizedConversationId);
+  if (!conversation || !conversation.has_older || chatOlderMessageLoads.has(normalizedConversationId)) {
+    return;
+  }
+  const messages = conversationMessages(conversation);
+  const beforeMessageId = text(conversation.oldest_message_id) || text(messages[0]?.id);
+  if (!beforeMessageId) {
+    return;
+  }
+  const scrollSnapshot = captureChatScroll(normalizedConversationId);
+  chatOlderMessageLoads.add(normalizedConversationId);
+  renderChat();
+  try {
+    const query = new URLSearchParams({
+      before: beforeMessageId,
+      limit: String(chatMessagePageSize),
+    });
+    const response = await fetch(
+      `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/messages?${query.toString()}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (text(payload.conversation_id) !== normalizedConversationId) {
+      return;
+    }
+    applyChatMessagePage(normalizedConversationId, payload);
+    chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
+    if (scrollSnapshot) {
+      scheduleChatScrollPreservePrepend(normalizedConversationId, scrollSnapshot);
+    }
+  } catch (error) {
+    chatState = {
+      ...chatState,
+      error: error instanceof Error ? error.message : "Older messages failed to load.",
+    };
+  } finally {
+    chatOlderMessageLoads.delete(normalizedConversationId);
     renderChat();
   }
 }
@@ -1361,10 +1425,86 @@ function replaceChatConversation(conversation) {
   if (!conversation?.id) {
     return;
   }
+  const existing = chatConversationById(conversation.id);
+  const nextConversation = mergeChatConversation(existing, conversation);
   const nextConversations = chatState.conversations.filter((item) => text(item.id) !== text(conversation.id));
-  nextConversations.push(conversation);
+  nextConversations.push(nextConversation);
   nextConversations.sort(compareChatConversations);
   chatState = { ...chatState, conversations: nextConversations };
+}
+
+function ensureChatStream(conversationId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId || typeof EventSource === "undefined") {
+    return;
+  }
+  if (chatStream && chatStreamConversationId === normalizedConversationId) {
+    return;
+  }
+  closeChatStream();
+  chatStreamConversationId = normalizedConversationId;
+  chatStreamErrorRefreshPending = false;
+  const stream = new EventSource(
+    `${API_BASE}/conversations/${encodeURIComponent(normalizedConversationId)}/stream`,
+  );
+  chatStream = stream;
+  stream.addEventListener("snapshot", (event) => {
+    if (chatStream !== stream || chatStreamConversationId !== normalizedConversationId) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      applyChatSnapshot(payload, normalizedConversationId);
+    } catch {
+      // Ignore malformed stream events; EventSource will keep the connection alive.
+    }
+  });
+  stream.onerror = () => {
+    if (chatStream !== stream || chatStreamConversationId !== normalizedConversationId) {
+      return;
+    }
+    if (chatStreamErrorRefreshPending) {
+      return;
+    }
+    chatStreamErrorRefreshPending = true;
+    void loadConversationDetail(normalizedConversationId).finally(() => {
+      if (chatStream === stream) {
+        chatStreamErrorRefreshPending = false;
+      }
+    });
+  };
+}
+
+function closeChatStream() {
+  if (chatStream) {
+    chatStream.close();
+  }
+  chatStream = null;
+  chatStreamConversationId = null;
+  chatStreamErrorRefreshPending = false;
+}
+
+function applyChatSnapshot(payload, expectedConversationId) {
+  const conversation = payload?.conversation;
+  if (!conversation?.id || text(conversation.id) !== text(expectedConversationId)) {
+    return;
+  }
+  const scrollSnapshot = captureChatScroll(expectedConversationId);
+  const shouldStickToBottom = chatIsScrolledNearBottom(expectedConversationId);
+  syncTeamStateFromChatPayload(payload);
+  replaceChatConversation(conversation);
+  chatState = {
+    ...chatState,
+    loading: false,
+    error: null,
+    revision: payload.revision ?? chatState.revision,
+  };
+  if (shouldStickToBottom) {
+    scheduleChatScrollToBottom(expectedConversationId);
+  } else if (scrollSnapshot) {
+    scheduleChatScrollPreserve(expectedConversationId, scrollSnapshot);
+  }
+  renderChat();
 }
 
 async function createOrFocusChat(agentId) {
@@ -1395,6 +1535,7 @@ async function createOrFocusChat(agentId) {
     chatNewPickerOpen = false;
     renderChat();
     if (selectedChatConversationId) {
+      ensureChatStream(selectedChatConversationId);
       await loadConversationDetail(selectedChatConversationId);
     }
     setStatus("", "");
@@ -1437,13 +1578,18 @@ async function submitChatMessage(form) {
     replaceChatConversation(payload.conversation);
     selectedChatConversationId = payload.conversation?.id || selectedChatConversationId;
     chatState = { ...chatState, revision: payload.revision ?? chatState.revision };
+    if (selectedChatConversationId) {
+      ensureChatStream(selectedChatConversationId);
+    }
     form.reset();
-    setStatus(
-      payload.dispatch?.success === false
-        ? (payload.dispatch.message || "Chat message saved, but dispatch failed.")
-        : "Chat message sent.",
-      payload.dispatch?.success === false ? "warning" : "ok",
-    );
+    if (payload.dispatch?.success === false) {
+      setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
+    } else {
+      setStatus("", "");
+    }
+    if (selectedChatConversationId) {
+      scheduleChatScrollToBottom(selectedChatConversationId);
+    }
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Chat message failed.", "error");
   } finally {
@@ -3316,10 +3462,12 @@ function renderChatThread() {
     return;
   }
   const agent = conversation.agent || {};
-  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  const messages = conversationMessages(conversation);
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
+  const olderLoading = chatOlderMessageLoads.has(text(conversation.id));
+  const callStrip = renderChatCallStrip(conversation);
   elements.chatThreadView.innerHTML = `
-    <div class="chat-thread">
+    <div class="chat-thread${callStrip ? " has-call-strip" : ""}">
       <header class="chat-thread-header">
         <div class="chat-thread-title">
           ${renderChatAvatar(agent)}
@@ -3337,8 +3485,13 @@ function renderChatThread() {
           <button type="button" data-chat-refresh>Refresh</button>
         </div>
       </header>
-      ${renderChatCallStrip(conversation)}
-      <div class="chat-message-list" role="log" aria-live="polite">
+      ${callStrip}
+      <div class="chat-message-list" role="log" aria-live="polite" data-chat-scroll-conversation-id="${escapeAttr(conversation.id)}">
+        ${
+          conversation.has_older || olderLoading
+            ? `<div class="chat-history-sentinel" data-chat-history-sentinel>${olderLoading ? "Loading older messages." : ""}</div>`
+            : ""
+        }
         ${
           messages.length
             ? messages.map(renderChatMessage).join("")
@@ -3351,6 +3504,8 @@ function renderChatThread() {
       </form>
     </div>
   `;
+  bindChatMessageListScroll(conversation.id);
+  applyPendingChatScroll(conversation.id);
 }
 
 function renderChatCallStrip(conversation) {
@@ -3386,6 +3541,89 @@ function renderChatMessage(message) {
   `;
 }
 
+function applyChatMessagePage(conversationId, payload) {
+  const conversation = chatConversationById(conversationId);
+  if (!conversation) {
+    return;
+  }
+  replaceChatConversation({
+    ...conversation,
+    messages: Array.isArray(payload.messages) ? payload.messages : [],
+    message_count: payload.message_count ?? conversation.message_count,
+    has_older: Boolean(payload.has_older),
+    oldest_message_id: payload.oldest_message_id || null,
+    newest_message_id: payload.newest_message_id || null,
+  });
+}
+
+function mergeChatConversation(existing, incoming) {
+  if (!existing) {
+    return normalizeChatConversation(incoming);
+  }
+  const incomingMessages = conversationMessages(incoming);
+  const existingMessages = conversationMessages(existing);
+  const mergedMessages = incomingMessages.length
+    ? mergeChatMessages(existingMessages, incomingMessages)
+    : existingMessages;
+  const next = {
+    ...existing,
+    ...incoming,
+    messages: mergedMessages,
+  };
+  if (existingMessages.length && incomingMessages.length) {
+    const existingOldest = existingMessages[0];
+    const incomingOldest = incomingMessages[0];
+    if (compareChatMessages(existingOldest, incomingOldest) < 0) {
+      next.has_older = existing.has_older;
+    }
+  }
+  return normalizeChatConversation(next);
+}
+
+function normalizeChatConversation(conversation) {
+  const messages = conversationMessages(conversation);
+  return {
+    ...conversation,
+    messages,
+    has_older: Boolean(conversation?.has_older),
+    oldest_message_id: text(messages[0]?.id) || text(conversation?.oldest_message_id) || null,
+    newest_message_id: text(messages[messages.length - 1]?.id) || text(conversation?.newest_message_id) || null,
+  };
+}
+
+function conversationMessages(conversation) {
+  return Array.isArray(conversation?.messages)
+    ? [...conversation.messages].sort(compareChatMessages)
+    : [];
+}
+
+function mergeChatMessages(existingMessages, incomingMessages) {
+  const byId = new Map();
+  [...existingMessages, ...incomingMessages].forEach((message) => {
+    if (message?.id) {
+      byId.set(text(message.id), {
+        ...(byId.get(text(message.id)) || {}),
+        ...message,
+      });
+    }
+  });
+  return Array.from(byId.values()).sort(compareChatMessages);
+}
+
+function compareChatMessages(left, right) {
+  const leftTime = Date.parse(left?.created_at || "");
+  const rightTime = Date.parse(right?.created_at || "");
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  const leftCreated = text(left?.created_at);
+  const rightCreated = text(right?.created_at);
+  if (leftCreated !== rightCreated) {
+    return leftCreated.localeCompare(rightCreated);
+  }
+  return text(left?.id).localeCompare(text(right?.id));
+}
+
 function renderChatAvatar(agent) {
   const label = text(agent?.display_name || agent?.id || "?");
   const avatarAsset = text(agent?.avatar?.asset_id);
@@ -3396,12 +3634,103 @@ function renderChatAvatar(agent) {
 }
 
 function selectedChatConversation() {
-  return chatState.conversations.find((conversation) => text(conversation.id) === text(selectedChatConversationId)) || null;
+  return chatConversationById(selectedChatConversationId);
+}
+
+function chatConversationById(conversationId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId) {
+    return null;
+  }
+  return chatState.conversations.find((conversation) => text(conversation.id) === normalizedConversationId) || null;
 }
 
 function conversationForAgent(agentId) {
   const normalizedAgentId = text(agentId);
   return chatState.conversations.find((conversation) => text(conversation.agent_id) === normalizedAgentId) || null;
+}
+
+function chatMessageListElement(conversationId = selectedChatConversationId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId || !elements.chatThreadView) {
+    return null;
+  }
+  return Array.from(elements.chatThreadView.querySelectorAll(".chat-message-list")).find((list) => {
+    return text(list.dataset.chatScrollConversationId) === normalizedConversationId;
+  }) || null;
+}
+
+function captureChatScroll(conversationId = selectedChatConversationId) {
+  const list = chatMessageListElement(conversationId);
+  if (!list) {
+    return null;
+  }
+  return {
+    scrollTop: list.scrollTop,
+    scrollHeight: list.scrollHeight,
+  };
+}
+
+function chatIsScrolledNearBottom(conversationId = selectedChatConversationId) {
+  const list = chatMessageListElement(conversationId);
+  if (!list) {
+    return true;
+  }
+  return list.scrollHeight - list.clientHeight - list.scrollTop <= chatBottomStickinessPx;
+}
+
+function scheduleChatScrollToBottom(conversationId) {
+  pendingChatScroll = { conversationId: text(conversationId), mode: "bottom" };
+}
+
+function scheduleChatScrollPreserve(conversationId, snapshot) {
+  pendingChatScroll = {
+    conversationId: text(conversationId),
+    mode: "preserve",
+    scrollTop: snapshot.scrollTop,
+  };
+}
+
+function scheduleChatScrollPreservePrepend(conversationId, snapshot) {
+  pendingChatScroll = {
+    conversationId: text(conversationId),
+    mode: "preserve-prepend",
+    scrollTop: snapshot.scrollTop,
+    scrollHeight: snapshot.scrollHeight,
+  };
+}
+
+function bindChatMessageListScroll(conversationId) {
+  const list = chatMessageListElement(conversationId);
+  if (!list) {
+    return;
+  }
+  list.addEventListener("scroll", () => {
+    if (list.scrollTop <= chatTopLoadThresholdPx) {
+      void loadOlderChatMessages(conversationId);
+    }
+  });
+}
+
+function applyPendingChatScroll(conversationId) {
+  const pending = pendingChatScroll;
+  if (!pending || text(pending.conversationId) !== text(conversationId)) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    const list = chatMessageListElement(conversationId);
+    if (!list || pendingChatScroll !== pending) {
+      return;
+    }
+    if (pending.mode === "bottom") {
+      list.scrollTop = list.scrollHeight;
+    } else if (pending.mode === "preserve-prepend") {
+      list.scrollTop = Math.max(0, list.scrollHeight - pending.scrollHeight + pending.scrollTop);
+    } else {
+      list.scrollTop = pending.scrollTop;
+    }
+    pendingChatScroll = null;
+  });
 }
 
 function compareChatConversations(left, right) {

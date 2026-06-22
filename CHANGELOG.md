@@ -31,6 +31,23 @@ material. Newer entries are added incrementally as changes land.
 - Changed the Team Add-on Teams tab so each team starts collapsed and expands into a single active records tab for agents, projects, or roles.
 - Added per-team record paging controls to keep long team lists compact.
 
+## 2026-06-21 - Team Add-on Chat Virtual Scrolling
+
+- Bounded the Team Add-on Chat panel so long histories scroll inside the chat
+  message list, open at the latest message, and load older messages on upward
+  scroll instead of rendering the full transcript at once.
+- Removed the redundant global success banner after sending a chat message.
+
+## 2026-06-21 - Team Add-on Chat Revision Safety
+
+- Kept partial Team Chat live-update snapshots from advancing the page-wide
+  Team state revision, preserving optimistic conflict checks for non-chat edits.
+
+## 2026-06-21 - Team Add-on Chat Live Updates
+
+- Added a Team Chat conversation event stream and subscribed the Chat tab to
+  selected-conversation snapshots so agent replies appear without a page reload.
+
 ## 2026-06-21 - Team Add-on Chat Lifecycle Fixes
 
 - Fixed Team Chat reply-application errors so the source operator message is
