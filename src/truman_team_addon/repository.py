@@ -3151,6 +3151,16 @@ class TeamStateRepository:
             return self.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
+            terminal_task_states = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+            teams_with_open_tasks: set[str] = set()
+            for task in state_model.tasks.values():
+                if task.state in terminal_task_states:
+                    continue
+                owner = state_model.agents.get(task.owner_agent_id)
+                if owner is None or owner.team_id is None:
+                    continue
+                teams_with_open_tasks.add(owner.team_id)
+            teams_with_lease = set()
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
@@ -3295,6 +3305,124 @@ class TeamStateRepository:
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                         "subordinates": _subordinate_agent_payloads(state_model, agent),
+                    }
+                )
+                if agent.team_id is not None:
+                    teams_with_lease.add(agent.team_id)
+
+            if normalized_limit and len(leases) >= normalized_limit:
+                return state_model
+
+            for team in sorted(state_model.teams.values(), key=lambda item: item.id):
+                if normalized_limit and len(leases) >= normalized_limit:
+                    break
+                if (
+                    team.archived
+                    or team.id in blocked_teams
+                    or team.id not in teams_with_open_tasks
+                ):
+                    continue
+                if normalized_team_id is not None and team.id != normalized_team_id:
+                    continue
+                if team.id in teams_with_lease:
+                    continue
+                manager = state_model.agents.get(team.manager_agent_id)
+                if (
+                    manager is None
+                    or manager.status != AgentStatus.ACTIVE
+                    or (manager.id is None)
+                ):
+                    continue
+                if normalized_project_id is not None and not agent_has_project_assignment(
+                    state_model,
+                    manager.id,
+                    normalized_project_id,
+                ):
+                    continue
+                if (
+                    normalized_agent_id is not None
+                    and manager.id != normalized_agent_id
+                ):
+                    continue
+                if (
+                    manager.id in state_model.agent_runtimes
+                    and state_model.agent_runtimes[manager.id].wake_leased_until
+                    and _ensure_utc(state_model.agent_runtimes[manager.id].wake_leased_until)
+                    > effective_now
+                ):
+                    continue
+                if _active_stand_downs_for_agent(state_model, manager.id):
+                    continue
+                manager_runtime = state_model.agent_runtimes.setdefault(
+                    manager.id,
+                    AgentRuntime(agent_id=manager.id),
+                )
+                due_by_time = (
+                    manager_runtime.next_wake_at is None
+                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
+                )
+                if not due_by_time:
+                    continue
+                if (
+                    max_no_progress_count >= 0
+                    and manager_runtime.no_progress_count >= max_no_progress_count
+                    and not _wakeable_inbox_items(
+                        _pending_inbox_for_agent(state_model, manager.id)
+                    )
+                ):
+                    continue
+                dispatch_id = f"team-dispatch-{uuid4().hex}"
+                manager_runtime.active_dispatch_id = dispatch_id
+                manager_runtime.wake_reason = "manager_fallback"
+                manager_runtime.last_wake_at = effective_now
+                manager_runtime.wake_leased_until = effective_now + timedelta(
+                    seconds=lease_seconds
+                )
+                manager_runtime.next_wake_at = effective_now + timedelta(
+                    seconds=wake_interval_seconds
+                )
+                manager_runtime.updated_at = effective_now
+                if (
+                    manager_runtime.context_clearing_policy
+                    == AgentContextClearingPolicy.EVERY_WAKE
+                    and not manager_runtime.context_rotation_pending
+                ):
+                    _mark_context_rotation_pending(
+                        state_model,
+                        agent=manager,
+                        runtime=manager_runtime,
+                        reason="every_wake",
+                        requested_by=None,
+                        requested_at=effective_now,
+                        request_note=None,
+                    )
+                _clear_low_priority_batch(manager_runtime)
+                teams_with_lease.add(team.id)
+                leases.append(
+                    {
+                        "agent": _agent_payload(state_model, manager),
+                        "runtime": manager_runtime.model_dump(mode="json"),
+                        "dispatch_id": dispatch_id,
+                        "reason": "manager_fallback",
+                        "tasks": [
+                            task_payload_with_derived(state_model, task)
+                            for task in _active_tasks_for_agent(
+                                state_model,
+                                manager.id,
+                            )
+                        ],
+                        "inbox": _pending_inbox_for_agent(
+                            state_model,
+                            manager.id,
+                        ),
+                        "recent_action_feedback": _latest_action_feedback_for_agent(
+                            state_model,
+                            manager.id,
+                        ),
+                        "operator_chat_participants": _operator_chat_participant_payloads(state_model),
+                        "superior_agent_id": manager.reports_to_agent_id,
+                        "subordinate_agent_ids": list(manager.subordinate_agent_ids),
+                        "subordinates": _subordinate_agent_payloads(state_model, manager),
                     }
                 )
             return state_model

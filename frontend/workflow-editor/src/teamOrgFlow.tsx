@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo } from "react";
+import React, { useEffect, useId, useMemo, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   Background,
@@ -126,8 +126,27 @@ function TeamOrgFlowApp({ payload }: { payload: OrgFlowPayload | null }) {
 
 function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
   const reactFlow = useReactFlow<OrgNode, Edge>();
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const nodes = useMemo(() => payload.nodes, [payload]);
   const edges = useMemo(() => payload.edges, [payload]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const handleWheel = (event: WheelEvent) => {
+      const popover = inboxPopoverForWheelEvent(canvas, event);
+      if (!popover) {
+        return;
+      }
+      scrollInboxPopoverFromWheel(event, popover);
+    };
+    canvas.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", handleWheel, { capture: true });
+    };
+  }, []);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -137,7 +156,7 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
   }, [payload.fitKey, reactFlow]);
 
   return (
-    <div className="team-org-flow-canvas" data-team-org-flow-canvas>
+    <div ref={canvasRef} className="team-org-flow-canvas" data-team-org-flow-canvas>
       <ReactFlow<OrgNode, Edge>
         nodes={nodes}
         edges={edges}
@@ -403,8 +422,22 @@ function InboxIndicators({ indicators }: { indicators: InboxIndicator[] }) {
 
 function InboxIndicatorBadge({ indicator }: { indicator: InboxIndicator }) {
   const popoverId = useId();
+  const popoverRef = useRef<HTMLSpanElement | null>(null);
   const items = indicator.items || [];
   const hasItems = items.length > 0;
+  useEffect(() => {
+    const popover = popoverRef.current;
+    if (!popover) {
+      return;
+    }
+    const handleWheel = (event: WheelEvent) => {
+      scrollInboxPopoverFromWheel(event, popover);
+    };
+    popover.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      popover.removeEventListener("wheel", handleWheel);
+    };
+  }, [hasItems]);
   return (
     <span
       className={[
@@ -421,7 +454,13 @@ function InboxIndicatorBadge({ indicator }: { indicator: InboxIndicator }) {
       <InboxIcon direction={indicator.direction} />
       <strong>{indicator.count}</strong>
       {hasItems ? (
-        <span className="agent-inbox-popover" role="tooltip" id={popoverId} aria-label={indicator.label}>
+        <span
+          ref={popoverRef}
+          className="agent-inbox-popover nowheel"
+          role="tooltip"
+          id={popoverId}
+          aria-label={indicator.label}
+        >
           {items.map((item, index) => (
             <span className="agent-inbox-bubble" key={`${item.detail}-${item.meta}-${index}`}>
               <strong>{item.detail}</strong>
@@ -432,6 +471,33 @@ function InboxIndicatorBadge({ indicator }: { indicator: InboxIndicator }) {
       ) : null}
     </span>
   );
+}
+
+function inboxPopoverForWheelEvent(canvas: HTMLElement, event: WheelEvent) {
+  for (const popover of Array.from(canvas.querySelectorAll<HTMLElement>(".agent-inbox-popover"))) {
+    const rect = popover.getBoundingClientRect();
+    if (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    ) {
+      return popover;
+    }
+  }
+
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  const popover = target?.closest(".agent-inbox-popover");
+  return popover instanceof HTMLElement && canvas.contains(popover) ? popover : null;
+}
+
+function scrollInboxPopoverFromWheel(event: WheelEvent, popover: HTMLElement) {
+  popover.scrollTop += event.deltaY;
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
 }
 
 function InboxIcon({ direction }: { direction: InboxIndicator["direction"] }) {

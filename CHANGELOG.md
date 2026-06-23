@@ -10,6 +10,8 @@
 
 - Restored hover and focus popovers for status-request and progress-report
   badges in the Team Add-on ReactFlow org chart.
+- Kept those org-chart badge popovers scrollable without triggering ReactFlow
+  canvas panning.
 
 ## 2026-06-23 - Team Add-on Duplicate Wake Suppression
 

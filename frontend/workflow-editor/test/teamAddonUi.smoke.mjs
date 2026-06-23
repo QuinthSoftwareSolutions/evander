@@ -81,7 +81,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(orgFlowScript, /aria-describedby/);
   assert.match(orgFlowScript, /"Agent ID "/);
   assert.match(orgFlowScript, /agent-inbox-popover/);
+  assert.match(orgFlowScript, /nowheel/);
+  assert.match(orgFlowScript, /addEventListener\("wheel"/);
   assert.match(orgFlowScript, /stopPropagation\(\)/);
+  assert.match(stylesheet, /\.agent-inbox-popover\s*{[\s\S]*pointer-events:\s*auto;/);
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
