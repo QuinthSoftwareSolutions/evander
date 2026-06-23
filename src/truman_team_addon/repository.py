@@ -1538,13 +1538,17 @@ class TeamStateRepository:
         team_id: str | None = None,
         project_id: str | None = None,
         agent_id: str | None = None,
+        blocked_team_ids: set[str] | None = None,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_limit = max(0, int(limit))
         normalized_team_id = _optional_text(team_id)
         normalized_project_id = _optional_text(project_id)
         normalized_agent_id = _optional_text(agent_id)
+        blocked_teams = set(blocked_team_ids or set())
         claims: list[dict[str, Any]] = []
+        if normalized_limit == 0:
+            return self.read(), claims
 
         def _mutate(state: TeamState) -> TeamState:
             messages = sorted(
@@ -1567,6 +1571,8 @@ class TeamStateRepository:
                 if agent is None or agent.status == AgentStatus.ARCHIVED:
                     continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
+                    continue
+                if agent.team_id in blocked_teams:
                     continue
                 if normalized_project_id is not None and not agent_has_project_assignment(
                     state,
@@ -3140,6 +3146,8 @@ class TeamStateRepository:
         low_priority_threshold = max(0, int(low_priority_wake_after_cycles))
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
+        if normalized_limit == 0:
+            return self.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):

@@ -369,6 +369,39 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     assert state.agent_runtimes["backend"].wake_reason == "team_chat"
 
 
+def test_repository_claim_pending_chat_message_dispatches_honors_limit_zero(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer when available.",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    state, claims = repo.claim_pending_chat_message_dispatches(now=now, limit=0)
+
+    assert claims == []
+    assert state.conversation_messages[message.id].status == "queued"
+    assert state.conversation_messages[message.id].dispatch_id == dispatch_id
+    runtime = state.agent_runtimes.get("backend")
+    assert runtime is None or runtime.active_dispatch_id is None
+    assert runtime is None or runtime.wake_leased_until is None
+
+
 def test_repository_fails_active_team_chat_message_when_reply_item_is_invalid(
     tmp_path: Path,
 ) -> None:

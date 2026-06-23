@@ -1038,6 +1038,62 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     assert reread.agent_runtimes["backend"].wake_reason == "team_chat"
 
 
+def test_wake_due_agents_provider_limit_zero_dispatches_no_queued_chat(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer when a wake cycle is available.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=0,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 0
+    assert result["leases"] == []
+    assert result["dispatches"] == []
+    assert result["chat_dispatches"] == []
+    assert resumer.calls == []
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.conversation_messages[message.id].status == "queued"
+    assert reread.conversation_messages[message.id].dispatch_id == dispatch_id
+    runtime = reread.agent_runtimes.get("backend")
+    assert runtime is None or runtime.active_dispatch_id is None
+    assert runtime is None or runtime.wake_leased_until is None
+
+
 def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     tmp_path: Path,
 ) -> None:
@@ -1628,6 +1684,67 @@ def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
     assert result["cost_guard_blocked_teams"][0]["team_id"] == "team"
     assert result["cost_guard_blocked_teams"][0]["max_cost_usd"] == 0.0
     assert result["cost_guard_blocked_teams"][0]["estimated_cost"] == 0.0
+
+
+def test_wake_due_agents_provider_cost_guard_blocks_queued_chat(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_team(
+        team_id="team",
+        max_cost_usd=0,
+        set_max_cost_usd=True,
+    )
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer after the cap is raised.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 0
+    assert result["leases"] == []
+    assert result["dispatches"] == []
+    assert result["chat_dispatches"] == []
+    assert resumer.calls == []
+    assert result["cost_guard_blocked_team_ids"] == ["team"]
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.conversation_messages[message.id].status == "queued"
+    assert reread.conversation_messages[message.id].dispatch_id == dispatch_id
+    runtime = reread.agent_runtimes.get("backend")
+    assert runtime is None or runtime.active_dispatch_id is None
+    assert runtime is None or runtime.wake_leased_until is None
 
 
 def test_wake_due_agents_provider_prepares_project_repo_when_configured(

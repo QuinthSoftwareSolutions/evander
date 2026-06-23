@@ -859,6 +859,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             project_id=_optional_text(payload.get("project_id")),
             agent_id=_optional_text(payload.get("agent_id")),
             limit=normalized_limit,
+            blocked_team_ids=blocked_team_ids,
         )
         chat_dispatches: list[dict[str, Any]] = []
         errors: list[str] = []

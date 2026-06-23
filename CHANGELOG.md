@@ -19,6 +19,8 @@
   Team dispatch, instead of marking the operator message failed immediately.
 - Retried queued Team chat messages from the wake cycle once the agent's active
   Team lease is released, giving queued chat precedence over ordinary due work.
+- Kept queued Team chat retries behind the wake loop limit and Team cost-cap
+  guard so they do not bypass paused or over-cap wake configurations.
 
 ## 2026-06-23 - Team Add-on Review Rework Semantics
 
