@@ -529,6 +529,8 @@ class TeamStateRepository:
             if manager_agent_id is not None:
                 _require_present(state.agents, manager_agent_id, "governance manager")
                 group.manager_agent_id = manager_agent_id
+            if archived is not None:
+                group.archived = archived
             if set_member_team_ids:
                 previous_member_team_ids = set(group.member_team_ids)
                 normalized_member_team_ids = _unique_text_list(
@@ -564,8 +566,6 @@ class TeamStateRepository:
                 group.goals = goals
             if set_max_cost_usd:
                 group.max_cost_usd = _optional_cost_limit(max_cost_usd)
-            if archived is not None:
-                group.archived = archived
             group.updated_at = utc_now()
             return state
 
