@@ -218,6 +218,7 @@ const fieldTooltips = {
   "setup-template-form:manager_existing_agent_id": "Copy session defaults from an existing agent for the new manager.",
   "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
+  "setup-template-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
   "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
   "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
@@ -235,6 +236,7 @@ const fieldTooltips = {
   "create-team-form:manager_display_name": "Optional display name. If blank, the generated agent ID is shown.",
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
+  "create-team-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
   "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
 
   "create-governance-group-form:name": "Human-readable portfolio or governance group name.",
@@ -321,6 +323,7 @@ const fieldTooltips = {
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
+  "edit:team:escalate_to_governance": "Route manager escalations to governance instead of operator escalation when true.",
   "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
@@ -3789,6 +3792,7 @@ function renderTeamRecordDetailContent(team) {
         ${renderAgentDetailField("Agents", teamRecords.agents.length)}
         ${renderAgentDetailField("Projects", teamRecords.projects.length)}
         ${renderAgentDetailField("Roles", teamRecords.roles.length)}
+        ${renderAgentDetailField("Escalate to governance", Boolean(team.escalate_to_governance) ? "Enabled" : "Disabled")}
         ${renderAgentDetailField("Operator communication target", text(team.operator_communication_target_id) || "None")}
         ${renderAgentDetailField("Estimated max cost USD", text(team.max_cost_usd) || "None")}
       </div>
@@ -8467,6 +8471,9 @@ function payloadForForm(form, data = formData(form)) {
     if (operatorTarget) {
       payload.team.operator_communication_target_id = operatorTarget;
     }
+    payload.team.escalate_to_governance = Boolean(
+      form.elements.escalate_to_governance?.checked,
+    );
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
       payload.team.max_cost_usd = maxCost;
@@ -8494,6 +8501,9 @@ function payloadForForm(form, data = formData(form)) {
     if (operatorTarget) {
       payload.operator_communication_target_id = operatorTarget;
     }
+    payload.escalate_to_governance = Boolean(
+      form.elements.escalate_to_governance?.checked,
+    );
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
       payload.max_cost_usd = maxCost;
@@ -8806,6 +8816,7 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
+      ${checkboxField("Escalate manager escalations to governance", "escalate_to_governance", Boolean(record.escalate_to_governance))}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
@@ -8962,6 +8973,7 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
+      escalate_to_governance: Boolean(form.elements.escalate_to_governance?.checked),
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };

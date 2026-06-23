@@ -2706,6 +2706,64 @@ def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) 
     }
 
 
+def test_apply_agent_action_routes_manager_escalation_to_governance(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        goals=[{"id": "cost", "description": "Keep teams within budget"}],
+        expected_revision=repo.read().revision,
+    )
+    repo.update_team(
+        team_id="team",
+        escalate_to_governance=True,
+        expected_revision=repo.read().revision,
+    )
+
+    provider = TeamApplyAgentActionEffectProvider()
+    provider.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-manager",
+            action={
+                "agent_id": "manager",
+                "operator_escalations": [
+                    {
+                        "title": "Need policy guidance",
+                        "message": "Team needs a new staffing policy.",
+                        "urgency": "normal",
+                    }
+                ],
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    assert len(result["created_governance_agenda_item_ids"]) == 1
+    assert result["operator_escalation_event_ids"] == []
+    assert result.get("created_inbox_item_ids") == []
+    assert "published_event_ids" not in result
+
+    state = TeamStateRepository(tmp_path).read()
+    agenda_id = result["created_governance_agenda_item_ids"][0]
+    agenda_item = state.governance_agenda[agenda_id]
+    assert agenda_item.item_type == "team_escalation"
+    assert agenda_item.title == "Need policy guidance"
+    assert agenda_item.summary == "Team needs a new staffing policy."
+    assert agenda_item.team_id == "team"
+    assert agenda_item.payload["escalation_id"].startswith("escalation-")
+    assert agenda_item.payload["governance_group_id"] == "portfolio"
+    assert state.governance_runtimes["portfolio"].next_wake_at is None
+
+
 def test_apply_agent_action_publishes_git_promotion_event(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path, max_ephemeral=1)
 

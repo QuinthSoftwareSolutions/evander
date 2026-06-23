@@ -369,6 +369,7 @@ class Team(TeamModel):
     manager_agent_id: str
     operator_communication_target_id: str | None = None
     max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    escalate_to_governance: bool = False
     project_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

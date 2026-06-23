@@ -301,6 +301,13 @@ _AUTO_DEV_SQUAD_TEMPLATE = {
             "example": "slack://ops-channel",
         },
         {
+            "path": "team.escalate_to_governance",
+            "label": "Escalate to Governance",
+            "description": "Route manager escalations to governance group agenda instead of operator escalation.",
+            "required": False,
+            "example": "false",
+        },
+        {
             "path": "project.id",
             "label": "Project ID",
             "description": "Stable project identifier.",

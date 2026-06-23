@@ -225,6 +225,7 @@ class TeamStateRepository:
         manager_role_name: str | None = None,
         operator_communication_target_id: str | None = None,
         max_cost_usd: object | None = None,
+        escalate_to_governance: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_team_id = _optional_text(team_id)
@@ -304,6 +305,7 @@ class TeamStateRepository:
                 manager_agent_id=manager.id,
                 operator_communication_target_id=normalized_operator_target,
                 max_cost_usd=max_cost_usd,
+                escalate_to_governance=escalate_to_governance,
                 created_at=now,
                 updated_at=now,
             )
@@ -321,6 +323,7 @@ class TeamStateRepository:
         set_operator_communication_target_id: bool = False,
         max_cost_usd: object | None = None,
         set_max_cost_usd: bool = False,
+        escalate_to_governance: bool | None = None,
         archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -433,6 +436,8 @@ class TeamStateRepository:
                 team.operator_communication_target_id = operator_communication_target_id
             if set_max_cost_usd:
                 team.max_cost_usd = _optional_cost_limit(max_cost_usd)
+            if escalate_to_governance is not None:
+                team.escalate_to_governance = bool(escalate_to_governance)
             if archived is not None:
                 team.archived = archived
                 if archived:
@@ -2082,6 +2087,10 @@ class TeamStateRepository:
         operator_communication_target_id = _optional_text(
             team_input.get("operator_communication_target_id")
         )
+        escalate_to_governance = _optional_bool(
+            team_input.get("escalate_to_governance"),
+            "team.escalate_to_governance",
+        )
         max_cost_usd = (
             team_input.get("max_cost_usd") if "max_cost_usd" in team_input else None
         )
@@ -2235,6 +2244,7 @@ class TeamStateRepository:
                 name=team_name,
                 manager_agent_id=manager.id,
                 operator_communication_target_id=operator_communication_target_id,
+                escalate_to_governance=escalate_to_governance or False,
                 max_cost_usd=max_cost_usd,
                 created_at=now,
                 updated_at=now,
@@ -4339,6 +4349,20 @@ def _pending_governance_agenda_for_group(
     return items
 
 
+def _governance_groups_for_team(
+    state: TeamState,
+    team_id: str,
+) -> list[GovernanceGroup]:
+    return sorted(
+        [
+            group
+            for group in state.governance_groups.values()
+            if not group.archived and team_id in group.member_team_ids
+        ],
+        key=lambda group: group.id,
+    )
+
+
 def _governance_agenda_effective_team_id(
     state: TeamState,
     item: GovernanceAgendaItem,
@@ -4688,6 +4712,19 @@ def _optional_cost_limit(value: object) -> Decimal | None:
     if amount < 0:
         raise ValueError("max_cost_usd must be a non-negative decimal")
     return amount
+
+
+def _optional_bool(value: object, field_name: str) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{field_name} must be a boolean")
 
 
 def _ensure_utc(value: datetime) -> datetime:
@@ -5825,19 +5862,19 @@ def _apply_operator_escalation(
     project_id = _optional_text(escalation.get("project_id"))
     task_id = _optional_text(escalation.get("task_id"))
     team = state.teams.get(actor.team_id)
-    target = (
-        _optional_text(team.operator_communication_target_id) if team is not None else None
-    )
-    if not target:
+    if team is None:
         result["errors"].append(
-            f"team {actor.team_id} has no operator_communication_target_id for escalations"
+            f"team {actor.team_id} does not exist"
         )
         return False
+    if project_id is not None:
+        project = _require_present(state.projects, project_id, "project")
+        if project.team_id != team.id:
+            raise ValueError(f"project {project.id} is not in team {team.id}")
     escalation_id = f"escalation-{uuid4().hex}"
     payload: dict[str, Any] = {
         "team_id": actor.team_id,
         "manager_agent_id": actor.id,
-        "communication_target_id": target,
         "title": title,
         "message": message,
         "urgency": urgency,
@@ -5846,29 +5883,71 @@ def _apply_operator_escalation(
         payload["project_id"] = project_id
     if task_id is not None:
         payload["task_id"] = task_id
-    inbox_id = f"inbox-{uuid4().hex}"
-    state.inbox[inbox_id] = AgentInboxItem(
-        id=inbox_id,
-        recipient_agent_id=actor.id,
-        sender_agent_id=actor.id,
-        task_id=task_id,
-        item_type=TeamInboxItemType.ESCALATION,
-        response_requested=False,
-        priority=TeamInboxPriority.NORMAL,
-        payload={"escalation_id": escalation_id, **payload},
-    )
-    result["created_inbox_item_ids"].append(inbox_id)
-    result["events"].append(
-        {
-            "event_type": OPERATOR_ESCALATION_EVENT_TYPE,
-            "correlation_key": escalation_id,
-            "idempotency_key": (
-                f"team-addon:{OPERATOR_ESCALATION_EVENT_TYPE}:{escalation_id}"
-            ),
-            "payload": payload,
-        }
-    )
-    result["operator_escalation_event_ids"].append(escalation_id)
+    if not team.escalate_to_governance:
+        target = (
+            _optional_text(team.operator_communication_target_id)
+        )
+        if not target:
+            result["errors"].append(
+                f"team {actor.team_id} has no operator_communication_target_id for escalations"
+            )
+            return False
+        payload["communication_target_id"] = target
+        inbox_id = f"inbox-{uuid4().hex}"
+        state.inbox[inbox_id] = AgentInboxItem(
+            id=inbox_id,
+            recipient_agent_id=actor.id,
+            sender_agent_id=actor.id,
+            task_id=task_id,
+            item_type=TeamInboxItemType.ESCALATION,
+            response_requested=False,
+            priority=TeamInboxPriority.NORMAL,
+            payload={"escalation_id": escalation_id, **payload},
+        )
+        result["created_inbox_item_ids"].append(inbox_id)
+        result["events"].append(
+            {
+                "event_type": OPERATOR_ESCALATION_EVENT_TYPE,
+                "correlation_key": escalation_id,
+                "idempotency_key": (
+                    f"team-addon:{OPERATOR_ESCALATION_EVENT_TYPE}:{escalation_id}"
+                ),
+                "payload": payload,
+            }
+        )
+        result["operator_escalation_event_ids"].append(escalation_id)
+        return True
+
+    governance_groups = _governance_groups_for_team(state, team.id)
+    if not governance_groups:
+        result["errors"].append(
+            f"team {team.id} is configured for governance escalation but is not in a "
+            "governance group"
+        )
+        return False
+
+    now = utc_now()
+    for group in governance_groups:
+        agenda_id = f"governance-agenda-{uuid4().hex}"
+        group_runtime = state.governance_runtimes.setdefault(
+            group.id,
+            GovernanceRuntime(governance_group_id=group.id),
+        )
+        state.governance_agenda[agenda_id] = GovernanceAgendaItem(
+            id=agenda_id,
+            governance_group_id=group.id,
+            item_type=GovernanceAgendaItemType.TEAM_ESCALATION,
+            title=title,
+            summary=message,
+            team_id=team.id,
+            project_id=project_id,
+            payload=payload | {"escalation_id": escalation_id, "governance_group_id": group.id},
+            created_at=now,
+            updated_at=now,
+        )
+        group_runtime.next_wake_at = None
+        group_runtime.updated_at = now
+        result.setdefault("created_governance_agenda_item_ids", []).append(agenda_id)
     return True
 
 
