@@ -46,9 +46,12 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /create-team-from-teams-form/);
   assert.match(script, /data-team-inline-create-toggle/);
   assert.match(script, /data-team-inline-create-form/);
+  assert.match(script, /data-git-import-button/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.team-inline-create-form/);
+  assert.match(stylesheet, /\.git-import-actions/);
   assert.match(markup, /data-teams-create-team-open/);
+  assert.match(markup, /data-git-import-button/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
   assert.match(script, /data-chat-scroll-conversation-id/);
@@ -1201,6 +1204,43 @@ async function createTeamAddonServer(
         );
         return;
       }
+      if (request.method === "POST" && pathname === "/api/addons/team-addon/projects/git/import") {
+        const payload = await requestJson(request);
+        requests.push({ method: request.method, pathname, payload });
+        const repoSource = String(payload.repo_source || "").trim();
+        if (!repoSource) {
+          jsonResponse(response, { error: "repo_source is required" }, 400);
+          return;
+        }
+        const baseName = path.basename(repoSource).replace(/\.git$/, "") || "project";
+        const bareRepoName = String(payload.bare_repo_name || `${baseName}.git`).replace(/\.git$/, "");
+        const git = {
+          host_repo_path: repoSource,
+          bare_repo_name: `${bareRepoName}.git`,
+          base_branch: "main",
+          canonical_origin_url: "git@github.com:Example/imported-project.git",
+          provider: "github",
+        };
+        jsonResponse(
+          response,
+          {
+            imported: {
+              success: true,
+              repo_source: repoSource,
+              host_repo_path: git.host_repo_path,
+              bare_repo_name: git.bare_repo_name,
+              bare_repo_path: `/srv/git-remotes/${git.bare_repo_name}`,
+              base_branch: git.base_branch,
+              canonical_origin_url: git.canonical_origin_url,
+              provider: git.provider,
+              git,
+            },
+            git,
+          },
+          201,
+        );
+        return;
+      }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/conversations") {
         requests.push({ method: request.method, pathname, search: url.search });
         jsonResponse(response, chatCollectionPayload(state));
@@ -1960,6 +2000,42 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   assert.equal(teamRequest.payload.manager_display_name, "Launch Manager");
   assert.equal(teamRequest.payload.manager_role_name, "Manager");
   assert.equal(teamRequest.payload.operator_communication_target_id, "ops-launch");
+});
+
+test("team add-on UI imports Git repo config into project forms", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t);
+  const page = await openBrowserPage(t, port);
+
+  await openDetails(page, "Create project");
+  const projectForm = page.locator("#create-project-form");
+  await projectForm.locator('[name="host_repo_path"]').fill("/srv/repos/imported-project");
+  await projectForm.locator('[name="bare_repo"]').fill("team-import.git");
+  await projectForm.getByRole("button", { name: "Import Git repo" }).click();
+
+  await page
+    .locator("#status-message", {
+      hasText: "Imported Git repo. Review the populated Git fields, then save.",
+    })
+    .waitFor({ state: "visible" });
+  assert.equal(await projectForm.locator('[name="host_repo_path"]').inputValue(), "/srv/repos/imported-project");
+  assert.equal(await projectForm.locator('[name="bare_repo"]').inputValue(), "team-import.git");
+  assert.equal(await projectForm.locator('[name="base_branch"]').inputValue(), "main");
+  assert.equal(
+    await projectForm.locator('[name="canonical_origin_url"]').inputValue(),
+    "git@github.com:Example/imported-project.git",
+  );
+  assert.equal(await projectForm.locator('[name="provider"]').inputValue(), "github");
+
+  const importRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname === "/api/addons/team-addon/projects/git/import",
+  );
+  assert.ok(importRequest);
+  assert.deepEqual(importRequest.payload, {
+    repo_source: "/srv/repos/imported-project",
+    bare_repo_name: "team-import.git",
+  });
 });
 
 test("team add-on UI renders empty state and submits setup forms with revisions", async (t) => {

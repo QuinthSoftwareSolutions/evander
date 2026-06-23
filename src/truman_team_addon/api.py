@@ -304,6 +304,30 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(_state_payload(request, state))
 
+    async def import_project_git_repo(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        service = getattr(context, "service", None)
+        import_git_repo = getattr(service, "import_git_repo", None)
+        if not callable(import_git_repo):
+            return JSONResponse({"error": "Git repo import is unavailable"}, status_code=503)
+        bare_repo_name = _optional(payload, "bare_repo_name") or _optional(payload, "repo_name")
+        bare_repo = _optional(payload, "bare_repo")
+        if bare_repo:
+            if bare_repo.startswith("/"):
+                raise ValueError("bare_repo must be a bare repo name for import, not a path")
+            if bare_repo_name and bare_repo_name != bare_repo:
+                raise ValueError("bare_repo cannot differ from bare_repo_name")
+            bare_repo_name = bare_repo
+        try:
+            imported = import_git_repo(
+                repo_source=_required(payload, "repo_source", "host_repo_path"),
+                bare_repo_name=bare_repo_name,
+                directory_path=_optional(payload, "directory_path") or "root",
+            )
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse({"imported": imported, "git": imported.get("git")}, status_code=201)
+
     async def create_role(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
@@ -1471,6 +1495,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
+        Route("/projects/git/import", _with_errors(import_project_git_repo), methods=["POST"]),
         Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
         Route("/roles", _with_errors(create_role), methods=["POST"]),
         Route("/roles", _with_errors(list_roles), methods=["GET"]),

@@ -6063,6 +6063,40 @@ def _mirror_remote_name_for_repo(repo_path: str) -> str:
     return "origin"
 
 
+def _normalize_import_bare_repo_name(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[: -len(".git")]
+    if not normalized:
+        raise ValueError("bare_repo_name is required")
+    if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
+        raise ValueError("bare_repo_name must be a single repository name, not a path")
+    return normalized
+
+
+def _git_config_value(git_dir: Path, key: str) -> str | None:
+    result = _run_subprocess(
+        ["git", f"--git-dir={git_dir}", "config", "--get", key],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
+def _infer_git_provider_from_url(url: str | None) -> str | None:
+    normalized = str(url or "").strip().lower()
+    if not normalized:
+        return None
+    if "github.com" in normalized:
+        return "github"
+    if "dev.azure.com" in normalized or "visualstudio.com" in normalized:
+        return "azure_devops"
+    return None
+
+
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
     if not path.exists():
         return 0, set()
@@ -11898,12 +11932,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
         except Exception as exc:
             finished_at = _utc_now()
+            error_message = str(exc) or exc.__class__.__name__
             self._update_agent_create_operation(
                 operation_id,
                 lambda current: current.model_copy(
                     update={
                         "status": "failed",
-                        "error": str(exc) or exc.__class__.__name__,
+                        "error": error_message,
                         "finished_at": finished_at,
                         "updated_at": finished_at,
                     }
@@ -14175,6 +14210,68 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             review_branch=review_branch,
             remote_name=remote_name,
         )
+
+    def import_git_repo(
+        self,
+        *,
+        repo_source: str,
+        bare_repo_name: str | None = None,
+        directory_path: str = "root",
+    ) -> dict[str, Any]:
+        normalized_source = str(repo_source or "").strip()
+        if not normalized_source:
+            raise ValueError("repo_source is required")
+        normalized_directory = self.vm_agent_support.normalize_directory_path(directory_path)
+        issue_setup = self.vm_agent_support.resolve_issue_setup(
+            normalized_directory,
+            root_dir=self.project_dir,
+        )
+        resolved_repo_path, resolved_repo_name = self.vm_agent_support.resolve_repo_source(
+            normalized_source
+        )
+        import_repo_name = _normalize_import_bare_repo_name(
+            bare_repo_name or resolved_repo_name
+        )
+        bare_repo_path = self.vm_agent_support.sync_repo_into_bare_remote(
+            import_repo_name,
+            resolved_repo_path,
+            issue_setup=issue_setup,
+            repo_source=normalized_source,
+        )
+        bare_repo_name_with_suffix = f"{import_repo_name}.git"
+        canonical_origin_url = _git_config_value(
+            bare_repo_path,
+            "agent-sandbox.canonicalOriginUrl",
+        )
+        base_branch = _git_config_value(bare_repo_path, "agent-sandbox.baseBranch")
+        provider = _infer_git_provider_from_url(canonical_origin_url)
+        git_config: dict[str, Any] = {
+            "host_repo_path": resolved_repo_path,
+            "bare_repo_name": bare_repo_name_with_suffix,
+        }
+        if base_branch:
+            git_config["base_branch"] = base_branch
+        if canonical_origin_url:
+            git_config["canonical_origin_url"] = canonical_origin_url
+        if provider:
+            git_config["provider"] = provider
+        return {
+            "success": True,
+            "repo_source": normalized_source,
+            "host_repo_path": resolved_repo_path,
+            "repo_name": import_repo_name,
+            "bare_repo_name": bare_repo_name_with_suffix,
+            "bare_repo_path": str(bare_repo_path),
+            "git_root": issue_setup.git_root,
+            "git_ssh_alias": issue_setup.git_ssh_alias,
+            "remote_url": f"ssh://{issue_setup.git_ssh_alias}{bare_repo_path}",
+            "base_branch": base_branch,
+            "canonical_origin_url": canonical_origin_url,
+            "provider": provider,
+            "directory_path": normalized_directory,
+            "git": git_config,
+            "message": f"Imported {resolved_repo_path} into {bare_repo_path}",
+        }
 
     @staticmethod
     def _derive_review_branch(agent_branch: str) -> str:

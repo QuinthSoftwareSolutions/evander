@@ -294,6 +294,15 @@ Optional inputs are:
 - `project.git.base_branch`, `project.git.canonical_origin_url`,
   `project.git.provider`, and `project.git.canonical_release_branch_prefix`
 
+The Team Add-on setup, project-create, and project-edit forms include an
+`Import Git repo` action beside the Git fields. It accepts the current host repo
+path or canonical origin URL as the repo source, creates or refreshes a
+control-plane bare mirror under the configured root `issue_setup.git_root`, and
+fills the form with the resolved `host_repo_path`, `bare_repo_name`, base
+branch, canonical origin URL, and provider when they can be inferred. The import
+does not save Team state by itself; review the populated fields and submit the
+form normally.
+
 The template uses a fixed hierarchy:
 
 - `manager -> project_lead -> implementer`

@@ -3126,6 +3126,22 @@ form {
   padding: 0.8rem;
 }
 
+.git-import-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.git-import-actions button {
+  width: auto;
+}
+
+.git-import-actions .meta-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .checkbox-label {
   display: flex;
   align-items: center;

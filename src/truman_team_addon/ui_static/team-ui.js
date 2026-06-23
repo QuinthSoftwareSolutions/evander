@@ -733,6 +733,20 @@ function bindForms() {
     void submitCreateForm(form);
   });
 
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-git-import-button]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    const form = button.closest("form");
+    if (!form) {
+      setStatus("Git import form is unavailable.", "error");
+      return;
+    }
+    void importGitRepoForForm(form, button);
+  });
+
   document.addEventListener("change", (event) => {
     const select = event.target?.closest?.("[data-chat-operator-select]");
     if (!select) {
@@ -7693,6 +7707,89 @@ async function submitTaskUpdate(form) {
   });
 }
 
+async function importGitRepoForForm(form, button) {
+  const data = formData(form);
+  const repoSource = text(data.host_repo_path) || text(data.canonical_origin_url);
+  if (!repoSource) {
+    setStatus("Host repo path or canonical origin URL is required before import.", "error");
+    return false;
+  }
+  const bareRepo = text(data.bare_repo || data.bare_repo_name);
+  if (bareRepo && bareRepo.startsWith("/")) {
+    setStatus("Import creates a control-plane bare repo name; use a name, not an absolute path.", "error");
+    return false;
+  }
+  const payload = { repo_source: repoSource };
+  if (bareRepo) {
+    payload.bare_repo_name = bareRepo;
+  }
+  const directoryPath = text(form.dataset.directoryPath);
+  if (directoryPath) {
+    payload.directory_path = directoryPath;
+  }
+  const statusTarget = form.querySelector("[data-git-import-status]");
+  setGitImportStatus(statusTarget, "Importing.");
+  setFormBusy(form, true);
+  button.disabled = true;
+  setStatus("Importing Git repo.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}/projects/git/import`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const body = await response.json();
+    applyImportedGitConfig(form, body.git || body.imported?.git || {});
+    const imported = body.imported || {};
+    setGitImportStatus(statusTarget, imported.bare_repo_name || "Imported.");
+    setStatus("Imported Git repo. Review the populated Git fields, then save.", "ok");
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Git import failed.";
+    setGitImportStatus(statusTarget, message);
+    setStatus(message, "error");
+    return false;
+  } finally {
+    setFormBusy(form, false);
+    button.disabled = false;
+  }
+}
+
+function applyImportedGitConfig(form, git) {
+  const fields = {
+    host_repo_path: git.host_repo_path,
+    bare_repo: git.bare_repo_name || git.bare_repo_path,
+    base_branch: git.base_branch,
+    canonical_origin_url: git.canonical_origin_url,
+    provider: git.provider,
+    canonical_release_branch_prefix: git.canonical_release_branch_prefix,
+  };
+  Object.entries(fields).forEach(([name, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    const field = form.elements[name];
+    if (!field) {
+      return;
+    }
+    field.value = value;
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function setGitImportStatus(element, message) {
+  if (!element) {
+    return;
+  }
+  element.textContent = message || "";
+}
+
 async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true } = {}) {
   const drafts = captureFormDrafts();
   const body = { ...payload, expected_revision: state.revision };
@@ -9174,6 +9271,7 @@ function renderEditFields(type, record) {
       ${textField("Bare repo", "bare_repo", gitToBareRepo(record.git), {
         placeholder: "repo.git or /srv/git/repo.git",
       })}
+      ${gitImportControls()}
       ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical origin URL", "canonical_origin_url", record.git?.canonical_origin_url || "")}
       ${selectField("Provider", "provider", "git-providers", record.git?.provider || "", { placeholder: "Default" })}
@@ -9396,6 +9494,15 @@ function multiSelectField(label, name, optionsKey, values, { size = 4 } = {}) {
 
 function checkboxField(label, name, checked) {
   return `<label class="checkbox-label"><input name="${escapeAttr(name)}" type="checkbox"${checked ? " checked" : ""} /> ${escapeHtml(label)}</label>`;
+}
+
+function gitImportControls() {
+  return `
+    <div class="git-import-actions">
+      <button type="button" data-git-import-button>Import Git repo</button>
+      <span class="meta-line" data-git-import-status></span>
+    </div>
+  `;
 }
 
 function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {

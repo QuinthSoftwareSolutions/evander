@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Git Repo Import
+
+- Added a Team Add-on Git import action that creates or refreshes a
+  control-plane bare mirror from a host repo path or canonical URL and fills the
+  project Git config fields in setup, create, and edit forms.
+- Exposed the import through a Team Add-on API endpoint backed by the existing
+  host Git mirror setup semantics.
+
 ## 2026-06-23 - Team Add-on Governance Agenda Handling
 
 - Added a governance-manager MCP tool that lets active governance managers mark

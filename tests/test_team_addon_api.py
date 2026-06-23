@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
@@ -38,6 +40,9 @@ from truman_team_addon.models import (
     TeamTaskState,
 )
 from truman_team_addon.repository import TeamStateRepository
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _png_avatar_bytes(color: tuple[int, int, int] = (23, 111, 122)) -> bytes:
@@ -73,6 +78,24 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
     return TestClient(create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon))))
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git_dir(git_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", f"--git-dir={git_dir}", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _post_backend_role(
@@ -2131,6 +2154,7 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
 
     assert response.status_code == 200
     runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["context_clearing_policy"] == "idle"
     assert runtime["auto_context_clearing_enabled"] is True
     assert runtime["context_rotation_pending"] is True
     assert runtime["context_rotation_reason"] == "idle"
@@ -2148,12 +2172,28 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
 
     assert response.status_code == 200
     runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["context_clearing_policy"] == "off"
     assert runtime["auto_context_clearing_enabled"] is False
     assert runtime["context_rotation_pending"] is False
     assert runtime["context_rotation_reason"] is None
     assert runtime["context_rotation_requested_at"] is None
     assert runtime["next_wake_at"] is None
     assert runtime["last_handoff_summary"] is None
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "context_clearing_policy": "every_wake",
+            "expected_revision": 6,
+        },
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["context_clearing_policy"] == "every_wake"
+    assert runtime["auto_context_clearing_enabled"] is True
+    assert runtime["context_rotation_pending"] is False
+    assert runtime["next_wake_at"] is None
 
 
 def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) -> None:
@@ -2496,6 +2536,69 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     )
     assert response.status_code == 400
     assert "exactly one" in response.json()["error"]
+
+
+def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
+    source_repo = tmp_path / "source-repo"
+    source_repo.mkdir()
+    _git(source_repo, "init", "-q", "-b", "main")
+    _git(source_repo, "config", "user.email", "team@example.invalid")
+    _git(source_repo, "config", "user.name", "Team Test")
+    (source_repo / "README.md").write_text("# Source\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md")
+    _git(source_repo, "commit", "-q", "-m", "initial")
+    source_commit = _git(source_repo, "rev-parse", "refs/heads/main").stdout.strip()
+
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    service = AdminService(config_path)
+    service.project_dir = PROJECT_ROOT
+    service.vm_agent_support.project_dir = PROJECT_ROOT
+    git_root = tmp_path / "git-remotes"
+    DirectoryConfigStore(
+        service.runtime.directories,
+        runtime_dir=service.config.runtime_dir,
+    ).write(
+        "root",
+        domain="issue_setup",
+        payload={
+            "git_root": str(git_root),
+            "git_host": "192.168.250.1",
+            "git_user": "agent",
+            "git_ssh_alias": "agent-sandbox-git-host",
+        },
+    )
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/addons/team-addon/projects/git/import",
+        json={
+            "repo_source": str(source_repo),
+            "bare_repo_name": "team-project.git",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    imported = body["imported"]
+    bare_repo = git_root / "team-project.git"
+    assert imported["host_repo_path"] == str(source_repo.resolve())
+    assert imported["bare_repo_name"] == "team-project.git"
+    assert imported["bare_repo_path"] == str(bare_repo)
+    assert imported["base_branch"] == "main"
+    assert body["git"] == {
+        "host_repo_path": str(source_repo.resolve()),
+        "bare_repo_name": "team-project.git",
+        "base_branch": "main",
+    }
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == source_commit
+    assert (
+        _git_dir(bare_repo, "config", "--get", "agent-sandbox.trustedRepoPath").stdout.strip()
+        == str(source_repo.resolve())
+    )
+    assert (
+        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSource").stdout.strip()
+        == str(source_repo)
+    )
 
 
 def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None:
