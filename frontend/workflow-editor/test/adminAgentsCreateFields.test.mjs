@@ -138,7 +138,8 @@ test("create submit dismisses the modal before waiting for agent creation", () =
   assert.notEqual(scheduleIndex, -1, "create handler should schedule the create request");
   assert.ok(closeIndex < scheduleIndex, "create modal must close before the long-running create request is scheduled");
   assert.match(source, /const createPayload = buildCreatePayload\(submittedForm, selectedDirectoryPath\);/);
-  assert.match(source, /setStatus\(`Creating \$\{targetLabel\}\.\.\.`\);/);
+  assert.match(source, /setCreateSubmitting\(true\);/);
+  assert.match(source, /setStatus\(`Queueing create for \$\{targetLabel\}\.\.\.`\);/);
   assert.doesNotMatch(source, /setInlineValidation\(message\);/);
   assert.doesNotMatch(source, /fetchJson<AgentActionResponse>/);
 });
@@ -151,12 +152,15 @@ test("create request starts after the modal has a paint opportunity", () => {
   assert.match(source, /void finishCreateAgent\(createPayload\);/);
 });
 
-test("create success summarizes setup output instead of showing bootstrap logs", () => {
+test("create submission uses async operations instead of synchronous setup", () => {
   const successSource = finishCreateAgentSource();
 
-  assert.match(successSource, /const successMessage = `Agent \$\{payload\.target_name\} was successfully created\.`/);
-  assert.match(successSource, /setStatus\(successMessage\);/);
-  assert.doesNotMatch(successSource, /payload\.message/);
+  assert.match(page, /\/api\/admin\/agents\/create-operations/);
+  assert.match(successSource, /const operation = await submitAgentCreateOperation\(createPayload\);/);
+  assert.match(successSource, /setCreateOperations\(\(current\) => \[/);
+  assert.match(successSource, /Queued create for \$\{operation\.target_name\}\./);
+  assert.match(successSource, /if \(operation\.status === "succeeded"\) \{/);
+  assert.doesNotMatch(successSource, /\/api\/admin\/agents",/);
 });
 
 test("provider options are filtered by execution_backends against the selected backend", () => {

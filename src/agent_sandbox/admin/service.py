@@ -16,6 +16,7 @@ import time
 import fcntl
 from collections import Counter, deque
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -332,6 +333,7 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
 }
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
 _WORKFLOW_GENERATION_COOLDOWN_SECONDS = 10.0
+_AGENT_CREATE_OPERATION_MAX_WORKERS = 4
 _CONTAINER_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
@@ -362,6 +364,25 @@ _SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
     "private_key",
     "ssh_key",
 )
+
+
+AgentCreateOperationStatus = Literal["queued", "running", "succeeded", "failed"]
+
+
+class AgentCreateOperation(BaseModel):
+    operation_id: str
+    status: AgentCreateOperationStatus
+    backend: str
+    target_name: str
+    session_id: str | None = None
+    directory_path: str = "root"
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class EffectiveIssueSetupConfig(BaseModel):
@@ -7699,6 +7720,15 @@ class AdminService:
             write_config=self._write_trigger_document,
         )
         self.trigger_event_repository: TriggerEventRepository = JsonTriggerEventRepository()
+        self.agent_create_operations = JsonStore(
+            self.config.runtime_dir / "agent-create-operations.json",
+            AgentCreateOperation,
+        )
+        self._agent_create_executor = ThreadPoolExecutor(
+            max_workers=_AGENT_CREATE_OPERATION_MAX_WORKERS,
+            thread_name_prefix="agent-create",
+        )
+        self._mark_stale_agent_create_operations_failed()
         self._execution_backend_instance = None
 
     @property
@@ -11696,6 +11726,188 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
         return self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
+
+    def _agent_create_operation_details(
+        self, payload: Mapping[str, Any]
+    ) -> tuple[str, str, str | None, str]:
+        selected_backend = self._normalize_agent_backend(
+            self._agent_optional_string(payload, "backend")
+            or self._agent_optional_string(payload, "execution_backend")
+        )
+        directory_path = self._normalize_directory_path(
+            self._agent_optional_string(payload, "directory_path")
+        )
+        if selected_backend == "libvirt_vm":
+            vm_name = self._agent_optional_string(payload, "vm_name")
+            if not vm_name:
+                raise ValueError("vm_name is required for libvirt_vm agents")
+            return (
+                selected_backend,
+                vm_name,
+                self._agent_optional_string(payload, "session_id"),
+                directory_path,
+            )
+
+        session_id = self._agent_optional_string(payload, "session_id")
+        if not session_id:
+            raise ValueError("session_id is required for container_worker_vm agents")
+        target_name = self._agent_optional_string(payload, "target_name") or session_id
+        return selected_backend, target_name, session_id, directory_path
+
+    @staticmethod
+    def _agent_create_operation_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+        return json.loads(json.dumps(dict(payload), default=str))
+
+    def submit_admin_agent_create(self, payload: Mapping[str, Any]) -> AgentCreateOperation:
+        if not isinstance(payload, Mapping):
+            raise ValueError("Request body must be a JSON object")
+        request_payload = self._agent_create_operation_request_payload(payload)
+        backend, target_name, session_id, directory_path = self._agent_create_operation_details(
+            request_payload
+        )
+        now = _utc_now()
+        operation = AgentCreateOperation(
+            operation_id=f"agent-create-{uuid4().hex}",
+            status="queued",
+            backend=backend,
+            target_name=target_name,
+            session_id=session_id,
+            directory_path=directory_path,
+            request_payload=request_payload,
+            created_at=now,
+            updated_at=now,
+        )
+        self.agent_create_operations.put(operation.operation_id, operation)
+        self._agent_create_executor.submit(
+            self._run_agent_create_operation,
+            operation.operation_id,
+        )
+        return self.get_admin_agent_create_operation(operation.operation_id)
+
+    def list_admin_agent_create_operations(
+        self,
+        *,
+        limit: int = 50,
+        directory_path: str | None = None,
+    ) -> list[AgentCreateOperation]:
+        normalized_directory = (
+            self._normalize_directory_path(directory_path) if directory_path else None
+        )
+        operations = list(self.agent_create_operations.read_all().values())
+        if normalized_directory is not None:
+            operations = [
+                operation
+                for operation in operations
+                if operation.directory_path == normalized_directory
+            ]
+        operations.sort(
+            key=lambda operation: (
+                operation.updated_at,
+                operation.created_at,
+                operation.operation_id,
+            ),
+            reverse=True,
+        )
+        bounded_limit = max(1, min(int(limit), 200))
+        return operations[:bounded_limit]
+
+    def get_admin_agent_create_operation(self, operation_id: str) -> AgentCreateOperation:
+        normalized_operation_id = str(operation_id or "").strip()
+        operation = self.agent_create_operations.get(normalized_operation_id)
+        if operation is None:
+            raise LookupError(f"Agent create operation not found: {normalized_operation_id}")
+        return operation
+
+    def _update_agent_create_operation(
+        self,
+        operation_id: str,
+        updater: Any,
+    ) -> AgentCreateOperation | None:
+        def _update(items: dict[str, AgentCreateOperation]) -> AgentCreateOperation | None:
+            current = items.get(operation_id)
+            if current is None:
+                return None
+            updated = updater(current)
+            items[operation_id] = updated
+            return updated
+
+        return self.agent_create_operations.update_all(_update)
+
+    def _run_agent_create_operation(self, operation_id: str) -> None:
+        started_at = _utc_now()
+        operation = self._update_agent_create_operation(
+            operation_id,
+            lambda current: current.model_copy(
+                update={
+                    "status": "running",
+                    "started_at": current.started_at or started_at,
+                    "updated_at": started_at,
+                    "error": None,
+                }
+            ),
+        )
+        if operation is None:
+            return
+        try:
+            result = self.create_admin_agent(operation.request_payload)
+            finished_at = _utc_now()
+            if bool(result.get("success")):
+                self._update_agent_create_operation(
+                    operation_id,
+                    lambda current: current.model_copy(
+                        update={
+                            "status": "succeeded",
+                            "result": result,
+                            "error": None,
+                            "finished_at": finished_at,
+                            "updated_at": finished_at,
+                        }
+                    ),
+                )
+                return
+            self._update_agent_create_operation(
+                operation_id,
+                lambda current: current.model_copy(
+                    update={
+                        "status": "failed",
+                        "result": result,
+                        "error": str(result.get("message") or "Agent create failed."),
+                        "finished_at": finished_at,
+                        "updated_at": finished_at,
+                    }
+                ),
+            )
+        except Exception as exc:
+            finished_at = _utc_now()
+            self._update_agent_create_operation(
+                operation_id,
+                lambda current: current.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": str(exc) or exc.__class__.__name__,
+                        "finished_at": finished_at,
+                        "updated_at": finished_at,
+                    }
+                ),
+            )
+
+    def _mark_stale_agent_create_operations_failed(self) -> None:
+        now = _utc_now()
+
+        def _mark(items: dict[str, AgentCreateOperation]) -> None:
+            for operation_id, operation in list(items.items()):
+                if operation.status not in {"queued", "running"}:
+                    continue
+                items[operation_id] = operation.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": "Admin Web restarted before this create operation finished.",
+                        "finished_at": now,
+                        "updated_at": now,
+                    }
+                )
+
+        self.agent_create_operations.update_all(_mark)
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(

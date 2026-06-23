@@ -9,6 +9,9 @@ import { OptionMultiSelectEditor, StringListEditor, StringMapEditor } from "../a
 import type {
   AgentActionResponse,
   AgentBackend,
+  AgentCreateOperation,
+  AgentCreateOperationListResponse,
+  AgentCreateOperationResponse,
   AgentCreateRequest,
   AgentCreateOptionsResponse,
   AgentExecutionRecord,
@@ -349,6 +352,29 @@ async function loadAgentCreateOptions(
   );
 }
 
+async function submitAgentCreateOperation(
+  createPayload: AgentCreateRequest,
+): Promise<AgentCreateOperation> {
+  const payload = await fetchJson<AgentCreateOperationResponse>(
+    "/api/admin/agents/create-operations",
+    {
+      method: "POST",
+      body: JSON.stringify(createPayload),
+    },
+  );
+  return payload.operation;
+}
+
+async function loadAgentCreateOperations(directoryPath: string): Promise<AgentCreateOperation[]> {
+  const query = new URLSearchParams({ limit: "30" });
+  const trimmed = directoryPath.trim();
+  if (trimmed) query.set("directory_path", trimmed);
+  const payload = await fetchJson<AgentCreateOperationListResponse>(
+    `/api/admin/agents/create-operations?${query.toString()}`,
+  );
+  return payload.items;
+}
+
 async function loadAgentLogPage(
   agent: AgentRecord | null,
   options: { limit?: number; offset?: number; query?: string; view?: AgentLogView } = {},
@@ -568,6 +594,24 @@ function agentTargetStateText(agent: AgentRecord): string {
     return `Worker: ${activeRuns} active, latest ${statusLabel(latestStatus)}`;
   }
   return `Worker: latest ${statusLabel(latestStatus)}`;
+}
+
+function createOperationIsActive(operation: AgentCreateOperation): boolean {
+  return operation.status === "queued" || operation.status === "running";
+}
+
+function createOperationMessage(operation: AgentCreateOperation): string {
+  if (operation.status === "succeeded") {
+    const message = operation.result?.message;
+    return typeof message === "string" && message.trim()
+      ? message
+      : `Created ${operation.target_name}`;
+  }
+  if (operation.status === "failed") {
+    return operation.error || "Agent create failed.";
+  }
+  if (operation.status === "running") return "Setting up agent target.";
+  return "Waiting to start.";
 }
 
 function hostRuntimeImage(host: Record<string, unknown> | null | undefined): RuntimeImageInfo | null {
@@ -858,7 +902,7 @@ function isActiveStatus(status: string): boolean {
 
 function statusClass(status: string): string {
   const normalized = status.trim().toLowerCase();
-  if (normalized === "running" || normalized === "starting" || normalized === "preparing") {
+  if (normalized === "running" || normalized === "starting" || normalized === "preparing" || normalized === "queued") {
     return "running";
   }
   if (normalized === "failed") return "failed";
@@ -1041,6 +1085,8 @@ export function AgentsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [createOperations, setCreateOperations] = useState<AgentCreateOperation[]>([]);
   const [createForm, setCreateForm] = useState<AgentCreateFormState>(() =>
     emptyCreateForm(),
   );
@@ -1063,6 +1109,7 @@ export function AgentsPage() {
   const operatorSteeringLoadSeqRef = useRef(0);
   const operatorSteeringDraftTargetRef = useRef<string | null>(null);
   const refreshAuthSessionRef = useRef(refreshAuthSession);
+  const createOperationStatusesRef = useRef<Map<string, string>>(new Map());
   const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
 
   useEffect(() => {
@@ -1317,6 +1364,58 @@ export function AgentsPage() {
     return payload;
   }, [refreshAgents, refreshSummaryCache]);
 
+  const applyCreateOperations = useCallback(async (
+    operations: AgentCreateOperation[],
+    announceTransitions: boolean,
+  ) => {
+    const previousStatuses = createOperationStatusesRef.current;
+    const nextStatuses = new Map<string, string>();
+    const transitioned: AgentCreateOperation[] = [];
+    for (const operation of operations) {
+      const previousStatus = previousStatuses.get(operation.operation_id);
+      nextStatuses.set(operation.operation_id, operation.status);
+      if (
+        announceTransitions &&
+        previousStatus !== undefined &&
+        previousStatus !== operation.status &&
+        (operation.status === "succeeded" || operation.status === "failed")
+      ) {
+        transitioned.push(operation);
+      }
+    }
+    createOperationStatusesRef.current = nextStatuses;
+    setCreateOperations(operations);
+    if (!transitioned.length) return;
+    setActionLog((current) => [
+      ...transitioned.map((operation) => {
+        const succeeded = operation.status === "succeeded";
+        const outcome = succeeded
+          ? "succeeded"
+          : `failed: ${operation.error ?? "Agent create failed."}`;
+        return {
+          at: new Date().toISOString(),
+          message: `Create agent: ${operation.target_name} ${outcome}`,
+          tone: succeeded ? "info" as const : "error" as const,
+        };
+      }),
+      ...current,
+    ].slice(0, 30));
+    if (transitioned.some((operation) => operation.status === "succeeded")) {
+      await refreshLiveAgents();
+    }
+  }, [refreshLiveAgents]);
+
+  const refreshCreateOperations = useCallback(async (announceTransitions = false) => {
+    try {
+      const operations = await loadAgentCreateOperations(selectedDirectoryPath);
+      await applyCreateOperations(operations, announceTransitions);
+    } catch (reason: unknown) {
+      if (isApiAuthError(reason)) {
+        await refreshAuthSessionRef.current(AUTH_EXPIRED_MESSAGE);
+      }
+    }
+  }, [applyCreateOperations, selectedDirectoryPath]);
+
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
@@ -1343,6 +1442,23 @@ export function AgentsPage() {
       window.clearInterval(timer);
     };
   }, [refreshSummaryAgents]);
+
+  useEffect(() => {
+    void refreshCreateOperations(false);
+  }, [refreshCreateOperations]);
+
+  const hasActiveCreateOperations = createOperations.some(createOperationIsActive);
+
+  useEffect(() => {
+    if (!hasActiveCreateOperations) return;
+    void refreshCreateOperations(true);
+    const timer = window.setInterval(() => {
+      void refreshCreateOperations(true);
+    }, 2500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [hasActiveCreateOperations, refreshCreateOperations]);
 
   useEffect(() => {
     if (!selectedAgent) {
@@ -1684,24 +1800,35 @@ export function AgentsPage() {
 
   async function finishCreateAgent(createPayload: AgentCreateRequest) {
     try {
-      const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
-        method: "POST",
-        body: JSON.stringify(createPayload),
-      });
-      const successMessage = `Agent ${payload.target_name} was successfully created.`;
-      setActionLog((current) => [{ at: new Date().toISOString(), message: successMessage, tone: "info" as const }, ...current].slice(0, 30));
-      setStatus(successMessage);
+      const operation = await submitAgentCreateOperation(createPayload);
+      createOperationStatusesRef.current.set(operation.operation_id, operation.status);
+      setCreateOperations((current) => [
+        operation,
+        ...current.filter((item) => item.operation_id !== operation.operation_id),
+      ].slice(0, 30));
+      const submittedMessage = `Create agent: queued ${operation.target_name}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message: submittedMessage, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(
+        operation.status === "succeeded"
+          ? `Agent ${operation.target_name} was successfully created.`
+          : `Queued create for ${operation.target_name}.`,
+      );
       setError(null);
       setCreateForm(emptyCreateForm());
-      await refreshLiveAgents();
-      setSelectedKey(`${payload.backend}:${payload.agent_id}`);
+      if (operation.status === "succeeded") {
+        await refreshLiveAgents();
+        const agentId = operation.result?.agent_id;
+        if (typeof agentId === "string" && agentId) {
+          setSelectedKey(`${operation.backend}:${agentId}`);
+        }
+      }
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);
       setStatus(null);
       setActionLog((current) => [{ at: new Date().toISOString(), message: `Create agent: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
     } finally {
-      setBusyAction(null);
+      setCreateSubmitting(false);
     }
   }
 
@@ -1733,13 +1860,13 @@ export function AgentsPage() {
       submittedForm.targetName.trim() ||
       submittedForm.sessionId.trim() ||
       "agent";
-    setBusyAction("create-agent");
+    setCreateSubmitting(true);
     setInlineValidation("");
     setShowCreateForm(false);
-    setStatus(`Creating ${targetLabel}...`);
+    setStatus(`Queueing create for ${targetLabel}...`);
     setError(null);
     setActionLog((current) => [
-      { at: new Date().toISOString(), message: `Create agent: started ${targetLabel}`, tone: "info" as const },
+      { at: new Date().toISOString(), message: `Create agent: submitting ${targetLabel}`, tone: "info" as const },
       ...current,
     ].slice(0, 30));
     scheduleCreateAgent(createPayload);
@@ -1895,6 +2022,7 @@ export function AgentsPage() {
   const selectedExecutionDisplay = selectedAgent ? agentExecutionDisplay(selectedAgent) : null;
   const selectedTargetStateText = selectedAgent ? agentTargetStateText(selectedAgent) : null;
   const canMutate = busyAction === null && privilegedUnlocked;
+  const activeCreateOperationCount = createOperations.filter(createOperationIsActive).length;
   const showStart = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.start && powerState !== "running";
   const showShutdown = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.shutdown && powerState === "running";
   const showEnable = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.enable_disable && agentState === "disabled";
@@ -2052,7 +2180,7 @@ export function AgentsPage() {
                 setShowSkillInstallForm(false);
                 setInlineValidation("");
               }}
-              disabled={busyAction !== null || !privilegedUnlocked}
+              disabled={busyAction !== null || createSubmitting || !privilegedUnlocked}
             >
               Create
             </button>
@@ -2316,7 +2444,7 @@ export function AgentsPage() {
                 <div>
                   <h2>Create agent</h2>
                 </div>
-                <button className="admin-action-button compact" type="button" onClick={() => setShowCreateForm(false)} disabled={busyAction === "create-agent"}>
+                <button className="admin-action-button compact" type="button" onClick={() => setShowCreateForm(false)} disabled={createSubmitting}>
                   Close
                 </button>
               </div>
@@ -2688,8 +2816,8 @@ export function AgentsPage() {
                   </div>
                 </div>
                 <div className="inline-actions compact-actions">
-                  <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "create-agent"} onClick={() => void handleCreateAgent()}>
-                    {busyAction === "create-agent" ? "Creating..." : "Create"}
+                  <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || createSubmitting} onClick={() => void handleCreateAgent()}>
+                    {createSubmitting ? "Queueing..." : "Create"}
                   </button>
                 </div>
               </div>
@@ -3329,6 +3457,36 @@ export function AgentsPage() {
                 ) : (
                   <div className="empty-state compact-empty-state">No executions have run for this session.</div>
                 )}
+              </details>
+            ) : null}
+
+            {createOperations.length > 0 ? (
+              <details className="panel compact-disclosure" open={activeCreateOperationCount > 0}>
+                <summary className="panel-header compact-disclosure-summary">
+                  <h3>Create operations</h3>
+                  <span className="panel-meta">
+                    {activeCreateOperationCount > 0 ? `${activeCreateOperationCount} active` : `${createOperations.length} recent`}
+                  </span>
+                </summary>
+                <div className="agent-execution-list">
+                  {createOperations.map((operation) => (
+                    <div className="agent-execution-row" key={operation.operation_id}>
+                      <div className="agent-execution-title">
+                        <span className={`status-pill ${statusClass(operation.status)}`}>
+                          {statusLabel(operation.status)}
+                        </span>
+                        <span>{operation.target_name}</span>
+                      </div>
+                      <div className="agent-execution-meta">
+                        <span>{operation.backend === "libvirt_vm" ? "VM agent" : "Container worker"}</span>
+                        <span>{formatTimestamp(operation.updated_at)}</span>
+                      </div>
+                      <div className="agent-execution-meta">
+                        <span>{createOperationMessage(operation)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </details>
             ) : null}
 

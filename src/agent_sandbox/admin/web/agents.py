@@ -198,6 +198,43 @@ def agent_routes(
         status_code = 201 if bool(result.get("success")) else 409
         return JSONResponse(_jsonable(result), status_code=status_code)
 
+    async def submit_create_operation(request: Request) -> JSONResponse:
+        try:
+            payload = await _json_body(request)
+            operation = await run_in_threadpool(service.submit_admin_agent_create, payload)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse({"operation": _jsonable(operation)}, status_code=202)
+
+    async def list_create_operations(request: Request) -> JSONResponse:
+        directory_path = _string_query(request, "directory_path")
+        try:
+            operations = await run_in_threadpool(
+                service.list_admin_agent_create_operations,
+                limit=_int_query(request, "limit", default=50),
+                directory_path=directory_path,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse({"items": [_jsonable(operation) for operation in operations]})
+
+    async def get_create_operation(request: Request) -> JSONResponse:
+        operation_id = request.path_params["operation_id"]
+        try:
+            operation = await run_in_threadpool(
+                service.get_admin_agent_create_operation,
+                operation_id,
+            )
+        except LookupError as exc:
+            return json_error(str(exc), status_code=404)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse({"operation": _jsonable(operation)})
+
     async def patch_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
@@ -265,6 +302,13 @@ def agent_routes(
         ),
         Route("/api/admin/agents", create_agent, methods=["POST"]),
         Route("/api/admin/agents/create-options", create_options, methods=["GET"]),
+        Route("/api/admin/agents/create-operations", submit_create_operation, methods=["POST"]),
+        Route("/api/admin/agents/create-operations", list_create_operations, methods=["GET"]),
+        Route(
+            "/api/admin/agents/create-operations/{operation_id:str}",
+            get_create_operation,
+            methods=["GET"],
+        ),
         Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),
         Route("/api/admin/agents/{agent_id:str}", delete_agent, methods=["DELETE"]),
         Route("/api/admin/agents/{agent_id:str}/log", get_agent_log, methods=["GET"]),

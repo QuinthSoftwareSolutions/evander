@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Async Agents Page Create Operations
+
+- Added reload-safe Admin Web create-operation tracking so multiple agent creates
+  can be submitted from the Agents page while earlier VM or container setup is
+  still running.
+- Preserved the existing synchronous agent-create API while adding polling
+  endpoints and UI status for queued, running, succeeded, and failed creates.
+
 ## 2026-06-23 - Team Add-on Governance Escalation Validation
 
 - Validated optional manager escalation `project_id` values before creating

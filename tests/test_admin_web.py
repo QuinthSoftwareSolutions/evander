@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import tarfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MethodType
@@ -141,6 +142,26 @@ def write_config(
         lines.append(f'execution_backend: "{execution_backend}"')
     config_path.write_text("\n".join(lines), encoding="utf-8")
     return config_path
+
+
+def wait_for_agent_create_operation_status(
+    service: AdminService,
+    operation_id: str,
+    status: str,
+    *,
+    timeout_seconds: float = 3.0,
+):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        operation = service.get_admin_agent_create_operation(operation_id)
+        if operation.status == status:
+            return operation
+        time.sleep(0.01)
+    operation = service.get_admin_agent_create_operation(operation_id)
+    raise AssertionError(
+        f"Operation {operation_id} did not reach {status}; "
+        f"last status was {operation.status}"
+    )
 
 
 def _write_trigger_orchestrator_sqlite_config(tmp_path: Path) -> Path:
@@ -11995,6 +12016,63 @@ def test_admin_web_agents_create_vm_duplicate_session_returns_409(
     body = response.json()
     assert body["success"] is False
     assert body["message"] == "Session already exists: lab-session"
+
+
+def test_admin_web_agents_create_operations_submit_list_and_get(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured_payloads: list[dict[str, object]] = []
+
+    def create_admin_agent(self, payload):
+        del self
+        captured_payloads.append(dict(payload))
+        return {
+            "success": True,
+            "agent_id": "container-session",
+            "backend": "container_worker_vm",
+            "target_name": "container-target",
+            "action": "create",
+            "message": "Prepared container worker session container-session",
+            "session_id": "container-session",
+        }
+
+    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/agents/create-operations",
+        json={
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+        },
+    )
+
+    assert response.status_code == 202
+    operation_id = response.json()["operation"]["operation_id"]
+    operation = wait_for_agent_create_operation_status(service, operation_id, "succeeded")
+    assert operation.result is not None
+    assert operation.result["target_name"] == "container-target"
+    assert captured_payloads == [
+        {
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+        }
+    ]
+
+    list_response = client.get("/api/admin/agents/create-operations?directory_path=root&limit=5")
+    get_response = client.get(f"/api/admin/agents/create-operations/{operation_id}")
+
+    assert list_response.status_code == 200
+    assert [item["operation_id"] for item in list_response.json()["items"]] == [operation_id]
+    assert get_response.status_code == 200
+    assert get_response.json()["operation"]["status"] == "succeeded"
+    assert (
+        get_response.json()["operation"]["result"]["message"]
+        == "Prepared container worker session container-session"
+    )
 
 
 def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
