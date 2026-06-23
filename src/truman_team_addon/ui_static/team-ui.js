@@ -1452,10 +1452,15 @@ function chatScopeFields(payload) {
 
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
   const requestId = ++chatRequestId;
+  const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
   chatState = { ...chatState, loading: true, error: null };
   renderChat();
   try {
-    const response = await fetch(chatApiUrl("/conversations"), {
+    const query = new URLSearchParams({ include_selected_messages: "1" });
+    if (candidateId) {
+      query.set("selected_conversation_id", candidateId);
+    }
+    const response = await fetch(chatApiUrl("/conversations", query), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1467,12 +1472,18 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
     }
     chatState = normalizeChat(payload);
     selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
-    const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
-    selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
+    selectedChatConversationId =
+      selectExistingConversationId(text(payload.selected_conversation_id) || candidateId) || firstConversationId();
+    const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
+    if (selectedMessagesLoaded) {
+      scheduleChatScrollToBottom(selectedChatConversationId);
+    }
     renderChat();
     if (selectedChatConversationId) {
       ensureChatStream(selectedChatConversationId);
-      void loadConversationDetail(selectedChatConversationId, requestId);
+      if (!selectedMessagesLoaded) {
+        void loadConversationDetail(selectedChatConversationId, requestId);
+      }
     } else {
       closeChatStream();
     }
@@ -1580,6 +1591,11 @@ function selectExistingConversationId(conversationId) {
 
 function firstConversationId() {
   return text(chatState.conversations[0]?.id) || null;
+}
+
+function chatConversationHasLoadedMessages(conversationId) {
+  const conversation = chatConversationById(conversationId);
+  return conversation?.messages_loaded === true;
 }
 
 function replaceChatConversation(conversation) {
@@ -1696,10 +1712,16 @@ async function createOrFocusChat(agentId) {
     selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
     chatNewPickerOpen = false;
+    const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
+    if (selectedMessagesLoaded) {
+      scheduleChatScrollToBottom(selectedChatConversationId);
+    }
     renderChat();
     if (selectedChatConversationId) {
       ensureChatStream(selectedChatConversationId);
-      await loadConversationDetail(selectedChatConversationId);
+      if (!selectedMessagesLoaded) {
+        await loadConversationDetail(selectedChatConversationId);
+      }
     }
     setStatus("", "");
   } catch (error) {
@@ -4521,10 +4543,12 @@ function mergeChatConversation(existing, incoming) {
 }
 
 function normalizeChatConversation(conversation) {
+  const messagesLoaded = Array.isArray(conversation?.messages) || conversation?.messages_loaded === true;
   const messages = conversationMessages(conversation);
   return {
     ...conversation,
     messages,
+    messages_loaded: messagesLoaded,
     has_older: Boolean(conversation?.has_older),
     oldest_message_id: text(messages[0]?.id) || text(conversation?.oldest_message_id) || null,
     newest_message_id: text(messages[messages.length - 1]?.id) || text(conversation?.newest_message_id) || null,

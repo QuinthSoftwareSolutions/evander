@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Chat Load Performance
+
+- Optimized the Team Add-on Chat load path so the conversation list can inline
+  the selected thread's first message page, letting the client render a usable
+  chat view without a redundant detail request.
+- Grouped conversation messages once while building chat collection payloads so
+  large chat histories no longer rescan all messages for every conversation row.
+
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 
 - Recorded governance member-team additions and removals as pending
