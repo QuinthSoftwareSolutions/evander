@@ -9,6 +9,8 @@
   relationship between the Python bridge env and managed Asterisk ARI/PJSIP names.
 - Kept the Azure Vault example as blank template values while rendering required bridge secrets
   into `secrets.env`, and made systemd service reconciliation tolerate older service-toggle maps.
+- Fixed the managed Asterisk `s` fallback extension so configured inbound DIDWW routes are passed
+  to the bridge instead of treating the fallback extension name as the route ID.
 
 ## 2026-06-22 - Admin Login Oversized Branding
 

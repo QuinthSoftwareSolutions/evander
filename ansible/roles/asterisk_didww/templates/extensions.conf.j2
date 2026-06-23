@@ -25,7 +25,7 @@ exten => s,1,NoOp(Inbound DIDWW call ${EXTEN})
  same => n,Set(CALLER_NUMBER=${CALLERID(num)})
 {% if agent_sandbox_asterisk_didww_inbound_route_id | length > 0 %}
  same => n,Set(INBOUND_ROUTE_ID={{ agent_sandbox_asterisk_didww_inbound_route_id }})
- same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN}:{{ agent_sandbox_asterisk_didww_inbound_route_id }})
+ same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:{{ agent_sandbox_asterisk_didww_inbound_route_id }})
 {% else %}
  same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN})
 {% endif %}

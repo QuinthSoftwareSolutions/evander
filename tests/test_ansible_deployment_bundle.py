@@ -214,9 +214,17 @@ def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> 
 
     assert "Set(INBOUND_PHONE_CALL=1)" in extensions
     assert "Set(INBOUND_ROUTE_ID={{ agent_sandbox_asterisk_didww_inbound_route_id }})" in extensions
+    dialed_did_extension = extensions.split("exten => _X.,1", 1)[1].split(
+        "exten => s,1", 1
+    )[0]
+    fallback_extension = extensions.split("exten => s,1", 1)[1]
     assert (
         "Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN}:{{ agent_sandbox_asterisk_didww_inbound_route_id }})"
-        in extensions
+        in dialed_did_extension
+    )
+    assert (
+        "Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:{{ agent_sandbox_asterisk_didww_inbound_route_id }})"
+        in fallback_extension
     )
 
     assert "Verify managed Asterisk is active" in verification
