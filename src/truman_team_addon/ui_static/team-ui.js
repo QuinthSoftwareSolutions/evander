@@ -1472,8 +1472,11 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
     }
     chatState = normalizeChat(payload);
     selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
+    const responseCandidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
     selectedChatConversationId =
-      selectExistingConversationId(text(payload.selected_conversation_id) || candidateId) || firstConversationId();
+      selectExistingConversationId(responseCandidateId) ||
+      selectExistingConversationId(text(payload.selected_conversation_id) || candidateId) ||
+      firstConversationId();
     const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
     if (selectedMessagesLoaded) {
       scheduleChatScrollToBottom(selectedChatConversationId);

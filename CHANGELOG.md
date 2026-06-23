@@ -7,6 +7,8 @@
   chat view without a redundant detail request.
 - Grouped conversation messages once while building chat collection payloads so
   large chat histories no longer rescan all messages for every conversation row.
+- Preserved the current Chat conversation selection when a refresh response
+  arrives after the operator has selected a different conversation.
 
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 

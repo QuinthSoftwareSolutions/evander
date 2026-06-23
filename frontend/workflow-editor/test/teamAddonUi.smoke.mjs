@@ -1105,6 +1105,7 @@ async function createTeamAddonServer(
   t,
   {
     conflictOnFirstTeamCreate = false,
+    conversationsBeforeResponse = null,
     costsBeforeResponse = null,
     costsDelayMs = 0,
     costsPayload = null,
@@ -1179,6 +1180,9 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/conversations") {
         chatRequests.push({ method: request.method, pathname, search: url.search });
+        if (conversationsBeforeResponse) {
+          await conversationsBeforeResponse({ request, url, chatRequests });
+        }
         jsonResponse(
           response,
           chatCollectionPayload(state, {
@@ -3639,6 +3643,39 @@ function seededLongChatState(messageCount = 120) {
   return state;
 }
 
+function seededTwoConversationChatState() {
+  const state = seededLongChatState(80);
+  state.agents["beta-lead"].display_name = "Bea";
+  state.conversations["conversation-beta-lead"] = {
+    id: "conversation-beta-lead",
+    agent_id: "beta-lead",
+    created_by: "operator",
+    last_message_preview: "Beta message 019",
+    created_at: "2026-06-09T00:00:00Z",
+    updated_at: "2026-06-09T01:00:00Z",
+    last_interaction_at: "2026-06-09T01:00:00Z",
+  };
+  for (let index = 0; index < 20; index += 1) {
+    const timestamp = new Date(Date.UTC(2026, 5, 9, 0, index, 30)).toISOString();
+    state.conversation_messages[`beta-msg-${String(index).padStart(3, "0")}`] = {
+      id: `beta-msg-${String(index).padStart(3, "0")}`,
+      conversation_id: "conversation-beta-lead",
+      sender: index % 2 === 0 ? "operator" : "agent",
+      message_type: "text",
+      body: `Beta message ${String(index).padStart(3, "0")}`,
+      status: "sent",
+      dispatch_id: null,
+      voice_session_id: null,
+      source_message_id: null,
+      error: null,
+      metadata: {},
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+  }
+  return state;
+}
+
 test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
@@ -3755,6 +3792,52 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
   assert.ok(
     afterScrollMetrics.scrollTop > 0,
     `expected scroll position to be preserved after prepend: ${JSON.stringify(afterScrollMetrics)}`,
+  );
+});
+
+test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", async (t) => {
+  let holdConversationList = false;
+  let releaseRefreshResponse = null;
+  let refreshRequestStarted = null;
+  const refreshStarted = new Promise((resolve) => {
+    refreshRequestStarted = resolve;
+  });
+  const refreshRelease = new Promise((resolve) => {
+    releaseRefreshResponse = resolve;
+  });
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+    conversationsBeforeResponse: async () => {
+      if (!holdConversationList) {
+        return;
+      }
+      holdConversationList = false;
+      refreshRequestStarted?.();
+      await refreshRelease;
+    },
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+
+  holdConversationList = true;
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await refreshStarted;
+  await page.locator('[data-chat-conversation-id="conversation-beta-lead"]').click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+
+  releaseRefreshResponse?.();
+  await page.waitForFunction(() => {
+    const selected = document.querySelector(".chat-conversation-row.is-selected");
+    return selected?.dataset?.chatConversationId === "conversation-beta-lead";
+  });
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".chat-thread-title").getByText("Ada").count(),
+    0,
+    "expected delayed conversation-list response not to restore the stale selection",
   );
 });
 
