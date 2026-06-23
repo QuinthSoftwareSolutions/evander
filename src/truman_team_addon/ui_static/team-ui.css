@@ -1290,17 +1290,73 @@ button.runtime-filter-button.active {
 }
 
 .hierarchy-node-title strong,
-.hierarchy-node-role,
-.hierarchy-node-id {
+.hierarchy-node-role {
   overflow-wrap: anywhere;
 }
 
-.hierarchy-node-id {
-  color: var(--muted);
-  font-size: 0.72rem;
+.hierarchy-node-avatar-wrap {
+  position: relative;
+  display: inline-grid;
+}
+
+.hierarchy-node-avatar-wrap > .agent-avatar,
+.hierarchy-node-avatar-wrap > .agent-avatar-fallback {
+  cursor: default;
+}
+
+.hierarchy-node-avatar-card {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  top: calc(100% + 0.35rem);
+  min-width: max-content;
+  max-width: 17rem;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 12px 28px var(--shadow);
+  color: var(--text);
+  font-size: 0.76rem;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(0) translateY(-2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.hierarchy-node-avatar-wrap:hover .hierarchy-node-avatar-card,
+.hierarchy-node-avatar-wrap:focus-within .hierarchy-node-avatar-card {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0) translateY(0);
+  transition-delay: 1s, 1s;
+}
+
+.hierarchy-node-avatar-wrap .hierarchy-node-avatar-card {
+  transition-delay: 0s, 0s;
+}
+
+.hierarchy-node-avatar-name {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
   font-weight: 700;
-  flex: 0 1 auto;
-  text-align: right;
+}
+
+.hierarchy-node-avatar-id {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.72rem;
+}
+
+.hierarchy-node-avatar-role {
+  overflow-wrap: anywhere;
+  color: var(--muted);
 }
 
 .hierarchy-node-subtitle {

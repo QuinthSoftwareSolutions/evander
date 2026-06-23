@@ -3237,14 +3237,20 @@ function renderHierarchyNode(node, options = {}) {
       <li class="hierarchy-branch">
         <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
           <div class="hierarchy-node-summary">
-            ${renderAgentAvatar(node.agentData)}
+            <span class="hierarchy-node-avatar-wrap">
+              ${renderAgentAvatar(node.agentData)}
+              <span class="hierarchy-node-avatar-card" aria-hidden="true">
+                <strong class="hierarchy-node-avatar-name">${escapeHtml(node.agentData.label)}</strong>
+                ${
+                  node.agentData.label !== node.agentData.id
+                    ? `<span class="hierarchy-node-avatar-id">${escapeHtml(node.agentData.id)}</span>`
+                    : ""
+                }
+                <span class="hierarchy-node-avatar-role">${escapeHtml(node.agentData.role)}</span>
+              </span>
+            </span>
             <div class="hierarchy-node-title">
               <strong>${escapeHtml(node.agentData.label)}</strong>
-              ${
-                node.agentData.label !== node.agentData.id
-                  ? `<span class="hierarchy-node-id">${escapeHtml(node.agentData.id)}</span>`
-                  : ""
-              }
             </div>
             <div class="hierarchy-node-subtitle">
               <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>

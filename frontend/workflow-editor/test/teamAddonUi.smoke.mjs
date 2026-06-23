@@ -2339,12 +2339,28 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.equal(await leadCard.locator(".hierarchy-node-title strong").textContent(), "lead");
   assert.equal(await backendCard.locator(".hierarchy-node-title strong").textContent(), "Backend Worker");
   assert.equal(await workerCard.locator(".hierarchy-node-title strong").textContent(), "worker");
-  assert.equal(await managerCard.locator(".hierarchy-node-id").count(), 1);
-  assert.equal(await backendCard.locator(".hierarchy-node-id").count(), 1);
+  assert.equal(await managerCard.locator(".hierarchy-node-id").count(), 0);
+  assert.equal(await backendCard.locator(".hierarchy-node-id").count(), 0);
   assert.equal(await leadCard.locator(".hierarchy-node-id").count(), 0);
   assert.equal(await workerCard.locator(".hierarchy-node-id").count(), 0);
+  assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await leadCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await workerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
+  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
 
-  await backendCard.hover();
+  await backendCard.locator(".hierarchy-node-avatar-wrap").hover();
+  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
+  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), true);
+  await backendCard
+    .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
+    .getByText("Backend Worker")
+    .waitFor({ state: "visible" });
+  await backendCard
+    .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
+    .getByText("backend")
+    .waitFor({ state: "visible" });
   const backendDetails = backendCard.locator(".hierarchy-node-details");
   await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
   await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
@@ -2415,7 +2431,8 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     state: "visible",
   });
 
-  await focusedBackendCard.hover();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap").hover();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
   await focusedBackendCard.locator(".org-node-work-line--now").getByText("Build API").waitFor({
     state: "visible",
   });

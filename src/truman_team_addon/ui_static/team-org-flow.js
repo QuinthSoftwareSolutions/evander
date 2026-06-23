@@ -12189,9 +12189,15 @@ function gk({ data: e }) {
       children: [
         /* @__PURE__ */ _.jsxs("div", { className: "hierarchy-node-summary", children: [
           /* @__PURE__ */ _.jsxs("div", { className: "hierarchy-node-title", children: [
-            /* @__PURE__ */ _.jsx(mm, { avatar: e.avatar }),
-            /* @__PURE__ */ _.jsx("strong", { children: e.label }),
-            e.idLabel ? /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-id", children: e.idLabel }) : null
+            /* @__PURE__ */ _.jsxs("span", { className: "hierarchy-node-avatar-wrap", children: [
+              /* @__PURE__ */ _.jsx(mm, { avatar: e.avatar }),
+              /* @__PURE__ */ _.jsxs("span", { className: "hierarchy-node-avatar-card", "aria-hidden": "true", children: [
+                /* @__PURE__ */ _.jsx("strong", { className: "hierarchy-node-avatar-name", children: e.label }),
+                e.idLabel ? /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-avatar-id", children: e.idLabel }) : null,
+                /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-avatar-role", children: e.role })
+              ] })
+            ] }),
+            /* @__PURE__ */ _.jsx("strong", { children: e.label })
           ] }),
           /* @__PURE__ */ _.jsxs("div", { className: "hierarchy-node-subtitle", children: [
             /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-role", children: e.role }),
