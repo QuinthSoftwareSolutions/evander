@@ -642,7 +642,7 @@ function AddonView({ tab }: { tab: AdminTabDefinition }) {
         className="admin-addon-frame"
         title={tab.label}
         src={tab.uiPath}
-        sandbox="allow-forms allow-same-origin allow-scripts"
+        sandbox="allow-forms allow-modals allow-same-origin allow-scripts"
       />
     );
   }

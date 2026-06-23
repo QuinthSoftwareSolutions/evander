@@ -312,6 +312,7 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   await assert.doesNotReject(() => page.getByRole("button", { name: /^Teams\b/ }).waitFor({ state: "visible" }));
   const frame = page.locator('iframe.admin-addon-frame[title="Teams"]');
   await frame.waitFor({ state: "visible" });
+  assert.equal(await frame.getAttribute("sandbox"), "allow-forms allow-modals allow-same-origin allow-scripts");
   assert.equal(
     new URL(await frame.getAttribute("src"), `http://127.0.0.1:${address.port}`).pathname,
     "/addons/team-addon/",
