@@ -1477,7 +1477,8 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
     assert response.status_code == 201
     body = response.json()
     assert "team-platform-team" in body["teams"]
-    assert "agent-team-platform-team-platform-manager" in body["agents"]
+    manager_id = "agent-team-platform-team-platform-manager"
+    assert manager_id in body["agents"]
 
     response = client.post(
         "/api/addons/team-addon/teams",
@@ -1510,6 +1511,25 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
     )
 
     response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "team_id": "team-platform-team",
+            "name": "Manager Led",
+            "lead_agent_id": manager_id,
+            "expected_revision": body["revision"],
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    manager_project_id = "project-team-platform-team-manager-led"
+    assert body["projects"][manager_project_id]["lead_agent_id"] == manager_id
+    manager = body["agents"][manager_id]
+    assert manager["project_id"] is None
+    assert manager["role_id"] == "team-platform-team__manager"
+    assert manager["reports_to_agent_id"] is None
+    assert manager_id not in manager["subordinate_agent_ids"]
+
+    response = client.post(
         "/api/addons/team-addon/teams",
         json={
             "id": "explicit-team",
@@ -1517,7 +1537,7 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
             "manager_agent_id": "explicit-manager",
             "manager_session_id": "session-explicit-manager",
             "manager_role_id": "explicit-manager-role",
-            "expected_revision": 3,
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 201

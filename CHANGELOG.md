@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Project Lead Overlay
+
+- Allowed project leadership to be assigned as a project-level overlay so a team
+  manager can also lead a project without losing manager role or reporting
+  semantics.
+
 ## 2026-06-23 - Team Add-on Teams Tab Creation
 
 - Added inline Teams-tab creation for projects, agents, and roles scoped to the

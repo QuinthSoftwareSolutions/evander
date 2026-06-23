@@ -1694,21 +1694,7 @@ function applyMutation(state, pathname, payload) {
     state.teams[payload.team_id].project_ids.push(projectId);
     const managerId = state.teams[payload.team_id].manager_agent_id;
     const existingLead = state.agents[leadAgentId];
-    if (existingLead) {
-      const oldSuperior = state.agents[existingLead.reports_to_agent_id];
-      if (oldSuperior) {
-        oldSuperior.subordinate_agent_ids = oldSuperior.subordinate_agent_ids.filter(
-          (agentId) => agentId !== leadAgentId,
-        );
-      }
-      existingLead.team_id = payload.team_id;
-      existingLead.project_id = projectId;
-      existingLead.display_name = payload.lead_display_name ?? existingLead.display_name;
-      existingLead.role_id = leadRoleId;
-      existingLead.session_id = payload.lead_session_id ?? existingLead.session_id;
-      existingLead.reports_to_agent_id = managerId;
-      existingLead.ephemeral_policy = { max_concurrent: 0 };
-    } else {
+    if (!existingLead) {
       state.agents[leadAgentId] = {
         id: leadAgentId,
         team_id: payload.team_id,
@@ -1721,10 +1707,10 @@ function applyMutation(state, pathname, payload) {
         ephemeral_policy: { max_concurrent: 0 },
         status: "active",
       };
-    }
-    const manager = state.agents[managerId];
-    if (!manager.subordinate_agent_ids.includes(leadAgentId)) {
-      manager.subordinate_agent_ids.push(leadAgentId);
+      const manager = state.agents[managerId];
+      if (!manager.subordinate_agent_ids.includes(leadAgentId)) {
+        manager.subordinate_agent_ids.push(leadAgentId);
+      }
     }
     return;
   }
@@ -3449,9 +3435,9 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   const inlineProjectForm = betaGroup.locator('form[data-form-id="create-project-form"]');
   await inlineProjectForm.waitFor({ state: "visible" });
   assert.equal(await inlineProjectForm.locator('select[name="team_id"]').count(), 0);
-  assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 0);
+  assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 1);
   await inlineProjectForm.locator('[name="name"]').fill("Second Project");
-  await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-candidate");
+  await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-manager");
   await inlineProjectForm.locator('[name="goal_description"]').fill("Ship beta follow-up");
   await inlineProjectForm.getByRole("button", { name: "Create project" }).click();
   await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
@@ -3470,7 +3456,7 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.equal(requests[1].payload.project_id, "beta-project");
   assert.deepEqual(requests[1].payload.permissions, ["request_release"]);
   assert.equal(requests[2].payload.team_id, "team-beta");
-  assert.equal(requests[2].payload.lead_agent_id, "beta-candidate");
+  assert.equal(requests[2].payload.lead_agent_id, "beta-manager");
   assert.deepEqual(requests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
 });
 

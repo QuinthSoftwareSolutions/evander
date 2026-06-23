@@ -254,7 +254,7 @@ const fieldTooltips = {
 
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
   "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
-  "create-project-form:lead_agent_id": "Existing unassigned non-manager agent on the selected team that will become this project's lead.",
+  "create-project-form:lead_agent_id": "Existing same-team agent that will lead this project. The team manager may also be selected.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
   "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions for the new agent.",
@@ -7606,8 +7606,7 @@ function projectLeadAgentOptionsForTeam(teamId) {
   return values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => text(agent.team_id) === normalizedTeamId)
-    .filter((agent) => !text(agent.project_id))
-    .filter((agent) => text(agent.id) !== managerAgentId)
+    .filter((agent) => !text(agent.project_id) || text(agent.id) === managerAgentId)
     .sort(byId)
     .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
 }

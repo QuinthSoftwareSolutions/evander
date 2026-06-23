@@ -1199,7 +1199,11 @@ class TeamState(TeamModel):
                 role.permissions.append(RolePermission.CREATE_ROOT_TASK)
         for project in self.projects.values():
             lead = self.agents.get(project.lead_agent_id)
-            role = self.roles.get(lead.role_id) if lead is not None else None
+            role = (
+                self.roles.get(lead.role_id)
+                if lead is not None and lead.project_id == project.id
+                else None
+            )
             if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
                 role.permissions.append(RolePermission.CREATE_ROOT_TASK)
 
@@ -1309,8 +1313,8 @@ class TeamState(TeamModel):
             lead = self.agents.get(project.lead_agent_id)
             if lead is None:
                 errors.append(f"project {project.id} references missing lead {project.lead_agent_id}")
-            elif lead.project_id != project.id:
-                errors.append(f"project {project.id} lead {lead.id} belongs to project {lead.project_id}")
+            elif lead.team_id != project.team_id:
+                errors.append(f"project {project.id} lead {lead.id} belongs to team {lead.team_id}")
 
     def _validate_roles(self, errors: list[str]) -> None:
         for role in self.roles.values():

@@ -673,7 +673,7 @@ class TeamStateRepository:
         team_id: str,
         name: str,
         lead_agent_id: str | None,
-        lead_session_id: str,
+        lead_session_id: str | None,
         lead_display_name: str | None = None,
         goals: list[ProjectGoal | Mapping[str, Any]] | None = None,
         git: ProjectGitConfig | None = None,
@@ -724,7 +724,10 @@ class TeamStateRepository:
                         f"agent {effective_lead_agent_id} belongs to team "
                         f"{existing_lead.team_id}"
                     )
-                if existing_lead.project_id is not None:
+                if (
+                    existing_lead.project_id is not None
+                    and existing_lead.id != team.manager_agent_id
+                ):
                     raise ValueError(
                         f"agent {effective_lead_agent_id} already belongs to project "
                         f"{existing_lead.project_id}"
@@ -750,20 +753,6 @@ class TeamStateRepository:
             state.roles[role.id] = role
             if existing_lead is not None:
                 lead = existing_lead
-                old_superior_id = lead.reports_to_agent_id
-                if old_superior_id and old_superior_id in state.agents:
-                    old_superior = state.agents[old_superior_id]
-                    old_superior.subordinate_agent_ids = _remove_value(
-                        old_superior.subordinate_agent_ids,
-                        lead.id,
-                    )
-                lead.team_id = normalized_team_id
-                lead.project_id = effective_project_id
-                lead.display_name = normalized_lead_display_name or lead.display_name
-                lead.role_id = role.id
-                lead.session_id = normalized_lead_session_id or lead.session_id
-                lead.reports_to_agent_id = team.manager_agent_id
-                lead.ephemeral_policy = role.ephemeral_policy.model_copy(deep=True)
             else:
                 lead = PersistentAgent(
                     id=effective_lead_agent_id,
@@ -776,8 +765,11 @@ class TeamStateRepository:
                     ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
                 )
                 state.agents[lead.id] = lead
-            manager = state.agents[team.manager_agent_id]
-            manager.subordinate_agent_ids = _append_unique(manager.subordinate_agent_ids, lead.id)
+                manager = state.agents[team.manager_agent_id]
+                manager.subordinate_agent_ids = _append_unique(
+                    manager.subordinate_agent_ids,
+                    lead.id,
+                )
             state.projects[effective_project_id] = Project(
                 id=effective_project_id,
                 team_id=normalized_team_id,
@@ -5483,10 +5475,17 @@ def _agent_has_role_permission_for_project(
     project_id: str,
 ) -> bool:
     project = state.projects.get(project_id)
-    role = state.roles.get(actor.role_id)
-    if project is None or role is None:
+    if project is None:
         return False
-    if actor.team_id != project.team_id or role.team_id != project.team_id:
+    if actor.team_id != project.team_id:
+        return False
+    if (
+        permission == RolePermission.CREATE_ROOT_TASK
+        and _is_project_lead_for(state, actor.id, project_id)
+    ):
+        return True
+    role = state.roles.get(actor.role_id)
+    if role is None or role.team_id != project.team_id:
         return False
     if _is_team_manager(state, actor):
         return permission in role.permissions
@@ -5534,7 +5533,9 @@ def _task_creation_mandate_error(
 
 def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
     agent = state.agents.get(agent_id)
-    return agent is not None and agent.project_id == project_id
+    return agent is not None and (
+        agent.project_id == project_id or _is_project_lead_for(state, agent_id, project_id)
+    )
 
 
 def _upward_recipient_error(
