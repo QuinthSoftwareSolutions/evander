@@ -158,5 +158,5 @@ test("users tab is labeled users and groups", () => {
   assert.ok(usersTab);
   assert.equal(usersTab?.label, "Users & Groups");
   assert.equal(usersTab?.shortLabel, "Users");
-  assert.equal(usersTab?.description, "Azure SSO users, groups, and permissions.");
+  assert.equal(usersTab?.description, "Admin users, groups, and permissions.");
 });

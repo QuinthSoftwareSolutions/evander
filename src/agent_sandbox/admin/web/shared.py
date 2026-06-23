@@ -397,6 +397,15 @@ class AdminWebAuth:
                 )
             if not any(self.user_store.can(user.login, ADMIN_OWNER_PERMISSION) for user in users):
                 raise ValueError("Azure SSO admin auth requires at least one effective owner")
+        if (
+            self.config.auth_mode == "local_password"
+            and self.user_store is not None
+            and self.config.password is not None
+        ):
+            self.user_store.bootstrap_local_password_admin(
+                login=self.config.username,
+                password=self.config.password,
+            )
 
     def authentication_payload(self, request: Request) -> dict[str, Any]:
         session = self.read_session(request)
@@ -494,15 +503,29 @@ class AdminWebAuth:
             )
         if self.config.auth_mode != "local_password":
             raise ValueError("Password sign-in is unavailable for the configured auth mode")
-        if normalize_admin_web_login(username) != normalize_admin_web_login(self.config.username):
+        normalized_username = normalize_admin_web_login(username)
+        if self.user_store is not None:
+            user = self.user_store.verify_local_password(login=username, password=password)
+            if user is not None:
+                return self._encode_local_password_session(user)
+        if normalized_username != normalize_admin_web_login(self.config.username):
             raise ValueError("Invalid username or password")
         expected = (self.config.password or "").encode("utf-8")
         if not hmac.compare_digest(password.encode("utf-8"), expected):
             raise ValueError("Invalid username or password")
+        display_name = self.config.username
+        if self.user_store is not None:
+            user = self.user_store.record_login(
+                login=self.config.username,
+                display_name=self.config.username,
+            )
+            if user is not None:
+                display_name = user.display_name or self.config.username
         return self._encode_session(
             subject=self.config.username,
             login=self.config.username,
-            display_name=self.config.username,
+            display_name=display_name,
+            extras={"auth_mode": "local_password"},
         )
 
     def logout(self, request: Request) -> None:
@@ -561,6 +584,15 @@ class AdminWebAuth:
         payload = self._decode_signed_payload(token)
         if payload is None:
             return None
+        return self.session_from_token_payload(payload)
+
+    def session_from_token(self, token: str) -> dict[str, Any] | None:
+        payload = self._decode_signed_payload(token)
+        if payload is None:
+            return None
+        return self.session_from_token_payload(payload)
+
+    def session_from_token_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         if payload.get("kind") != "session":
             return None
         if self.config.auth_mode == "azure_sso":
@@ -568,6 +600,8 @@ class AdminWebAuth:
             if user is None:
                 return None
             return self._enrich_azure_session(payload, user)
+        if self.config.auth_mode == "local_password":
+            return self._enrich_local_password_session(payload)
         return self._annotate_session_permissions(payload)
 
     def effective_permissions(
@@ -868,6 +902,31 @@ class AdminWebAuth:
     def _enrich_azure_session(
         self, payload: dict[str, Any], user: AdminWebUserRecord
     ) -> dict[str, Any]:
+        enriched = dict(payload)
+        enriched["login"] = user.login
+        enriched["name"] = user.display_name or str(payload.get("name") or user.login)
+        return self._annotate_session_permissions(enriched)
+
+    def _encode_local_password_session(self, user: AdminWebUserRecord) -> str:
+        configured_login = normalize_admin_web_login(self.config.username)
+        login = self.config.username if user.login == configured_login else user.login
+        return self._encode_session(
+            subject=user.login,
+            login=login,
+            display_name=user.display_name or login,
+            extras={"auth_mode": "local_password"},
+        )
+
+    def _enrich_local_password_session(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        login = normalize_admin_web_login(payload.get("login"))
+        configured_login = normalize_admin_web_login(self.config.username)
+        if login is None:
+            return None
+        if login == configured_login:
+            return self._annotate_session_permissions(payload)
+        user = self._user_for_session_payload(payload)
+        if user is None:
+            return None
         enriched = dict(payload)
         enriched["login"] = user.login
         enriched["name"] = user.display_name or str(payload.get("name") or user.login)

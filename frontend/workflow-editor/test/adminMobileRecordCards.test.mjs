@@ -192,6 +192,7 @@ test("users keep the desktop records table and add mobile user cards", () => {
     "user.display_name || \"None\"",
     "user.role",
     "user.contact ? user.contact.name : \"None\"",
+    "user.local_password_enabled ? \"Set\" : \"None\"",
     "formatTimestamp(user.last_login_at)",
     "formatTimestamp(user.updated_at)",
     "No user records.",

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Local Multi-User Admin Password Auth
+
+- Broadened Admin Web `local_password` authentication to support multiple local users with
+  per-user hashed passwords managed through Users & Groups, while preserving the configured
+  username/password as first-start bootstrap and break-glass access.
+- Updated local password sessions, user payloads, and docs so Admin Web identity, permissions,
+  and credential state reflect the actual signed-in local user.
+
 ## 2026-06-23 - Managed DIDWW Asterisk Deployment
 
 - Added an opt-in Ansible role that installs Asterisk, renders ARI/RTP/PJSIP/dialplan

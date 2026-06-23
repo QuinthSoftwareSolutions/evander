@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +32,10 @@ AdminWebUserRole = Literal["admin", "regular"]
 _UNSET = object()
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY = "legacy_role_assignments_v1"
+LOCAL_PASSWORD_ALGORITHM = "pbkdf2_sha256"
+LOCAL_PASSWORD_HASH_NAME = "sha256"
+LOCAL_PASSWORD_ITERATIONS = 200_000
+LOCAL_PASSWORD_SALT_BYTES = 32
 
 
 def normalize_admin_web_login(value: object) -> str | None:
@@ -63,6 +70,22 @@ class AdminWebUserRecord(BaseModel):
     @classmethod
     def normalize_display_name(cls, value: object) -> str | None:
         return _normalize_display_name(value)
+
+
+class AdminWebLocalPasswordCredentialRecord(BaseModel):
+    login: str
+    algorithm: str
+    iterations: int
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("login", mode="before")
+    @classmethod
+    def normalize_login(cls, value: object) -> str:
+        login = normalize_admin_web_login(value)
+        if login is None:
+            raise ValueError("login is required")
+        return login
 
 
 class AdminWebGroupRecord(BaseModel):
@@ -260,6 +283,32 @@ class AdminWebUserStore:
                 self.ensure_effective_owner_exists(connection)
             return sorted(records, key=lambda user: user.login)
 
+    def bootstrap_local_password_admin(
+        self, *, login: object, password: object
+    ) -> AdminWebUserRecord | None:
+        normalized = normalize_admin_web_login(login)
+        if normalized is None:
+            raise ValueError("login is required")
+        self._validate_local_password(password)
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._user_count(connection) > 0:
+                return None
+            now = utc_now()
+            record = AdminWebUserRecord(
+                login=normalized,
+                role="admin",
+                display_name=_normalize_display_name(login),
+                created_at=now,
+                updated_at=now,
+            )
+            self._insert_or_replace_user(connection, record)
+            self._replace_legacy_role_assignment(connection, login=normalized, role="admin")
+            self._store_local_password(connection, login=normalized, password=str(password))
+            self.ensure_effective_owner_exists(connection)
+            return record
+
     def upsert_user(
         self,
         *,
@@ -354,6 +403,81 @@ class AdminWebUserStore:
             connection.execute("DELETE FROM admin_web_users WHERE login = ?", (normalized,))
             self.ensure_effective_owner_exists(connection)
             return existing
+
+    def set_local_password(self, *, login: object, password: object) -> AdminWebUserRecord:
+        normalized = normalize_admin_web_login(login)
+        if normalized is None:
+            raise ValueError("login is required")
+        self._validate_local_password(password)
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._get_user(connection, normalized)
+            if existing is None:
+                raise ValueError("Admin web user not found")
+            self._store_local_password(connection, login=normalized, password=str(password))
+            return existing
+
+    def verify_local_password(
+        self, *, login: object, password: object
+    ) -> AdminWebUserRecord | None:
+        normalized = normalize_admin_web_login(login)
+        if normalized is None or not isinstance(password, str):
+            return None
+        self._ensure_ready()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT algorithm, password_hash, salt, iterations
+                FROM admin_web_local_password_credentials
+                WHERE login = ?
+                """,
+                (normalized,),
+            ).fetchone()
+        if row is None or str(row["algorithm"]) != LOCAL_PASSWORD_ALGORITHM:
+            return None
+        try:
+            iterations = int(row["iterations"])
+            salt = bytes.fromhex(str(row["salt"]))
+            expected_hash = str(row["password_hash"])
+        except (TypeError, ValueError):
+            return None
+        actual_hash = _hash_local_password(
+            password=password,
+            salt=salt,
+            iterations=iterations,
+        )
+        if not hmac.compare_digest(actual_hash, expected_hash):
+            return None
+        return self.record_login(login=normalized)
+
+    def get_local_password_credential(
+        self, login: object
+    ) -> AdminWebLocalPasswordCredentialRecord | None:
+        normalized = normalize_admin_web_login(login)
+        if normalized is None:
+            return None
+        self._ensure_ready()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT login, algorithm, iterations, created_at, updated_at
+                FROM admin_web_local_password_credentials
+                WHERE login = ?
+                """,
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AdminWebLocalPasswordCredentialRecord.model_validate(
+            {
+                "login": row["login"],
+                "algorithm": row["algorithm"],
+                "iterations": row["iterations"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
 
     def record_login(
         self, *, login: object, display_name: object | None = None
@@ -874,6 +998,16 @@ class AdminWebUserStore:
                     PRIMARY KEY (login, preference_key)
                 );
 
+                CREATE TABLE IF NOT EXISTS admin_web_local_password_credentials (
+                    login TEXT PRIMARY KEY,
+                    algorithm TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    salt TEXT NOT NULL,
+                    iterations INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS admin_web_groups (
                     group_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
@@ -913,6 +1047,9 @@ class AdminWebUserStore:
 
                 CREATE INDEX IF NOT EXISTS idx_admin_web_user_preferences_login
                     ON admin_web_user_preferences(login, preference_key);
+
+                CREATE INDEX IF NOT EXISTS idx_admin_web_local_password_credentials_login
+                    ON admin_web_local_password_credentials(login);
 
                 CREATE INDEX IF NOT EXISTS idx_admin_web_group_permissions_group
                     ON admin_web_group_permissions(group_id, permission);
@@ -1306,6 +1443,10 @@ class AdminWebUserStore:
 
     def _delete_user_related_rows(self, connection: sqlite3.Connection, login: str) -> None:
         connection.execute(
+            "DELETE FROM admin_web_local_password_credentials WHERE login = ?",
+            (login,),
+        )
+        connection.execute(
             "DELETE FROM admin_web_user_preferences WHERE login = ?",
             (login,),
         )
@@ -1440,6 +1581,52 @@ class AdminWebUserStore:
             ),
         )
 
+    def _store_local_password(
+        self, connection: sqlite3.Connection, *, login: str, password: str
+    ) -> None:
+        now = _datetime_to_storage(utc_now())
+        existing = connection.execute(
+            """
+            SELECT created_at
+            FROM admin_web_local_password_credentials
+            WHERE login = ?
+            """,
+            (login,),
+        ).fetchone()
+        salt = secrets.token_bytes(LOCAL_PASSWORD_SALT_BYTES)
+        password_hash = _hash_local_password(
+            password=password,
+            salt=salt,
+            iterations=LOCAL_PASSWORD_ITERATIONS,
+        )
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO admin_web_local_password_credentials(
+                login,
+                algorithm,
+                password_hash,
+                salt,
+                iterations,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                login,
+                LOCAL_PASSWORD_ALGORITHM,
+                password_hash,
+                salt.hex(),
+                LOCAL_PASSWORD_ITERATIONS,
+                str(existing["created_at"]) if existing is not None else now,
+                now,
+            ),
+        )
+
+    def _validate_local_password(self, password: object) -> None:
+        if not isinstance(password, str) or password == "":
+            raise ValueError("password is required")
+
     def _row_to_user(self, row: sqlite3.Row) -> AdminWebUserRecord:
         return AdminWebUserRecord.model_validate(
             {
@@ -1473,9 +1660,19 @@ def _json_dumps(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _hash_local_password(*, password: str, salt: bytes, iterations: int) -> str:
+    return hashlib.pbkdf2_hmac(
+        LOCAL_PASSWORD_HASH_NAME,
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    ).hex()
+
+
 __all__ = [
     "AdminWebGroupPermissionRecord",
     "AdminWebGroupRecord",
+    "AdminWebLocalPasswordCredentialRecord",
     "AdminWebUserRecord",
     "AdminWebUserRole",
     "AdminWebUserGroupAssignmentRecord",

@@ -42,6 +42,8 @@ export type AdminWebUserRecord = {
   display_name: string | null;
   contact_id: string | null;
   contact: AdminContactSummary | null;
+  local_password_enabled: boolean;
+  password_last_changed_at: string | null;
   group_assignments: AdminWebUserGroupAssignmentRecord[];
   workflow_grants: AdminWebWorkflowGrantRecord[];
   effective_permissions: string[];
