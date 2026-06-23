@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Governance Escalation Validation
+
+- Validated optional manager escalation `project_id` values before creating
+  governance agenda items so typoed or stale project IDs become action errors
+  instead of aborting the apply-agent-action effect.
+
 ## 2026-06-23 - Team Add-on Stand-Down Prompt
 
 - Allowed Admin Web add-on iframes to open modal prompts so the Team Add-on

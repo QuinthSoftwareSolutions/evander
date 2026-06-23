@@ -5862,6 +5862,15 @@ def _apply_operator_escalation(
     project_id = _optional_text(escalation.get("project_id"))
     task_id = _optional_text(escalation.get("task_id"))
     team = state.teams.get(actor.team_id)
+    if team is None:
+        result["errors"].append(
+            f"team {actor.team_id} does not exist"
+        )
+        return False
+    if project_id is not None:
+        project = _require_present(state.projects, project_id, "project")
+        if project.team_id != team.id:
+            raise ValueError(f"project {project.id} is not in team {team.id}")
     escalation_id = f"escalation-{uuid4().hex}"
     payload: dict[str, Any] = {
         "team_id": actor.team_id,
@@ -5874,11 +5883,6 @@ def _apply_operator_escalation(
         payload["project_id"] = project_id
     if task_id is not None:
         payload["task_id"] = task_id
-    if team is None:
-        result["errors"].append(
-            f"team {actor.team_id} does not exist"
-        )
-        return False
     if not team.escalate_to_governance:
         target = (
             _optional_text(team.operator_communication_target_id)
