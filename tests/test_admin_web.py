@@ -7569,6 +7569,166 @@ def test_admin_web_local_password_username_permissions_are_case_insensitive(
     assert authorized.status_code == 200
 
 
+def test_admin_web_bootstraps_local_password_user_from_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "Operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+
+    app = create_app(AdminService(write_config(tmp_path)))
+    users = app.state.admin_user_store.list_users()
+    credential = app.state.admin_user_store.get_local_password_credential("operator")
+
+    assert [user.login for user in users] == ["operator"]
+    assert users[0].role == "admin"
+    assert users[0].display_name == "Operator"
+    assert credential is not None
+    assert credential.login == "operator"
+
+
+def test_admin_web_local_password_supports_multiple_users(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(AdminService(write_config(tmp_path)))
+    admin_client = TestClient(app)
+    regular_client = TestClient(app)
+
+    admin_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin-pass"},
+    )
+    created = admin_client.post(
+        "/api/admin/users",
+        json={
+            "login": "Operator@Example.com",
+            "role": "regular",
+            "display_name": "Operator",
+            "password": "operator-pass",
+        },
+    )
+    login = regular_client.post(
+        "/api/auth/login",
+        json={"username": "operator@example.com", "password": "operator-pass"},
+    )
+    session = regular_client.get("/api/auth/session")
+
+    assert created.status_code == 200
+    assert created.json()["user"]["login"] == "operator@example.com"
+    assert created.json()["user"]["local_password_enabled"] is True
+    assert created.json()["user"]["password_last_changed_at"] is not None
+    assert "password_hash" not in json.dumps(created.json())
+    assert login.status_code == 200
+    assert login.json()["username"] == "operator@example.com"
+    assert login.json()["display_name"] == "Operator"
+    assert login.json()["role"] == "regular"
+    assert login.json()["can_manage_users"] is False
+    assert session.json()["authenticated"] is True
+    assert session.json()["username"] == "operator@example.com"
+
+
+def test_admin_web_local_password_user_create_requires_password(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
+
+    created = client.post(
+        "/api/admin/users",
+        json={"login": "operator@example.com", "role": "regular"},
+    )
+
+    assert created.status_code == 400
+    assert created.json()["error"] == "password is required for new local password users"
+
+
+def test_admin_web_local_password_reset_changes_user_password(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(AdminService(write_config(tmp_path)))
+    admin_client = TestClient(app)
+    regular_client = TestClient(app)
+
+    admin_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin-pass"},
+    )
+    admin_client.post(
+        "/api/admin/users",
+        json={
+            "login": "operator@example.com",
+            "role": "regular",
+            "password": "old-pass",
+        },
+    )
+    reset = admin_client.patch(
+        "/api/admin/users/operator@example.com",
+        json={"password": "new-pass"},
+    )
+    old_login = regular_client.post(
+        "/api/auth/login",
+        json={"username": "operator@example.com", "password": "old-pass"},
+    )
+    new_login = regular_client.post(
+        "/api/auth/login",
+        json={"username": "operator@example.com", "password": "new-pass"},
+    )
+
+    assert reset.status_code == 200
+    assert reset.json()["user"]["local_password_enabled"] is True
+    assert old_login.status_code == 401
+    assert new_login.status_code == 200
+
+
+def test_admin_web_deleted_local_password_user_loses_existing_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(AdminService(write_config(tmp_path)))
+    admin_client = TestClient(app)
+    regular_client = TestClient(app)
+
+    admin_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin-pass"},
+    )
+    admin_client.post(
+        "/api/admin/users",
+        json={
+            "login": "operator@example.com",
+            "role": "regular",
+            "password": "operator-pass",
+        },
+    )
+    regular_client.post(
+        "/api/auth/login",
+        json={"username": "operator@example.com", "password": "operator-pass"},
+    )
+
+    before_delete = regular_client.get("/api/workflow-editor/document")
+    deleted = admin_client.delete("/api/admin/users/operator@example.com")
+    session = regular_client.get("/api/auth/session")
+    after_delete = regular_client.get("/api/workflow-editor/document")
+
+    assert before_delete.status_code == 200
+    assert deleted.status_code == 200
+    assert session.status_code == 200
+    assert session.json()["authenticated"] is False
+    assert session.json()["permissions"] == []
+    assert after_delete.status_code == 401
+
+
 def test_workflow_event_api_mints_token_and_publishes_external_event(
     tmp_path: Path, monkeypatch
 ) -> None:

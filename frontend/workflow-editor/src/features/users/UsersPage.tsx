@@ -35,6 +35,7 @@ type UserFormState = {
   login: string;
   displayName: string;
   role: AdminWebUserRole;
+  password: string;
   contactId: string;
   initialContactId: string;
   groupAssignments: GroupAssignmentFormState[];
@@ -52,6 +53,7 @@ const EMPTY_FORM: UserFormState = {
   login: "",
   displayName: "",
   role: "regular",
+  password: "",
   contactId: "",
   initialContactId: "",
   groupAssignments: [],
@@ -147,6 +149,7 @@ function PermissionTooltip({ permission, focusable = false }: { permission: stri
 
 export function UsersPage() {
   const {
+    authMode,
     canManageUsers,
     currentUserId,
     directoryScopedConfigEnabled,
@@ -257,6 +260,7 @@ export function UsersPage() {
       login: selectedUser.login,
       displayName: selectedUser.display_name ?? "",
       role: selectedUser.role,
+      password: "",
       contactId: selectedUser.contact_id ?? "",
       initialContactId: selectedUser.contact_id ?? "",
       groupAssignments: assignmentFormState(selectedUser.group_assignments),
@@ -353,6 +357,7 @@ export function UsersPage() {
         login: string;
         role: AdminWebUserRole;
         display_name: string | null;
+        password?: string;
         contact_id?: string | null;
         group_assignments?: Array<{ group_id: string; directory_path: string }>;
         workflow_grants?: Array<{ permission: "workflows.read" | "workflows.write"; directory_path: string }>;
@@ -361,6 +366,16 @@ export function UsersPage() {
         role: form.role,
         display_name: form.displayName.trim() || null,
       };
+      if (authMode === "local_password") {
+        if (!selectedUser && form.password === "") {
+          setError("Password is required.");
+          setSaving(false);
+          return;
+        }
+        if (form.password !== "") {
+          requestPayload.password = form.password;
+        }
+      }
       if (selectedUser || form.groupAssignments.length > 0 || form.workflowGrants.length > 0) {
         requestPayload.group_assignments = form.groupAssignments
           .map((assignment) => ({
@@ -651,7 +666,7 @@ export function UsersPage() {
               <div>
                 <h2>{selectedTitle}</h2>
                 <p className="muted-text">
-                  {selectedUser ? selectedUser.login : "Create an Azure SSO user record."}
+                  {selectedUser ? selectedUser.login : authMode === "local_password" ? "Create a local user record." : "Create an Azure SSO user record."}
                 </p>
                 <p className="muted-text">Directory: {selectedDirectoryPath}</p>
               </div>
@@ -714,6 +729,21 @@ export function UsersPage() {
                     <option value="regular">Regular</option>
                   </select>
                 </label>
+                {authMode === "local_password" ? (
+                  <label className="field-stack">
+                    <span>{selectedUser ? "New password" : "Password"}</span>
+                    <input
+                      value={form.password}
+                      onChange={(event) =>
+                        setForm((current) => ({ ...current, password: event.target.value }))
+                      }
+                      disabled={actionDisabled}
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={selectedUser ? "Unchanged" : ""}
+                    />
+                  </label>
+                ) : null}
                 <label className="field-stack">
                   <span>Contact</span>
                   <select
@@ -911,6 +941,7 @@ export function UsersPage() {
                       <th>Role</th>
                       <th>Display name</th>
                       <th>Contact</th>
+                      <th>Password</th>
                       <th>Last login</th>
                       <th>Updated</th>
                     </tr>
@@ -930,13 +961,14 @@ export function UsersPage() {
                         </td>
                         <td>{user.display_name || "None"}</td>
                         <td>{user.contact ? user.contact.name : "None"}</td>
+                        <td>{user.local_password_enabled ? "Set" : "None"}</td>
                         <td>{formatTimestamp(user.last_login_at)}</td>
                         <td>{formatTimestamp(user.updated_at)}</td>
                       </tr>
                     ))}
                     {sortedUsers.length === 0 ? (
                       <tr>
-                        <td className="empty-state-cell" colSpan={6}>
+                        <td className="empty-state-cell" colSpan={7}>
                           No user records.
                         </td>
                       </tr>
@@ -974,6 +1006,10 @@ export function UsersPage() {
                     <div className="mobile-record-row">
                       <span>Contact</span>
                       <span>{user.contact ? user.contact.name : "None"}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Password</span>
+                      <span>{user.local_password_enabled ? "Set" : "None"}</span>
                     </div>
                     <div className="mobile-record-row">
                       <span>Last login</span>

@@ -295,7 +295,8 @@ inspecting runtime activity.
 `agent-sandbox-admin-web` now supports three explicit auth modes:
 
 - `none`: default when no auth mode is configured and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset.
-- `local_password`: current username/password flow with the existing signed local session cookie.
+- `local_password`: local username/password sign-in with one or more Admin Web users and the
+  existing signed local session cookie.
 - `azure_sso`: Microsoft Entra browser sign-in using OIDC Authorization Code + PKCE, followed by the same local signed session cookie used by the rest of the admin API.
 
 Backward compatibility is preserved:
@@ -306,8 +307,8 @@ Backward compatibility is preserved:
 Common auth env vars:
 
 - `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=none|local_password|azure_sso`
-- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for `local_password` mode. Default: `admin`
-- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for `local_password` mode
+- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for `local_password` bootstrap/break-glass access. Default: `admin`
+- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for `local_password` bootstrap/break-glass access
 - `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET` for the signed local session cookie
 - `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS` for the local session lifetime
 - `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true|false`
@@ -335,12 +336,16 @@ Azure SSO is optional and disabled by default. To enable it:
 4. Set the tenant you intend to trust with `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
 5. For the first startup, set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the initial admin UPN/email-style identities.
 
-Azure SSO users are then managed in `runtime/admin-web.db` through the Admin Web Users & Groups
-tab. The env list is only read when the SQLite user table is empty, and imported users receive the
+Admin Web users are managed in `runtime/admin-web.db` through the Admin Web Users & Groups tab.
+In `local_password` mode, `AGENT_SANDBOX_ADMIN_WEB_USERNAME` and
+`AGENT_SANDBOX_ADMIN_WEB_PASSWORD` seed the first local owner and remain a break-glass credential;
+additional users get per-user password hashes through Users & Groups. In `azure_sso` mode, the env
+allowed-user list is only read when the SQLite user table is empty, and imported users receive the
 seeded Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite
 table is empty; legacy `admin` and `regular` roles are preserved for compatibility and mapped to
 Owner and Operator group assignments. Removing a user from the store invalidates their existing
-local admin session on the next authenticated request.
+local admin session on the next authenticated request unless they are the configured break-glass
+local user.
 
 The admin web only trusts a sign-in when both checks pass:
 

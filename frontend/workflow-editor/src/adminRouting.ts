@@ -65,7 +65,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
     key: "users",
     label: "Users & Groups",
     shortLabel: "Users",
-    description: "Azure SSO users, groups, and permissions.",
+    description: "Admin users, groups, and permissions.",
   },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },

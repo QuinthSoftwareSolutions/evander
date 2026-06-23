@@ -319,7 +319,7 @@ The browser admin surface supports three auth modes:
 
 - `none`: no sign-in required. This remains the default when
   `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is also unset.
-- `local_password`: the existing local username/password form. If
+- `local_password`: local username/password sign-in with one or more Admin Web users. If
   `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset but `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, this mode is selected automatically for backward compatibility.
 - `azure_sso`: Microsoft Entra browser sign-in through OIDC Authorization Code + PKCE.
 
@@ -332,8 +332,8 @@ Required local session settings:
 `local_password` settings:
 
 - `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=local_password`
-- `AGENT_SANDBOX_ADMIN_WEB_USERNAME`
-- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD`
+- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for bootstrap/break-glass access
+- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for bootstrap/break-glass access
 
 `azure_sso` settings:
 
@@ -357,11 +357,13 @@ Azure SSO enabling sequence:
    `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
 6. Restart `agent-sandbox-admin-web`.
 
-Azure SSO users are stored in `runtime/admin-web.db`, keyed by normalized login/email. When the
-SQLite user table is empty, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds those users with the
-Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite table is
-empty; legacy `admin` and `regular` roles are retained for compatibility and mapped to Owner and
-Operator group assignments. After that first bootstrap, the SQLite runtime store is the source of
+Admin Web users are stored in `runtime/admin-web.db`, keyed by normalized login/email. In
+`local_password` mode, the configured username/password seeds the first local owner when the user
+table is empty, and Users & Groups can set or reset per-user local passwords. In `azure_sso` mode,
+`AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds initial users with the Owner group when the
+SQLite user table is empty. A legacy `runtime/admin-web-users.json` file is imported once when the
+SQLite table is empty; legacy `admin` and `regular` roles are retained for compatibility and mapped
+to Owner and Operator group assignments. After that first bootstrap, the SQLite runtime store is the source of
 truth. Users with `groups.manage` can create and edit reusable permission groups; users with
 `users.manage` can create users and edit their directory-scoped group assignments and direct
 workflow read/write grants from the Admin Web Users & Groups tab. Directory scopes inherit downward,

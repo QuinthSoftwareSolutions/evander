@@ -33,7 +33,7 @@ If the Admin UI is exposed beyond localhost, put it behind TLS and configure aut
 `config/admin-web.env`. The UI supports:
 
 - `none`: no sign-in gate, intended for trusted local-only operation.
-- `local_password`: username/password sign-in backed by the signed local session cookie.
+- `local_password`: local username/password sign-in backed by the signed local session cookie.
 - `azure_sso`: Microsoft Entra OIDC sign-in backed by the same local session cookie.
 
 ### Branding
@@ -487,8 +487,8 @@ The conformance report artifacts are also documented in `conformance-reports.md`
 
 ## Users & Groups
 
-The Users & Groups tab manages Admin Web user records, reusable permission groups, directory-scoped
-group assignments, and direct workflow grants when Azure SSO is enabled. The page has separate
+The Users & Groups tab manages Admin Web user records, local-password credentials, reusable
+permission groups, directory-scoped group assignments, and direct workflow grants. The page has separate
 **Users** and **Groups** modes. Open `/#users` for Users mode or `/#users/groups` to link directly
 to Groups mode.
 
@@ -502,12 +502,13 @@ Common user tasks:
 4. Click **New user**.
 5. Enter the user's login/email-style identifier.
 6. Optionally set a display name.
-7. Choose the legacy compatibility role.
-8. Optionally attach a directory-scoped contact.
-9. Add directory-scoped group assignments or direct workflow read/write grants.
-10. Click **Save**.
-11. Select an existing user to edit display name, role, contact, assignments, or grants.
-12. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
+7. Set a password when local password authentication is enabled.
+8. Choose the legacy compatibility role.
+9. Optionally attach a directory-scoped contact.
+10. Add directory-scoped group assignments or direct workflow read/write grants.
+11. Click **Save**.
+12. Select an existing user to edit display name, role, password, contact, assignments, or grants.
+13. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
     authenticated request.
 
 Common group tasks:

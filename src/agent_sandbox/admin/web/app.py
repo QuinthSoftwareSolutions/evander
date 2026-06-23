@@ -200,19 +200,23 @@ def create_app(service: AdminService) -> Starlette:
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=401)
-        permissions = list(auth.effective_permissions(auth.config.username))
+        session = auth.session_from_token(token)
+        if session is None:
+            return json_error("Sign in failed", status_code=401)
+        permissions = list(session.get("effective_permissions") or session.get("permissions") or [])
+        session_id = str(session.get("sid") or "").strip() or None
         response = JSONResponse(
             {
                 "auth_mode": auth.config.auth_mode,
                 "auth_required": auth.config.auth_required,
                 "authenticated": True,
-                "username": auth.config.username,
-                "display_name": auth.config.username,
-                "role": _role_for_permissions(permissions),
-                "can_manage_users": auth.can_manage_users(auth.config.username),
+                "username": session.get("login"),
+                "display_name": session.get("name"),
+                "role": session.get("role") or _role_for_permissions(permissions),
+                "can_manage_users": bool(session.get("can_manage_users")),
                 "permissions": permissions,
                 "effective_permissions": permissions,
-                "session_id": None,
+                "session_id": session_id,
                 "available_login_methods": ["password"]
                 if auth.config.auth_mode == "local_password"
                 else [],

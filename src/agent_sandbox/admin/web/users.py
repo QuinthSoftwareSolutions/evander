@@ -28,6 +28,7 @@ def _user_payload(
     user_store: AdminWebUserStore,
     user,
     *,
+    auth: AdminWebAuth | None = None,
     directory_path: str = "root",
     contact_id: str | None = None,
     contacts_config: ContactDirectoryConfig | None = None,
@@ -48,6 +49,18 @@ def _user_payload(
         }
         if contact is not None and contact_id is not None
         else None
+    )
+    credential = user_store.get_local_password_credential(user.login)
+    legacy_local_password_enabled = (
+        auth is not None
+        and auth.config.auth_mode == "local_password"
+        and auth.config.password is not None
+        and normalize_admin_web_login(user.login)
+        == normalize_admin_web_login(auth.config.username)
+    )
+    payload["local_password_enabled"] = credential is not None or legacy_local_password_enabled
+    payload["password_last_changed_at"] = (
+        credential.model_dump(mode="json")["updated_at"] if credential is not None else None
     )
     payload["group_assignments"] = [
         assignment.model_dump(mode="json")
@@ -106,6 +119,15 @@ def _workflow_grant_payloads(payload: dict[str, Any]) -> list[dict[str, Any]] | 
             }
         )
     return result
+
+
+def _optional_password_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
+    if "password" not in payload:
+        return False, None
+    password = payload.get("password")
+    if not isinstance(password, str) or password == "":
+        raise ValueError("password is required")
+    return True, password
 
 
 def _apply_user_access_payload(
@@ -290,6 +312,7 @@ def admin_user_routes(
                     _user_payload(
                         user_store,
                         user,
+                        auth=auth,
                         directory_path=directory_path,
                         contact_id=contacts_config.user_contact_links.get(user.login),
                         contacts_config=contacts_config,
@@ -309,6 +332,18 @@ def admin_user_routes(
             role = str(payload.get("role") or "").strip().lower()
             if role not in {"admin", "regular"}:
                 return json_error("role must be admin or regular")
+            has_password, password = _optional_password_payload(payload)
+            existing_user = user_store.get_user(login)
+            normalized_login = normalize_admin_web_login(login)
+            if has_password and auth.config.auth_mode != "local_password":
+                return json_error("password can only be set when auth mode is local_password")
+            if (
+                auth.config.auth_mode == "local_password"
+                and existing_user is None
+                and normalized_login != normalize_admin_web_login(auth.config.username)
+                and not has_password
+            ):
+                return json_error("password is required for new local password users")
             if "contact_id" in payload and not service.directory_scoped_config_enabled:
                 return json_error(
                     "directory-scoped config is disabled; user contact attachments are read-only"
@@ -325,6 +360,8 @@ def admin_user_routes(
             if "display_name" in payload:
                 update["display_name"] = payload["display_name"]
             user = user_store.upsert_user(**update)  # type: ignore[arg-type]
+            if password is not None:
+                user_store.set_local_password(login=user.login, password=password)
             _apply_user_access_payload(
                 user_store,
                 login=user.login,
@@ -348,6 +385,7 @@ def admin_user_routes(
                 "user": _user_payload(
                     user_store,
                     user,
+                    auth=auth,
                     directory_path=directory_path,
                     contact_id=contacts_config.user_contact_links.get(user.login),
                     contacts_config=contacts_config,
@@ -371,6 +409,9 @@ def admin_user_routes(
                 if candidate not in {"admin", "regular"}:
                     return json_error("role must be admin or regular")
                 role = candidate  # type: ignore[assignment]
+            has_password, password = _optional_password_payload(payload)
+            if has_password and auth.config.auth_mode != "local_password":
+                return json_error("password can only be set when auth mode is local_password")
             if "contact_id" in payload and not service.directory_scoped_config_enabled:
                 return json_error(
                     "directory-scoped config is disabled; user contact attachments are read-only"
@@ -386,6 +427,8 @@ def admin_user_routes(
             user = user_store.update_user(**update)
             if user is None:
                 return json_error("Admin web user not found", status_code=404)
+            if password is not None:
+                user_store.set_local_password(login=user.login, password=password)
             _apply_user_access_payload(
                 user_store,
                 login=user.login,
@@ -409,6 +452,7 @@ def admin_user_routes(
                 "user": _user_payload(
                     user_store,
                     user,
+                    auth=auth,
                     directory_path=directory_path,
                     contact_id=contacts_config.user_contact_links.get(user.login),
                     contacts_config=contacts_config,
@@ -436,7 +480,7 @@ def admin_user_routes(
         except ValueError as exc:
             return json_error(str(exc))
         return json_ok(
-            {"user": _user_payload(user_store, user, directory_path=directory_path)}
+            {"user": _user_payload(user_store, user, auth=auth, directory_path=directory_path)}
         )
 
     async def list_groups(request: Request):
