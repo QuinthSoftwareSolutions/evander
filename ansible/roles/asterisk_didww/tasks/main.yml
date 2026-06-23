@@ -1,0 +1,102 @@
+---
+- name: Skip Asterisk DIDWW provisioning when disabled
+  ansible.builtin.debug:
+    msg: "Asterisk DIDWW provisioning is disabled."
+  when: not (agent_sandbox_asterisk_didww_enabled | bool)
+
+- name: Configure Asterisk for DIDWW SIP bridge
+  when: agent_sandbox_asterisk_didww_enabled | bool
+  block:
+    - name: Assert Asterisk DIDWW required variables are configured
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_asterisk_ari_password | length > 0
+          - agent_sandbox_asterisk_public_address | length > 0
+          - agent_sandbox_asterisk_local_nets | length > 0
+          - agent_sandbox_asterisk_didww_sip_host | length > 0
+          - agent_sandbox_asterisk_didww_sip_username | length > 0
+          - agent_sandbox_asterisk_didww_sip_password | length > 0
+          - agent_sandbox_asterisk_didww_identify_matches | length > 0
+          - agent_sandbox_asterisk_ari_user == agent_sandbox_didww_sip_bridge_env.get('ASTERISK_ARI_USER', agent_sandbox_asterisk_ari_user)
+          - agent_sandbox_asterisk_ari_app == agent_sandbox_didww_sip_bridge_env.get('ASTERISK_ARI_APP', agent_sandbox_asterisk_ari_app)
+          - agent_sandbox_asterisk_didww_endpoint == agent_sandbox_didww_sip_bridge_env.get('ASTERISK_PJSIP_ENDPOINT', agent_sandbox_asterisk_didww_endpoint)
+        fail_msg: >-
+          agent_sandbox_asterisk_didww_enabled requires ARI password, public NAT
+          address, local networks, DIDWW SIP host/auth/identify settings, and
+          Asterisk ARI/PJSIP values that match the bridge service environment.
+        success_msg: Asterisk DIDWW required variables are configured.
+
+    - name: Install Asterisk packages
+      ansible.builtin.apt:
+        name: "{{ agent_sandbox_asterisk_packages }}"
+        state: present
+
+    - name: Render managed Asterisk config files
+      ansible.builtin.template:
+        src: "{{ item.template }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: asterisk
+        mode: "{{ item.mode }}"
+      loop:
+        - template: http.conf.j2
+          dest: /etc/asterisk/http.conf
+          mode: "0644"
+        - template: ari.conf.j2
+          dest: /etc/asterisk/ari.conf
+          mode: "0640"
+        - template: rtp.conf.j2
+          dest: /etc/asterisk/rtp.conf
+          mode: "0644"
+        - template: pjsip.conf.j2
+          dest: /etc/asterisk/pjsip.conf
+          mode: "0640"
+        - template: extensions.conf.j2
+          dest: /etc/asterisk/extensions.conf
+          mode: "0644"
+      loop_control:
+        label: "{{ item.dest }}"
+      no_log: true
+      register: agent_sandbox_asterisk_config_render
+
+    - name: Enable and start Asterisk
+      ansible.builtin.systemd:
+        name: asterisk.service
+        enabled: true
+        state: "{{ 'restarted' if agent_sandbox_asterisk_config_render.changed else 'started' }}"
+        daemon_reload: true
+
+    - name: Wait for local Asterisk ARI listener
+      ansible.builtin.wait_for:
+        host: "{{ agent_sandbox_asterisk_http_bind_host }}"
+        port: "{{ agent_sandbox_asterisk_http_bind_port }}"
+        timeout: 30
+
+    - name: Verify Asterisk ARI credentials
+      ansible.builtin.uri:
+        url: >-
+          http://{{ agent_sandbox_asterisk_http_bind_host }}:{{ agent_sandbox_asterisk_http_bind_port }}/ari/asterisk/info
+        method: GET
+        url_username: "{{ agent_sandbox_asterisk_ari_user }}"
+        url_password: "{{ agent_sandbox_asterisk_ari_password }}"
+        force_basic_auth: true
+        status_code: 200
+      no_log: true
+      register: agent_sandbox_asterisk_ari_probe
+      retries: 6
+      delay: 5
+      until: agent_sandbox_asterisk_ari_probe.status == 200
+
+    - name: Verify Asterisk DIDWW endpoint exists
+      ansible.builtin.command:
+        cmd: "asterisk -rx 'pjsip show endpoint {{ agent_sandbox_asterisk_didww_endpoint }}'"
+      changed_when: false
+      register: agent_sandbox_asterisk_didww_endpoint_probe
+
+    - name: Assert Asterisk DIDWW endpoint was loaded
+      ansible.builtin.assert:
+        that:
+          - "'Endpoint:' in agent_sandbox_asterisk_didww_endpoint_probe.stdout"
+          - "agent_sandbox_asterisk_didww_endpoint in agent_sandbox_asterisk_didww_endpoint_probe.stdout"
+        fail_msg: "Asterisk did not load the managed DIDWW PJSIP endpoint."
+        success_msg: "Asterisk loaded the managed DIDWW PJSIP endpoint."

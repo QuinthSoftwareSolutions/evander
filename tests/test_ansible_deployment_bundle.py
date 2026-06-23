@@ -16,6 +16,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "python_env",
         "runtime_bootstrap",
         "service_config",
+        "asterisk_didww",
         "systemd_install",
         "frontend_build",
         "admin_web_caddy",
@@ -46,6 +47,7 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: python_env" in site
     assert "- role: runtime_bootstrap" in site
     assert "- role: service_config" in site
+    assert "- role: asterisk_didww" in site
     assert "- role: systemd_install" in site
     assert "- role: frontend_build" in site
     assert "- role: admin_web_caddy" in site
@@ -56,6 +58,8 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: verification" in site
     assert site.index("- role: host_prereqs") < site.index("- role: apt_cache_relay")
     assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
+    assert site.index("- role: service_config") < site.index("- role: asterisk_didww")
+    assert site.index("- role: asterisk_didww") < site.index("- role: systemd_install")
     assert site.index("- role: frontend_build") < site.index("- role: admin_web_caddy")
     assert site.index("- role: admin_web_caddy") < site.index("- role: service_runtime")
     assert site.index("- role: package_cache_nexus") < site.index("- role: semantic_store_qdrant")
@@ -139,6 +143,85 @@ def test_ansible_admin_web_branding_assets_can_be_copied() -> None:
 
     assert "agent_sandbox_admin_web_branding_assets" in docs
     assert "operator-owned deployment config" in docs
+
+
+def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
+        encoding="utf-8"
+    )
+    vault_example = (
+        repo / "ansible" / "group_vars" / "all" / "vault.yml.example"
+    ).read_text(encoding="utf-8")
+    tasks = (
+        repo / "ansible" / "roles" / "asterisk_didww" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    pjsip = (
+        repo / "ansible" / "roles" / "asterisk_didww" / "templates" / "pjsip.conf.j2"
+    ).read_text(encoding="utf-8")
+    extensions = (
+        repo / "ansible" / "roles" / "asterisk_didww" / "templates" / "extensions.conf.j2"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
+
+    assert "agent_sandbox_asterisk_didww_enabled: false" in defaults
+    assert "agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls: false" in defaults
+    assert 'agent_sandbox_didww_sip_bridge_ari_user: "{{ agent_sandbox_run_user }}"' in defaults
+    assert "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: \"{{ (agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls | bool) | ternary('true', 'false') }}\"" in defaults
+    assert "agent_sandbox_asterisk_ari_user:" in defaults
+    assert "agent_sandbox_didww_sip_bridge_env.get('ASTERISK_ARI_USER'" in defaults
+    assert "agent_sandbox_shared_secrets_env.get('ASTERISK_ARI_PASSWORD'" in defaults
+    assert 'agent_sandbox_asterisk_didww_identify_section: "didww-identify"' in defaults
+    assert '"46.19.208.0/21"' in defaults
+    assert '"185.238.172.0/22"' in defaults
+    assert "agent_sandbox_asterisk_didww_inbound_route_id" in defaults
+
+    assert "agent_sandbox_asterisk_didww_enabled: false" in azure
+    assert "vault_didww_sip_username" in azure
+    assert "vault_didww_sip_password" in azure
+    assert "vault_didww_sip_identify_matches" in azure
+    assert "vault_didww_inbound_route_id" in azure
+    assert "vault_didww_sip_username" in vault_example
+    assert "vault_didww_sip_password" in vault_example
+
+    assert "Skip Asterisk DIDWW provisioning when disabled" in tasks
+    assert "Install Asterisk packages" in tasks
+    assert "Render managed Asterisk config files" in tasks
+    assert "no_log: true" in tasks
+    assert "Verify Asterisk ARI credentials" in tasks
+    assert "pjsip show endpoint {{ agent_sandbox_asterisk_didww_endpoint }}" in tasks
+    assert "agent_sandbox_asterisk_ari_user == agent_sandbox_didww_sip_bridge_env.get" in tasks
+
+    assert "external_signaling_address={{ agent_sandbox_asterisk_public_address }}" in pjsip
+    assert "external_media_address={{ agent_sandbox_asterisk_public_address }}" in pjsip
+    assert "local_net={{ local_net }}" in pjsip
+    assert "allow={{ agent_sandbox_asterisk_didww_codecs | join(\",\") }}" in pjsip
+    assert "direct_media=no" in pjsip
+    assert "rewrite_contact=yes" in pjsip
+    assert "force_rport=yes" in pjsip
+    assert "rtp_symmetric=no" in pjsip
+    assert "match={{ match }}" in pjsip
+
+    assert "Set(INBOUND_PHONE_CALL=1)" in extensions
+    assert "Set(INBOUND_ROUTE_ID={{ agent_sandbox_asterisk_didww_inbound_route_id }})" in extensions
+    assert (
+        "Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN}:{{ agent_sandbox_asterisk_didww_inbound_route_id }})"
+        in extensions
+    )
+
+    assert "Verify managed Asterisk is active" in verification
+    assert "Verify managed Asterisk ARI endpoint" in verification
+    assert "agent_sandbox_asterisk_didww_enabled | bool" in verification
+    assert "agent_sandbox_asterisk_didww_enabled" in docs
+    assert "agent_sandbox_didww_sip_bridge_ari_user" in docs
+    assert "agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls" in docs
+    assert "DIDWW source CIDRs" in docs
 
 
 def test_ansible_site_announces_control_plane_deployment_status() -> None:
