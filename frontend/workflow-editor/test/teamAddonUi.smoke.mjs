@@ -3414,7 +3414,6 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   await waitForRevision(page, 4);
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
-  await page.locator('#team-people-page [data-people-team-id="team-beta"]').click();
 
   const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
   await betaGroup.waitFor({ state: "visible" });

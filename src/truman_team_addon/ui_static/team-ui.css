@@ -415,6 +415,13 @@ button.team-record-kind-tab strong {
   gap: 0.5rem;
 }
 
+.team-record-section-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
 .team-record-section-header h3 {
   margin: 0;
   font-size: 0.92rem;
@@ -424,6 +431,66 @@ button.team-record-kind-tab strong {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.team-inline-create-toggle {
+  min-height: 1.95rem;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.team-inline-create-form {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid rgba(23, 111, 122, 0.22);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--panel-alt);
+}
+
+.team-inline-create-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.team-inline-create-fields label {
+  min-width: 0;
+}
+
+.team-inline-create-fields textarea,
+.team-inline-create-fields label:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.team-inline-create-advanced {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.team-inline-create-advanced summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.team-inline-create-advanced[open] summary {
+  margin-bottom: 0.6rem;
+}
+
+.team-inline-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.team-inline-create-actions button {
+  min-height: 2rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
 }
 
 .team-record-list {
@@ -3322,6 +3389,7 @@ label textarea {
   .content-grid,
   .people-layout,
   .team-record-grid,
+  .team-inline-create-fields,
   .governance-create-form,
   .project-columns,
   .delivery-buckets,
@@ -3343,7 +3411,9 @@ label textarea {
   .teams-create-team-header,
   .org-focus-header,
   .org-focus-team-header,
-  .team-record-group-header {
+  .team-record-group-header,
+  .team-record-section-header,
+  .team-record-section-title {
     display: grid;
   }
 
@@ -3429,6 +3499,7 @@ label textarea {
   .planning-filters,
   .task-board-selectors,
   .focused-section-header-actions,
+  .team-inline-create-actions,
   .team-record-group-counts {
     justify-content: flex-start;
   }

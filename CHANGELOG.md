@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Teams Tab Creation
+
+- Added inline Teams-tab creation for projects, agents, and roles scoped to the
+  selected team, reusing the existing Setup create endpoint semantics without a
+  visible Team selector.
+
 ## 2026-06-23 - Agent Create Operation Safety
 
 - Kept async agent-create request payloads in Admin Web process memory only so
