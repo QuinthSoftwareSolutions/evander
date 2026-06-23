@@ -364,6 +364,7 @@ _SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
     "private_key",
     "ssh_key",
 )
+_PROTECTED_MIRROR_HEAD_REFSPECS = ("^refs/heads/agents/*", "^refs/heads/review/*")
 
 
 AgentCreateOperationStatus = Literal["queued", "running", "succeeded", "failed"]
@@ -8875,6 +8876,7 @@ class AdminService:
                 resolved_repo_path,
                 "+refs/heads/*:refs/heads/*",
                 "+refs/tags/*:refs/tags/*",
+                *_PROTECTED_MIRROR_HEAD_REFSPECS,
             ],
             capture_output=True,
             text=True,

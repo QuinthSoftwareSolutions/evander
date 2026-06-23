@@ -38,6 +38,8 @@
 - Blocked refreshes into existing bare mirrors that already contain
   `refs/heads/agents/**` work, and moved the import operation off the Admin Web
   event loop.
+- Preserved local `refs/heads/agents/**` and `refs/heads/review/**` output refs
+  during import mirror refreshes while still pruning stale source branches.
 
 ## 2026-06-23 - Team Add-on Governance Agenda Handling
 

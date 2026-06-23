@@ -289,6 +289,7 @@ class VmAgentAdminSupport:
                 resolved_repo_path,
                 "+refs/heads/*:refs/heads/*",
                 "+refs/tags/*:refs/tags/*",
+                *_admin_service._PROTECTED_MIRROR_HEAD_REFSPECS,
             ],
             capture_output=True,
             text=True,
