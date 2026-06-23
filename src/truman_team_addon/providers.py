@@ -39,7 +39,13 @@ from .mcp import (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
 )
-from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
+from .models import (
+    AGENT_OPERATOR_ONLY_FIELDS,
+    RolePermission,
+    TeamState,
+    team_session_health_payload,
+    team_state_payload,
+)
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
     TeamAgentActionArtifactQueryDefinition,
@@ -62,9 +68,10 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 11
+ACTION_CONTRACT_SCHEMA_VERSION = 12
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
+ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
 TEAM_AGENT_GUIDANCE_VERSION = 2
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
@@ -349,6 +356,29 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Dispatch ID",
                 "string",
                 description="Dispatch id for the active Team lease being completed.",
+            ),
+            _catalog_field(
+                "action_artifact_path",
+                "Action artifact path",
+                "string",
+                description="Artifact path the persistent agent was expected to write.",
+                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
+                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
+            ),
+            _catalog_field(
+                "recover_missing_action",
+                "Recover missing action",
+                "boolean",
+                description="When true, one missing action artifact completion resumes the same dispatch with a narrow recovery prompt before failing the lease.",
+                default_value=True,
+            ),
+            _catalog_field(
+                "recovery_resume_mode",
+                "Recovery resume mode",
+                "string",
+                description="Resume mode used for the missing-action recovery prompt.",
+                default_value="same_context",
+                placeholder="same_context",
             ),
             _revision_field(),
         ],
@@ -836,6 +866,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
 
         repo = TeamStateRepository(_runtime_dir(context))
         current_state = repo.read()
+        session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
             context,
             state=current_state,
@@ -847,35 +878,77 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             _required_text(record["team_id"], "team_id")
             for record in cost_guard_blocked_teams
         }
-        state, leases = repo.lease_due_agents(
+        action_path = (
+            _optional_text(payload.get("action_artifact_path"))
+            or DEFAULT_ACTION_ARTIFACT_PATH
+        )
+        resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
+        lease_limit = _optional_int(payload.get("limit"), default=10)
+        normalized_limit = max(0, int(lease_limit or 0))
+        state, queued_chat_claims = repo.claim_pending_chat_message_dispatches(
             team_id=_optional_text(payload.get("team_id")),
             project_id=_optional_text(payload.get("project_id")),
             agent_id=_optional_text(payload.get("agent_id")),
-            limit=_optional_int(payload.get("limit"), default=10),
-            lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
-            wake_interval_seconds=_optional_int(payload.get("wake_interval_seconds"), default=900),
-            max_no_progress_count=_optional_int(
-                payload.get("max_no_progress_count"),
-                default=3,
-            ),
-            low_priority_wake_after_cycles=_optional_int(
-                payload.get("low_priority_wake_after_cycles"),
-                default=4,
-            ),
+            limit=normalized_limit,
             blocked_team_ids=blocked_team_ids,
         )
-        action_path = _optional_text(payload.get("action_artifact_path")) or DEFAULT_ACTION_ARTIFACT_PATH
-        resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
+        chat_dispatches: list[dict[str, Any]] = []
+        errors: list[str] = []
+        state, chat_dispatches, chat_errors = _dispatch_queued_team_chat_messages(
+            context,
+            repo=repo,
+            state=state,
+            claims=queued_chat_claims,
+            resumer=resumer,
+            action_artifact_path=action_path,
+        )
+        errors.extend(chat_errors)
+        if normalized_limit and len(queued_chat_claims) >= normalized_limit:
+            leases = []
+        else:
+            regular_limit = (
+                max(0, normalized_limit - len(queued_chat_claims))
+                if normalized_limit
+                else 0
+            )
+            state, leases = repo.lease_due_agents(
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                agent_id=_optional_text(payload.get("agent_id")),
+                limit=regular_limit,
+                lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
+                wake_interval_seconds=_optional_int(
+                    payload.get("wake_interval_seconds"),
+                    default=900,
+                ),
+                max_no_progress_count=_optional_int(
+                    payload.get("max_no_progress_count"),
+                    default=3,
+                ),
+                low_priority_wake_after_cycles=_optional_int(
+                    payload.get("low_priority_wake_after_cycles"),
+                    default=4,
+                ),
+                blocked_team_ids=blocked_team_ids,
+            )
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
-        errors: list[str] = []
         for lease in leases:
             agent = lease["agent"]
             try:
+                lease = {
+                    **lease,
+                    "session_health": team_session_health_payload(
+                        state,
+                        session_records=session_records,
+                        agent_ids=_prompt_session_health_agent_ids(state, agent),
+                    ),
+                }
                 seed_result = _seed_action_contract_files(
                     context,
                     agent=agent,
+                    dispatch_id=lease["dispatch_id"],
                     action_artifact_path=action_path,
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
@@ -973,6 +1046,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "revision": state.revision,
             "leased_count": len(leases),
             "leases": leases,
+            "chat_dispatches": chat_dispatches,
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
@@ -980,6 +1054,87 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
         }
+
+
+def _dispatch_queued_team_chat_messages(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    state: Any,
+    claims: list[dict[str, Any]],
+    resumer: Any,
+    action_artifact_path: str,
+) -> tuple[Any, list[dict[str, Any]], list[str]]:
+    dispatches: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for claim in claims:
+        agent_id = _required_text(claim.get("agent_id"), "agent_id")
+        message_id = _required_text(claim.get("message_id"), "message_id")
+        conversation_id = _required_text(claim.get("conversation_id"), "conversation_id")
+        dispatch_id = _required_text(claim.get("dispatch_id"), "dispatch_id")
+        agent = state.agents[agent_id]
+        message = state.conversation_messages[message_id]
+        conversation = state.conversations[conversation_id]
+        try:
+            agent_payload = agent.model_dump(mode="json")
+            seed_result = _seed_action_contract_files(
+                context,
+                agent=agent_payload,
+                dispatch_id=dispatch_id,
+                action_artifact_path=action_artifact_path,
+            )
+            guidance_result = _seed_team_agent_guidance(context, agent=agent_payload)
+            prompt = _build_team_chat_prompt(
+                state=state,
+                conversation=conversation,
+                message=message,
+                action_artifact_path=action_artifact_path,
+            )
+            result = resumer.resume_agent(
+                target=agent.session_id,
+                prompt=prompt,
+                resume_mode="same_context",
+                dispatch_id=dispatch_id,
+            )
+            result_payload = _coerce_mapping(result)
+            if _result_reports_failure(result_payload):
+                error = _resume_failure_message(result_payload)
+                state, _message = repo.mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+                errors.append(f"{agent_id}: {error}")
+                continue
+            dispatches.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": agent.session_id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "dispatch_id": dispatch_id,
+                    "action_contract": seed_result,
+                    "agent_guidance": guidance_result,
+                    "result": result_payload,
+                }
+            )
+            _mirror_session_metadata(
+                context,
+                repo=repo,
+                state=state,
+                agent_id=agent_id,
+                session_id=agent.session_id,
+            )
+        except Exception as exc:  # pragma: no cover - covered through provider tests with fakes
+            error = str(exc)
+            try:
+                state, _message = repo.mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+            except Exception as release_exc:  # pragma: no cover - defensive diagnostics
+                error = f"{error}; failed to release team chat dispatch: {release_exc}"
+            errors.append(f"{agent_id}: {error}")
+    return state, dispatches, errors
 
 
 class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
@@ -1101,6 +1256,9 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             "error",
             "session_id",
             "dispatch_id",
+            "action_artifact_path",
+            "recover_missing_action",
+            "recovery_resume_mode",
             "expected_revision",
         )
         if resolved_config:
@@ -1112,6 +1270,31 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         original_action = dict(action) if isinstance(action, dict) else None
         artifact_publish_records: list[dict[str, Any]] = []
         artifact_publish_errors: list[str] = []
+        action_error = _optional_text(payload.get("error"))
+        action_artifact_path = (
+            _optional_text(payload.get("action_artifact_path"))
+            or DEFAULT_ACTION_ARTIFACT_PATH
+        )
+        if (
+            not valid
+            and _optional_bool(payload.get("recover_missing_action"), default=True)
+            and _is_missing_action_artifact_error(action_error, action_artifact_path)
+        ):
+            recovery = _dispatch_missing_action_recovery(
+                self.runtime_context,
+                repo=repo,
+                session_id=_optional_text(payload.get("session_id")),
+                dispatch_id=_optional_text(payload.get("dispatch_id")),
+                action_artifact_path=action_artifact_path,
+                error=action_error or "artifact file not found",
+                expected_revision=expected_revision,
+                resume_mode=(
+                    _optional_text(payload.get("recovery_resume_mode"))
+                    or "same_context"
+                ),
+            )
+            if recovery is not None:
+                return recovery
         if valid:
             action, artifact_publish_records, artifact_publish_errors = (
                 _prepare_deliverable_artifacts(
@@ -1123,7 +1306,6 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
                     expected_revision=expected_revision,
                 )
             )
-        action_error = _optional_text(payload.get("error"))
         if artifact_publish_errors:
             publish_error = "; ".join(artifact_publish_errors)
             action_error = f"{action_error}; {publish_error}" if action_error else publish_error
@@ -1166,6 +1348,9 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             result["published_event_ids"] = published_event_ids
         if artifact_publish_records:
             result["published_deliverable_artifacts"] = artifact_publish_records
+        result.setdefault("recovery_dispatched", False)
+        result.setdefault("recovery_action_record_id", None)
+        result.setdefault("recovery_result", None)
         if isinstance(agent_id, str):
             state_payload = _filtered_team_state_payload(
                 state,
@@ -1178,6 +1363,251 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             state_payload["conversations"] = {}
             state_payload["conversation_messages"] = {}
         return {**result, "state": state_payload}
+
+
+def _is_missing_action_artifact_error(
+    error: str | None,
+    action_artifact_path: str,
+) -> bool:
+    normalized = str(error or "").casefold()
+    if "artifact file not found" not in normalized:
+        return False
+    path = action_artifact_path.strip()
+    if path.startswith("/artifacts/"):
+        path = path[len("/artifacts/") :]
+    path = path.strip("/")
+    if not path:
+        return True
+    return path.casefold() in normalized or Path(path).name.casefold() in normalized
+
+
+def _dispatch_missing_action_recovery(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    session_id: str | None,
+    dispatch_id: str | None,
+    action_artifact_path: str,
+    error: str,
+    expected_revision: int | None,
+    resume_mode: str,
+) -> dict[str, Any] | None:
+    if not session_id or not dispatch_id:
+        return None
+    resumer = getattr(context, "agent_resumer", None)
+    resume_agent = getattr(resumer, "resume_agent", None)
+    if not callable(resume_agent):
+        return None
+    try:
+        state, recovery_record = repo.record_missing_action_recovery_prompted(
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            action_artifact_path=action_artifact_path,
+            error=error,
+            expected_revision=expected_revision,
+        )
+    except (TeamStateConflictError, ValueError):
+        return None
+    if recovery_record.get("already_prompted") or recovery_record.get("error"):
+        recovery_error = _optional_text(recovery_record.get("error"))
+        if recovery_error is None:
+            recovery_error = "missing Team action recovery was already prompted"
+        return _apply_missing_action_after_recovery_dispatch_failed(
+            repo,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            error=error,
+            state=state,
+            recovery_record=recovery_record,
+            recovery_result={
+                "success": False,
+                "error": recovery_error,
+            },
+        )
+    agent_id = _optional_text(recovery_record.get("agent_id"))
+    if agent_id is None:
+        return None
+    prompt = _missing_action_recovery_prompt(
+        agent_id=agent_id,
+        dispatch_id=dispatch_id,
+        action_artifact_path=action_artifact_path,
+        error=error,
+    )
+    try:
+        resume_result = resume_agent(
+            target=session_id,
+            prompt=prompt,
+            resume_mode=resume_mode,
+            dispatch_id=dispatch_id,
+        )
+    except Exception as exc:
+        return _apply_missing_action_after_recovery_dispatch_failed(
+            repo,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            error=error,
+            state=state,
+            recovery_record=recovery_record,
+            recovery_result={
+                "success": False,
+                "error": str(exc) or exc.__class__.__name__,
+            },
+        )
+    result_payload = _coerce_mapping(resume_result)
+    if _result_reports_failure(result_payload):
+        return _apply_missing_action_after_recovery_dispatch_failed(
+            repo,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            error=error,
+            state=state,
+            recovery_record=recovery_record,
+            recovery_result=result_payload,
+        )
+    state_payload = _filtered_team_state_payload(
+        state,
+        team_id=None,
+        project_id=None,
+        agent_id=agent_id,
+    )
+    return {
+        **_empty_apply_result(
+            success=True,
+            revision=state.revision,
+            agent_id=agent_id,
+        ),
+        "recovery_dispatched": True,
+        "recovery_action_record_id": recovery_record.get("action_record_id"),
+        "recovery_result": result_payload,
+        "state": state_payload,
+    }
+
+
+def _apply_missing_action_after_recovery_dispatch_failed(
+    repo: TeamStateRepository,
+    *,
+    session_id: str,
+    dispatch_id: str,
+    error: str,
+    state: TeamState,
+    recovery_record: Mapping[str, Any],
+    recovery_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    agent_id = _optional_text(recovery_record.get("agent_id"))
+    try:
+        failed_state, result = repo.apply_agent_action(
+            action={
+                "agent_id": agent_id,
+                "dispatch_id": dispatch_id,
+            },
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            valid=False,
+            error=error,
+            expected_revision=state.revision,
+        )
+    except TeamStateConflictError as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "expected_revision": exc.expected_revision,
+            "current_revision": exc.current_revision,
+        }
+    result["recovery_dispatched"] = False
+    result["recovery_action_record_id"] = recovery_record.get("action_record_id")
+    result["recovery_result"] = dict(recovery_result)
+    if agent_id is not None:
+        state_payload = _filtered_team_state_payload(
+            failed_state,
+            team_id=None,
+            project_id=None,
+            agent_id=agent_id,
+        )
+    else:
+        state_payload = team_state_payload(failed_state, include_agent_avatars=False)
+        state_payload["conversations"] = {}
+        state_payload["conversation_messages"] = {}
+    return {**result, "state": state_payload}
+
+
+def _missing_action_recovery_prompt(
+    *,
+    agent_id: str,
+    dispatch_id: str,
+    action_artifact_path: str,
+    error: str,
+) -> str:
+    absolute_path = (
+        action_artifact_path
+        if action_artifact_path.startswith("/artifacts/")
+        else f"/artifacts/{action_artifact_path.strip('/')}"
+    )
+    example = {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "agent_id": agent_id,
+        "dispatch_id": dispatch_id,
+        "task_updates": [],
+        "status_reports": [],
+        "questions": [],
+        "deliverables": [],
+        "handled_inbox_item_ids": [],
+        "notes": "Recovery action artifact for the completed Team dispatch.",
+    }
+    return (
+        "Your previous Team dispatch completed without the required Team action "
+        f"artifact. Original artifact read error: {error}\n\n"
+        "Do not continue implementation work in this recovery turn. Write only the "
+        f"missing UTF-8 JSON action object to {absolute_path}, then finish.\n\n"
+        "Use the Team context from the just-completed dispatch. If work is not ready "
+        "for a deliverable, write a status_reports item to your direct superior or "
+        "a question if you need a response. If you created deliverable files, make "
+        "sure they are under /artifacts and reference them with relative "
+        "deliverables[].artifact_paths plus the correct task_id. Include any "
+        "status-request inbox ids you are answering in handled_inbox_item_ids.\n\n"
+        "Minimum valid shape:\n"
+        f"{json.dumps(example, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _empty_apply_result(
+    *,
+    success: bool,
+    revision: int,
+    agent_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "success": success,
+        "revision": revision,
+        "agent_id": agent_id,
+        "applied": False,
+        "errors": [],
+        "created_inbox_item_ids": [],
+        "created_deliverable_ids": [],
+        "created_task_ids": [],
+        "created_status_request_ids": [],
+        "created_review_request_ids": [],
+        "decided_review_request_ids": [],
+        "updated_goal_ids": [],
+        "operator_escalation_event_ids": [],
+        "git_promotion_event_ids": [],
+        "release_package_ids": [],
+        "updated_task_ids": [],
+        "handled_inbox_item_ids": [],
+        "created_ephemeral_assignment_ids": [],
+        "ephemeral_events": [],
+        "events": [],
+        "accepted_ephemeral_assignment_ids": [],
+        "rejected_ephemeral_assignment_ids": [],
+        "created_stand_down_ids": [],
+        "revoked_stand_down_ids": [],
+        "created_chat_reply_message_ids": [],
+        "replied_chat_message_ids": [],
+        "created_operator_chat_message_ids": [],
+        "published_deliverable_artifacts": [],
+        "recovery_dispatched": False,
+        "recovery_action_record_id": None,
+        "recovery_result": None,
+    }
 
 
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
@@ -1684,6 +2114,9 @@ class TeamStateQueryProvider(QueryProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
+        session_records = _session_records_by_id(
+            _session_repository_from_context(self.runtime_context)
+        )
         team_id = _optional_text(payload.get("team_id"))
         project_id = _optional_text(payload.get("project_id"))
         agent_id = _optional_text(payload.get("agent_id"))
@@ -1692,6 +2125,7 @@ class TeamStateQueryProvider(QueryProviderBase):
             team_id=team_id,
             project_id=project_id,
             agent_id=agent_id,
+            session_records=session_records,
         )
         return {
             "success": True,
@@ -2166,6 +2600,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "exact relative files or directories in deliverables[].artifact_paths. "
         "The Team runtime publishes only those paths and records artifact refs "
         "for reviewers.\n"
+        "- When responding to a review_rejected inbox item, create a revised "
+        "deliverable with deliverables[].supersedes_deliverable_id set to the "
+        "payload's supersedes_deliverable_id.\n"
         "- Use review_decisions only for review requests assigned to you. "
         "Accepting a review is the action that cascades to deliverable/task "
         "acceptance once all attached reviews are accepted.\n"
@@ -2274,6 +2711,8 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "reason": lease["reason"],
         "superior_agent_id": lease["superior_agent_id"],
         "subordinate_agent_ids": lease["subordinate_agent_ids"],
+        "subordinates": lease.get("subordinates") or [],
+        "session_health": lease.get("session_health") or [],
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
         "recent_action_feedback": lease.get("recent_action_feedback") or [],
@@ -2307,6 +2746,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         else ""
     )
     schema = {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
         "task_updates": [],
@@ -2338,7 +2778,12 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
         f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below for this "
         "dispatch and write the requested action artifact before finishing.\n\n"
+        "Role-aware delegation: when creating tasks or requests for subordinates, "
+        "use subordinates[].role_name and subordinates[].role_description. "
+        "Reviewer roles should generally receive review_requests or review-focused "
+        "tasks, not implementation task ownership.\n\n"
         f"{_task_creation_mandate_guidance(agent)}"
+        f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repo_prompt_guidance(project_repo)}"
         f"{handoff_section}"
         f"{action_feedback_section}"
@@ -2346,10 +2791,131 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
         f"use {example_path} as a writable template. Do not infer required fields "
-        "from memory; follow the schema file.\n\n"
+        "from memory; follow the schema file. A helper command has also been "
+        f"seeded at {ACTION_CONTRACT_HELPER_PATH}; pass it a draft JSON file or "
+        "pipe a JSON object to it and it will fill schema_version, agent_id, "
+        f"dispatch_id, and write /artifacts/{action_artifact_path}.\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
+    tasks = [
+        task
+        for task in lease.get("tasks") or []
+        if isinstance(task, Mapping) and _optional_text(task.get("id")) is not None
+    ]
+    if not tasks:
+        return (
+            "Deliverable mechanics for this dispatch:\n"
+            "- If no deliverable is ready, still write the Team action artifact with "
+            "notes, questions, status_reports, or handled_inbox_item_ids as needed.\n"
+            "- Do not finish without writing the action artifact, even for a status-only "
+            "wake.\n\n"
+        )
+    task_ids = [_required_text(task.get("id"), "task.id") for task in tasks]
+    default_task_id = task_ids[0]
+    return (
+        "Deliverable mechanics for this dispatch:\n"
+        f"- Valid owned task_id values for deliverables are: {', '.join(task_ids)}.\n"
+        "- For a report deliverable, write it under /artifacts first, for example "
+        f"/artifacts/team-deliverables/{default_task_id}/report.md.\n"
+        "- In deliverables[].artifact_paths, list paths relative to /artifacts, for "
+        f"example team-deliverables/{default_task_id}/report.md. Do not use absolute "
+        "paths there.\n"
+        "- A non-Git deliverable must include task_id, summary, and artifact_paths. "
+        "If you created or updated useful files only in the repo checkout, copy or "
+        "summarize the deliverable under /artifacts before reporting it.\n"
+        "- If no deliverable is ready, still write the Team action artifact with "
+        "notes, questions, status_reports, or handled_inbox_item_ids as needed.\n"
+        "- Do not finish without writing the action artifact, even for a status-only "
+        "wake.\n\n"
+    )
+
+
+def _build_team_chat_prompt(
+    *,
+    state: Any,
+    conversation: Any,
+    message: Any,
+    action_artifact_path: str = DEFAULT_ACTION_ARTIFACT_PATH,
+) -> str:
+    agents = _object_mapping_field(state, "agents")
+    conversation_messages = _object_mapping_field(state, "conversation_messages")
+    agent_id = _required_text(_object_field(conversation, "agent_id"), "conversation.agent_id")
+    agent = agents[agent_id]
+    conversation_id = _required_text(_object_field(conversation, "id"), "conversation.id")
+    operator_user_id = _required_text(
+        _object_field(conversation, "operator_user_id"),
+        "conversation.operator_user_id",
+    )
+    operator_label = (
+        _optional_text(_object_field(conversation, "operator_display_name"))
+        or operator_user_id
+    )
+    recent_messages = [
+        item
+        for item in conversation_messages.values()
+        if _object_field(item, "conversation_id") == conversation_id
+    ]
+    recent_messages.sort(
+        key=lambda item: (
+            _object_field(item, "created_at"),
+            _required_text(_object_field(item, "id"), "conversation_message.id"),
+        )
+    )
+    transcript_lines = []
+    for item in recent_messages[-12:]:
+        body = str(_object_field(item, "body") or "").strip()
+        if not body:
+            continue
+        sender = _object_field(item, "sender")
+        if sender == "operator":
+            sender_label = f"human operator {operator_label}"
+        elif sender == "agent":
+            sender_label = _team_chat_agent_display_name(agent)
+        else:
+            sender_label = "system"
+        transcript_lines.append(f"{sender_label}: {body}")
+    transcript = "\n".join(transcript_lines)
+    agent_display_name = _team_chat_agent_display_name(agent)
+    message_id = _required_text(_object_field(message, "id"), "message.id")
+    dispatch_id = _optional_text(_object_field(message, "dispatch_id")) or ""
+    action_artifact = f"/artifacts/{action_artifact_path}"
+    return (
+        "You have received a message from a human operator in the Team Add-on Chat tab.\n"
+        "This is not an agent-to-agent inbox message. Treat it as the current human "
+        "operator request. Reply to this human operator by writing "
+        f"{action_artifact} with a chat_replies entry. Do not use questions "
+        "or status_reports for this human chat reply; those are for agent-to-agent "
+        "inbox communication. A helper command has been seeded at "
+        f"{ACTION_CONTRACT_HELPER_PATH}; pass it a draft JSON file or pipe a JSON "
+        "object to it and it will fill schema_version, agent_id, dispatch_id, and "
+        f"write {action_artifact}.\n\n"
+        f"Current agent: {agent_display_name} ({agent_id})\n"
+        f"Human operator: {operator_label} ({operator_user_id})\n"
+        f"Conversation ID: {conversation_id}\n"
+        f"Human operator message ID: {message_id}\n"
+        f"Dispatch ID: {dispatch_id}\n\n"
+        "Required reply shape:\n"
+        "{\n"
+        f'  "schema_version": {ACTION_CONTRACT_SCHEMA_VERSION},\n'
+        f'  "agent_id": "{agent_id}",\n'
+        f'  "dispatch_id": "{dispatch_id}",\n'
+        '  "chat_replies": [\n'
+        "    {\n"
+        f'      "conversation_id": "{conversation_id}",\n'
+        f'      "message_id": "{message_id}",\n'
+        '      "body": "Your reply to the operator."\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Recent conversation:\n"
+        f"{transcript or '(no earlier messages)'}\n\n"
+        "Human operator message:\n"
+        f"{_object_field(message, 'body')}"
     )
 
 
@@ -2420,6 +2986,26 @@ def _agent_prompt_payload(agent: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(agent)
     payload.pop("display_name", None)
     return payload
+
+
+def _object_field(item: object, field_name: str) -> object:
+    if isinstance(item, Mapping):
+        return item.get(field_name)
+    return getattr(item, field_name, None)
+
+
+def _object_mapping_field(item: object, field_name: str) -> Mapping[str, Any]:
+    value = _object_field(item, field_name)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    return value
+
+
+def _team_chat_agent_display_name(agent: object) -> str:
+    return (
+        _optional_text(_object_field(agent, "display_name"))
+        or _required_text(_object_field(agent, "id"), "agent.id")
+    )
 
 
 def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:
@@ -2562,26 +3148,14 @@ def _seed_action_contract_files(
     context: Any,
     *,
     agent: Mapping[str, Any],
+    dispatch_id: str,
     action_artifact_path: str,
 ) -> dict[str, Any]:
     session_id = _required_text(agent.get("session_id"), "session_id")
+    agent_id = _required_text(agent.get("id"), "agent.id")
+    normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
     schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
     example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
-    metadata = _session_metadata(context, session_id=session_id)
-    known_vm_ip = _session_known_vm_ip(metadata)
-    if _metadata_has_current_action_contract(
-        metadata,
-        schema_path=schema_path,
-        example_path=example_path,
-        action_artifact_path=f"/artifacts/{action_artifact_path}",
-    ):
-        return {
-            "seeded": False,
-            "reason": "already_seeded",
-            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-            "schema_path": schema_path,
-            "example_path": example_path,
-        }
 
     provider = AgentCopyFilesEffectProvider()
     provider.initialize(
@@ -2604,23 +3178,33 @@ def _seed_action_contract_files(
                     "mode": "0644",
                     "overwrite": True,
                 },
+                {
+                    "content": _team_finish_helper_content(
+                        agent_id=agent_id,
+                        dispatch_id=normalized_dispatch_id,
+                        action_artifact_path=action_artifact_path,
+                    ),
+                    "destination_path": ACTION_CONTRACT_HELPER_PATH,
+                    "mode": "0755",
+                    "overwrite": True,
+                },
             ],
         ),
         context,
     )
-    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
-    copy_result = provider.execute(resolved_config=resolved_config)
+    copy_result = provider.execute()
     if not bool(copy_result.get("success")):
         message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
         raise RuntimeError(message or "failed to seed Team action contract files")
 
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
     _mark_action_contract_seeded(
         context,
         session_id=session_id,
         schema_path=schema_path,
         example_path=example_path,
         action_artifact_path=f"/artifacts/{action_artifact_path}",
+        helper_path=ACTION_CONTRACT_HELPER_PATH,
         copy_result=copy_result,
         vm_ip=copied_vm_ip,
     )
@@ -2629,9 +3213,76 @@ def _seed_action_contract_files(
         "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
         "schema_path": schema_path,
         "example_path": example_path,
+        "helper_path": ACTION_CONTRACT_HELPER_PATH,
         "vm_ip": copied_vm_ip,
         "copied_paths": list(copy_result.get("copied_paths") or []),
     }
+
+
+def _team_finish_helper_content(
+    *,
+    agent_id: str,
+    dispatch_id: str,
+    action_artifact_path: str,
+) -> str:
+    absolute_path = (
+        action_artifact_path
+        if action_artifact_path.startswith("/artifacts/")
+        else f"/artifacts/{action_artifact_path.strip('/')}"
+    )
+    defaults = {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "agent_id": agent_id,
+        "dispatch_id": dispatch_id,
+        "task_updates": [],
+        "task_creations": [],
+        "status_requests": [],
+        "questions": [],
+        "status_reports": [],
+        "operator_chat_messages": [],
+        "deliverables": [],
+        "review_requests": [],
+        "review_decisions": [],
+        "goal_updates": [],
+        "operator_escalations": [],
+        "stand_downs": [],
+        "stand_down_revocations": [],
+        "git_review_promotions": [],
+        "git_feature_updates": [],
+        "git_release_requests": [],
+        "ephemeral_requests": [],
+        "ephemeral_acceptances": [],
+        "handled_inbox_item_ids": [],
+        "notes": "",
+    }
+    return (
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        f"DEFAULTS = {json.dumps(defaults, sort_keys=True, indent=2)}\n"
+        f"ACTION_PATH = Path({json.dumps(absolute_path)})\n\n"
+        "def load_payload():\n"
+        "    if len(sys.argv) > 2:\n"
+        "        print('usage: team-finish [draft-action.json]', file=sys.stderr)\n"
+        "        raise SystemExit(64)\n"
+        "    if len(sys.argv) == 2:\n"
+        "        return json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "    raw = sys.stdin.read().strip()\n"
+        "    return json.loads(raw) if raw else {}\n\n"
+        "payload = load_payload()\n"
+        "if not isinstance(payload, dict):\n"
+        "    print('team action must be a JSON object', file=sys.stderr)\n"
+        "    raise SystemExit(64)\n"
+        "for key, value in DEFAULTS.items():\n"
+        "    payload.setdefault(key, value)\n"
+        "payload['schema_version'] = DEFAULTS['schema_version']\n"
+        "payload['agent_id'] = DEFAULTS['agent_id']\n"
+        "payload['dispatch_id'] = DEFAULTS['dispatch_id']\n"
+        "ACTION_PATH.parent.mkdir(parents=True, exist_ok=True)\n"
+        "ACTION_PATH.write_text(json.dumps(payload, sort_keys=True, indent=2) + '\\n', encoding='utf-8')\n"
+        "print(str(ACTION_PATH))\n"
+    )
 
 
 def _seed_team_agent_guidance(
@@ -2642,7 +3293,6 @@ def _seed_team_agent_guidance(
     session_id = _required_text(agent.get("session_id"), "session_id")
     identity = _agent_guidance_identity(agent)
     metadata = _session_metadata(context, session_id=session_id)
-    known_vm_ip = _session_known_vm_ip(metadata)
     if _metadata_has_current_agent_guidance(metadata, agent=agent):
         return {
             "seeded": False,
@@ -2674,13 +3324,12 @@ def _seed_team_agent_guidance(
         ),
         context,
     )
-    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
-    copy_result = provider.execute(resolved_config=resolved_config)
+    copy_result = provider.execute()
     if not bool(copy_result.get("success")):
         message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
         raise RuntimeError(message or "failed to seed Team agent guidance")
 
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
     _mark_agent_guidance_seeded(
         context,
         session_id=session_id,
@@ -2707,7 +3356,6 @@ def _seed_team_governance_guidance(
     session_id = _required_text(agent.get("session_id"), "session_id")
     identity = _agent_guidance_identity(agent)
     metadata = _session_metadata(context, session_id=session_id)
-    known_vm_ip = _session_known_vm_ip(metadata)
     if _metadata_has_current_governance_guidance(metadata, agent=agent):
         return {
             "seeded": False,
@@ -2754,13 +3402,12 @@ def _seed_team_governance_guidance(
         ),
         context,
     )
-    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
-    copy_result = provider.execute(resolved_config=resolved_config)
+    copy_result = provider.execute()
     if not bool(copy_result.get("success")):
         message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
         raise RuntimeError(message or "failed to seed Team governance guidance")
 
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
     _mark_governance_guidance_seeded(
         context,
         session_id=session_id,
@@ -2778,23 +3425,6 @@ def _seed_team_governance_guidance(
         "vm_ip": copied_vm_ip,
         "copied_paths": list(copy_result.get("copied_paths") or []),
     }
-
-
-def _session_has_current_action_contract(
-    context: Any,
-    *,
-    session_id: str,
-    schema_path: str,
-    example_path: str,
-    action_artifact_path: str,
-) -> bool:
-    metadata = _session_metadata(context, session_id=session_id)
-    return _metadata_has_current_action_contract(
-        metadata,
-        schema_path=schema_path,
-        example_path=example_path,
-        action_artifact_path=action_artifact_path,
-    )
 
 
 def _metadata_has_current_agent_guidance(
@@ -2879,42 +3509,6 @@ def _agent_guidance_identity(agent: Mapping[str, Any]) -> dict[str, str | None]:
     }
 
 
-def _metadata_has_current_action_contract(
-    metadata: Mapping[str, Any],
-    *,
-    schema_path: str,
-    example_path: str,
-    action_artifact_path: str,
-) -> bool:
-    team_addon = metadata.get("team_addon")
-    if not isinstance(team_addon, Mapping):
-        return False
-    contract = team_addon.get("action_contract")
-    if not isinstance(contract, Mapping):
-        return False
-    return (
-        int(contract.get("schema_version") or 0) == ACTION_CONTRACT_SCHEMA_VERSION
-        and contract.get("schema_path") == schema_path
-        and contract.get("example_path") == example_path
-        and contract.get("action_artifact_path") == action_artifact_path
-        and contract.get("seeded") is True
-    )
-
-
-def _session_known_vm_ip(metadata: Mapping[str, Any]) -> str | None:
-    team_addon = metadata.get("team_addon")
-    if isinstance(team_addon, Mapping):
-        for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
-            value = _optional_text(team_addon.get(key))
-            if value:
-                return value
-    for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
-        value = _optional_text(metadata.get(key))
-        if value:
-            return value
-    return None
-
-
 def _session_metadata(context: Any, *, session_id: str) -> dict[str, Any]:
     lookup = getattr(context, "session_lookup", None)
     read_all = getattr(lookup, "read_all_sessions", None)
@@ -2941,6 +3535,7 @@ def _mark_action_contract_seeded(
     schema_path: str,
     example_path: str,
     action_artifact_path: str,
+    helper_path: str,
     copy_result: Mapping[str, Any],
     vm_ip: str | None,
 ) -> None:
@@ -2955,6 +3550,7 @@ def _mark_action_contract_seeded(
             "schema_path": schema_path,
             "example_path": example_path,
             "action_artifact_path": action_artifact_path,
+            "helper_path": helper_path,
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }
@@ -3257,6 +3853,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "id": {"type": "string", "minLength": 1},
                         "task_id": {"type": "string", "minLength": 1},
                         "summary": {"type": "string", "minLength": 1},
+                        "supersedes_deliverable_id": text_or_null,
                         "artifact_paths": non_empty_string_array,
                         "artifact_refs": string_array,
                         "artifact_space_ref": text_or_null,
@@ -3628,6 +4225,78 @@ def _session_repository_from_context(context: Any) -> Any | None:
     return getattr(service_runtime, "session_repository", None)
 
 
+def _session_records_by_id(repository: Any | None) -> dict[str, Any] | None:
+    if repository is None:
+        return None
+    readers = (
+        getattr(repository, "read_all_sessions", None),
+        getattr(repository, "read_all_safe", None),
+        getattr(repository, "read_all", None),
+    )
+    for reader in readers:
+        if not callable(reader):
+            continue
+        try:
+            records = reader()
+        except Exception:
+            continue
+        if isinstance(records, Mapping):
+            return {str(key): value for key, value in records.items()}
+    list_sessions = getattr(repository, "list_sessions", None)
+    if callable(list_sessions):
+        try:
+            sessions = list_sessions()
+        except Exception:
+            return None
+        return {
+            str(getattr(session, "session_id")): session
+            for session in sessions
+            if getattr(session, "session_id", None)
+        }
+    return None
+
+
+def _prompt_session_health_agent_ids(
+    state: TeamState,
+    agent: Mapping[str, Any],
+) -> set[str]:
+    agent_id = _optional_text(agent.get("id"))
+    if agent_id is None:
+        return set()
+    visible_ids = {agent_id}
+    state_agent = state.agents.get(agent_id)
+
+    subordinate_stack = list(_string_items(agent.get("subordinate_agent_ids")))
+    if state_agent is not None:
+        subordinate_stack.extend(state_agent.subordinate_agent_ids)
+    while subordinate_stack:
+        subordinate_id = subordinate_stack.pop()
+        if subordinate_id in visible_ids:
+            continue
+        subordinate = state.agents.get(subordinate_id)
+        if subordinate is None:
+            continue
+        visible_ids.add(subordinate_id)
+        subordinate_stack.extend(subordinate.subordinate_agent_ids)
+
+    visible_project_ids = set(_string_items(agent.get("lead_project_ids")))
+    managed_team_ids: set[str] = set()
+    for team in state.teams.values():
+        if team.manager_agent_id == agent_id:
+            managed_team_ids.add(team.id)
+    for project in state.projects.values():
+        if project.lead_agent_id == agent_id or project.team_id in managed_team_ids:
+            visible_project_ids.add(project.id)
+    if managed_team_ids:
+        for candidate in state.agents.values():
+            if candidate.team_id in managed_team_ids:
+                visible_ids.add(candidate.id)
+    for assignment in state.project_assignments.values():
+        if assignment.project_id in visible_project_ids:
+            visible_ids.add(assignment.agent_id)
+    return visible_ids
+
+
 def _session_repository_for_manifest_updates(context: Any) -> Any | None:
     candidates = [
         getattr(context, "session_repository", None),
@@ -3874,8 +4543,13 @@ def _filtered_team_state_payload(
     team_id: str | None,
     project_id: str | None,
     agent_id: str | None,
+    session_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    filtered = team_state_payload(state, include_agent_avatars=False)
+    filtered = team_state_payload(
+        state,
+        include_agent_avatars=False,
+        session_records=session_records,
+    )
     teams = filtered["teams"]
     projects = filtered["projects"]
     agents = filtered["agents"]
@@ -4178,10 +4852,16 @@ def _filter_runtime_operations(
             visible_assignment_ids=visible_assignment_ids,
         )
     ]
+    session_health = [
+        row
+        for row in _mapping_items(value.get("session_health"))
+        if _optional_text(row.get("agent_id")) in visible_agent_ids
+    ]
     return {
         "generated_at": value.get("generated_at"),
         "agents": agents,
         "attention": attention,
+        "session_health": session_health,
     }
 
 
