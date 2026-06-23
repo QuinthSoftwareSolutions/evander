@@ -108,6 +108,7 @@ let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
 const teamRecordGroupTabs = {};
 const teamRecordGroupPages = {};
+const openTeamInlineCreateForms = new Set();
 const teamRecordPageSize = 6;
 let selectedTaskBoardTeamId = "";
 let selectedTaskBoardProjectId = "";
@@ -253,7 +254,7 @@ const fieldTooltips = {
 
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
   "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
-  "create-project-form:lead_agent_id": "Existing registered agent on the selected team that will become this project's lead.",
+  "create-project-form:lead_agent_id": "Existing unassigned non-manager agent on the selected team that will become this project's lead.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
   "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions for the new agent.",
@@ -365,6 +366,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindForms();
   bindRecordEditing();
   bindExistingAgentPickers();
+  bindProjectLeadSelects();
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
@@ -722,6 +724,15 @@ function bindForms() {
     void submitChatMessage(form);
   });
 
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("form[data-team-inline-create-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    void submitCreateForm(form);
+  });
+
   document.addEventListener("change", (event) => {
     const select = event.target?.closest?.("[data-chat-operator-select]");
     if (!select) {
@@ -787,6 +798,26 @@ function bindRecordEditing() {
         teamRecordPage.dataset.teamRecordGroupId,
         teamRecordPage.dataset.teamRecordKind,
         Number(teamRecordPage.dataset.teamRecordPage),
+      );
+      return;
+    }
+
+    const inlineCreateToggle = event.target.closest("[data-team-inline-create-toggle]");
+    if (inlineCreateToggle) {
+      event.preventDefault();
+      toggleTeamInlineCreateForm(
+        inlineCreateToggle.dataset.teamRecordGroupId,
+        inlineCreateToggle.dataset.teamRecordKind,
+      );
+      return;
+    }
+
+    const inlineCreateClose = event.target.closest("[data-team-inline-create-close]");
+    if (inlineCreateClose) {
+      event.preventDefault();
+      closeTeamInlineCreateForm(
+        inlineCreateClose.dataset.teamRecordGroupId,
+        inlineCreateClose.dataset.teamRecordKind,
       );
       return;
     }
@@ -995,8 +1026,12 @@ function bindRecordEditing() {
 }
 
 function bindExistingAgentPickers() {
-  document.querySelectorAll("[data-agent-source-picker]").forEach((select) => {
-    select.addEventListener("change", () => applyExistingAgentDefaults(select));
+  document.addEventListener("change", (event) => {
+    const select = event.target?.closest?.("[data-agent-source-picker]");
+    if (!select) {
+      return;
+    }
+    applyExistingAgentDefaults(select);
   });
 }
 
@@ -1016,6 +1051,24 @@ function applyExistingAgentDefaults(select) {
     setFieldValue(form, select.dataset.maxConcurrentField, String(ephemeralCapacity(sourceAgent)));
   }
 
+}
+
+function bindProjectLeadSelects() {
+  document.addEventListener("change", (event) => {
+    const teamSelect = event.target?.closest?.("#create-project-form [name='team_id']");
+    if (!teamSelect) {
+      return;
+    }
+    refreshProjectLeadSelect(teamSelect.form);
+  });
+}
+
+function refreshProjectLeadSelect(form) {
+  const select = form?.elements?.lead_agent_id;
+  if (!select?.matches?.('select[data-options="project-lead-agents"]')) {
+    return;
+  }
+  fillSelect(select, projectLeadAgentOptions(select));
 }
 
 function decorateFieldTooltips(root = document) {
@@ -1039,7 +1092,7 @@ function decorateFieldTooltips(root = document) {
 
 function tooltipForField(label, field) {
   const form = field.form;
-  const formId = formIdentifier(form);
+  const formId = formSemanticIdentifier(form);
   const aliasedFormId = formId === "create-team-from-teams-form" ? "create-team-form" : "";
   const fieldName = text(field.name);
   const editType = text(form?.dataset?.editType);
@@ -3400,12 +3453,29 @@ function renderTeamRecordSection(kind, teamRecords) {
   const page = clampPage(teamRecordGroupPages[pageKey] || 1, totalPages);
   teamRecordGroupPages[pageKey] = page;
   const pageRecords = records.slice((page - 1) * teamRecordPageSize, page * teamRecordPageSize);
+  const canCreate = config.createLabel && !isNoTeamRecord({ id: teamRecords.teamId });
+  const createOpen = canCreate && isTeamInlineCreateFormOpen(teamRecords.teamId, kind);
   return `
     <section class="team-record-section" aria-label="${escapeAttr(config.title)}">
       <div class="team-record-section-header">
-        <h3>${escapeHtml(config.title)}</h3>
-        <span>${escapeHtml(records.length)}</span>
+        <div class="team-record-section-title">
+          <h3>${escapeHtml(config.title)}</h3>
+          <span>${escapeHtml(records.length)}</span>
+        </div>
+        ${
+          canCreate
+            ? `<button
+                type="button"
+                class="team-inline-create-toggle"
+                aria-expanded="${createOpen ? "true" : "false"}"
+                data-team-inline-create-toggle
+                data-team-record-group-id="${escapeAttr(teamRecords.teamId)}"
+                data-team-record-kind="${escapeAttr(kind)}"
+              >${escapeHtml(createOpen ? "Close" : config.createLabel)}</button>`
+            : ""
+        }
       </div>
+      ${renderTeamInlineCreateForm(teamRecords.teamId, kind)}
       ${
         records.length
           ? `<ul class="team-record-list compact-record-list">${pageRecords.map((record) => config.render(record)).join("")}</ul>
@@ -3417,9 +3487,240 @@ function renderTeamRecordSection(kind, teamRecords) {
 }
 
 function teamRecordSectionConfig(kind) {
-  if (kind === "project") return { title: "Projects", collection: "projects", render: renderSelectableProject, emptyMessage: "No projects." };
-  if (kind === "role") return { title: "Roles", collection: "roles", render: renderSelectableRole, emptyMessage: "No roles." };
-  return { title: "Agents", collection: "agents", render: renderSelectableAgent, emptyMessage: "No agents." };
+  if (kind === "project") return { title: "Projects", collection: "projects", render: renderSelectableProject, emptyMessage: "No projects.", createLabel: "Add project" };
+  if (kind === "role") return { title: "Roles", collection: "roles", render: renderSelectableRole, emptyMessage: "No roles.", createLabel: "Add role" };
+  return { title: "Agents", collection: "agents", render: renderSelectableAgent, emptyMessage: "No agents.", createLabel: "Add agent" };
+}
+
+function renderTeamInlineCreateForm(teamId, kind) {
+  const normalizedTeamId = text(teamId);
+  const normalizedKind = normalizedTeamRecordKind(kind);
+  if (!normalizedTeamId || isNoTeamRecord({ id: normalizedTeamId }) || !isTeamInlineCreateFormOpen(normalizedTeamId, normalizedKind)) {
+    return "";
+  }
+  if (normalizedKind === "project") {
+    return renderTeamInlineProjectForm(normalizedTeamId);
+  }
+  if (normalizedKind === "role") {
+    return renderTeamInlineRoleForm(normalizedTeamId);
+  }
+  return renderTeamInlineAgentForm(normalizedTeamId);
+}
+
+function renderTeamInlineProjectForm(teamId) {
+  const formId = teamInlineCreateDomId(teamId, "project");
+  return `
+    <form
+      id="${escapeAttr(formId)}"
+      class="team-inline-create-form"
+      data-team-inline-create-form
+      data-form-id="create-project-form"
+      data-endpoint="/projects"
+      data-method="POST"
+      data-team-record-group-id="${escapeAttr(teamId)}"
+      data-team-record-kind="project"
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
+      <div class="team-inline-create-fields">
+        <label>Name <input name="name" required /></label>
+        <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select unassigned team agent">${renderSelectOptions(
+          projectLeadAgentOptionsForTeam(teamId),
+          { placeholder: "Select unassigned team agent" },
+        )}</select></label>
+        <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
+      </div>
+      <details class="team-inline-create-advanced">
+        <summary>Git config</summary>
+        <div class="team-inline-create-fields">
+          <label>Host repo path <input name="host_repo_path" /></label>
+          <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+          <label>Base branch <input name="base_branch" placeholder="main" /></label>
+          <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+          <label>Provider <select name="provider">${renderSelectOptions(gitProviders, { placeholder: "Default" })}</select></label>
+          <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+        </div>
+      </details>
+      ${renderTeamInlineCreateActions(teamId, "project", "Create project")}
+    </form>
+  `;
+}
+
+function renderTeamInlineRoleForm(teamId) {
+  const formId = teamInlineCreateDomId(teamId, "role");
+  return `
+    <form
+      id="${escapeAttr(formId)}"
+      class="team-inline-create-form"
+      data-team-inline-create-form
+      data-form-id="create-role-form"
+      data-endpoint="/roles"
+      data-method="POST"
+      data-team-record-group-id="${escapeAttr(teamId)}"
+      data-team-record-kind="role"
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
+      <div class="team-inline-create-fields">
+        <label>Project <select name="project_id">${renderSelectOptions(teamProjectOptions(teamId), { placeholder: "Team-wide" })}</select></label>
+        <label>Name <input name="name" required /></label>
+        <label>Description <textarea name="description" rows="2"></textarea></label>
+        <label>Permissions <select name="permissions" multiple size="3">${renderMultiSelectOptions(rolePermissionOptions())}</select></label>
+        <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
+      </div>
+      ${renderTeamInlineCreateActions(teamId, "role", "Create role")}
+    </form>
+  `;
+}
+
+function renderTeamInlineAgentForm(teamId) {
+  const formId = teamInlineCreateDomId(teamId, "agent");
+  return `
+    <form
+      id="${escapeAttr(formId)}"
+      class="team-inline-create-form"
+      data-team-inline-create-form
+      data-form-id="register-agent-form"
+      data-endpoint="/agents"
+      data-method="POST"
+      data-team-record-group-id="${escapeAttr(teamId)}"
+      data-team-record-kind="agent"
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
+      <div class="team-inline-create-fields">
+        <label>
+          Existing agent defaults
+          <select
+            name="existing_agent_id"
+            data-agent-source-picker
+            data-session-field="session_id"
+            data-display-field="display_name"
+            data-role-field="role_id"
+            data-project-field="project_id"
+            data-reports-to-field="reports_to_agent_id"
+            data-max-concurrent-field="max_concurrent"
+          >${renderSelectOptions(teamAgentOptions(teamId), { placeholder: "Select existing agent" })}</select>
+        </label>
+        <label>Project <select name="project_id">${renderSelectOptions(teamProjectOptions(teamId), { placeholder: "No project" })}</select></label>
+        <label>Role <select name="role_id">${renderSelectOptions(teamRoleOptions(teamId), { placeholder: "No role" })}</select></label>
+        <label>Session ID <input name="session_id" required /></label>
+        <label>Display name <input name="display_name" /></label>
+        <label>Reports to <select name="reports_to_agent_id">${renderSelectOptions(teamAgentOptions(teamId), { placeholder: "No superior" })}</select></label>
+        <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
+      </div>
+      ${renderTeamInlineCreateActions(teamId, "agent", "Register agent")}
+    </form>
+  `;
+}
+
+function renderTeamInlineCreateActions(teamId, kind, submitLabel) {
+  return `
+    <div class="team-inline-create-actions">
+      <button type="submit">${escapeHtml(submitLabel)}</button>
+      <button
+        type="button"
+        class="secondary"
+        data-team-inline-create-close
+        data-team-record-group-id="${escapeAttr(teamId)}"
+        data-team-record-kind="${escapeAttr(kind)}"
+      >Cancel</button>
+    </div>
+  `;
+}
+
+function renderSelectOptions(options, { selectedValue = "", placeholder = "Default", includePlaceholder = true } = {}) {
+  const selected = text(selectedValue);
+  return `${includePlaceholder ? `<option value="">${escapeHtml(placeholder)}</option>` : ""}${options
+    .map(([value, label]) => {
+      const optionValue = text(value);
+      return `<option value="${escapeAttr(optionValue)}"${optionValue === selected ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("")}`;
+}
+
+function renderMultiSelectOptions(options, selectedValues = []) {
+  const selected = new Set(splitList(selectedValues));
+  return options
+    .map(([value, label]) => {
+      const optionValue = text(value);
+      return `<option value="${escapeAttr(optionValue)}"${selected.has(optionValue) ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+}
+
+function teamProjectOptions(teamId) {
+  const normalizedTeamId = text(teamId);
+  return values(state.projects)
+    .filter((project) => isVisibleProject(project) && text(project.team_id) === normalizedTeamId)
+    .sort(compareTeamProjects)
+    .map((project) => [project.id, `${projectLabel(project)} (${project.id})`]);
+}
+
+function teamRoleOptions(teamId) {
+  const normalizedTeamId = text(teamId);
+  return values(state.roles)
+    .filter((role) => isVisibleRole(role) && text(role.team_id) === normalizedTeamId)
+    .sort(compareTeamRoles)
+    .map((role) => [role.id, `${roleLabel(role)} (${role.id})`]);
+}
+
+function teamAgentOptions(teamId) {
+  const normalizedTeamId = text(teamId);
+  return values(state.agents)
+    .filter((agent) => isVisibleAgent(agent) && text(agent.team_id) === normalizedTeamId)
+    .sort(comparePeopleAgents)
+    .map((agent) => [agent.id, `${agentLabel(agent)} (${agent.id})`]);
+}
+
+function rolePermissionOptions() {
+  return (state.available_role_permissions || []).map((permission) => [permission, permissionLabel(permission)]);
+}
+
+function teamInlineCreateKey(teamId, kind) {
+  return `${text(teamId)}:${normalizedTeamRecordKind(kind)}`;
+}
+
+function teamInlineCreateDomId(teamId, kind) {
+  return `team-inline-create-${normalizedTeamRecordKind(kind)}-${text(teamId).replace(/[^A-Za-z0-9_-]+/g, "-")}`;
+}
+
+function isTeamInlineCreateFormOpen(teamId, kind) {
+  return openTeamInlineCreateForms.has(teamInlineCreateKey(teamId, kind));
+}
+
+function toggleTeamInlineCreateForm(teamId, kind) {
+  const normalizedTeamId = text(teamId);
+  const normalizedKind = normalizedTeamRecordKind(kind);
+  if (!normalizedTeamId || isNoTeamRecord({ id: normalizedTeamId })) {
+    return;
+  }
+  const key = teamInlineCreateKey(normalizedTeamId, normalizedKind);
+  if (openTeamInlineCreateForms.has(key)) {
+    openTeamInlineCreateForms.delete(key);
+  } else {
+    openTeamInlineCreateForms.add(key);
+    expandedTeamRecordGroupIds.add(normalizedTeamId);
+    teamRecordGroupTabs[normalizedTeamId] = normalizedKind;
+  }
+  renderAgents();
+  decorateFieldTooltips(document);
+}
+
+function closeTeamInlineCreateForm(teamId, kind, { rerender = true } = {}) {
+  openTeamInlineCreateForms.delete(teamInlineCreateKey(teamId, kind));
+  if (rerender) {
+    renderAgents();
+    decorateFieldTooltips(document);
+  }
+}
+
+function closeTeamInlineCreateFormFor(form, { rerender = true } = {}) {
+  if (!form?.hasAttribute?.("data-team-inline-create-form")) {
+    return;
+  }
+  closeTeamInlineCreateForm(
+    form.dataset.teamRecordGroupId,
+    form.dataset.teamRecordKind,
+    { rerender },
+  );
 }
 
 function renderTeamRecordPager(teamId, kind, page, totalPages, totalRecords) {
@@ -7217,8 +7518,7 @@ function refreshSelects({ includeEditForm = false } = {}) {
     if (!includeEditForm && elements.editForm?.contains(select)) {
       return;
     }
-    const key = select.dataset.options;
-    fillSelect(select, options[key] || []);
+    fillSelect(select, optionsForSelect(select, options));
   });
 
   const updateTaskForm = document.querySelector("#update-task-form");
@@ -7284,6 +7584,34 @@ function buildSelectOptionSets() {
   };
 }
 
+function optionsForSelect(select, optionSets) {
+  if (select.dataset.options === "project-lead-agents") {
+    return projectLeadAgentOptions(select);
+  }
+  return optionSets[select.dataset.options] || [];
+}
+
+function projectLeadAgentOptions(select) {
+  const teamId = text(select.form?.elements?.team_id?.value);
+  return projectLeadAgentOptionsForTeam(teamId);
+}
+
+function projectLeadAgentOptionsForTeam(teamId) {
+  const normalizedTeamId = text(teamId);
+  const team = normalizedTeamId ? state.teams?.[normalizedTeamId] : null;
+  if (!team) {
+    return [];
+  }
+  const managerAgentId = text(team.manager_agent_id);
+  return values(state.agents)
+    .filter(isVisibleAgent)
+    .filter((agent) => text(agent.team_id) === normalizedTeamId)
+    .filter((agent) => !text(agent.project_id))
+    .filter((agent) => text(agent.id) !== managerAgentId)
+    .sort(byId)
+    .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
+}
+
 function fillSelect(select, options) {
   const currentValue = select.dataset.currentValue ?? select.value;
   const includePlaceholder = !select.multiple;
@@ -7310,8 +7638,7 @@ function fillSelect(select, options) {
 function fillSelectsIn(root) {
   const options = buildSelectOptionSets();
   root.querySelectorAll("select[data-options]").forEach((select) => {
-    const key = select.dataset.options;
-    fillSelect(select, options[key] || []);
+    fillSelect(select, optionsForSelect(select, options));
   });
 }
 
@@ -7324,13 +7651,16 @@ async function submitCreateForm(form) {
   }
   const payload = payloadForForm(form, data);
   const saved = await submitMutation(form, endpoint, method, payload);
-  const formId = formIdentifier(form);
+  const formId = formSemanticIdentifier(form);
   if (saved && formId === "create-team-from-teams-form") {
     closeTeamsCreateTeamPanel({ reset: true });
     renderAgents();
   }
   if (saved && formId === "create-governance-group-form") {
     closeGovernanceCreateGroupPanel({ reset: true });
+  }
+  if (saved && form.hasAttribute("data-team-inline-create-form")) {
+    closeTeamInlineCreateFormFor(form);
   }
 }
 
@@ -8441,7 +8771,7 @@ function endpointForForm(form, data) {
 }
 
 function payloadForForm(form, data = formData(form)) {
-  const formId = formIdentifier(form);
+  const formId = formSemanticIdentifier(form);
   if (formId === "setup-template-form") {
     const payload = {
       team: {
@@ -9103,6 +9433,10 @@ function formIdentifier(form) {
   return form.getAttribute("id") || "";
 }
 
+function formSemanticIdentifier(form) {
+  return form?.dataset?.formId || formIdentifier(form);
+}
+
 function captureFormDrafts() {
   const drafts = {};
   document.querySelectorAll("form").forEach((form) => {
@@ -9148,6 +9482,11 @@ function restoreFormDrafts(drafts) {
       }
       field.value = value;
     });
+    const leadSelect = form.elements.lead_agent_id;
+    if (leadSelect?.matches?.('select[data-options="project-lead-agents"]')) {
+      leadSelect.dataset.currentValue = text(values.lead_agent_id);
+      refreshProjectLeadSelect(form);
+    }
   });
   const updateTaskForm = document.querySelector("#update-task-form");
   if (updateTaskForm) {
