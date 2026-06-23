@@ -42,6 +42,7 @@ from .mcp import (
 from .models import (
     AGENT_OPERATOR_ONLY_FIELDS,
     RolePermission,
+    TeamState,
     team_session_health_payload,
     team_state_payload,
 )
@@ -917,7 +918,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "session_health": team_session_health_payload(
                         state,
                         session_records=session_records,
-                        agent_ids={agent["id"]},
+                        agent_ids=_prompt_session_health_agent_ids(state, agent),
                     ),
                 }
                 seed_result = _seed_action_contract_files(
@@ -3900,6 +3901,47 @@ def _session_records_by_id(repository: Any | None) -> dict[str, Any] | None:
             if getattr(session, "session_id", None)
         }
     return None
+
+
+def _prompt_session_health_agent_ids(
+    state: TeamState,
+    agent: Mapping[str, Any],
+) -> set[str]:
+    agent_id = _optional_text(agent.get("id"))
+    if agent_id is None:
+        return set()
+    visible_ids = {agent_id}
+    state_agent = state.agents.get(agent_id)
+
+    subordinate_stack = list(_string_items(agent.get("subordinate_agent_ids")))
+    if state_agent is not None:
+        subordinate_stack.extend(state_agent.subordinate_agent_ids)
+    while subordinate_stack:
+        subordinate_id = subordinate_stack.pop()
+        if subordinate_id in visible_ids:
+            continue
+        subordinate = state.agents.get(subordinate_id)
+        if subordinate is None:
+            continue
+        visible_ids.add(subordinate_id)
+        subordinate_stack.extend(subordinate.subordinate_agent_ids)
+
+    visible_project_ids = set(_string_items(agent.get("lead_project_ids")))
+    managed_team_ids: set[str] = set()
+    for team in state.teams.values():
+        if team.manager_agent_id == agent_id:
+            managed_team_ids.add(team.id)
+    for project in state.projects.values():
+        if project.lead_agent_id == agent_id or project.team_id in managed_team_ids:
+            visible_project_ids.add(project.id)
+    if managed_team_ids:
+        for candidate in state.agents.values():
+            if candidate.team_id in managed_team_ids:
+                visible_ids.add(candidate.id)
+    for assignment in state.project_assignments.values():
+        if assignment.project_id in visible_project_ids:
+            visible_ids.add(assignment.agent_id)
+    return visible_ids
 
 
 def _session_repository_for_manifest_updates(context: Any) -> Any | None:

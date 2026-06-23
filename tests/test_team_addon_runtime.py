@@ -27,6 +27,7 @@ from truman_team_addon.models import (
     AgentAvatar,
     AgentContextClearingPolicy,
     AgentInboxItem,
+    AgentProjectAssignment,
     AgentRuntime,
     AgentTask,
     AgentVoiceProfile,
@@ -1303,7 +1304,8 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
 def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
     tmp_path: Path,
 ) -> None:
-    _seed_team(tmp_path)
+    repo = _seed_team(tmp_path)
+    _add_pending_inbox(repo, item_id="lead-inbox", recipient_agent_id="lead")
     resumer = FakeResumer()
     session_store = FakeSessionStore()
     session_store.sessions["session-backend"].expires_at = datetime(
@@ -1312,12 +1314,20 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
         31,
         tzinfo=UTC,
     )
+    session_store.sessions["session-lead"] = SimpleNamespace(
+        session_id="session-lead",
+        vm_id="vm-lead",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(
             id="wake",
             display_name="Wake",
             type="effect:team:wake-due-agents",
+            agent_id="lead",
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
@@ -1350,6 +1360,18 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
             "expires_at": "2025-12-31T00:00:00+00:00",
             "is_expired": True,
             "status": "expired",
+        },
+        {
+            "agent_id": "lead",
+            "team_id": "team",
+            "project_ids": ["project"],
+            "lead_project_ids": ["project"],
+            "role_id": "project__project-lead",
+            "session_id": "session-lead",
+            "session_present": True,
+            "expires_at": None,
+            "is_expired": False,
+            "status": "unknown",
         }
     ]
 
@@ -3522,6 +3544,75 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
             + agent_runtime_operations["attention"]
             + agent_runtime_operations["session_health"]
         )
+    )
+
+
+def test_team_state_query_keeps_multi_project_expired_session_attention(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = _multi_team_state()
+    state.teams["alpha-team"].project_ids.append("alpha-maintenance")
+    state.projects["alpha-maintenance"] = Project(
+        id="alpha-maintenance",
+        team_id="alpha-team",
+        name="Alpha Maintenance",
+        lead_agent_id="alpha-lead",
+    )
+    state.roles["alpha-maintenance__project-lead"] = TeamRole(
+        id="alpha-maintenance__project-lead",
+        team_id="alpha-team",
+        project_id="alpha-maintenance",
+        name="Project Lead",
+    )
+    state.agents["alpha-lead"].role_id = "alpha-maintenance__project-lead"
+    state.project_assignments["alpha-maintenance:alpha-dev"] = AgentProjectAssignment(
+        id="alpha-maintenance:alpha-dev",
+        team_id="alpha-team",
+        project_id="alpha-maintenance",
+        agent_id="alpha-dev",
+    )
+    repo.store.write_object(state.model_dump(mode="json"))
+    session_lookup = SimpleNamespace(
+        read_all_sessions=lambda: {
+            "session-alpha-dev": SimpleNamespace(
+                session_id="session-alpha-dev",
+                expires_at=datetime(2025, 12, 31, tzinfo=UTC),
+            ),
+        }
+    )
+    query = TeamStateQueryProvider()
+    query.initialize(
+        TeamStateQueryDefinition(
+            id="state-maintenance",
+            display_name="State Maintenance",
+            type="query:team:state",
+            project_id="alpha-maintenance",
+        ),
+        QueryRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            session_lookup=session_lookup,
+        ),
+    )
+
+    scoped_state = query.execute()["state"]
+
+    runtime_operations = scoped_state["runtime_operations"]
+    expired_rows = [
+        row
+        for row in runtime_operations["attention"]
+        if row.get("kind") == "expired_agent_session"
+    ]
+    assert [row["agent_id"] for row in expired_rows] == ["alpha-dev"]
+    assert expired_rows[0]["project_id"] is None
+    assert set(expired_rows[0]["project_ids"]) == {
+        "alpha-maintenance",
+        "alpha-project",
+    }
+    assert any(
+        row["agent_id"] == "alpha-dev"
+        and set(row["project_ids"]) == {"alpha-maintenance", "alpha-project"}
+        for row in runtime_operations["session_health"]
     )
 
 

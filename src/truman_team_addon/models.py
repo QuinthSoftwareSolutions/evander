@@ -2744,7 +2744,7 @@ def _expired_session_rows(
                 state="expired",
                 team_id=health.get("team_id") or (agent.team_id if agent is not None else None),
                 agent_id=agent_id,
-                project_id=project_ids[0] if project_ids else None,
+                project_id=project_ids[0] if len(project_ids) == 1 else None,
                 project_ids=project_ids,
                 session_id=session_id,
                 session_expires_at=health.get("expires_at"),

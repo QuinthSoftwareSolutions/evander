@@ -5,6 +5,8 @@
 - Surfaced expired Team agent sessions in Team Add-on runtime operations,
   scoped Team state queries, and wake prompt context so leads and agents can
   escalate stale member sessions.
+- Kept multi-project expired-session attention visible in each assigned
+  project scope and expanded wake prompt session health to visible members.
 - Added Team Add-on UI indicators for expired sessions in the Operations view
   and agent details.
 
