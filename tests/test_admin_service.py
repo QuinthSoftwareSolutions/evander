@@ -2313,6 +2313,37 @@ def test_create_admin_agent_libvirt_records_default_template_when_vm_image_omitt
     }
 
 
+def test_create_admin_agent_libvirt_forwards_ttl_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "ttl_seconds": 604800,
+        }
+    )
+
+    assert result["success"] is True
+    assert captured["ttl_seconds"] == 604800
+    assert captured["ttl_hours"] is None
+
+
 def test_create_admin_agent_libvirt_never_allows_existing_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2384,9 +2415,16 @@ def test_create_container_agent_duplicate_session_raises(
         "backend": "container_worker_vm",
         "session_id": "container-session",
         "target_name": "container-target",
+        "ttl_seconds": 42,
     }
+    before = datetime.now(UTC)
     first = service.create_admin_agent(payload)
+    after = datetime.now(UTC)
     assert first["success"] is True
+    manifest = service.runtime.session_repository.get_session("container-session")
+    assert manifest is not None
+    assert before + timedelta(seconds=42) <= manifest.expires_at
+    assert manifest.expires_at <= after + timedelta(seconds=42)
 
     with pytest.raises(ValueError, match="Session already exists: container-session"):
         service.create_admin_agent(dict(payload))
@@ -12670,6 +12708,37 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         },
     }
     assert result.message == "ok:setup_vm.sh"
+
+
+def test_create_vm_uses_ttl_seconds_for_session_expiry(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok:setup_vm.sh", stderr=""
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run)
+
+    before = datetime.now(UTC)
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        ttl_seconds=90,
+    )
+    after = datetime.now(UTC)
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert before + timedelta(seconds=90) <= manifest.expires_at
+    assert manifest.expires_at <= after + timedelta(seconds=90)
 
 
 def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_setup_args(

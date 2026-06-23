@@ -103,6 +103,7 @@ type AgentCreateFormState = {
   vmName: string;
   targetName: string;
   sessionId: string;
+  ttlDuration: string;
   model: string;
   provider: string;
   vmUser: string;
@@ -190,6 +191,7 @@ function emptyCreateForm(): AgentCreateFormState {
     vmName: "",
     targetName: "",
     sessionId: "",
+    ttlDuration: "7d",
     model: "",
     provider: "",
     vmUser: "agent",
@@ -285,6 +287,42 @@ function optionalNumber(value: string): number | null {
   if (!trimmed) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseDurationSeconds(value: string): number | null {
+  const match = value
+    .trim()
+    .toLowerCase()
+    .match(
+      /^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$/,
+    );
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isInteger(amount) || amount <= 0) return null;
+  const unitSeconds: Record<string, number> = {
+    s: 1,
+    sec: 1,
+    secs: 1,
+    second: 1,
+    seconds: 1,
+    m: 60,
+    min: 60,
+    mins: 60,
+    minute: 60,
+    minutes: 60,
+    h: 60 * 60,
+    hr: 60 * 60,
+    hrs: 60 * 60,
+    hour: 60 * 60,
+    hours: 60 * 60,
+    d: 24 * 60 * 60,
+    day: 24 * 60 * 60,
+    days: 24 * 60 * 60,
+    w: 7 * 24 * 60 * 60,
+    week: 7 * 24 * 60 * 60,
+    weeks: 7 * 24 * 60 * 60,
+  };
+  return amount * unitSeconds[match[2]];
 }
 
 type AgentListLoadOptions = {
@@ -839,6 +877,8 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
     session_id: optionalText(form.sessionId),
     directory_path: optionalText(directoryPath),
   };
+  const ttlSeconds = parseDurationSeconds(form.ttlDuration);
+  if (ttlSeconds != null) payload.ttl_seconds = ttlSeconds;
   const model = optionalText(form.model);
   if (model) payload.model = model;
   const agentProvider = optionalText(form.agentProvider);
@@ -1786,6 +1826,11 @@ export function AgentsPage() {
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
   }
 
+  function ttlDurationIsInvalid(value: string): boolean {
+    const trimmed = value.trim();
+    return !trimmed || parseDurationSeconds(trimmed) == null;
+  }
+
   function toggleInstallSkill(skillName: string, selected: boolean) {
     setSkillInstallForm((current) => {
       const selectedSkills = new Set(current.codexSkills);
@@ -1847,6 +1892,12 @@ export function AgentsPage() {
     }
     if (createForm.backend === "container_worker_vm" && !createForm.sessionId.trim()) {
       setInlineValidation("Session id is required for container workers.");
+      return;
+    }
+    if (ttlDurationIsInvalid(createForm.ttlDuration)) {
+      setInlineValidation(
+        "Session TTL must use seconds, minutes, hours, days, or weeks, for example 30m, 8h, 7d, or 2w.",
+      );
       return;
     }
     if (createLabelsValidationError) {
@@ -2548,6 +2599,18 @@ export function AgentsPage() {
                       value={createForm.sessionId}
                       onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
                       placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <CreateFieldLabel tooltip="How long the created session remains active before expiry. Use s, m, h, d, or w, for example 30m, 8h, 7d, or 2w.">
+                      Session TTL
+                    </CreateFieldLabel>
+                    <input
+                      value={createForm.ttlDuration}
+                      onChange={(event) =>
+                        setCreateForm((current) => ({ ...current, ttlDuration: event.target.value }))
+                      }
+                      placeholder="7d"
                     />
                   </label>
                   <label className="field-stack">

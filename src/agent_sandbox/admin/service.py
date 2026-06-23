@@ -5862,7 +5862,16 @@ def _default_session_ttl(policy: EffectivePolicyConfig) -> timedelta:
     return timedelta(seconds=policy.default_session_ttl_seconds)
 
 
-def _resolve_session_ttl(policy: EffectivePolicyConfig, ttl_hours: int | None) -> timedelta:
+def _resolve_session_ttl(
+    policy: EffectivePolicyConfig,
+    ttl_hours: int | None,
+    *,
+    ttl_seconds: int | None = None,
+) -> timedelta:
+    if ttl_seconds is not None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be a positive integer")
+        return timedelta(seconds=ttl_seconds)
     if ttl_hours is not None:
         return timedelta(hours=ttl_hours)
     return _default_session_ttl(policy)
@@ -6806,6 +6815,7 @@ def _build_issue_session_manifest(
     issue_number: str | None,
     directory_path: str,
     ttl_hours: int | None,
+    ttl_seconds: int | None = None,
     extra_allowed_tools: list[str | ToolName] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
@@ -6922,7 +6932,8 @@ def _build_issue_session_manifest(
             else communication_file_require_approval_for_send
         ),
         web_search_enabled=web_search_enabled,
-        expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
+        expires_at=_utc_now()
+        + _resolve_session_ttl(policy, ttl_hours, ttl_seconds=ttl_seconds),
         metadata=metadata,
     )
 
@@ -12123,6 +12134,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 labels=_normalize_session_labels(payload.get("labels")),
                 model=self._agent_optional_string(payload, "model"),
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
+                ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
                 **(
@@ -12277,6 +12289,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             issue_number=None,
             directory_path=directory_path,
             ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
+            ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
             extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
             **(
                 {"tool_argument_policies": payload["tool_argument_policies"]}
@@ -22634,6 +22647,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         model: str | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
+        ttl_seconds: int | None = None,
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
         tool_argument_policies: dict[str, list[Any]] | None = None,
@@ -22703,6 +22717,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             labels=labels,
             model=model,
             vm_user=vm_user,
+            ttl_seconds=ttl_seconds,
             ttl_hours=ttl_hours,
             allowed_tools=allowed_tools,
             tool_argument_policies=tool_argument_policies,

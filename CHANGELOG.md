@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-23 - Agent Create Session TTL
+
+- Added a Session TTL duration field to the Admin Web Agents create dialog,
+  defaulting to `7d` and accepting seconds, minutes, hours, days, and weeks.
+- Added `ttl_seconds` support to agent creation so UI-created sessions can use
+  precise duration values while existing `ttl_hours` callers continue to work.
+
 ## 2026-06-23 - Discord Target Cursor Fast-Forward
 
 - Fast-forwarded per-session Discord inbox cursors when a Discord communication

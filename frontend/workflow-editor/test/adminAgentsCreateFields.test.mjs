@@ -35,6 +35,13 @@ function buildCreatePayloadSource() {
   );
 }
 
+function parseDurationSecondsSource() {
+  return sourceBetween(
+    "function parseDurationSeconds(value: string): number | null {",
+    "type AgentListLoadOptions = {",
+  );
+}
+
 function handleCreateAgentSource() {
   return sourceBetween(
     "function handleCreateAgent() {",
@@ -67,9 +74,23 @@ test("create form state carries backend-aware provider and image selections", ()
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?agentProvider: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?modelProviderMode: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?model: string;[\s\S]*?\};/);
+  assert.match(page, /type AgentCreateFormState = \{[\s\S]*?ttlDuration: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?vmImage: string;[\s\S]*?\};/);
   // emptyCreateForm must seed both image/provider fields so the modal opens with defaults.
-  assert.match(page, /function emptyCreateForm\([\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?modelProviderMode: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
+  assert.match(page, /function emptyCreateForm\([\s\S]*?ttlDuration: "7d",[\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?modelProviderMode: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
+});
+
+test("create TTL duration accepts seconds through weeks and emits seconds", () => {
+  const parser = parseDurationSecondsSource();
+  assert.match(parser, /s: 1,/);
+  assert.match(parser, /m: 60,/);
+  assert.match(parser, /h: 60 \* 60,/);
+  assert.match(parser, /d: 24 \* 60 \* 60,/);
+  assert.match(parser, /w: 7 \* 24 \* 60 \* 60,/);
+  assert.match(parser, /amount <= 0/);
+  const payloadSource = buildCreatePayloadSource();
+  assert.match(payloadSource, /const ttlSeconds = parseDurationSeconds\(form\.ttlDuration\);/);
+  assert.match(payloadSource, /if \(ttlSeconds != null\) payload\.ttl_seconds = ttlSeconds;/);
 });
 
 test("buildCreatePayload gates provider and image fields by backend", () => {
@@ -204,6 +225,7 @@ test("create modal exposes model override and structured initial policy controls
     "Web search",
     "Model",
     "Model relay",
+    "Session TTL",
   ]) {
     assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -248,6 +270,7 @@ test("create modal explains provider and bootstrap fields with tooltips", () => 
     "Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.",
     "Agent CLI to bootstrap and run in the target. Claude bootstraps Claude Code for VM agents; Directory default uses the configured provider default.",
     "Relay mode for Codex model requests. Leave blank to use the directory default; choose Local OpenAI for host-local Ollama.",
+    "How long the created session remains active before expiry. Use s, m, h, d, or w, for example 30m, 8h, 7d, or 2w.",
     "Model stored on the session for runtime prompts and resumes. Leave blank to use the selected agent provider or directory default.",
     "VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.",
     "Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.",
@@ -282,6 +305,7 @@ test("request and options types expose the new create fields", () => {
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?agent_provider\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?model_provider_mode\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?model\?: string \| null;[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateRequest = \{[\s\S]*?ttl_seconds\?: number \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?vm_image\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?communication_target_ids\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?teams_channel_allowlist\?: string\[\];[\s\S]*?\};/);
