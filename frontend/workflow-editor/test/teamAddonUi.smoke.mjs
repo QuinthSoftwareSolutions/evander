@@ -2276,8 +2276,18 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
   const initialState = seededOrgChartState();
+  initialState.teams.team.project_ids.push("other-project");
+  initialState.projects["other-project"] = {
+    id: "other-project",
+    team_id: "team",
+    name: "Other Project",
+    lead_agent_id: "lead",
+    goals: [],
+    git: null,
+    status: "active",
+  };
   delete initialState.agents.backend.project_id;
-  initialState.agents.backend.project_ids = ["project"];
+  initialState.agents.backend.project_ids = ["project", "other-project"];
   initialState.agents.backend.project_assignments = [
     {
       id: "project__backend__project_member",
@@ -2287,8 +2297,16 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
       role_id: "project__backend",
       kind: "project_member",
     },
+    {
+      id: "other-project__backend__project_member",
+      team_id: "team",
+      project_id: "other-project",
+      agent_id: "backend",
+      role_id: "project__backend",
+      kind: "project_member",
+    },
   ];
-  const { port } = await createTeamAddonServer(t, {
+  const { port, requests } = await createTeamAddonServer(t, {
     initialState,
   });
   const page = await openBrowserPage(t, port);
@@ -2417,6 +2435,19 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     state: "visible",
   });
   assert.equal(await page.locator('#edit-record-form select[name="project_id"]').inputValue(), "project");
+  await page.locator('#edit-record-form input[name="display_name"]').fill("Backend Worker Updated");
+  await page.locator("#edit-record-form").getByRole("button", { name: "Save changes" }).click();
+  await page.locator("#status-message", { hasText: /Saved revision \d+\./ }).waitFor({
+    state: "visible",
+  });
+  const editRequest = requests.find(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname === "/api/addons/team-addon/agents/backend",
+  );
+  assert.ok(editRequest);
+  assert.equal(editRequest.payload.display_name, "Backend Worker Updated");
+  assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {

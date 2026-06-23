@@ -9473,9 +9473,11 @@ function editPayloadForForm(type, form) {
     };
   }
   if (type === "agent") {
-    return {
+    const selectedProjectId = text(data.project_id);
+    const currentRecord = recordForEdit("agent", text(form.dataset.editId));
+    const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
+    const payload = {
       team_id: text(data.team_id) || null,
-      project_id: text(data.project_id) || null,
       role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id) || null,
@@ -9488,6 +9490,10 @@ function editPayloadForForm(type, form) {
       status: text(data.status),
       context_clearing_policy: text(data.context_clearing_policy) || "off",
     };
+    if (selectedProjectId !== currentProjectId) {
+      payload.project_id = selectedProjectId || null;
+    }
+    return payload;
   }
   if (type === "role") {
     return {

@@ -19,6 +19,8 @@
 - Fixed the Team Add-on agent edit dialog so the Project select is populated
   from assignment-backed `project_ids` and `project_assignments` instead of the
   removed legacy agent `project_id` field.
+- Stopped unchanged agent edit saves from sending `project_id`, preserving
+  multi-project memberships during unrelated edits.
 
 ## 2026-06-23 - Team Add-on Permission Help
 
