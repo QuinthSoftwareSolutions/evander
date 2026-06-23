@@ -71,6 +71,7 @@ DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
 ACTION_CONTRACT_SCHEMA_VERSION = 12
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
+ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
 TEAM_AGENT_GUIDANCE_VERSION = 2
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
@@ -355,6 +356,29 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Dispatch ID",
                 "string",
                 description="Dispatch id for the active Team lease being completed.",
+            ),
+            _catalog_field(
+                "action_artifact_path",
+                "Action artifact path",
+                "string",
+                description="Artifact path the persistent agent was expected to write.",
+                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
+                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
+            ),
+            _catalog_field(
+                "recover_missing_action",
+                "Recover missing action",
+                "boolean",
+                description="When true, one missing action artifact completion resumes the same dispatch with a narrow recovery prompt before failing the lease.",
+                default_value=True,
+            ),
+            _catalog_field(
+                "recovery_resume_mode",
+                "Recovery resume mode",
+                "string",
+                description="Resume mode used for the missing-action recovery prompt.",
+                default_value="same_context",
+                placeholder="same_context",
             ),
             _revision_field(),
         ],
@@ -924,6 +948,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 seed_result = _seed_action_contract_files(
                     context,
                     agent=agent,
+                    dispatch_id=lease["dispatch_id"],
                     action_artifact_path=action_path,
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
@@ -1055,6 +1080,7 @@ def _dispatch_queued_team_chat_messages(
             seed_result = _seed_action_contract_files(
                 context,
                 agent=agent_payload,
+                dispatch_id=dispatch_id,
                 action_artifact_path=action_artifact_path,
             )
             guidance_result = _seed_team_agent_guidance(context, agent=agent_payload)
@@ -1230,6 +1256,9 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             "error",
             "session_id",
             "dispatch_id",
+            "action_artifact_path",
+            "recover_missing_action",
+            "recovery_resume_mode",
             "expected_revision",
         )
         if resolved_config:
@@ -1241,6 +1270,31 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         original_action = dict(action) if isinstance(action, dict) else None
         artifact_publish_records: list[dict[str, Any]] = []
         artifact_publish_errors: list[str] = []
+        action_error = _optional_text(payload.get("error"))
+        action_artifact_path = (
+            _optional_text(payload.get("action_artifact_path"))
+            or DEFAULT_ACTION_ARTIFACT_PATH
+        )
+        if (
+            not valid
+            and _optional_bool(payload.get("recover_missing_action"), default=True)
+            and _is_missing_action_artifact_error(action_error, action_artifact_path)
+        ):
+            recovery = _dispatch_missing_action_recovery(
+                self.runtime_context,
+                repo=repo,
+                session_id=_optional_text(payload.get("session_id")),
+                dispatch_id=_optional_text(payload.get("dispatch_id")),
+                action_artifact_path=action_artifact_path,
+                error=action_error or "artifact file not found",
+                expected_revision=expected_revision,
+                resume_mode=(
+                    _optional_text(payload.get("recovery_resume_mode"))
+                    or "same_context"
+                ),
+            )
+            if recovery is not None:
+                return recovery
         if valid:
             action, artifact_publish_records, artifact_publish_errors = (
                 _prepare_deliverable_artifacts(
@@ -1252,7 +1306,6 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
                     expected_revision=expected_revision,
                 )
             )
-        action_error = _optional_text(payload.get("error"))
         if artifact_publish_errors:
             publish_error = "; ".join(artifact_publish_errors)
             action_error = f"{action_error}; {publish_error}" if action_error else publish_error
@@ -1295,6 +1348,9 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             result["published_event_ids"] = published_event_ids
         if artifact_publish_records:
             result["published_deliverable_artifacts"] = artifact_publish_records
+        result.setdefault("recovery_dispatched", False)
+        result.setdefault("recovery_action_record_id", None)
+        result.setdefault("recovery_result", None)
         if isinstance(agent_id, str):
             state_payload = _filtered_team_state_payload(
                 state,
@@ -1307,6 +1363,171 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             state_payload["conversations"] = {}
             state_payload["conversation_messages"] = {}
         return {**result, "state": state_payload}
+
+
+def _is_missing_action_artifact_error(
+    error: str | None,
+    action_artifact_path: str,
+) -> bool:
+    normalized = str(error or "").casefold()
+    if "artifact file not found" not in normalized:
+        return False
+    path = action_artifact_path.strip()
+    if path.startswith("/artifacts/"):
+        path = path[len("/artifacts/") :]
+    path = path.strip("/")
+    if not path:
+        return True
+    return path.casefold() in normalized or Path(path).name.casefold() in normalized
+
+
+def _dispatch_missing_action_recovery(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    session_id: str | None,
+    dispatch_id: str | None,
+    action_artifact_path: str,
+    error: str,
+    expected_revision: int | None,
+    resume_mode: str,
+) -> dict[str, Any] | None:
+    if not session_id or not dispatch_id:
+        return None
+    resumer = getattr(context, "agent_resumer", None)
+    resume_agent = getattr(resumer, "resume_agent", None)
+    if not callable(resume_agent):
+        return None
+    try:
+        state, recovery_record = repo.record_missing_action_recovery_prompted(
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            action_artifact_path=action_artifact_path,
+            error=error,
+            expected_revision=expected_revision,
+        )
+    except (TeamStateConflictError, ValueError):
+        return None
+    if recovery_record.get("already_prompted") or recovery_record.get("error"):
+        return None
+    agent_id = _optional_text(recovery_record.get("agent_id"))
+    if agent_id is None:
+        return None
+    prompt = _missing_action_recovery_prompt(
+        agent_id=agent_id,
+        dispatch_id=dispatch_id,
+        action_artifact_path=action_artifact_path,
+        error=error,
+    )
+    try:
+        resume_result = resume_agent(
+            target=session_id,
+            prompt=prompt,
+            resume_mode=resume_mode,
+            dispatch_id=dispatch_id,
+        )
+    except Exception:
+        return None
+    result_payload = _coerce_mapping(resume_result)
+    if _result_reports_failure(result_payload):
+        return None
+    state_payload = _filtered_team_state_payload(
+        state,
+        team_id=None,
+        project_id=None,
+        agent_id=agent_id,
+    )
+    return {
+        **_empty_apply_result(
+            success=True,
+            revision=state.revision,
+            agent_id=agent_id,
+        ),
+        "recovery_dispatched": True,
+        "recovery_action_record_id": recovery_record.get("action_record_id"),
+        "recovery_result": result_payload,
+        "state": state_payload,
+    }
+
+
+def _missing_action_recovery_prompt(
+    *,
+    agent_id: str,
+    dispatch_id: str,
+    action_artifact_path: str,
+    error: str,
+) -> str:
+    absolute_path = (
+        action_artifact_path
+        if action_artifact_path.startswith("/artifacts/")
+        else f"/artifacts/{action_artifact_path.strip('/')}"
+    )
+    example = {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "agent_id": agent_id,
+        "dispatch_id": dispatch_id,
+        "task_updates": [],
+        "status_reports": [],
+        "questions": [],
+        "deliverables": [],
+        "handled_inbox_item_ids": [],
+        "notes": "Recovery action artifact for the completed Team dispatch.",
+    }
+    return (
+        "Your previous Team dispatch completed without the required Team action "
+        f"artifact. Original artifact read error: {error}\n\n"
+        "Do not continue implementation work in this recovery turn. Write only the "
+        f"missing UTF-8 JSON action object to {absolute_path}, then finish.\n\n"
+        "Use the Team context from the just-completed dispatch. If work is not ready "
+        "for a deliverable, write a status_reports item to your direct superior or "
+        "a question if you need a response. If you created deliverable files, make "
+        "sure they are under /artifacts and reference them with relative "
+        "deliverables[].artifact_paths plus the correct task_id. Include any "
+        "status-request inbox ids you are answering in handled_inbox_item_ids.\n\n"
+        "Minimum valid shape:\n"
+        f"{json.dumps(example, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _empty_apply_result(
+    *,
+    success: bool,
+    revision: int,
+    agent_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "success": success,
+        "revision": revision,
+        "agent_id": agent_id,
+        "applied": False,
+        "errors": [],
+        "created_inbox_item_ids": [],
+        "created_deliverable_ids": [],
+        "created_task_ids": [],
+        "created_status_request_ids": [],
+        "created_review_request_ids": [],
+        "decided_review_request_ids": [],
+        "updated_goal_ids": [],
+        "operator_escalation_event_ids": [],
+        "git_promotion_event_ids": [],
+        "release_package_ids": [],
+        "updated_task_ids": [],
+        "handled_inbox_item_ids": [],
+        "created_ephemeral_assignment_ids": [],
+        "ephemeral_events": [],
+        "events": [],
+        "accepted_ephemeral_assignment_ids": [],
+        "rejected_ephemeral_assignment_ids": [],
+        "created_stand_down_ids": [],
+        "revoked_stand_down_ids": [],
+        "created_chat_reply_message_ids": [],
+        "replied_chat_message_ids": [],
+        "created_operator_chat_message_ids": [],
+        "published_deliverable_artifacts": [],
+        "recovery_dispatched": False,
+        "recovery_action_record_id": None,
+        "recovery_result": None,
+    }
 
 
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
@@ -2445,6 +2666,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         else ""
     )
     schema = {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
         "task_updates": [],
@@ -2481,6 +2703,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Reviewer roles should generally receive review_requests or review-focused "
         "tasks, not implementation task ownership.\n\n"
         f"{_task_creation_mandate_guidance(agent)}"
+        f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repo_prompt_guidance(project_repo)}"
         f"{handoff_section}"
         f"{action_feedback_section}"
@@ -2488,10 +2711,47 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
         f"use {example_path} as a writable template. Do not infer required fields "
-        "from memory; follow the schema file.\n\n"
+        "from memory; follow the schema file. A helper command has also been "
+        f"seeded at {ACTION_CONTRACT_HELPER_PATH}; pass it a draft JSON file or "
+        "pipe a JSON object to it and it will fill schema_version, agent_id, "
+        f"dispatch_id, and write /artifacts/{action_artifact_path}.\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
+    )
+
+
+def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
+    tasks = [
+        task
+        for task in lease.get("tasks") or []
+        if isinstance(task, Mapping) and _optional_text(task.get("id")) is not None
+    ]
+    if not tasks:
+        return (
+            "Deliverable mechanics for this dispatch:\n"
+            "- If no deliverable is ready, still write the Team action artifact with "
+            "notes, questions, status_reports, or handled_inbox_item_ids as needed.\n"
+            "- Do not finish without writing the action artifact, even for a status-only "
+            "wake.\n\n"
+        )
+    task_ids = [_required_text(task.get("id"), "task.id") for task in tasks]
+    default_task_id = task_ids[0]
+    return (
+        "Deliverable mechanics for this dispatch:\n"
+        f"- Valid owned task_id values for deliverables are: {', '.join(task_ids)}.\n"
+        "- For a report deliverable, write it under /artifacts first, for example "
+        f"/artifacts/team-deliverables/{default_task_id}/report.md.\n"
+        "- In deliverables[].artifact_paths, list paths relative to /artifacts, for "
+        f"example team-deliverables/{default_task_id}/report.md. Do not use absolute "
+        "paths there.\n"
+        "- A non-Git deliverable must include task_id, summary, and artifact_paths. "
+        "If you created or updated useful files only in the repo checkout, copy or "
+        "summarize the deliverable under /artifacts before reporting it.\n"
+        "- If no deliverable is ready, still write the Team action artifact with "
+        "notes, questions, status_reports, or handled_inbox_item_ids as needed.\n"
+        "- Do not finish without writing the action artifact, even for a status-only "
+        "wake.\n\n"
     )
 
 
@@ -2550,7 +2810,10 @@ def _build_team_chat_prompt(
         "operator request. Reply to this human operator by writing "
         f"{action_artifact} with a chat_replies entry. Do not use questions "
         "or status_reports for this human chat reply; those are for agent-to-agent "
-        "inbox communication.\n\n"
+        "inbox communication. A helper command has been seeded at "
+        f"{ACTION_CONTRACT_HELPER_PATH}; pass it a draft JSON file or pipe a JSON "
+        "object to it and it will fill schema_version, agent_id, dispatch_id, and "
+        f"write {action_artifact}.\n\n"
         f"Current agent: {agent_display_name} ({agent_id})\n"
         f"Human operator: {operator_label} ({operator_user_id})\n"
         f"Conversation ID: {conversation_id}\n"
@@ -2805,26 +3068,14 @@ def _seed_action_contract_files(
     context: Any,
     *,
     agent: Mapping[str, Any],
+    dispatch_id: str,
     action_artifact_path: str,
 ) -> dict[str, Any]:
     session_id = _required_text(agent.get("session_id"), "session_id")
+    agent_id = _required_text(agent.get("id"), "agent.id")
+    normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
     schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
     example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
-    metadata = _session_metadata(context, session_id=session_id)
-    known_vm_ip = _session_known_vm_ip(metadata)
-    if _metadata_has_current_action_contract(
-        metadata,
-        schema_path=schema_path,
-        example_path=example_path,
-        action_artifact_path=f"/artifacts/{action_artifact_path}",
-    ):
-        return {
-            "seeded": False,
-            "reason": "already_seeded",
-            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-            "schema_path": schema_path,
-            "example_path": example_path,
-        }
 
     provider = AgentCopyFilesEffectProvider()
     provider.initialize(
@@ -2847,23 +3098,33 @@ def _seed_action_contract_files(
                     "mode": "0644",
                     "overwrite": True,
                 },
+                {
+                    "content": _team_finish_helper_content(
+                        agent_id=agent_id,
+                        dispatch_id=normalized_dispatch_id,
+                        action_artifact_path=action_artifact_path,
+                    ),
+                    "destination_path": ACTION_CONTRACT_HELPER_PATH,
+                    "mode": "0755",
+                    "overwrite": True,
+                },
             ],
         ),
         context,
     )
-    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
-    copy_result = provider.execute(resolved_config=resolved_config)
+    copy_result = provider.execute()
     if not bool(copy_result.get("success")):
         message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
         raise RuntimeError(message or "failed to seed Team action contract files")
 
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
     _mark_action_contract_seeded(
         context,
         session_id=session_id,
         schema_path=schema_path,
         example_path=example_path,
         action_artifact_path=f"/artifacts/{action_artifact_path}",
+        helper_path=ACTION_CONTRACT_HELPER_PATH,
         copy_result=copy_result,
         vm_ip=copied_vm_ip,
     )
@@ -2872,9 +3133,76 @@ def _seed_action_contract_files(
         "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
         "schema_path": schema_path,
         "example_path": example_path,
+        "helper_path": ACTION_CONTRACT_HELPER_PATH,
         "vm_ip": copied_vm_ip,
         "copied_paths": list(copy_result.get("copied_paths") or []),
     }
+
+
+def _team_finish_helper_content(
+    *,
+    agent_id: str,
+    dispatch_id: str,
+    action_artifact_path: str,
+) -> str:
+    absolute_path = (
+        action_artifact_path
+        if action_artifact_path.startswith("/artifacts/")
+        else f"/artifacts/{action_artifact_path.strip('/')}"
+    )
+    defaults = {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "agent_id": agent_id,
+        "dispatch_id": dispatch_id,
+        "task_updates": [],
+        "task_creations": [],
+        "status_requests": [],
+        "questions": [],
+        "status_reports": [],
+        "operator_chat_messages": [],
+        "deliverables": [],
+        "review_requests": [],
+        "review_decisions": [],
+        "goal_updates": [],
+        "operator_escalations": [],
+        "stand_downs": [],
+        "stand_down_revocations": [],
+        "git_review_promotions": [],
+        "git_feature_updates": [],
+        "git_release_requests": [],
+        "ephemeral_requests": [],
+        "ephemeral_acceptances": [],
+        "handled_inbox_item_ids": [],
+        "notes": "",
+    }
+    return (
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        f"DEFAULTS = {json.dumps(defaults, sort_keys=True, indent=2)}\n"
+        f"ACTION_PATH = Path({json.dumps(absolute_path)})\n\n"
+        "def load_payload():\n"
+        "    if len(sys.argv) > 2:\n"
+        "        print('usage: team-finish [draft-action.json]', file=sys.stderr)\n"
+        "        raise SystemExit(64)\n"
+        "    if len(sys.argv) == 2:\n"
+        "        return json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "    raw = sys.stdin.read().strip()\n"
+        "    return json.loads(raw) if raw else {}\n\n"
+        "payload = load_payload()\n"
+        "if not isinstance(payload, dict):\n"
+        "    print('team action must be a JSON object', file=sys.stderr)\n"
+        "    raise SystemExit(64)\n"
+        "for key, value in DEFAULTS.items():\n"
+        "    payload.setdefault(key, value)\n"
+        "payload['schema_version'] = DEFAULTS['schema_version']\n"
+        "payload['agent_id'] = DEFAULTS['agent_id']\n"
+        "payload['dispatch_id'] = DEFAULTS['dispatch_id']\n"
+        "ACTION_PATH.parent.mkdir(parents=True, exist_ok=True)\n"
+        "ACTION_PATH.write_text(json.dumps(payload, sort_keys=True, indent=2) + '\\n', encoding='utf-8')\n"
+        "print(str(ACTION_PATH))\n"
+    )
 
 
 def _seed_team_agent_guidance(
@@ -2885,7 +3213,6 @@ def _seed_team_agent_guidance(
     session_id = _required_text(agent.get("session_id"), "session_id")
     identity = _agent_guidance_identity(agent)
     metadata = _session_metadata(context, session_id=session_id)
-    known_vm_ip = _session_known_vm_ip(metadata)
     if _metadata_has_current_agent_guidance(metadata, agent=agent):
         return {
             "seeded": False,
@@ -2917,13 +3244,12 @@ def _seed_team_agent_guidance(
         ),
         context,
     )
-    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
-    copy_result = provider.execute(resolved_config=resolved_config)
+    copy_result = provider.execute()
     if not bool(copy_result.get("success")):
         message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
         raise RuntimeError(message or "failed to seed Team agent guidance")
 
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
     _mark_agent_guidance_seeded(
         context,
         session_id=session_id,
@@ -2950,7 +3276,6 @@ def _seed_team_governance_guidance(
     session_id = _required_text(agent.get("session_id"), "session_id")
     identity = _agent_guidance_identity(agent)
     metadata = _session_metadata(context, session_id=session_id)
-    known_vm_ip = _session_known_vm_ip(metadata)
     if _metadata_has_current_governance_guidance(metadata, agent=agent):
         return {
             "seeded": False,
@@ -2997,13 +3322,12 @@ def _seed_team_governance_guidance(
         ),
         context,
     )
-    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
-    copy_result = provider.execute(resolved_config=resolved_config)
+    copy_result = provider.execute()
     if not bool(copy_result.get("success")):
         message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
         raise RuntimeError(message or "failed to seed Team governance guidance")
 
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
     _mark_governance_guidance_seeded(
         context,
         session_id=session_id,
@@ -3021,23 +3345,6 @@ def _seed_team_governance_guidance(
         "vm_ip": copied_vm_ip,
         "copied_paths": list(copy_result.get("copied_paths") or []),
     }
-
-
-def _session_has_current_action_contract(
-    context: Any,
-    *,
-    session_id: str,
-    schema_path: str,
-    example_path: str,
-    action_artifact_path: str,
-) -> bool:
-    metadata = _session_metadata(context, session_id=session_id)
-    return _metadata_has_current_action_contract(
-        metadata,
-        schema_path=schema_path,
-        example_path=example_path,
-        action_artifact_path=action_artifact_path,
-    )
 
 
 def _metadata_has_current_agent_guidance(
@@ -3122,42 +3429,6 @@ def _agent_guidance_identity(agent: Mapping[str, Any]) -> dict[str, str | None]:
     }
 
 
-def _metadata_has_current_action_contract(
-    metadata: Mapping[str, Any],
-    *,
-    schema_path: str,
-    example_path: str,
-    action_artifact_path: str,
-) -> bool:
-    team_addon = metadata.get("team_addon")
-    if not isinstance(team_addon, Mapping):
-        return False
-    contract = team_addon.get("action_contract")
-    if not isinstance(contract, Mapping):
-        return False
-    return (
-        int(contract.get("schema_version") or 0) == ACTION_CONTRACT_SCHEMA_VERSION
-        and contract.get("schema_path") == schema_path
-        and contract.get("example_path") == example_path
-        and contract.get("action_artifact_path") == action_artifact_path
-        and contract.get("seeded") is True
-    )
-
-
-def _session_known_vm_ip(metadata: Mapping[str, Any]) -> str | None:
-    team_addon = metadata.get("team_addon")
-    if isinstance(team_addon, Mapping):
-        for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
-            value = _optional_text(team_addon.get(key))
-            if value:
-                return value
-    for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
-        value = _optional_text(metadata.get(key))
-        if value:
-            return value
-    return None
-
-
 def _session_metadata(context: Any, *, session_id: str) -> dict[str, Any]:
     lookup = getattr(context, "session_lookup", None)
     read_all = getattr(lookup, "read_all_sessions", None)
@@ -3184,6 +3455,7 @@ def _mark_action_contract_seeded(
     schema_path: str,
     example_path: str,
     action_artifact_path: str,
+    helper_path: str,
     copy_result: Mapping[str, Any],
     vm_ip: str | None,
 ) -> None:
@@ -3198,6 +3470,7 @@ def _mark_action_contract_seeded(
             "schema_path": schema_path,
             "example_path": example_path,
             "action_artifact_path": action_artifact_path,
+            "helper_path": helper_path,
             "copied_paths": list(copy_result.get("copied_paths") or []),
         }
     }

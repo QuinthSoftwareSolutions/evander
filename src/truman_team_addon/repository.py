@@ -87,6 +87,7 @@ EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
+MISSING_ACTION_RECOVERY_MARKER = "missing action artifact recovery prompt dispatched"
 
 _NON_TERMINAL_TASK_STATES = frozenset(
     {
@@ -4245,6 +4246,75 @@ class TeamStateRepository:
         ]
         return state, result
 
+    def record_missing_action_recovery_prompted(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        action_artifact_path: str,
+        error: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_path = _required_text(action_artifact_path, "action_artifact_path")
+        result: dict[str, Any] = {
+            "recorded": False,
+            "already_prompted": False,
+            "agent_id": None,
+            "action_record_id": None,
+            "error": None,
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            agent = _agent_for_session(state_model, session_id=normalized_session_id)
+            result["agent_id"] = agent.id
+            runtime = state_model.agent_runtimes.setdefault(
+                agent.id,
+                AgentRuntime(agent_id=agent.id),
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                expected = runtime.active_dispatch_id or "none"
+                result["error"] = (
+                    "cannot recover missing Team action artifact because dispatch_id "
+                    f"{normalized_dispatch_id} does not match active lease {expected}"
+                )
+                return state_model
+            for record in state_model.action_records.values():
+                if (
+                    record.agent_id == agent.id
+                    and record.dispatch_id == normalized_dispatch_id
+                    and record.error is not None
+                    and MISSING_ACTION_RECOVERY_MARKER in record.error
+                ):
+                    result["already_prompted"] = True
+                    result["action_record_id"] = record.id
+                    return state_model
+            action_id = f"action-{uuid4().hex}"
+            recovery_error = (
+                f"{MISSING_ACTION_RECOVERY_MARKER}: {normalized_path}; "
+                f"original error: {error}"
+            )
+            state_model.action_records[action_id] = AgentActionRecord(
+                id=action_id,
+                agent_id=agent.id,
+                dispatch_id=normalized_dispatch_id,
+                action={
+                    "agent_id": agent.id,
+                    "dispatch_id": normalized_dispatch_id,
+                },
+                success=False,
+                error=recovery_error,
+            )
+            runtime.updated_at = utc_now()
+            result["recorded"] = True
+            result["action_record_id"] = action_id
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        return state, result
+
     def record_git_promotion_result(
         self,
         *,
@@ -5715,6 +5785,11 @@ def _correction_hints(error: str) -> list[str]:
         hints.append(
             "For Git-only deliverables, omit artifact_paths; otherwise list staged "
             "paths under /artifacts."
+        )
+    if "artifact file not found" in normalized or MISSING_ACTION_RECOVERY_MARKER in normalized:
+        hints.append(
+            "Before finishing any Team wake, write /artifacts/team-action.json. "
+            "Use the seeded team-finish helper to fill agent_id and dispatch_id."
         )
     if "supersedes_deliverable_id" in normalized:
         hints.append(

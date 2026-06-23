@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Action Handoff Hardening
+
+- Reseeded Team action contract files on every persistent wake and avoided
+  stale VM-IP metadata when copying Team guidance or action contract files.
+- Added a per-dispatch `team-finish` helper in Team agent sessions to fill
+  `schema_version`, `agent_id`, and `dispatch_id` before writing
+  `/artifacts/team-action.json`.
+- Added a one-shot missing-action recovery prompt that keeps the active Team
+  lease open for the same dispatch before falling back to the normal failure
+  path.
+- Tightened wake prompts with explicit deliverable staging, relative
+  `artifact_paths`, and owned `task_id` guidance.
+
 ## 2026-06-23 - Team Add-on Expired Session Visibility
 
 - Surfaced expired Team agent sessions in Team Add-on runtime operations,

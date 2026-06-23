@@ -709,7 +709,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 dispatch_id=dispatch_id,
             )
             conversation = state.conversations[conversation_id]
-            agent_setup = _seed_team_chat_agent_files(context, agent)
+            agent_setup = _seed_team_chat_agent_files(
+                context,
+                agent,
+                dispatch_id=dispatch_id,
+            )
             prompt = _build_team_chat_prompt(
                 state=state,
                 conversation=conversation,
@@ -2279,13 +2283,19 @@ def _is_active_team_dispatch_error(exc: ValueError) -> bool:
     return "already has active Team dispatch" in str(exc)
 
 
-def _seed_team_chat_agent_files(context: AddonContext, agent: Any) -> dict[str, Any]:
+def _seed_team_chat_agent_files(
+    context: AddonContext,
+    agent: Any,
+    *,
+    dispatch_id: str,
+) -> dict[str, Any]:
     runtime_context = _team_effect_runtime_context(context, agent=agent)
     agent_payload = agent.model_dump(mode="json") if hasattr(agent, "model_dump") else dict(agent)
     return {
         "action_contract": _seed_action_contract_files(
             runtime_context,
             agent=agent_payload,
+            dispatch_id=dispatch_id,
             action_artifact_path=DEFAULT_ACTION_ARTIFACT_PATH,
         ),
         "agent_guidance": _seed_team_agent_guidance(

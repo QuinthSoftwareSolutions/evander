@@ -63,6 +63,7 @@ from truman_team_addon.provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from truman_team_addon.providers import (
+    ACTION_CONTRACT_HELPER_PATH,
     ACTION_CONTRACT_SCHEMA_VERSION,
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
@@ -82,7 +83,10 @@ from truman_team_addon.providers import (
     _build_prompt,
     _publish_deliverable_artifact_bundle,
 )
-from truman_team_addon.repository import TeamStateRepository
+from truman_team_addon.repository import (
+    MISSING_ACTION_RECOVERY_MARKER,
+    TeamStateRepository,
+)
 from truman_team_addon.workflow_packs import team_runtime_v1
 
 
@@ -756,6 +760,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert [file["destination_path"] for file in copied_files] == [
         "/artifacts/team-action.schema.json",
         "/artifacts/team-action.example.json",
+        ACTION_CONTRACT_HELPER_PATH,
     ]
     guidance_files = file_copier.calls[1]["files"]
     assert guidance_files == [
@@ -885,6 +890,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert example["review_decisions"][0]["state"] == "accepted"
     assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
     assert "commit_sha" in example["git_review_promotions"][0]
+    helper = str(copied_files[2]["content"])
+    assert f'"agent_id": "backend"' in helper
+    assert str(result["dispatches"][0]["dispatch_id"]) in helper
+    assert str(copied_files[2]["mode"]) == "0755"
     assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
@@ -904,6 +913,13 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "team-action.json" in prompt
     assert "team-action.schema.json" in prompt
     assert "team-action.example.json" in prompt
+    assert ACTION_CONTRACT_HELPER_PATH in prompt
+    assert "pipe a JSON object to it" in prompt
+    assert '"schema_version":' in prompt
+    assert "Deliverable mechanics for this dispatch" in prompt
+    assert "Valid owned task_id values for deliverables are: task" in prompt
+    assert "/artifacts/team-deliverables/task/report.md" in prompt
+    assert "team-deliverables/task/report.md" in prompt
     assert TEAM_AGENT_GUIDANCE_PATH in prompt
     assert TEAM_AGENT_GUIDANCE_SECTION_ID in prompt
     assert "Task creation mandate for this dispatch" in prompt
@@ -939,9 +955,11 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "schema_path": "/artifacts/team-action.schema.json",
         "example_path": "/artifacts/team-action.example.json",
         "action_artifact_path": "/artifacts/team-action.json",
+        "helper_path": ACTION_CONTRACT_HELPER_PATH,
         "copied_paths": [
             "/artifacts/team-action.schema.json",
             "/artifacts/team-action.example.json",
+            ACTION_CONTRACT_HELPER_PATH,
         ],
     }
     assert session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"] == {
@@ -1896,12 +1914,13 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert session_store.calls[3]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
-def test_wake_due_agents_provider_skips_already_seeded_action_contract(
+def test_wake_due_agents_provider_reseeds_action_contract_every_wake_without_stale_ip(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
     session_store = FakeSessionStore()
     session_store.sessions["session-backend"].metadata = {
+        "last_known_vm_ip": "192.0.2.44",
         "team_addon": {
             "action_contract": {
                 "seeded": True,
@@ -1909,6 +1928,7 @@ def test_wake_due_agents_provider_skips_already_seeded_action_contract(
                 "schema_path": "/artifacts/team-action.schema.json",
                 "example_path": "/artifacts/team-action.example.json",
                 "action_artifact_path": "/artifacts/team-action.json",
+                "vm_ip": "192.0.2.44",
             },
             "agent_guidance": {
                 "seeded": True,
@@ -1940,9 +1960,12 @@ def test_wake_due_agents_provider_skips_already_seeded_action_contract(
     result = provider.execute()
 
     assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is False
-    assert result["dispatches"][0]["action_contract"]["reason"] == "already_seeded"
-    assert file_copier.calls == []
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
+    assert result["dispatches"][0]["action_contract"]["schema_version"] == (
+        ACTION_CONTRACT_SCHEMA_VERSION
+    )
+    assert len(file_copier.calls) == 1
+    assert "vm_ip" not in file_copier.calls[0]
     assert repo.read().agent_runtimes["backend"].active_dispatch_id is not None
 
 
@@ -2044,14 +2067,14 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     result = provider.execute()
 
     assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is False
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
-    assert len(file_copier.calls) == 1
-    copied_file = file_copier.calls[0]["files"][0]
+    assert len(file_copier.calls) == 2
+    copied_file = file_copier.calls[1]["files"][0]
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
-    assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
+    assert session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION
 
@@ -2103,8 +2126,8 @@ def test_wake_due_agents_provider_clears_inactive_agent_guidance_metadata(
 
     assert result["success"] is True
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
-    assert len(file_copier.calls) == 1
-    metadata = session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"]
+    assert len(file_copier.calls) == 2
+    metadata = session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"]
     assert metadata["inactive"] is False
     assert metadata["inactive_reason"] is None
 
@@ -2160,11 +2183,11 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     result = provider.execute()
 
     assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is False
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
     assert result["dispatches"][0]["agent_guidance"]["display_name"] == "Beatrice"
-    assert len(file_copier.calls) == 1
-    copied_file = file_copier.calls[0]["files"][0]
+    assert len(file_copier.calls) == 2
+    copied_file = file_copier.calls[1]["files"][0]
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
@@ -2172,7 +2195,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     prompt = str(resumer.calls[0]["prompt"])
     assert "Beatrice" not in prompt
     assert '"display_name"' not in prompt
-    assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
+    assert session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"][
         "display_name"
     ] == "Beatrice"
 
@@ -2957,6 +2980,115 @@ def test_invalid_action_artifact_increments_no_progress(tmp_path: Path) -> None:
     assert result["success"] is False
     reread = TeamStateRepository(tmp_path).read()
     assert reread.agent_runtimes["backend"].no_progress_count == 1
+
+
+def test_missing_persistent_action_artifact_dispatches_one_shot_recovery(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = leases[0]["dispatch_id"]
+    resumer = FakeResumer()
+    apply = TeamApplyAgentActionEffectProvider()
+    apply.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            dispatch_id=dispatch_id,
+            valid=False,
+            error="artifact file not found: team-action.json",
+            action_artifact_path="team-action.json",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+        ),
+    )
+
+    result = apply.execute()
+
+    assert result["success"] is True
+    assert result["applied"] is False
+    assert result["recovery_dispatched"] is True
+    assert result["recovery_action_record_id"]
+    assert len(resumer.calls) == 1
+    assert resumer.calls[0]["target"] == "session-backend"
+    assert resumer.calls[0]["dispatch_id"] == dispatch_id
+    assert resumer.calls[0]["resume_mode"] == "same_context"
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Do not continue implementation work" in prompt
+    assert "/artifacts/team-action.json" in prompt
+    assert '"dispatch_id":' in prompt
+    reread = TeamStateRepository(tmp_path).read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id == dispatch_id
+    assert runtime.no_progress_count == 0
+    records = list(reread.action_records.values())
+    assert len(records) == 1
+    assert records[0].dispatch_id == dispatch_id
+    assert records[0].success is False
+    assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
+
+
+def test_missing_persistent_action_artifact_fails_after_recovery_was_prompted(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = leases[0]["dispatch_id"]
+    resumer = FakeResumer()
+    first_apply = TeamApplyAgentActionEffectProvider()
+    first_apply.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply-1",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            dispatch_id=dispatch_id,
+            valid=False,
+            error="artifact file not found: team-action.json",
+            action_artifact_path="team-action.json",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+        ),
+    )
+    assert first_apply.execute()["recovery_dispatched"] is True
+
+    second_apply = TeamApplyAgentActionEffectProvider()
+    second_apply.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply-2",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            dispatch_id=dispatch_id,
+            valid=False,
+            error="artifact file not found: team-action.json",
+            action_artifact_path="team-action.json",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+        ),
+    )
+
+    result = second_apply.execute()
+
+    assert result["success"] is False
+    assert result["recovery_dispatched"] is False
+    assert len(resumer.calls) == 1
+    reread = TeamStateRepository(tmp_path).read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.no_progress_count == 1
+    records = sorted(reread.action_records.values(), key=lambda record: record.created_at)
+    assert len(records) == 2
+    assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
+    assert records[1].error == "artifact file not found: team-action.json"
 
 
 def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
