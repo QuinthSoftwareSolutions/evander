@@ -19,7 +19,9 @@ from truman_team_addon.models import (
     AgentVoiceProfile,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
+    GovernanceAgendaItemType,
     GovernanceAgendaItemState,
+    GovernanceRuntime,
     ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
@@ -2186,6 +2188,107 @@ def test_governance_group_member_removal_handles_removed_team_agenda(
         state.governance_agenda["other-agenda"].state
         == GovernanceAgendaItemState.HANDLED
     )
+    membership_agenda = [
+        item
+        for item in state.governance_agenda.values()
+        if item.id != "other-agenda"
+    ]
+    assert len(membership_agenda) == 1
+    assert membership_agenda[0].item_type == GovernanceAgendaItemType.POLICY_DECISION
+    assert membership_agenda[0].team_id is None
+    assert membership_agenda[0].payload["removed_team_ids"] == ["other"]
+    assert membership_agenda[0].payload["current_member_team_ids"] == ["team"]
+
+
+def test_governance_group_member_addition_creates_due_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+
+    def _future_governance_wake(state):
+        state.governance_runtimes["portfolio"] = GovernanceRuntime(
+            governance_group_id="portfolio",
+            next_wake_at=now + timedelta(hours=12),
+        )
+        return state
+
+    repo.update(_future_governance_wake)
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["team", "other"],
+        set_member_team_ids=True,
+        expected_revision=repo.read().revision,
+    )
+
+    agenda = list(state.governance_agenda.values())
+    assert len(agenda) == 1
+    assert agenda[0].item_type == GovernanceAgendaItemType.POLICY_DECISION
+    assert agenda[0].title == "Governance member teams changed"
+    assert agenda[0].payload == {
+        "change_type": "member_teams_changed",
+        "added_team_ids": ["other"],
+        "removed_team_ids": [],
+        "previous_member_team_ids": ["team"],
+        "current_member_team_ids": ["team", "other"],
+    }
+    assert state.governance_runtimes["portfolio"].next_wake_at is None
+
+    state, leases = repo.lease_due_governance_managers(now=now)
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "policy_decision"
+    assert leases[0]["agenda"][0]["id"] == agenda[0].id
+    assert [item["team"]["id"] for item in leases[0]["member_teams"]] == [
+        "team",
+        "other",
+    ]
+    assert state.governance_runtimes["portfolio"].wake_reason == "policy_decision"
+
+
+def test_governance_group_member_reorder_does_not_create_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["other", "team"],
+        set_member_team_ids=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.governance_groups["portfolio"].member_team_ids == ["other", "team"]
+    assert state.governance_agenda == {}
 
 
 def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -> None:

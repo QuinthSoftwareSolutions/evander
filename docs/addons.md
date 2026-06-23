@@ -448,6 +448,11 @@ set:
   governance managers to mark agenda items in their own governance groups
   handled after they have decided, routed any needed directive, or determined no
   action is needed.
+- Updating a governance group's member Teams records a pending `policy_decision`
+  agenda item with the added, removed, previous, and current member Team IDs.
+  This clears any delayed governance wake for that group so the manager receives
+  a fresh governance prompt with the new member-team summaries on the next Team
+  runtime evaluation.
 - `query:team:session-routing` classifies a completed Truman session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
   unknown session before action artifacts are applied. Persistent agents are

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Governance Membership Wakes
+
+- Recorded governance member-team additions and removals as pending
+  `policy_decision` agenda items so governance managers wake with fresh member
+  summaries after their oversight scope changes.
+
 ## 2026-06-23 - Team Add-on Context Clearing Policy
 
 - Added per-agent Team Add-on context clearing policies: `off`, `idle`, and

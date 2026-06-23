@@ -538,9 +538,10 @@ class TeamStateRepository:
                 for team_id in normalized_member_team_ids:
                     _require_present(state.teams, team_id, "member team")
                 group.member_team_ids = normalized_member_team_ids
+                added_team_ids = set(normalized_member_team_ids) - previous_member_team_ids
                 removed_team_ids = previous_member_team_ids - set(normalized_member_team_ids)
+                membership_changed_at = utc_now()
                 if removed_team_ids:
-                    now = utc_now()
                     for item in state.governance_agenda.values():
                         if (
                             item.governance_group_id != group.id
@@ -550,7 +551,15 @@ class TeamStateRepository:
                         item_team_id = _governance_agenda_effective_team_id(state, item)
                         if item_team_id in removed_team_ids:
                             item.state = GovernanceAgendaItemState.HANDLED
-                            item.updated_at = now
+                            item.updated_at = membership_changed_at
+                _record_governance_membership_change_agenda(
+                    state,
+                    group=group,
+                    previous_member_team_ids=sorted(previous_member_team_ids),
+                    added_team_ids=sorted(added_team_ids),
+                    removed_team_ids=sorted(removed_team_ids),
+                    now=membership_changed_at,
+                )
             if goals is not None:
                 group.goals = goals
             if set_max_cost_usd:
@@ -4463,6 +4472,81 @@ def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[
     manager = state.agents.get(group.manager_agent_id)
     payload["manager"] = _agent_payload(state, manager) if manager is not None else None
     return payload
+
+
+def _record_governance_membership_change_agenda(
+    state: TeamState,
+    *,
+    group: GovernanceGroup,
+    previous_member_team_ids: list[str],
+    added_team_ids: list[str],
+    removed_team_ids: list[str],
+    now: datetime,
+) -> None:
+    if not added_team_ids and not removed_team_ids:
+        return
+    if group.archived:
+        return
+
+    payload = {
+        "change_type": "member_teams_changed",
+        "added_team_ids": added_team_ids,
+        "removed_team_ids": removed_team_ids,
+        "previous_member_team_ids": previous_member_team_ids,
+        "current_member_team_ids": list(group.member_team_ids),
+    }
+    summary_parts: list[str] = []
+    if added_team_ids:
+        summary_parts.append(
+            "Added member teams: "
+            + ", ".join(_team_reference_label(state, team_id) for team_id in added_team_ids)
+            + "."
+        )
+    if removed_team_ids:
+        summary_parts.append(
+            "Removed member teams: "
+            + ", ".join(_team_reference_label(state, team_id) for team_id in removed_team_ids)
+            + "."
+        )
+    summary_parts.append(
+        "Current member teams: "
+        + (
+            ", ".join(
+                _team_reference_label(state, team_id)
+                for team_id in group.member_team_ids
+            )
+            if group.member_team_ids
+            else "none"
+        )
+        + "."
+    )
+    agenda_id = _generated_id(
+        prefix="governance-agenda",
+        labels=[group.id, "member-teams-changed"],
+        existing_ids=state.governance_agenda,
+    )
+    state.governance_agenda[agenda_id] = GovernanceAgendaItem(
+        id=agenda_id,
+        governance_group_id=group.id,
+        item_type=GovernanceAgendaItemType.POLICY_DECISION,
+        title="Governance member teams changed",
+        summary=" ".join(summary_parts),
+        payload=payload,
+        priority=TeamInboxPriority.NORMAL,
+        created_at=now,
+        updated_at=now,
+    )
+    runtime = state.governance_runtimes.get(group.id)
+    if runtime is not None:
+        runtime.next_wake_at = None
+        runtime.updated_at = now
+
+
+def _team_reference_label(state: TeamState, team_id: str) -> str:
+    team = state.teams.get(team_id)
+    if team is None:
+        return team_id
+    return f"{team.name} ({team.id})"
 
 
 def _governance_member_team_payload(
