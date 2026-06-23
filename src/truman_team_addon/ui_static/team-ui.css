@@ -518,7 +518,7 @@ button.team-record-kind-tab strong {
 
 .chat-sidebar {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, auto) minmax(0, 1fr);
   gap: 0.75rem;
 }
 
@@ -547,6 +547,8 @@ button.team-record-kind-tab strong {
   border-radius: 8px;
   padding: 0.55rem;
   background: var(--panel-alt);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-operator-scope {
@@ -580,6 +582,15 @@ button.team-record-kind-tab strong {
 .chat-message-list {
   display: grid;
   gap: 0.45rem;
+}
+
+.chat-agent-picker {
+  max-height: min(18rem, 45vh);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.15rem;
+  scrollbar-gutter: stable;
 }
 
 .chat-conversation-list {

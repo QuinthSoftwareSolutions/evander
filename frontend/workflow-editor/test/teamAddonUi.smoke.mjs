@@ -61,6 +61,18 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /Chat message sent\./);
   assert.match(script, /data-chat-scroll-conversation-id/);
   assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
+  assert.match(
+    stylesheet,
+    /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-new-picker\s*\{[\s\S]*?overflow:\s*hidden;/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-agent-picker\s*\{[\s\S]*?max-height:\s*min\(18rem, 45vh\);[\s\S]*?overflow-y:\s*auto;/,
+  );
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
   assert.match(script, /peopleViewTeams/);
@@ -3595,6 +3607,21 @@ function seededLongChatState(messageCount = 120) {
   const state = seededGitState();
   state.revision = 9;
   state.agents["alpha-lead"].display_name = "Ada";
+  for (let index = 1; index <= 30; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    state.agents[`scroll-agent-${suffix}`] = {
+      id: `scroll-agent-${suffix}`,
+      team_id: "team-alpha",
+      project_id: "alpha-project",
+      role_id: "alpha-project__implementer",
+      display_name: `Scrollable Agent ${suffix}`,
+      session_id: `session-scroll-agent-${suffix}`,
+      reports_to_agent_id: "alpha-lead",
+      subordinate_agent_ids: [],
+      ephemeral_policy: { max_concurrent: 0 },
+      status: "active",
+    };
+  }
   state.conversations = {
     "conversation-alpha-lead": {
       id: "conversation-alpha-lead",
@@ -3726,6 +3753,48 @@ test("team add-on Chat panel stays bounded and loads older messages on upward sc
   assert.ok(
     afterScrollMetrics.scrollTop > 0,
     `expected scroll position to be preserved after prepend: ${JSON.stringify(afterScrollMetrics)}`,
+  );
+
+  await page.getByRole("button", { name: "New chat" }).click();
+  const picker = page.locator(".chat-agent-picker");
+  await picker.waitFor({ state: "visible" });
+  const pickerMetrics = await picker.evaluate((element) => {
+    const sidebar = document.querySelector(".chat-sidebar");
+    if (!(sidebar instanceof HTMLElement)) {
+      return null;
+    }
+    const pickerBox = element.getBoundingClientRect();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    return {
+      clientHeight: element.clientHeight,
+      overflowY: getComputedStyle(element).overflowY,
+      pickerBottom: pickerBox.bottom,
+      scrollHeight: element.scrollHeight,
+      sidebarBottom: sidebarBox.bottom,
+    };
+  });
+  assert.ok(pickerMetrics, "expected chat picker metrics");
+  assert.match(pickerMetrics.overflowY, /auto|scroll/);
+  assert.ok(
+    pickerMetrics.scrollHeight > pickerMetrics.clientHeight,
+    `expected long agent picker to scroll internally: ${JSON.stringify(pickerMetrics)}`,
+  );
+  assert.ok(
+    pickerMetrics.pickerBottom <= pickerMetrics.sidebarBottom + 2,
+    `expected picker to stay inside sidebar: ${JSON.stringify(pickerMetrics)}`,
+  );
+  const lateAgent = page.locator('[data-chat-agent-id="scroll-agent-30"]');
+  await lateAgent.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  await lateAgent.click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "scroll-agent-30",
+      ),
+    "expected selecting a late-list chat agent to create or focus that chat",
   );
 });
 
