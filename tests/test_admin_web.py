@@ -21,7 +21,7 @@ from starlette.testclient import TestClient
 
 import agent_sandbox.admin.service as admin_service
 import agent_sandbox.admin.web.vms_issues as vms_issues_module
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.service import AgentCreateOperation, AdminService
 from agent_sandbox.admin.service import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
@@ -12046,11 +12046,15 @@ def test_admin_web_agents_create_operations_submit_list_and_get(
             "backend": "container_worker_vm",
             "session_id": "container-session",
             "target_name": "container-target",
+            "ignored_provider_token": "super-secret-token",
         },
     )
 
     assert response.status_code == 202
-    operation_id = response.json()["operation"]["operation_id"]
+    response_payload = response.json()
+    assert "request_payload" not in response_payload["operation"]
+    assert "super-secret-token" not in json.dumps(response_payload)
+    operation_id = response_payload["operation"]["operation_id"]
     operation = wait_for_agent_create_operation_status(service, operation_id, "succeeded")
     assert operation.result is not None
     assert operation.result["target_name"] == "container-target"
@@ -12059,6 +12063,7 @@ def test_admin_web_agents_create_operations_submit_list_and_get(
             "backend": "container_worker_vm",
             "session_id": "container-session",
             "target_name": "container-target",
+            "ignored_provider_token": "super-secret-token",
         }
     ]
 
@@ -12067,12 +12072,42 @@ def test_admin_web_agents_create_operations_submit_list_and_get(
 
     assert list_response.status_code == 200
     assert [item["operation_id"] for item in list_response.json()["items"]] == [operation_id]
+    assert "request_payload" not in list_response.json()["items"][0]
+    assert "super-secret-token" not in json.dumps(list_response.json())
     assert get_response.status_code == 200
     assert get_response.json()["operation"]["status"] == "succeeded"
+    assert "request_payload" not in get_response.json()["operation"]
+    assert "super-secret-token" not in json.dumps(get_response.json())
     assert (
         get_response.json()["operation"]["result"]["message"]
         == "Prepared container worker session container-session"
     )
+
+
+def test_admin_web_startup_marks_abandoned_agent_create_operations_failed(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.agent_create_operations.put(
+        "operation-running",
+        AgentCreateOperation(
+            operation_id="operation-running",
+            status="running",
+            backend="container_worker_vm",
+            target_name="container-target",
+            session_id="container-session",
+            directory_path="root",
+            owner_id="dead-admin-web",
+            owner_pid=0,
+        ),
+    )
+
+    create_app(service)
+
+    operation = service.get_admin_agent_create_operation("operation-running")
+    assert operation.status == "failed"
+    assert operation.error == "Admin Web process exited before this create operation finished."
+    assert operation.finished_at is not None
 
 
 def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(

@@ -199,7 +199,8 @@ export type AgentCreateOperation = {
   target_name: string;
   session_id: string | null;
   directory_path: string;
-  request_payload: AgentCreateRequest;
+  owner_id: string | null;
+  owner_pid: number | null;
   result: Record<string, unknown> | null;
   error: string | null;
   created_at: string;

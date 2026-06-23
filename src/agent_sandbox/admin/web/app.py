@@ -175,6 +175,7 @@ def create_app(service: AdminService) -> Starlette:
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
     addon_catalog = load_addons(service.config.addon_loader)
+    service.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return request_has_privileged_operations(auth=auth, service=service, request=request)

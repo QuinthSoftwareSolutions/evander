@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Agent Create Operation Safety
+
+- Kept async agent-create request payloads in Admin Web process memory only so
+  operation status records no longer persist or return arbitrary submitted JSON.
+- Moved abandoned create-operation recovery out of generic AdminService
+  construction and tied it to Admin Web startup with operation owner liveness
+  checks.
+
 ## 2026-06-23 - Team Add-on Existing Project Leads
 
 - Changed Team Add-on project creation so the UI assigns an existing registered

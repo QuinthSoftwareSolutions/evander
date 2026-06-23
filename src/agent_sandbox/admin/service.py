@@ -376,7 +376,8 @@ class AgentCreateOperation(BaseModel):
     target_name: str
     session_id: str | None = None
     directory_path: str = "root"
-    request_payload: dict[str, Any] = Field(default_factory=dict)
+    owner_id: str | None = None
+    owner_pid: int | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -7724,11 +7725,13 @@ class AdminService:
             self.config.runtime_dir / "agent-create-operations.json",
             AgentCreateOperation,
         )
+        self._agent_create_operation_owner_id = f"{os.getpid()}:{uuid4().hex}"
+        self._agent_create_operation_payloads: dict[str, dict[str, Any]] = {}
+        self._agent_create_operation_payloads_lock = threading.Lock()
         self._agent_create_executor = ThreadPoolExecutor(
             max_workers=_AGENT_CREATE_OPERATION_MAX_WORKERS,
             thread_name_prefix="agent-create",
         )
-        self._mark_stale_agent_create_operations_failed()
         self._execution_backend_instance = None
 
     @property
@@ -11755,15 +11758,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return selected_backend, target_name, session_id, directory_path
 
     @staticmethod
-    def _agent_create_operation_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _agent_create_operation_worker_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         return json.loads(json.dumps(dict(payload), default=str))
 
     def submit_admin_agent_create(self, payload: Mapping[str, Any]) -> AgentCreateOperation:
         if not isinstance(payload, Mapping):
             raise ValueError("Request body must be a JSON object")
-        request_payload = self._agent_create_operation_request_payload(payload)
+        worker_payload = self._agent_create_operation_worker_payload(payload)
         backend, target_name, session_id, directory_path = self._agent_create_operation_details(
-            request_payload
+            worker_payload
         )
         now = _utc_now()
         operation = AgentCreateOperation(
@@ -11773,15 +11776,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             target_name=target_name,
             session_id=session_id,
             directory_path=directory_path,
-            request_payload=request_payload,
+            owner_id=self._agent_create_operation_owner_id,
+            owner_pid=os.getpid(),
             created_at=now,
             updated_at=now,
         )
-        self.agent_create_operations.put(operation.operation_id, operation)
-        self._agent_create_executor.submit(
-            self._run_agent_create_operation,
-            operation.operation_id,
-        )
+        with self._agent_create_operation_payloads_lock:
+            self._agent_create_operation_payloads[operation.operation_id] = worker_payload
+        try:
+            self.agent_create_operations.put(operation.operation_id, operation)
+            self._agent_create_executor.submit(
+                self._run_agent_create_operation,
+                operation.operation_id,
+            )
+        except Exception:
+            with self._agent_create_operation_payloads_lock:
+                self._agent_create_operation_payloads.pop(operation.operation_id, None)
+            raise
         return self.get_admin_agent_create_operation(operation.operation_id)
 
     def list_admin_agent_create_operations(
@@ -11837,19 +11848,27 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         started_at = _utc_now()
         operation = self._update_agent_create_operation(
             operation_id,
-            lambda current: current.model_copy(
-                update={
-                    "status": "running",
-                    "started_at": current.started_at or started_at,
-                    "updated_at": started_at,
-                    "error": None,
-                }
+            lambda current: (
+                current.model_copy(
+                    update={
+                        "status": "running",
+                        "started_at": current.started_at or started_at,
+                        "updated_at": started_at,
+                        "error": None,
+                    }
+                )
+                if current.status in {"queued", "running"}
+                else current
             ),
         )
-        if operation is None:
+        if operation is None or operation.status != "running":
             return
         try:
-            result = self.create_admin_agent(operation.request_payload)
+            with self._agent_create_operation_payloads_lock:
+                worker_payload = self._agent_create_operation_payloads.get(operation_id)
+            if worker_payload is None:
+                raise RuntimeError("Agent create request payload is no longer available.")
+            result = self.create_admin_agent(worker_payload)
             finished_at = _utc_now()
             if bool(result.get("success")):
                 self._update_agent_create_operation(
@@ -11890,18 +11909,39 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     }
                 ),
             )
+        finally:
+            with self._agent_create_operation_payloads_lock:
+                self._agent_create_operation_payloads.pop(operation_id, None)
 
-    def _mark_stale_agent_create_operations_failed(self) -> None:
+    @staticmethod
+    def _agent_create_operation_owner_is_alive(owner_pid: int | None) -> bool:
+        if owner_pid is None or owner_pid <= 0:
+            return False
+        if owner_pid == os.getpid():
+            return True
+        try:
+            os.kill(owner_pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def mark_abandoned_agent_create_operations_failed(self) -> None:
         now = _utc_now()
 
         def _mark(items: dict[str, AgentCreateOperation]) -> None:
             for operation_id, operation in list(items.items()):
                 if operation.status not in {"queued", "running"}:
                     continue
+                if operation.owner_pid is None:
+                    continue
+                if self._agent_create_operation_owner_is_alive(operation.owner_pid):
+                    continue
                 items[operation_id] = operation.model_copy(
                     update={
                         "status": "failed",
-                        "error": "Admin Web restarted before this create operation finished.",
+                        "error": "Admin Web process exited before this create operation finished.",
                         "finished_at": now,
                         "updated_at": now,
                     }
