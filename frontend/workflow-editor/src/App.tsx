@@ -175,7 +175,7 @@ type SaveState = "idle" | "saving" | "saved";
 type WorkflowGeneratorState = "idle" | "draftable" | "generating" | "ready" | "error";
 
 type WorkflowUndoEntry = {
-  document: WorkflowEditorDocument;
+  document: WorkflowDocumentSurface;
   nodeEditOrigins: Record<string, string>;
 };
 
@@ -1367,8 +1367,12 @@ function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
   return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
 }
 
-function cloneWorkflowEditorDocument(document: WorkflowEditorDocument): WorkflowEditorDocument {
-  return JSON.parse(JSON.stringify(document)) as WorkflowEditorDocument;
+function cloneWorkflowDocumentSurface(document: WorkflowDocumentSurface): WorkflowDocumentSurface {
+  return JSON.parse(JSON.stringify({
+    config: document.config,
+    layout: document.layout,
+    graphs: document.graphs,
+  })) as WorkflowDocumentSurface;
 }
 
 function workflowComparableValue(value: unknown): unknown {
@@ -1573,23 +1577,17 @@ function workflowEditableDocumentsEqual(left: WorkflowDocumentSurface, right: Wo
   return workflowValuesEqual(left, right);
 }
 
-function workflowUndoDocumentsEqual(left: WorkflowEditorDocument, right: WorkflowEditorDocument): boolean {
+function workflowUndoDocumentsEqual(left: WorkflowDocumentSurface, right: WorkflowDocumentSurface): boolean {
   return workflowValuesEqual(
     {
       config: left.config,
       layout: left.layout,
       graphs: left.graphs,
-      output_schemas: left.output_schemas ?? {},
-      validation_diagnostics: left.validation_diagnostics ?? [],
-      revision: left.revision,
     },
     {
       config: right.config,
       layout: right.layout,
       graphs: right.graphs,
-      output_schemas: right.output_schemas ?? {},
-      validation_diagnostics: right.validation_diagnostics ?? [],
-      revision: right.revision,
     },
   );
 }
@@ -5940,7 +5938,7 @@ export default function App() {
 
   function rememberWorkflowUndoSnapshot(snapshot: WorkflowEditorDocument) {
     const entry: WorkflowUndoEntry = {
-      document: cloneWorkflowEditorDocument(snapshot),
+      document: cloneWorkflowDocumentSurface(snapshot),
       nodeEditOrigins: { ...nodeEditOrigins },
     };
     setUndoHistory((current) => {
@@ -5957,10 +5955,16 @@ export default function App() {
   }
 
   function undoWorkflowChange() {
-    if (!canUndoWorkflowChanges) return;
+    if (!canUndoWorkflowChanges || !document) return;
     const entry = undoHistory[undoHistory.length - 1];
     if (!entry) return;
-    const restoredDocument = cloneWorkflowEditorDocument(entry.document);
+    const restoredDocument = normalizeWorkflowEditorDocument(
+      {
+        ...document,
+        ...cloneWorkflowDocumentSurface(entry.document),
+      },
+      selectedDirectoryPath,
+    );
     const restoredNodeIds = new Set(workflowNodeIds(restoredDocument.config));
     const nextSelectedNodeIds = selectedNodeIds.filter((nodeId) => restoredNodeIds.has(nodeId));
     setUndoHistory((current) => current.slice(0, -1));
@@ -7410,6 +7414,8 @@ export default function App() {
       undefined,
       validation.validation_diagnostics,
       validation.output_schemas,
+      undefined,
+      { recordUndo: false },
     );
   }
 
