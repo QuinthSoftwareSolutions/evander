@@ -24,6 +24,8 @@ from .git_naming import (
 from .models import (
     AGENT_OPERATOR_ONLY_FIELDS,
     AgentActionRecord,
+    AgentProjectAssignment,
+    AgentProjectAssignmentKind,
     AgentAvatar,
     AgentVoiceProfile,
     AgentInboxItem,
@@ -66,6 +68,12 @@ from .models import (
     TeamState,
     TeamTaskState,
     task_payload_with_derived,
+    agent_has_project_assignment,
+    agent_lead_project_ids,
+    agent_project_assignment_payloads,
+    agent_project_ids,
+    effective_role_permissions,
+    project_lead_agent_id,
     _ensure_unique,
     _unique_text_list,
 )
@@ -281,7 +289,6 @@ class TeamStateRepository:
             if existing_manager is not None:
                 manager = existing_manager
                 manager.team_id = effective_team_id
-                manager.project_id = None
                 manager.display_name = normalized_manager_display_name or manager.display_name
                 manager.role_id = role.id
                 manager.session_id = normalized_manager_session_id
@@ -724,14 +731,6 @@ class TeamStateRepository:
                         f"agent {effective_lead_agent_id} belongs to team "
                         f"{existing_lead.team_id}"
                     )
-                if (
-                    existing_lead.project_id is not None
-                    and existing_lead.id != team.manager_agent_id
-                ):
-                    raise ValueError(
-                        f"agent {effective_lead_agent_id} already belongs to project "
-                        f"{existing_lead.project_id}"
-                    )
             elif normalized_lead_agent_id and normalized_lead_session_id is None:
                 raise ValueError(f"agent {effective_lead_agent_id} does not exist")
             elif normalized_lead_session_id is None:
@@ -757,7 +756,6 @@ class TeamStateRepository:
                 lead = PersistentAgent(
                     id=effective_lead_agent_id,
                     team_id=normalized_team_id,
-                    project_id=effective_project_id,
                     display_name=normalized_lead_display_name,
                     role_id=role.id,
                     session_id=normalized_lead_session_id,
@@ -770,6 +768,22 @@ class TeamStateRepository:
                     manager.subordinate_agent_ids,
                     lead.id,
                 )
+            assignment_id = _project_assignment_id(
+                effective_project_id,
+                lead.id,
+                AgentProjectAssignmentKind.PROJECT_LEAD,
+                existing_ids=state.project_assignments,
+            )
+            state.project_assignments[assignment_id] = AgentProjectAssignment(
+                id=assignment_id,
+                team_id=normalized_team_id,
+                project_id=effective_project_id,
+                agent_id=lead.id,
+                role_id=role.id,
+                kind=AgentProjectAssignmentKind.PROJECT_LEAD,
+                created_at=now,
+                updated_at=now,
+            )
             state.projects[effective_project_id] = Project(
                 id=effective_project_id,
                 team_id=normalized_team_id,
@@ -902,7 +916,7 @@ class TeamStateRepository:
                     _validate_role_assignment(
                         role,
                         team_id=agent.team_id,
-                        project_id=agent.project_id,
+                        project_ids=agent_project_ids(state, agent.id),
                     )
             for profile in state.review_profiles.values():
                 if role.id in profile.applicable_role_ids:
@@ -970,7 +984,7 @@ class TeamStateRepository:
                 _validate_role_assignment(
                     role,
                     team_id=normalized_team_id,
-                    project_id=normalized_project_id,
+                    project_ids=[normalized_project_id] if normalized_project_id is not None else [],
                 )
                 if normalized_reports_to_agent_id is not None:
                     superior = _require_present(
@@ -986,7 +1000,6 @@ class TeamStateRepository:
             agent = PersistentAgent(
                 id=effective_agent_id,
                 team_id=normalized_team_id,
-                project_id=normalized_project_id,
                 display_name=normalized_display_name,
                 role_id=normalized_role_id,
                 session_id=normalized_session_id,
@@ -1002,6 +1015,21 @@ class TeamStateRepository:
                 ),
             )
             state.agents[agent.id] = agent
+            if normalized_project_id is not None and normalized_team_id is not None:
+                assignment_id = _project_assignment_id(
+                    normalized_project_id,
+                    agent.id,
+                    AgentProjectAssignmentKind.PROJECT_MEMBER,
+                    existing_ids=state.project_assignments,
+                )
+                state.project_assignments[assignment_id] = AgentProjectAssignment(
+                    id=assignment_id,
+                    team_id=normalized_team_id,
+                    project_id=normalized_project_id,
+                    agent_id=agent.id,
+                    role_id=normalized_role_id,
+                    kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+                )
             if normalized_reports_to_agent_id and normalized_reports_to_agent_id in state.agents:
                 superior = state.agents[normalized_reports_to_agent_id]
                 superior.subordinate_agent_ids = _append_unique(
@@ -1060,8 +1088,13 @@ class TeamStateRepository:
                             old_superior.subordinate_agent_ids,
                             agent.id,
                         )
+                    for assignment_id in [
+                        assignment.id
+                        for assignment in state.project_assignments.values()
+                        if assignment.agent_id == agent.id
+                    ]:
+                        state.project_assignments.pop(assignment_id, None)
                     agent.team_id = None
-                    agent.project_id = None
                     agent.role_id = None
                     agent.reports_to_agent_id = None
                     agent.subordinate_agent_ids = []
@@ -1070,15 +1103,35 @@ class TeamStateRepository:
                     _require_present(state.teams, normalized_team_id, "team")
                     agent.team_id = normalized_team_id
             if set_project_id and not detached_from_team:
+                if agent.team_id is None:
+                    raise ValueError("project_id cannot be set for a teamless agent")
+                for assignment_id in [
+                    assignment.id
+                    for assignment in state.project_assignments.values()
+                    if assignment.agent_id == agent.id
+                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
+                ]:
+                    state.project_assignments.pop(assignment_id, None)
                 if normalized_project_id is not None:
-                    if agent.team_id is None:
-                        raise ValueError("project_id cannot be set for a teamless agent")
                     project = _require_present(state.projects, normalized_project_id, "project")
                     if project.team_id != agent.team_id:
                         raise ValueError(
                             f"project {normalized_project_id} does not belong to team {agent.team_id}"
                         )
-                agent.project_id = normalized_project_id
+                    assignment_id = _project_assignment_id(
+                        normalized_project_id,
+                        agent.id,
+                        AgentProjectAssignmentKind.PROJECT_MEMBER,
+                        existing_ids=state.project_assignments,
+                    )
+                    state.project_assignments[assignment_id] = AgentProjectAssignment(
+                        id=assignment_id,
+                        team_id=agent.team_id,
+                        project_id=normalized_project_id,
+                        agent_id=agent.id,
+                        role_id=agent.role_id,
+                        kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+                    )
             if set_role_id and not detached_from_team:
                 if normalized_role_id is not None:
                     if agent.team_id is None:
@@ -1087,17 +1140,27 @@ class TeamStateRepository:
                     _validate_role_assignment(
                         role,
                         team_id=agent.team_id,
-                        project_id=agent.project_id,
+                        project_ids=agent_project_ids(state, agent.id),
                     )
                 agent.role_id = normalized_role_id
+                if role is not None and role.project_id is not None:
+                    for assignment in state.project_assignments.values():
+                        if assignment.agent_id == agent.id and assignment.project_id == role.project_id:
+                            assignment.role_id = role.id
+                            assignment.updated_at = now
             elif role_id is not None and not detached_from_team:
                 role = _require_present(state.roles, normalized_role_id or role_id, "role")
                 _validate_role_assignment(
                     role,
                     team_id=agent.team_id,
-                    project_id=agent.project_id,
+                    project_ids=agent_project_ids(state, agent.id),
                 )
                 agent.role_id = role.id
+                if role.project_id is not None:
+                    for assignment in state.project_assignments.values():
+                        if assignment.agent_id == agent.id and assignment.project_id == role.project_id:
+                            assignment.role_id = role.id
+                            assignment.updated_at = now
             if session_id is not None:
                 agent.session_id = session_id
             if set_display_name:
@@ -1151,8 +1214,6 @@ class TeamStateRepository:
                         superior.subordinate_agent_ids, agent.id
                     )
             if agent.team_id is None:
-                if agent.project_id is not None:
-                    raise ValueError("teamless agent cannot belong to a project")
                 if agent.role_id is not None:
                     raise ValueError("teamless agent cannot have a team-scoped role")
                 if agent.reports_to_agent_id is not None:
@@ -1166,7 +1227,7 @@ class TeamStateRepository:
                 _validate_role_assignment(
                     role,
                     team_id=agent.team_id,
-                    project_id=agent.project_id,
+                    project_ids=agent_project_ids(state, agent.id),
                 )
             return state
 
@@ -2286,13 +2347,33 @@ class TeamStateRepository:
                 role_agent = PersistentAgent(
                     id=role_agent_ids[role.key],
                     team_id=team_id,
-                    project_id=project_id,
                     role_id=role_ids[role.key],
                     session_id=role_inputs[role.key]["session_id"],
                     reports_to_agent_id=superior.id,
                     ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
                 )
                 state.agents[role_agent.id] = role_agent
+                assignment_kind = (
+                    AgentProjectAssignmentKind.PROJECT_LEAD
+                    if role.key == "project_lead"
+                    else AgentProjectAssignmentKind.PROJECT_MEMBER
+                )
+                assignment_id = _project_assignment_id(
+                    project_id,
+                    role_agent.id,
+                    assignment_kind,
+                    existing_ids=state.project_assignments,
+                )
+                state.project_assignments[assignment_id] = AgentProjectAssignment(
+                    id=assignment_id,
+                    team_id=team_id,
+                    project_id=project_id,
+                    agent_id=role_agent.id,
+                    role_id=role_ids[role.key],
+                    kind=assignment_kind,
+                    created_at=now,
+                    updated_at=now,
+                )
                 superior.subordinate_agent_ids = _append_unique(
                     superior.subordinate_agent_ids,
                     role_agent.id,
@@ -2867,7 +2948,7 @@ class TeamStateRepository:
                     continue
                 if agent.team_id in blocked_teams:
                     continue
-                if normalized_project_id is not None and agent.project_id != normalized_project_id:
+                if normalized_project_id is not None and not agent_has_project_assignment(state_model, agent.id, normalized_project_id):
                     continue
                 if normalized_agent_id is not None and agent.id != normalized_agent_id:
                     continue
@@ -3166,14 +3247,13 @@ class TeamStateRepository:
             "team_addon": {
                 "agent_id": agent.id,
                 "team_id": agent.team_id,
-                "project_id": agent.project_id,
+                "project_ids": agent_project_ids(state, agent.id),
+                "lead_project_ids": agent_lead_project_ids(state, agent.id),
+                "project_assignments": agent_project_assignment_payloads(state, agent.id),
                 "role_id": agent.role_id,
                 "role_name": role.name if role is not None else None,
-                "role_permissions": (
-                    [permission.value for permission in role.permissions]
-                    if role is not None
-                    else []
-                ),
+                "role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
+                "effective_role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
                 "reports_to_agent_id": agent.reports_to_agent_id,
                 "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                 "active_task_ids": active_task_ids,
@@ -4197,6 +4277,19 @@ def _role_id_part(value: str) -> str:
     return _required_text(value, "role_key").replace("_", "-")
 
 
+def _project_assignment_id(
+    project_id: str,
+    agent_id: str,
+    kind: AgentProjectAssignmentKind,
+    *,
+    existing_ids: Mapping[str, Any],
+) -> str:
+    return _unique_id_from_base(
+        f"{project_id}__{agent_id}__{kind.value}",
+        existing_ids=existing_ids,
+    )
+
+
 def _normalize_role_permissions(
     permissions: list[RolePermission | str] | None,
 ) -> list[RolePermission]:
@@ -4217,9 +4310,12 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
     for team in state.teams.values():
         if team.manager_agent_id == agent.id:
             blockers.append(f"manager of team {team.id}")
-    for project in state.projects.values():
-        if project.lead_agent_id == agent.id:
-            blockers.append(f"lead of project {project.id}")
+    for assignment in state.project_assignments.values():
+        if (
+            assignment.agent_id == agent.id
+            and assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD
+        ):
+            blockers.append(f"lead of project {assignment.project_id}")
     if agent.subordinate_agent_ids:
         blockers.append(
             "has subordinate agents " + ", ".join(sorted(agent.subordinate_agent_ids))
@@ -4267,14 +4363,14 @@ def _validate_role_assignment(
     role: TeamRole,
     *,
     team_id: str | None,
-    project_id: str | None,
+    project_ids: list[str],
 ) -> None:
     if team_id is None:
         raise ValueError(f"role {role.id} cannot be assigned to a teamless agent")
     if role.team_id != team_id:
         raise ValueError(f"role {role.id} does not belong to team {team_id}")
-    if role.project_id is not None and role.project_id != project_id:
-        raise ValueError(f"role {role.id} does not belong to project {project_id}")
+    if role.project_id is not None and role.project_id not in project_ids:
+        raise ValueError(f"role {role.id} does not belong to any assigned project")
 
 
 def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) -> None:
@@ -4287,12 +4383,13 @@ def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     payload = agent.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+    effective_permissions = effective_role_permissions(state, agent)
     payload["role_name"] = role.name if role is not None else None
-    payload["role_permissions"] = (
-        [permission.value for permission in role.permissions]
-        if role is not None
-        else []
-    )
+    payload["role_permissions"] = [permission.value for permission in effective_permissions]
+    payload["effective_role_permissions"] = [permission.value for permission in effective_permissions]
+    payload["project_assignments"] = agent_project_assignment_payloads(state, agent.id)
+    payload["project_ids"] = agent_project_ids(state, agent.id)
+    payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
     return payload
 
 
@@ -4935,7 +5032,8 @@ def _build_context_handoff_summary(
     request_note: str | None,
 ) -> str:
     display = agent.display_name or agent.id
-    project_label = agent.project_id or "none"
+    assigned_project_ids = agent_project_ids(state, agent.id)
+    project_label = ", ".join(assigned_project_ids) or "none"
     superior_label = agent.reports_to_agent_id or "none"
     subordinate_label = ", ".join(agent.subordinate_agent_ids) or "none"
     role = state.roles.get(agent.role_id)
@@ -5304,8 +5402,7 @@ def _agent_governs_team(state: TeamState, *, agent_id: str, team_id: str) -> boo
 
 
 def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
-    project = state.projects.get(project_id)
-    return project is not None and project.lead_agent_id == agent_id
+    return project_lead_agent_id(state, project_id) == agent_id
 
 
 def _apply_chat_reply(
@@ -5479,19 +5576,9 @@ def _agent_has_role_permission_for_project(
         return False
     if actor.team_id != project.team_id:
         return False
-    if (
-        permission == RolePermission.CREATE_ROOT_TASK
-        and _is_project_lead_for(state, actor.id, project_id)
-    ):
+    if _is_team_manager(state, actor) and permission in effective_role_permissions(state, actor):
         return True
-    role = state.roles.get(actor.role_id)
-    if role is None or role.team_id != project.team_id:
-        return False
-    if _is_team_manager(state, actor):
-        return permission in role.permissions
-    if role.project_id is not None and role.project_id != project_id:
-        return False
-    return permission in role.permissions
+    return permission in effective_role_permissions(state, actor, project_id=project_id)
 
 
 def _task_creation_mandate_error(
@@ -5533,9 +5620,7 @@ def _task_creation_mandate_error(
 
 def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
     agent = state.agents.get(agent_id)
-    return agent is not None and (
-        agent.project_id == project_id or _is_project_lead_for(state, agent_id, project_id)
-    )
+    return agent is not None and agent_has_project_assignment(state, agent_id, project_id)
 
 
 def _upward_recipient_error(
@@ -5582,7 +5667,7 @@ def _plan_task_creation(
     actor_can_target_project = _is_project_lead_for(
         state, actor.id, project_id
     ) or _is_team_manager(state, actor)
-    if owner.project_id != project_id and not actor_can_target_project:
+    if not agent_has_project_assignment(state, owner.id, project_id) and not actor_can_target_project:
         result["errors"].append(
             f"agent {actor.id} cannot create a task for {owner_id} outside project {project_id}"
         )
@@ -7169,9 +7254,9 @@ def _promotion_failure_recipient(
     actor = state.agents.get(promotion.actor_agent_id)
     if actor is not None and actor.reports_to_agent_id is not None:
         return actor.reports_to_agent_id
-    project = state.projects.get(promotion.project_id)
-    if project is not None:
-        return project.lead_agent_id
+    lead_agent_id = project_lead_agent_id(state, promotion.project_id)
+    if lead_agent_id is not None:
+        return lead_agent_id
     return None
 
 
@@ -7179,8 +7264,9 @@ def _release_failure_recipient(state: TeamState, release: ReleasePackage) -> str
     project = state.projects.get(release.project_id)
     if project is None:
         return None
-    if project.lead_agent_id in state.agents:
-        return project.lead_agent_id
+    lead_agent_id = project_lead_agent_id(state, release.project_id)
+    if lead_agent_id in state.agents:
+        return lead_agent_id
     team = state.teams.get(project.team_id)
     return team.manager_agent_id if team is not None else None
 
@@ -7302,7 +7388,7 @@ def _create_ephemeral_assignments(
         task = _require_present(state.tasks, task_id, "task")
         if task.owner_agent_id != parent.id:
             raise ValueError(f"agent {parent.id} cannot spawn ephemeral work for task {task_id}")
-        if parent.project_id != task.project_id:
+        if not agent_has_project_assignment(state, parent.id, task.project_id):
             raise ValueError(f"agent {parent.id} is not assigned to project {task.project_id}")
         assignment_id = _optional_text(request.get("id")) or f"ephemeral-{uuid4().hex}"
         if assignment_id in seen_ids:

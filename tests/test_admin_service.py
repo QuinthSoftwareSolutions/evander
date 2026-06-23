@@ -8331,7 +8331,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
         content=b"sqlite run detail artifact\n",
         original_filename="sqlite-notes.txt",
         created_at=datetime(2026, 5, 16, 11, 0, tzinfo=UTC),
-        expires_at=datetime(2026, 6, 23, 11, 0, tzinfo=UTC),
+        expires_at=datetime(2099, 6, 23, 11, 0, tzinfo=UTC),
         metadata={"source": "sqlite-fixture"},
     )
     service.runtime.approvals.put(

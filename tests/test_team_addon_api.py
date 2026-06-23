@@ -1524,7 +1524,8 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
     manager_project_id = "project-team-platform-team-manager-led"
     assert body["projects"][manager_project_id]["lead_agent_id"] == manager_id
     manager = body["agents"][manager_id]
-    assert manager["project_id"] is None
+    assert manager["project_ids"] == [manager_project_id]
+    assert manager["lead_project_ids"] == [manager_project_id]
     assert manager["role_id"] == "team-platform-team__manager"
     assert manager["reports_to_agent_id"] is None
     assert manager_id not in manager["subordinate_agent_ids"]

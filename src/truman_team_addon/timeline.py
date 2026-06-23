@@ -18,6 +18,8 @@ from .models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    agent_project_ids,
+    project_lead_agent_id,
 )
 
 
@@ -297,7 +299,8 @@ def _action_entries(state: TeamState) -> list[TimelineEntry]:
     for record in state.action_records.values():
         agent = state.agents.get(record.agent_id)
         team_id = agent.team_id if agent is not None else None
-        project_id = agent.project_id if agent is not None else None
+        assigned_project_ids = agent_project_ids(state, record.agent_id) if agent is not None else []
+        project_id = assigned_project_ids[0] if assigned_project_ids else None
         entries.append(
             _entry(
                 id=f"action:{record.id}:created",
@@ -420,7 +423,7 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
         team_id = project.team_id if project is not None else None
         related = _unique_agent_ids(
             [
-                project.lead_agent_id if project is not None else None,
+                project_lead_agent_id(state, release.project_id) if project is not None else None,
                 *(
                     state.deliverables[deliverable_id].producer_agent_id
                     for deliverable_id in release.deliverable_ids
@@ -435,7 +438,7 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                 category="created",
                 timestamp=release.created_at,
                 timestamp_source="created_at",
-                actor_agent_id=project.lead_agent_id if project is not None else None,
+                actor_agent_id=project_lead_agent_id(state, release.project_id) if project is not None else None,
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=release.project_id,
@@ -455,7 +458,7 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                     timestamp=timestamp,
                     timestamp_source="published_at" if release.published_at is not None else "updated_at",
                     timestamp_missing=timestamp is None,
-                    actor_agent_id=project.lead_agent_id if project is not None else None,
+                    actor_agent_id=project_lead_agent_id(state, release.project_id) if project is not None else None,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=release.project_id,
@@ -474,7 +477,7 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                     timestamp=release.updated_at,
                     timestamp_source="updated_at",
                     timestamp_missing=release.updated_at is None,
-                    actor_agent_id=project.lead_agent_id if project is not None else None,
+                    actor_agent_id=project_lead_agent_id(state, release.project_id) if project is not None else None,
                     related_agent_ids=related,
                     team_id=team_id,
                     project_id=release.project_id,

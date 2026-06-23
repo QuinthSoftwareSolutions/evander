@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Project Assignment Model
+
+- Replaced direct agent project membership with explicit project assignment records so one team agent can participate in or lead multiple projects.
+- Added assignment-aware effective permissions to Team Add-on wake payloads and guidance so project leads are told they can create top-level tasks.
+- Added local SQLite backfill from legacy agent project membership and project lead fields into project assignments.
+
 ## 2026-06-23 - Team Add-on Project Lead Overlay
 
 - Allowed project leadership to be assigned as a project-level overlay so a team

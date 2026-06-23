@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 13
+SQLITE_SCHEMA_VERSION = 14
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -124,6 +124,7 @@ class TeamStateSqliteStore:
                     definition="TEXT",
                 )
                 _ensure_team_agents_nullable_membership(connection)
+                _ensure_project_assignments_from_legacy(connection)
                 _ensure_team_conversations_operator_scope(connection)
                 _ensure_column(
                     connection,
@@ -235,6 +236,7 @@ class TeamStateSqliteStore:
             "projects": {},
             "roles": {},
             "agents": {},
+            "project_assignments": {},
             "agent_runtimes": {},
             "tasks": {},
             "deliverables": {},
@@ -256,6 +258,7 @@ class TeamStateSqliteStore:
         self._read_roles(connection, payload)
         self._read_projects(connection, payload)
         self._read_agents(connection, payload)
+        self._read_project_assignments(connection, payload)
         self._read_stand_downs(connection, payload)
         self._read_agent_runtimes(connection, payload)
         self._read_tasks(connection, payload)
@@ -281,6 +284,7 @@ class TeamStateSqliteStore:
         self._write_roles(connection, payload["roles"])
         self._write_projects(connection, payload["projects"])
         self._write_agents(connection, payload["agents"])
+        self._write_project_assignments(connection, payload["project_assignments"])
         self._write_stand_downs(connection, payload["stand_downs"])
         self._write_agent_runtimes(connection, payload["agent_runtimes"])
         self._write_tasks(connection, payload["tasks"])
@@ -689,7 +693,6 @@ class TeamStateSqliteStore:
             payload["agents"][row["id"]] = {
                 "id": row["id"],
                 "team_id": row["team_id"],
-                "project_id": row["project_id"],
                 "display_name": row["display_name"],
                 "avatar": (
                     _json_loads(row["avatar_json"]) if row["avatar_json"] is not None else None
@@ -713,15 +716,14 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_agents(
-                    id, team_id, project_id, display_name, avatar_json, voice_profile_json,
+                    id, team_id, display_name, avatar_json, voice_profile_json,
                     role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
                     agent["team_id"],
-                    agent.get("project_id"),
                     agent.get("display_name"),
                     _json_dumps(agent.get("avatar")) if agent.get("avatar") is not None else None,
                     (
@@ -743,6 +745,45 @@ class TeamStateSqliteStore:
                 agent["id"],
                 "subordinate_agent_id",
                 agent.get("subordinate_agent_ids", []),
+            )
+
+    @staticmethod
+    def _read_project_assignments(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute("SELECT * FROM team_project_assignments ORDER BY id"):
+            payload["project_assignments"][row["id"]] = {
+                "id": row["id"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "agent_id": row["agent_id"],
+                "role_id": row["role_id"],
+                "kind": row["kind"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_project_assignments(
+        connection: sqlite3.Connection,
+        assignments: dict[str, Any],
+    ) -> None:
+        for assignment in assignments.values():
+            connection.execute(
+                """
+                INSERT INTO team_project_assignments(
+                    id, team_id, project_id, agent_id, role_id, kind, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    assignment["id"],
+                    assignment["team_id"],
+                    assignment["project_id"],
+                    assignment["agent_id"],
+                    assignment.get("role_id"),
+                    assignment.get("kind", "project_member"),
+                    assignment["created_at"],
+                    assignment["updated_at"],
+                ),
             )
 
     @staticmethod
@@ -1712,11 +1753,78 @@ def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> N
     connection.execute("DROP TABLE team_agents_notnull_legacy")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_team_agents_status_scope "
-        "ON team_agents(status, team_id, project_id, id)"
+        "ON team_agents(status, team_id, id)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_team_agents_session ON team_agents(session_id)"
     )
+
+
+def _ensure_project_assignments_from_legacy(connection: sqlite3.Connection) -> None:
+    project_assignment_count = connection.execute(
+        "SELECT COUNT(*) AS count FROM team_project_assignments"
+    ).fetchone()["count"]
+    if int(project_assignment_count or 0) > 0:
+        return
+    now = utc_now().isoformat()
+    agent_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(team_agents)")
+    }
+    has_agent_project_id = "project_id" in agent_columns
+    for row in connection.execute(
+        """
+        SELECT p.id AS project_id, p.team_id, p.lead_agent_id, a.role_id
+        FROM team_projects p
+        LEFT JOIN team_agents a ON a.id = p.lead_agent_id
+        ORDER BY p.id
+        """
+    ):
+        assignment_id = f"{row['project_id']}__{row['lead_agent_id']}__project_lead"
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO team_project_assignments(
+                id, team_id, project_id, agent_id, role_id, kind, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'project_lead', ?, ?)
+            """,
+            (
+                assignment_id,
+                row["team_id"],
+                row["project_id"],
+                row["lead_agent_id"],
+                row["role_id"],
+                now,
+                now,
+            ),
+        )
+    if has_agent_project_id:
+        for row in connection.execute(
+            """
+            SELECT id, team_id, project_id, role_id
+            FROM team_agents
+            WHERE project_id IS NOT NULL AND trim(project_id) <> ''
+            ORDER BY id
+            """
+        ):
+            assignment_id = f"{row['project_id']}__{row['id']}__project_member"
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO team_project_assignments(
+                    id, team_id, project_id, agent_id, role_id, kind, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'project_member', ?, ?)
+                """,
+                (
+                    assignment_id,
+                    row["team_id"],
+                    row["project_id"],
+                    row["id"],
+                    row["role_id"],
+                    now,
+                    now,
+                ),
+            )
 
 
 def _ensure_team_conversations_operator_scope(connection: sqlite3.Connection) -> None:
@@ -1913,6 +2021,7 @@ _STATE_TABLES = (
     "team_role_permissions",
     "team_project_goals",
     "team_agent_subordinates",
+    "team_project_assignments",
     "team_task_dependencies",
     "team_task_deliverables",
     "team_deliverable_artifacts",
@@ -2082,7 +2191,6 @@ CREATE TABLE IF NOT EXISTS team_project_goals (
 CREATE TABLE IF NOT EXISTS team_agents (
     id TEXT PRIMARY KEY,
     team_id TEXT,
-    project_id TEXT,
     display_name TEXT,
     avatar_json TEXT,
     voice_profile_json TEXT,
@@ -2092,8 +2200,25 @@ CREATE TABLE IF NOT EXISTS team_agents (
     max_ephemeral_concurrent INTEGER NOT NULL,
     status TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_team_agents_status_scope ON team_agents(status, team_id, project_id, id);
+CREATE INDEX IF NOT EXISTS idx_team_agents_status_scope ON team_agents(status, team_id, id);
 CREATE INDEX IF NOT EXISTS idx_team_agents_session ON team_agents(session_id);
+
+CREATE TABLE IF NOT EXISTS team_project_assignments (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    role_id TEXT,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_project_assignments_unique_kind
+    ON team_project_assignments(project_id, agent_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_project_assignments_one_lead
+    ON team_project_assignments(project_id, kind) WHERE kind = 'project_lead';
+CREATE INDEX IF NOT EXISTS idx_team_project_assignments_agent
+    ON team_project_assignments(agent_id, project_id, kind);
 
 CREATE TABLE IF NOT EXISTS team_agent_subordinates (
     agent_id TEXT NOT NULL,

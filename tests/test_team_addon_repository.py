@@ -29,6 +29,8 @@ from truman_team_addon.models import (
     TeamInboxItemType,
     TeamRecordState,
     TeamTaskState,
+    agent_project_ids,
+    project_lead_agent_id,
 )
 from truman_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from truman_team_addon.sqlite_store import (
@@ -920,7 +922,8 @@ def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Pat
     )
 
     assert state.projects["project"].lead_agent_id == "manager"
-    assert state.agents["manager"].project_id == manager_before.project_id
+    assert project_lead_agent_id(state, "project") == "manager"
+    assert agent_project_ids(state, "manager") == ["project"]
     assert state.agents["manager"].role_id == manager_before.role_id
     assert state.agents["manager"].reports_to_agent_id == manager_before.reports_to_agent_id
     assert state.agents["manager"].session_id == manager_before.session_id
@@ -968,7 +971,8 @@ def test_create_project_existing_project_lead_is_assignment_overlay(
     )
 
     assert state.projects["project"].lead_agent_id == "candidate"
-    assert state.agents["candidate"].project_id == candidate_before.project_id
+    assert project_lead_agent_id(state, "project") == "candidate"
+    assert agent_project_ids(state, "candidate") == ["project"]
     assert state.agents["candidate"].role_id == candidate_before.role_id
     assert state.agents["candidate"].reports_to_agent_id == candidate_before.reports_to_agent_id
     assert state.agents["candidate"].session_id == candidate_before.session_id
@@ -986,6 +990,7 @@ def test_create_project_existing_project_lead_is_assignment_overlay(
     repo.update(_add_candidate_inbox, expected_revision=state.revision)
     state, leases = repo.lease_due_agents(agent_id="candidate")
     assert len(leases) == 1
+    assert "create_root_task" in leases[0]["agent"]["effective_role_permissions"]
 
     state, result = repo.apply_agent_action(
         action={
@@ -1009,7 +1014,7 @@ def test_create_project_existing_project_lead_is_assignment_overlay(
     assert state.tasks["root-task"].created_by_agent_id == "candidate"
 
 
-def test_create_project_rejects_project_bound_non_manager_lead(
+def test_create_project_allows_same_agent_to_lead_multiple_projects(
     tmp_path: Path,
 ) -> None:
     repo = TeamStateRepository(tmp_path)
@@ -1029,15 +1034,18 @@ def test_create_project_rejects_project_bound_non_manager_lead(
         expected_revision=state.revision,
     )
 
-    with pytest.raises(ValueError, match="already belongs to project first-project"):
-        repo.create_project(
-            project_id="second-project",
-            team_id="team",
-            name="Second Project",
-            lead_agent_id="lead",
-            lead_session_id=None,
-            expected_revision=state.revision,
-        )
+    state = repo.create_project(
+        project_id="second-project",
+        team_id="team",
+        name="Second Project",
+        lead_agent_id="lead",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+
+    assert project_lead_agent_id(state, "first-project") == "lead"
+    assert project_lead_agent_id(state, "second-project") == "lead"
+    assert agent_project_ids(state, "lead") == ["first-project", "second-project"]
 
 
 def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path) -> None:
@@ -5302,7 +5310,7 @@ def test_register_teamless_agent(tmp_path: Path) -> None:
 
     agent = state.agents["unassigned"]
     assert agent.team_id is None
-    assert agent.project_id is None
+    assert agent_project_ids(state, "unassigned") == []
     assert agent.role_id is None
     assert agent.display_name == "Unassigned"
 

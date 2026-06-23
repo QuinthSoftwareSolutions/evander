@@ -17,6 +17,8 @@ from truman_team_addon.git_naming import (
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
+    AgentProjectAssignment,
+    AgentProjectAssignmentKind,
     AgentRuntime,
     AgentTask,
     AgentVoiceProfile,
@@ -42,6 +44,9 @@ from truman_team_addon.models import (
     TeamState,
     TeamTaskState,
     runtime_operations_payload,
+    agent_project_ids,
+    effective_role_permissions,
+    project_lead_agent_id,
     team_state_payload,
 )
 
@@ -133,6 +138,32 @@ def _valid_state() -> TeamState:
             "lead": lead,
             "ui": ui,
             "reviewer": reviewer,
+        },
+        project_assignments={
+            "project__lead__project_lead": AgentProjectAssignment(
+                id="project__lead__project_lead",
+                team_id="team",
+                project_id="project",
+                agent_id="lead",
+                role_id="project__project-lead",
+                kind=AgentProjectAssignmentKind.PROJECT_LEAD,
+            ),
+            "project__ui__project_member": AgentProjectAssignment(
+                id="project__ui__project_member",
+                team_id="team",
+                project_id="project",
+                agent_id="ui",
+                role_id="project__ui",
+                kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+            ),
+            "project__reviewer__project_member": AgentProjectAssignment(
+                id="project__reviewer__project_member",
+                team_id="team",
+                project_id="project",
+                agent_id="reviewer",
+                role_id="project__reviewer",
+                kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+            ),
         },
         tasks={
             "task": AgentTask(
@@ -364,12 +395,29 @@ def test_team_state_rejects_missing_manager() -> None:
         )
 
 
-def test_team_state_rejects_project_lead_outside_project() -> None:
+def test_team_state_allows_one_agent_to_lead_multiple_projects() -> None:
     state = _valid_state().model_dump(mode="python")
-    state["agents"]["lead"]["project_id"] = "other-project"
+    state["teams"]["team"]["project_ids"].append("other-project")
+    state["projects"]["other-project"] = {
+        "id": "other-project",
+        "team_id": "team",
+        "name": "Other Project",
+        "lead_agent_id": "lead",
+    }
+    state["project_assignments"]["other-project__lead__project_lead"] = {
+        "id": "other-project__lead__project_lead",
+        "team_id": "team",
+        "project_id": "other-project",
+        "agent_id": "lead",
+        "role_id": None,
+        "kind": "project_lead",
+    }
 
-    with pytest.raises(ValidationError, match="lead lead belongs to project other-project"):
-        TeamState.model_validate(state)
+    validated = TeamState.model_validate(state)
+
+    assert project_lead_agent_id(validated, "project") == "lead"
+    assert project_lead_agent_id(validated, "other-project") == "lead"
+    assert agent_project_ids(validated, "lead") == ["other-project", "project"]
 
 
 def test_team_state_rejects_reporting_cycle() -> None:
@@ -1155,5 +1203,5 @@ def test_teamless_persistent_agent_rejects_team_scoped_links() -> None:
     with pytest.raises(ValidationError, match="teamless agent cannot have a team-scoped role"):
         PersistentAgent(id="unassigned", session_id="session-unassigned", role_id="role")
 
-    with pytest.raises(ValidationError, match="teamless agent cannot belong to a project"):
-        PersistentAgent(id="unassigned", session_id="session-unassigned", project_id="project")
+    agent = PersistentAgent(id="unassigned", session_id="session-unassigned", project_id="project")
+    assert not hasattr(agent, "project_id")

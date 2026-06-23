@@ -897,7 +897,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert TEAM_AGENT_GUIDANCE_PATH in prompt
     assert TEAM_AGENT_GUIDANCE_SECTION_ID in prompt
     assert "Task creation mandate for this dispatch" in prompt
-    assert "does not have create_root_task" in prompt
+    assert "do not have create_root_task" in prompt
     assert "You may NOT create top-level tasks" in prompt
     assert "Every task_creations item you submit must set parent_task_id" in prompt
     assert "Your previous Team dispatch had validation errors" not in prompt
@@ -1095,11 +1095,11 @@ def test_build_prompt_allows_root_tasks_for_create_root_task_permission(
     repo = _seed_team(tmp_path)
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
     lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
-    lease["agent"] = {**lease["agent"], "role_permissions": ["create_root_task"]}
+    lease["agent"] = {**lease["agent"], "effective_role_permissions": ["create_root_task"]}
 
     prompt = _build_prompt(lease, action_artifact_path="team-action.json")
 
-    assert "your current role has create_root_task" in prompt
+    assert "effective permissions include create_root_task" in prompt
     assert "You may create top-level tasks by omitting parent_task_id" in prompt
     assert "You may NOT create top-level tasks" not in prompt
 
@@ -1504,7 +1504,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         {
             "agent_id": "backend",
             "session_id": "session-backend",
-            "project_id": "project",
+            "project_ids": ["project"],
             "dispatch_id": result["dispatches"][0]["dispatch_id"],
             "project_repo": project_repo,
             "target_dir": "/home/agent/Truman",
@@ -1885,7 +1885,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
     } == {
         "agent_id": "backend",
         "session_id": "session-backend",
-        "project_id": "project",
+        "project_ids": ["project"],
         "error": "repo missing",
     }
     assert str(failed_repo_preparation["dispatch_id"]).startswith("team-dispatch-")

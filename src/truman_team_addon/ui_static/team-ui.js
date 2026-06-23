@@ -1045,7 +1045,7 @@ function applyExistingAgentDefaults(select) {
   setFieldValue(form, select.dataset.sessionField, sourceAgent.session_id);
   setFieldValue(form, select.dataset.displayField, sourceAgent.display_name || agentLabel(sourceAgent));
   setFieldValue(form, select.dataset.roleField, sourceAgent.role_id);
-  setFieldValue(form, select.dataset.projectField, sourceAgent.project_id || "");
+  setFieldValue(form, select.dataset.projectField, agentProjectIds(sourceAgent)[0] || "");
   setFieldValue(form, select.dataset.reportsToField, sourceAgent.reports_to_agent_id || "");
   if (select.dataset.maxConcurrentField) {
     setFieldValue(form, select.dataset.maxConcurrentField, String(ephemeralCapacity(sourceAgent)));
@@ -2404,7 +2404,7 @@ function renderRuntimeAgentRow(agent) {
           <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agent.project_id ? ` - project ${escapeHtml(agent.project_id)}` : ""}</div>
+      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
       <div class="meta-line">Context clearing ${escapeHtml(contextAuto ? "auto on" : "auto off")} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
@@ -2443,7 +2443,7 @@ function renderCompactRuntimeAgentRow(agent) {
         <summary class="runtime-summary compact-record-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(agent.id)}</strong>
-            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agent.project_id ? ` - project ${escapeHtml(agent.project_id)}` : ""}</span>
+            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</span>
           </span>
           <span class="runtime-summary-meta">
             <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
@@ -3523,7 +3523,7 @@ function renderTeamInlineProjectForm(teamId) {
       <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
       <div class="team-inline-create-fields">
         <label>Name <input name="name" required /></label>
-        <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select unassigned team agent">${renderSelectOptions(
+        <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent">${renderSelectOptions(
           projectLeadAgentOptionsForTeam(teamId),
           { placeholder: "Select unassigned team agent" },
         )}</select></label>
@@ -4690,11 +4690,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
     ? snapshot.waiting.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
     : `<li>Clear</li>`;
   const runtimeRows = agentRuntimeDetailRows(details);
-  const projectValue = details.projectId
-    ? details.projectLabel && details.projectLabel !== details.projectId
-      ? `${details.projectLabel} (${details.projectId})`
-      : details.projectId
-    : "None";
+  const projectValue = details.projectIds.length ? details.projectLabel || details.projectIds.join(", ") : "None";
 
   return `
     <div class="agent-detail">
@@ -4961,6 +4957,21 @@ function projectLabel(projectOrId) {
   return text(project.name) || text(project.id) || projectId;
 }
 
+function agentProjectIds(agent) {
+  const directIds = uniqueTextList(agent?.project_ids);
+  if (directIds.length) {
+    return directIds;
+  }
+  const assignmentIds = Array.isArray(agent?.project_assignments)
+    ? agent.project_assignments.map((assignment) => text(assignment?.project_id)).filter(Boolean)
+    : [];
+  return uniqueTextList(assignmentIds);
+}
+
+function agentProjectSummary(agent) {
+  return agentProjectIds(agent).map(projectLabel).filter(Boolean).join(", ");
+}
+
 function agentStatus(agent) {
   return text(agent?.status) || "active";
 }
@@ -4969,8 +4980,8 @@ function agentCardData(agent) {
   const taskStats = agentTaskStats(agent.id);
   const runtime = runtimeSummary(agent.id);
   const directSubordinateIds = uniqueTextList(agent?.subordinate_agent_ids);
-  const projectId = text(agent?.project_id);
-  const projectName = projectLabel(projectId);
+  const projectIds = agentProjectIds(agent);
+  const projectName = projectIds.map(projectLabel).join(", ");
   const reportsToId = text(agent?.reports_to_agent_id);
   const ephemeralCurrentCount = activeEphemeralAssignmentsForAgent(agent.id).length;
   const inboxItems = pendingInboxForAgent(agent.id);
@@ -4989,8 +5000,9 @@ function agentCardData(agent) {
     voice_profile: agent?.voice_profile || null,
     status: agentStatus(agent),
     sessionId: text(agent?.session_id),
-    projectId: projectId || null,
-    projectLabel: projectName || projectId || null,
+    projectId: projectIds[0] || null,
+    projectIds,
+    projectLabel: projectName || null,
     reportsToLabel: reportsToId || "operator",
     directSubordinateCount: directSubordinateIds.length,
     taskStats,
@@ -5383,12 +5395,8 @@ function hierarchyDetailLines(agentData, { focused = false } = {}) {
   if (agentData.sessionId) {
     lines.push(`Session ${agentData.sessionId}`);
   }
-  if (agentData.projectId) {
-    const projectText =
-      agentData.projectLabel && agentData.projectLabel !== agentData.projectId
-        ? `${agentData.projectLabel} (${agentData.projectId})`
-        : agentData.projectId;
-    lines.push(`Project ${projectText}`);
+  if (agentData.projectIds.length) {
+    lines.push(`Projects ${agentData.projectLabel || agentData.projectIds.join(", ")}`);
   }
   lines.push(`Reports to ${agentData.reportsToLabel || "operator"}`);
   lines.push(`Direct subordinates ${agentData.directSubordinateCount}`);
@@ -7602,11 +7610,9 @@ function projectLeadAgentOptionsForTeam(teamId) {
   if (!team) {
     return [];
   }
-  const managerAgentId = text(team.manager_agent_id);
   return values(state.agents)
     .filter(isVisibleAgent)
     .filter((agent) => text(agent.team_id) === normalizedTeamId)
-    .filter((agent) => !text(agent.project_id) || text(agent.id) === managerAgentId)
     .sort(byId)
     .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
 }
