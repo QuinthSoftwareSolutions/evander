@@ -3363,14 +3363,6 @@ class TeamStateRepository:
                 )
                 if not due_by_time:
                     continue
-                if (
-                    max_no_progress_count >= 0
-                    and manager_runtime.no_progress_count >= max_no_progress_count
-                    and not _wakeable_inbox_items(
-                        _pending_inbox_for_agent(state_model, manager.id)
-                    )
-                ):
-                    continue
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
                 manager_runtime.active_dispatch_id = dispatch_id
                 manager_runtime.wake_reason = "manager_fallback"

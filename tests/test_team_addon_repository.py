@@ -3461,6 +3461,48 @@ def test_no_reply_inbox_does_not_wake_waiting_review_producer(
     assert runtime.low_priority_batch_cycle_count == 0
 
 
+def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="stalled-task")
+    repo.record_deliverable(
+        deliverable_id="deliverable-stalled",
+        task_id="stalled-task",
+        producer_agent_id="backend",
+        summary="Blocked slice for review.",
+    )
+
+    def _clear_deliverable_notices(state):
+        state.inbox = {
+            item_id: item
+            for item_id, item in state.inbox.items()
+            if not (
+                item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+                and item.task_id == "stalled-task"
+            )
+        }
+        return state
+
+    def _throttle_manager(state):
+        runtime = state.agent_runtimes.get("manager", AgentRuntime(agent_id="manager"))
+        runtime.no_progress_count = 10
+        state.agent_runtimes["manager"] = runtime
+        return state
+
+    repo.update(_clear_deliverable_notices)
+    repo.update(_throttle_manager)
+
+    state, leases = repo.lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    assert leases[0]["reason"] == "manager_fallback"
+    assert state.agent_runtimes["manager"].wake_reason == "manager_fallback"
+    assert leases[0]["tasks"] == []
+
+
 def test_every_wake_context_policy_preserves_low_priority_batching(
     tmp_path: Path,
 ) -> None:
