@@ -113,6 +113,52 @@ agent_sandbox_apt_cache_bind_host: "0.0.0.0"
 agent_sandbox_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
 agent_sandbox_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
 agent_sandbox_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com):443$"
+
+# Optional host-local Asterisk provisioning for the DIDWW SIP bridge. This is
+# disabled by default so existing deployments with hand-managed Asterisk configs
+# are not overwritten by an Ansible re-run.
+agent_sandbox_asterisk_didww_enabled: false
+agent_sandbox_asterisk_packages:
+  - asterisk
+agent_sandbox_asterisk_public_address: >-
+  {{
+    agent_sandbox_control_plane_public_host
+    | default(ansible_default_ipv4.address | default(''))
+  }}
+agent_sandbox_asterisk_local_nets:
+  - "{{ (agent_sandbox_control_plane_private_ip | regex_replace('\\.[0-9]+$', '.0')) ~ '/24' }}"
+agent_sandbox_asterisk_http_bind_host: "127.0.0.1"
+agent_sandbox_asterisk_http_bind_port: 8088
+agent_sandbox_asterisk_ari_user: "{{ agent_sandbox_didww_sip_bridge_env.get('ASTERISK_ARI_USER', 'agent-sandbox') }}"
+agent_sandbox_asterisk_ari_password: "{{ agent_sandbox_shared_secrets_env.get('ASTERISK_ARI_PASSWORD', '') }}"
+agent_sandbox_asterisk_ari_app: "{{ agent_sandbox_didww_sip_bridge_env.get('ASTERISK_ARI_APP', 'agent_sandbox_didww') }}"
+agent_sandbox_asterisk_ari_allowed_origins:
+  - "http://127.0.0.1"
+agent_sandbox_asterisk_sip_bind_host: "0.0.0.0"
+agent_sandbox_asterisk_sip_bind_port: 5060
+agent_sandbox_asterisk_rtp_start: 12000
+agent_sandbox_asterisk_rtp_end: 12100
+agent_sandbox_asterisk_user_agent: "agent-sandbox-asterisk"
+agent_sandbox_asterisk_didww_endpoint: "{{ agent_sandbox_didww_sip_bridge_env.get('ASTERISK_PJSIP_ENDPOINT', 'didww') }}"
+agent_sandbox_asterisk_didww_auth_section: "didww"
+agent_sandbox_asterisk_didww_aor_section: "didww"
+agent_sandbox_asterisk_didww_identify_section: "didww-identify"
+agent_sandbox_asterisk_didww_context: "from-didww"
+agent_sandbox_asterisk_didww_sip_host: "out.didww.com"
+agent_sandbox_asterisk_didww_sip_username: ""
+agent_sandbox_asterisk_didww_sip_password: ""
+agent_sandbox_asterisk_didww_from_user: ""
+agent_sandbox_asterisk_didww_from_domain: ""
+agent_sandbox_asterisk_didww_contact_user: ""
+agent_sandbox_asterisk_didww_identify_matches:
+  - "46.19.208.0/21"
+  - "185.238.172.0/22"
+agent_sandbox_asterisk_didww_qualify_frequency: 60
+agent_sandbox_asterisk_didww_codecs:
+  - ulaw
+  - alaw
+agent_sandbox_asterisk_didww_inbound_route_id: ""
+
 agent_sandbox_worker_use_apt_proxy: true
 agent_sandbox_worker_apt_proxy_config_path: "/etc/apt/apt.conf.d/01agent-sandbox-proxy"
 agent_sandbox_worker_apt_proxy_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}"
@@ -305,11 +351,14 @@ agent_sandbox_http_target_relay_env: {}
 agent_sandbox_ado_worker_env:
   ADO_WORK_ITEMS_AZURE_DEVOPS_PAT: ""
 
+agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls: false
+agent_sandbox_didww_sip_bridge_ari_user: "{{ agent_sandbox_run_user }}"
+
 agent_sandbox_didww_sip_bridge_env:
   DIDWW_SIP_BRIDGE_HOST: "127.0.0.1"
   DIDWW_SIP_BRIDGE_PORT: "11888"
   DIDWW_SIP_BRIDGE_TOKEN_ENV: "DIDWW_SIP_BRIDGE_TOKEN"
-  DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: "false"
+  DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: "{{ (agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls | bool) | ternary('true', 'false') }}"
   DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL: "http://127.0.0.1:8000"
   DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV: "VOICE_MEDIA_CONTROLLER_TOKEN"
   OPENAI_REALTIME_API_KEY_ENV: "OPENAI_API_KEY"
@@ -324,7 +373,7 @@ agent_sandbox_didww_sip_bridge_env:
   OPENAI_REALTIME_VAD_PREFIX_PADDING_MS: "300"
   OPENAI_REALTIME_VAD_SILENCE_DURATION_MS: "800"
   ASTERISK_ARI_URL: "http://127.0.0.1:8088/ari"
-  ASTERISK_ARI_USER: "agent-sandbox"
+  ASTERISK_ARI_USER: "{{ agent_sandbox_didww_sip_bridge_ari_user }}"
   ASTERISK_ARI_PASSWORD_ENV: "ASTERISK_ARI_PASSWORD"
   ASTERISK_ARI_APP: "agent_sandbox_didww"
   ASTERISK_PJSIP_ENDPOINT: "didww"

@@ -66,6 +66,7 @@
     - role: python_env
     - role: runtime_bootstrap
     - role: service_config
+    - role: asterisk_didww
     - role: systemd_install
     - role: frontend_build
     - role: admin_web_caddy

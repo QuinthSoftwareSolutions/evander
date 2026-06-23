@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-23 - Managed DIDWW Asterisk Deployment
+
+- Added an opt-in Ansible role that installs Asterisk, renders ARI/RTP/PJSIP/dialplan
+  configuration for the DIDWW SIP bridge, and verifies local ARI plus the managed DIDWW endpoint
+  before the bridge service is checked.
+- Documented the Vault-backed DIDWW SIP variables, Azure NAT settings, DIDWW source CIDRs, and the
+  relationship between the Python bridge env and managed Asterisk ARI/PJSIP names.
+- Kept the Azure Vault example as blank template values while rendering required bridge secrets
+  into `secrets.env`, and made systemd service reconciliation tolerate older service-toggle maps.
+
 ## 2026-06-22 - Admin Login Oversized Branding
 
 - Doubled the desktop Admin Web login page branding dimensions again and
