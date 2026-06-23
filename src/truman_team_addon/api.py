@@ -171,6 +171,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
             ),
+            escalate_to_governance=bool(_optional_bool(payload, "escalate_to_governance") or False),
             max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             expected_revision=_expected_revision(payload),
         )
@@ -187,6 +188,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 payload, "operator_communication_target_id"
             ),
             set_operator_communication_target_id="operator_communication_target_id" in payload,
+            escalate_to_governance=_optional_bool(payload, "escalate_to_governance"),
             max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             set_max_cost_usd="max_cost_usd" in payload,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
@@ -2716,6 +2718,22 @@ def _required(payload: Mapping[str, Any], *field_names: str) -> str:
     raise ValueError(f"{joined} is required")
 
 
+def _optional_bool(payload: Mapping[str, Any], field_name: str) -> bool | None:
+    if field_name not in payload:
+        return None
+    value = payload.get(field_name)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{field_name} must be a boolean")
+
+
 def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
     value = payload.get(field_name)
     if value is None:
@@ -2777,21 +2795,6 @@ def _query_chat_message_limit(request: Request) -> int:
     if limit < 1:
         raise ValueError("limit must be greater than zero")
     return min(limit, MAX_CHAT_MESSAGE_LIMIT)
-
-
-def _optional_bool(payload: Mapping[str, Any], field_name: str) -> bool | None:
-    if field_name not in payload or payload.get(field_name) is None:
-        return None
-    value = payload[field_name]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-    raise ValueError(f"{field_name} must be true or false")
 
 
 def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
