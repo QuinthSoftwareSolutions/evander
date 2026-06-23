@@ -62,7 +62,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 11
+ACTION_CONTRACT_SCHEMA_VERSION = 12
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 TEAM_AGENT_GUIDANCE_VERSION = 2
@@ -2279,6 +2279,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "exact relative files or directories in deliverables[].artifact_paths. "
         "The Team runtime publishes only those paths and records artifact refs "
         "for reviewers.\n"
+        "- When responding to a review_rejected inbox item, create a revised "
+        "deliverable with deliverables[].supersedes_deliverable_id set to the "
+        "payload's supersedes_deliverable_id.\n"
         "- Use review_decisions only for review requests assigned to you. "
         "Accepting a review is the action that cascades to deliverable/task "
         "acceptance once all attached reviews are accepted.\n"
@@ -3476,6 +3479,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "id": {"type": "string", "minLength": 1},
                         "task_id": {"type": "string", "minLength": 1},
                         "summary": {"type": "string", "minLength": 1},
+                        "supersedes_deliverable_id": text_or_null,
                         "artifact_paths": non_empty_string_array,
                         "artifact_refs": string_array,
                         "artifact_space_ref": text_or_null,

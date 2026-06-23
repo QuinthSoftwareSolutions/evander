@@ -780,6 +780,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "Do not accept or reject someone else's task with task_updates" in guidance
     assert "Use review_decisions only for review requests assigned to you" in guidance
     assert "Raw agent or review branches are not release sources" in guidance
+    assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
     assert "response_requested is false" in guidance
     assert "no-op replies" in guidance
@@ -794,6 +795,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     ]
     assert artifact_paths_schema["minItems"] == 1
     assert "default" not in artifact_paths_schema
+    assert (
+        "supersedes_deliverable_id"
+        in schema["properties"]["deliverables"]["items"]["properties"]
+    )
     assert "instructions" in schema["properties"]["review_requests"]["items"]["properties"]
     assert schema["properties"]["stand_downs"]["items"]["required"] == [
         "agent_id",

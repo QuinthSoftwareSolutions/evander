@@ -646,6 +646,10 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_tasks)")
         }
+        deliverable_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_deliverables)")
+        }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
@@ -661,6 +665,8 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
     assert "state_entered_at" in task_columns
+    assert "supersedes_deliverable_id" in deliverable_columns
+    assert "superseded_by_deliverable_id" in deliverable_columns
     assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
 
 
@@ -4271,6 +4277,7 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert rework_item.payload["kind"] == "review_rejected"
     assert rework_item.payload["review_request_id"] == "review-1"
     assert rework_item.payload["deliverable_id"] == "deliverable"
+    assert rework_item.payload["supersedes_deliverable_id"] == "deliverable"
     assert rework_item.payload["findings"] == ["Needs rework."]
 
     _state, leases = repo.lease_due_governance_managers(
@@ -4278,6 +4285,129 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     )
 
     assert leases == []
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-v2",
+                    "task_id": "task",
+                    "summary": "Reworked deliverable.",
+                    "supersedes_deliverable_id": rework_item.payload[
+                        "supersedes_deliverable_id"
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["created_deliverable_ids"] == ["deliverable-v2"]
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
+        "deliverable-v2"
+    )
+    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == (
+        "deliverable"
+    )
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable-v2",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review the revision.",
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-2", "state": "accepted"}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
+def test_apply_agent_action_rework_requires_deliverable_supersession(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review.",
+                }
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-1", "state": "rejected"}
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-v2",
+                    "task_id": "task",
+                    "summary": "Reworked deliverable without lineage.",
+                }
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable-v2",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review the revision.",
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-2", "state": "accepted"}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id is None
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
 def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:

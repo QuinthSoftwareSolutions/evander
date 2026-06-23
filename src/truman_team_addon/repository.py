@@ -2192,15 +2192,25 @@ class TeamStateRepository:
         summary: str,
         artifact_refs: list[str] | None = None,
         state: TeamRecordState = TeamRecordState.PENDING,
+        supersedes_deliverable_id: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_deliverable_id = _optional_text(deliverable_id)
         normalized_task_id = _required_text(task_id, "task_id")
         normalized_producer_agent_id = _required_text(producer_agent_id, "producer_agent_id")
         normalized_summary = _required_text(summary, "summary")
+        normalized_supersedes_deliverable_id = _optional_text(
+            supersedes_deliverable_id
+        )
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
+            superseded_deliverable = _superseded_deliverable_for_rework(
+                state_model,
+                task=task,
+                producer_agent_id=normalized_producer_agent_id,
+                supersedes_deliverable_id=normalized_supersedes_deliverable_id,
+            )
             effective_deliverable_id = normalized_deliverable_id or _generated_id(
                 prefix="deliverable",
                 labels=[normalized_task_id, normalized_summary],
@@ -2214,8 +2224,11 @@ class TeamStateRepository:
                 summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
                 state=state,
+                supersedes_deliverable_id=normalized_supersedes_deliverable_id,
             )
             state_model.deliverables[deliverable.id] = deliverable
+            if superseded_deliverable is not None:
+                superseded_deliverable.superseded_by_deliverable_id = deliverable.id
             task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
             task.updated_at = utc_now()
             return state_model
@@ -3959,6 +3972,15 @@ class TeamStateRepository:
                     git_refs = _deliverable_git_refs_from_payload(
                         deliverable_payload.get("git_refs")
                     )
+                    supersedes_deliverable_id = _optional_text(
+                        deliverable_payload.get("supersedes_deliverable_id")
+                    )
+                    superseded_deliverable = _superseded_deliverable_for_rework(
+                        state_model,
+                        task=task,
+                        producer_agent_id=agent.id,
+                        supersedes_deliverable_id=supersedes_deliverable_id,
+                    )
                     deliverable = Deliverable(
                         id=deliverable_id,
                         task_id=task_id,
@@ -3967,8 +3989,13 @@ class TeamStateRepository:
                         artifact_refs=artifact_refs,
                         git_refs=git_refs,
                         state=TeamRecordState.PENDING,
+                        supersedes_deliverable_id=supersedes_deliverable_id,
                     )
                     state_model.deliverables[deliverable.id] = deliverable
+                    if superseded_deliverable is not None:
+                        superseded_deliverable.superseded_by_deliverable_id = (
+                            deliverable.id
+                        )
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                     now = utc_now()
                     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
@@ -5681,6 +5708,11 @@ def _correction_hints(error: str) -> list[str]:
             "For Git-only deliverables, omit artifact_paths; otherwise list staged "
             "paths under /artifacts."
         )
+    if "supersedes_deliverable_id" in normalized:
+        hints.append(
+            "When revising a rejected deliverable, set supersedes_deliverable_id to "
+            "the rejected deliverable id from the review_rejected inbox payload."
+        )
     if "has neither a feature branch nor artifact refs" in normalized:
         hints.append(
             "Feature-promote Git deliverables before release: publish a review branch if "
@@ -6849,11 +6881,7 @@ def _cascade_review_decision(
         )
         if all_accepted:
             deliverable.state = TeamRecordState.ACCEPTED
-            task_deliverables = [
-                state.deliverables[deliverable_id]
-                for deliverable_id in task.deliverable_ids
-                if deliverable_id in state.deliverables
-            ]
+            task_deliverables = _active_task_deliverables(state, task)
             if task_deliverables and all(
                 item.state == TeamRecordState.ACCEPTED for item in task_deliverables
             ):
@@ -6876,6 +6904,7 @@ def _cascade_review_decision(
                 "kind": "review_rejected",
                 "review_request_id": review.id,
                 "deliverable_id": deliverable.id,
+                "supersedes_deliverable_id": deliverable.id,
                 "task_id": task.id,
                 "summary": "Review rejected; revise and resubmit.",
                 "findings": list(findings),
@@ -6963,6 +6992,55 @@ def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
     )
+
+
+def _superseded_deliverable_for_rework(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    producer_agent_id: str,
+    supersedes_deliverable_id: str | None,
+) -> Deliverable | None:
+    if supersedes_deliverable_id is None:
+        return None
+    deliverable = state.deliverables.get(supersedes_deliverable_id)
+    if deliverable is None:
+        raise ValueError(
+            f"supersedes_deliverable_id references missing deliverable "
+            f"{supersedes_deliverable_id}"
+        )
+    if deliverable.task_id != task.id:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} belongs to task "
+            f"{deliverable.task_id}, not {task.id}"
+        )
+    if deliverable.producer_agent_id != producer_agent_id:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} was produced by "
+            f"{deliverable.producer_agent_id}, not {producer_agent_id}"
+        )
+    if deliverable.state != TeamRecordState.REJECTED:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} is not rejected"
+        )
+    if deliverable.superseded_by_deliverable_id is not None:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} is already superseded by "
+            f"{deliverable.superseded_by_deliverable_id}"
+        )
+    return deliverable
+
+
+def _active_task_deliverables(
+    state: TeamState,
+    task: AgentTask,
+) -> list[Deliverable]:
+    return [
+        deliverable
+        for deliverable_id in task.deliverable_ids
+        if (deliverable := state.deliverables.get(deliverable_id)) is not None
+        and deliverable.superseded_by_deliverable_id is None
+    ]
 
 
 def _emit_git_promotion_event(
@@ -7665,11 +7743,18 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         if (task := state.tasks.get(deliverable.task_id)) is not None
         and task.project_id == project_id
     ]
-    deliverable_ids = {deliverable.id for deliverable in project_deliverables}
+    active_project_deliverables = [
+        deliverable
+        for deliverable in project_deliverables
+        if deliverable.superseded_by_deliverable_id is None
+    ]
+    active_deliverable_ids = {
+        deliverable.id for deliverable in active_project_deliverables
+    }
     project_reviews = [
         review
         for review in state.review_requests.values()
-        if review.deliverable_id in deliverable_ids
+        if review.deliverable_id in active_deliverable_ids
     ]
     project_releases = [
         release
@@ -7683,7 +7768,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         or any(goal.state == TeamRecordState.BLOCKED for goal in project.goals)
         or any(
             deliverable.state == TeamRecordState.BLOCKED
-            for deliverable in project_deliverables
+            for deliverable in active_project_deliverables
         )
         or any(review.state == TeamRecordState.BLOCKED for review in project_reviews)
         or any(release.state == TeamRecordState.BLOCKED for release in project_releases)
@@ -7693,7 +7778,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         and not any(task.state in _NON_TERMINAL_TASK_STATES for task in project_tasks)
         and not any(
             deliverable.state in pending_or_blocked
-            for deliverable in project_deliverables
+            for deliverable in active_project_deliverables
         )
         and not any(review.state in pending_or_blocked for review in project_reviews)
         and not any(release.state in pending_or_blocked for release in project_releases)

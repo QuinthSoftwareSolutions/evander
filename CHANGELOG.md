@@ -20,6 +20,8 @@
 - Added a review-rework inbox item for the deliverable producer so findings are
   handed back to the implementer while true blocked reviews still use blocker
   handling.
+- Added explicit deliverable supersession for review rework so accepted revised
+  deliverables can complete a task without losing rejected-deliverable history.
 
 ## 2026-06-23 - Team Add-on Role-Aware Wake Context
 

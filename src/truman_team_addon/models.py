@@ -736,12 +736,23 @@ class Deliverable(TeamModel):
     state: TeamRecordState = TeamRecordState.PENDING
     review_request_ids: list[str] = Field(default_factory=list)
     git_refs: DeliverableGitRefs = Field(default_factory=DeliverableGitRefs)
+    supersedes_deliverable_id: str | None = None
+    superseded_by_deliverable_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("id", "task_id", "producer_agent_id", "summary", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
+
+    @field_validator(
+        "supersedes_deliverable_id",
+        "superseded_by_deliverable_id",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
     @field_validator("artifact_refs", "review_request_ids", mode="before")
     @classmethod
@@ -1846,6 +1857,65 @@ class TeamState(TeamModel):
                     errors.append(
                         f"deliverable {deliverable.id} review {review_request_id} does not point back"
                     )
+            if deliverable.supersedes_deliverable_id is not None:
+                previous = self.deliverables.get(deliverable.supersedes_deliverable_id)
+                if previous is None:
+                    errors.append(
+                        f"deliverable {deliverable.id} supersedes missing deliverable "
+                        f"{deliverable.supersedes_deliverable_id}"
+                    )
+                elif previous.id == deliverable.id:
+                    errors.append(f"deliverable {deliverable.id} cannot supersede itself")
+                else:
+                    if previous.task_id != deliverable.task_id:
+                        errors.append(
+                            f"deliverable {deliverable.id} supersedes deliverable "
+                            f"{previous.id} from another task"
+                        )
+                    if previous.producer_agent_id != deliverable.producer_agent_id:
+                        errors.append(
+                            f"deliverable {deliverable.id} supersedes deliverable "
+                            f"{previous.id} from another producer"
+                        )
+                    if previous.superseded_by_deliverable_id != deliverable.id:
+                        errors.append(
+                            f"deliverable {deliverable.id} supersedes deliverable "
+                            f"{previous.id} without a reciprocal superseded_by link"
+                        )
+                    if previous.state != TeamRecordState.REJECTED:
+                        errors.append(
+                            f"deliverable {deliverable.id} supersedes non-rejected "
+                            f"deliverable {previous.id}"
+                        )
+            if deliverable.superseded_by_deliverable_id is not None:
+                replacement = self.deliverables.get(deliverable.superseded_by_deliverable_id)
+                if replacement is None:
+                    errors.append(
+                        f"deliverable {deliverable.id} is superseded by missing deliverable "
+                        f"{deliverable.superseded_by_deliverable_id}"
+                    )
+                elif replacement.id == deliverable.id:
+                    errors.append(f"deliverable {deliverable.id} cannot supersede itself")
+                else:
+                    if replacement.task_id != deliverable.task_id:
+                        errors.append(
+                            f"deliverable {deliverable.id} is superseded by deliverable "
+                            f"{replacement.id} from another task"
+                        )
+                    if replacement.producer_agent_id != deliverable.producer_agent_id:
+                        errors.append(
+                            f"deliverable {deliverable.id} is superseded by deliverable "
+                            f"{replacement.id} from another producer"
+                        )
+                    if replacement.supersedes_deliverable_id != deliverable.id:
+                        errors.append(
+                            f"deliverable {deliverable.id} is superseded by deliverable "
+                            f"{replacement.id} without a reciprocal supersedes link"
+                        )
+                    if deliverable.state != TeamRecordState.REJECTED:
+                        errors.append(
+                            f"non-rejected deliverable {deliverable.id} cannot be superseded"
+                        )
 
     def _validate_review_profiles(self, errors: list[str]) -> None:
         for profile in self.review_profiles.values():
