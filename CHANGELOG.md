@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Duplicate Wake Suppression
+
+- Stopped Team agents from being scheduled back onto `waiting_for_review`
+  tasks after they have already submitted an active deliverable.
+- Changed Team wake eligibility so pending inbox items with
+  `response_requested=false` stay visible but do not wake the recipient.
+- Aligned runtime Operations `wake_due` badges with the same deliverable and
+  no-reply inbox wake rules.
+
 ## 2026-06-23 - Team Add-on Action Handoff Hardening
 
 - Reseeded Team action contract files on every persistent wake and avoided

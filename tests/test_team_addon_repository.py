@@ -3341,6 +3341,126 @@ def test_every_wake_context_policy_does_not_wake_idle_agent(tmp_path: Path) -> N
     assert runtime.context_rotation_reason is None
 
 
+def test_waiting_review_deliverable_does_not_reschedule_producer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time + timedelta(minutes=20),
+    )
+
+    assert leases == []
+
+
+def test_response_requested_inbox_can_wake_waiting_review_producer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+
+    def _add_follow_up(state):
+        state.inbox["follow-up"] = AgentInboxItem(
+            id="follow-up",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=True,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_follow_up)
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "inbox"
+    assert [item["id"] for item in leases[0]["inbox"]] == ["follow-up"]
+
+
+def test_no_reply_inbox_does_not_wake_waiting_review_producer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+
+    def _add_no_reply_feedback(state):
+        state.inbox["no-reply"] = AgentInboxItem(
+            id="no-reply",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=False,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_no_reply_feedback)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        low_priority_wake_after_cycles=1,
+    )
+
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at is None
+    assert runtime.low_priority_batch_cycle_count == 0
+
+
 def test_every_wake_context_policy_preserves_low_priority_batching(
     tmp_path: Path,
 ) -> None:

@@ -3177,26 +3177,32 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                wake_inbox = _wakeable_inbox_items(pending_inbox)
                 immediate_inbox = [
                     item
-                    for item in pending_inbox
+                    for item in wake_inbox
                     if item.priority != TeamInboxPriority.LOW
                 ]
                 low_priority_inbox = [
-                    item for item in pending_inbox if item.priority == TeamInboxPriority.LOW
+                    item for item in wake_inbox if item.priority == TeamInboxPriority.LOW
                 ]
                 action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
+                wakeable_tasks = [
+                    task
+                    for task in active_tasks
+                    if _task_can_wake_owner_for_work(state_model, task)
+                ]
                 task_work_ready = any(
                     state_model.dependency_status(task.id) == "satisfied"
-                    for task in active_tasks
+                    for task in wakeable_tasks
                 ) or any(
                     state_model.subtask_counts(task.id)["open"] > 0
-                    for task in active_tasks
+                    for task in wakeable_tasks
                 )
                 wake_eligible = (
                     rotation_pending
-                    or bool(pending_inbox)
+                    or bool(wake_inbox)
                     or bool(action_feedback)
                     or task_work_ready
                 )
@@ -3226,18 +3232,18 @@ class TeamStateRepository:
                 elif not low_priority_inbox:
                     _clear_low_priority_batch(runtime)
                 if (
-                    not pending_inbox
+                    not wake_inbox
                     and not rotation_pending
                     and not action_feedback
                     and not due_by_time
                 ):
                     continue
-                if pending_inbox and not immediate_wake_ready and not low_priority_wake_ready:
+                if wake_inbox and not immediate_wake_ready and not low_priority_wake_ready:
                     continue
                 if (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
-                    and not pending_inbox
+                    and not wake_inbox
                     and not rotation_pending
                     and not action_feedback
                 ):
@@ -5244,6 +5250,29 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     ]
     tasks.sort(key=lambda item: (item.priority, item.created_at, item.id))
     return tasks
+
+
+def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
+    return [item for item in items if item.response_requested]
+
+
+def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
+    return not _task_waits_on_active_deliverable_review(state, task)
+
+
+def _task_waits_on_active_deliverable_review(state: TeamState, task: AgentTask) -> bool:
+    if task.state != TeamTaskState.WAITING_FOR_REVIEW:
+        return False
+    review_states = {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+        TeamRecordState.ACCEPTED,
+    }
+    return any(
+        deliverable.state in review_states
+        for deliverable in _active_task_deliverables(state, task)
+    )
 
 
 def _active_stand_downs_for_agent(
