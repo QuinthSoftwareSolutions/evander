@@ -2274,8 +2274,21 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
+  const initialState = seededOrgChartState();
+  delete initialState.agents.backend.project_id;
+  initialState.agents.backend.project_ids = ["project"];
+  initialState.agents.backend.project_assignments = [
+    {
+      id: "project__backend__project_member",
+      team_id: "team",
+      project_id: "project",
+      agent_id: "backend",
+      role_id: "project__backend",
+      kind: "project_member",
+    },
+  ];
   const { port } = await createTeamAddonServer(t, {
-    initialState: seededOrgChartState(),
+    initialState,
   });
   const page = await openBrowserPage(t, port);
 
@@ -2316,7 +2329,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   const backendDetails = backendCard.locator(".hierarchy-node-details");
   await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
   await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
-  await backendDetails.getByText("Project Project (project)").waitFor({ state: "visible" });
+  await backendDetails.getByText("Projects Project").waitFor({ state: "visible" });
   await backendDetails.getByText("Reports to lead").waitFor({ state: "visible" });
   await backendDetails.getByText("Direct subordinates 1").waitFor({ state: "visible" });
   await backendDetails.getByText("Open tasks 2").waitFor({ state: "visible" });
@@ -2402,6 +2415,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
   });
+  assert.equal(await page.locator('#edit-record-form select[name="project_id"]').inputValue(), "project");
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {

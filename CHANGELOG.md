@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Agent Edit Project Selection
+
+- Fixed the Team Add-on agent edit dialog so the Project select is populated
+  from assignment-backed `project_ids` and `project_assignments` instead of the
+  removed legacy agent `project_id` field.
+
 ## 2026-06-23 - Team Add-on Permission Help
 
 - Added Team Add-on permission tooltips for role permission options and saved

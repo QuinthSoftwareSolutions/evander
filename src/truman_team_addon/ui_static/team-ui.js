@@ -4987,7 +4987,24 @@ function agentProjectIds(agent) {
   const assignmentIds = Array.isArray(agent?.project_assignments)
     ? agent.project_assignments.map((assignment) => text(assignment?.project_id)).filter(Boolean)
     : [];
-  return uniqueTextList(assignmentIds);
+  if (assignmentIds.length) {
+    return uniqueTextList(assignmentIds);
+  }
+  const legacyProjectId = text(agent?.project_id);
+  return legacyProjectId ? [legacyProjectId] : [];
+}
+
+function agentEditProjectId(agent) {
+  const memberAssignmentIds = Array.isArray(agent?.project_assignments)
+    ? agent.project_assignments
+        .filter((assignment) => text(assignment?.kind || "project_member") === "project_member")
+        .map((assignment) => text(assignment?.project_id))
+        .filter(Boolean)
+    : [];
+  if (memberAssignmentIds.length) {
+    return uniqueTextList(memberAssignmentIds)[0];
+  }
+  return agentProjectIds(agent)[0] || "";
 }
 
 function agentProjectSummary(agent) {
@@ -9294,7 +9311,7 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
-      ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "No project" })}
+      ${selectField("Project", "project_id", "projects", agentEditProjectId(record), { placeholder: "No project" })}
       ${selectField("Role", "role_id", "roles", record.role_id || "", { placeholder: "No role" })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
