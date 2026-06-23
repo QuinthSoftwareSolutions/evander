@@ -445,6 +445,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   const saveStatus = page.locator(".save-status");
   const saveStatusHeadline = saveStatus.locator("strong");
+  const undoButton = page.getByRole("button", { name: "Undo" }).first();
+  assert.equal(await undoButton.isDisabled(), true);
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
   await changeWorkflowCanvasViewport(page);
@@ -482,6 +484,38 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
   await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), false);
+
+  await undoButton.click();
+  await page.waitForFunction(() => {
+    const promptField = [...document.querySelectorAll(".inspector-field")]
+      .find((element) => element.textContent?.includes("Prompt"));
+    return promptField?.querySelector("input")?.value === "Handle ticket";
+  });
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
+
+  await page.keyboard.press("Control+Z");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent"),
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), true);
+
+  await displayNameInput.fill("Dispatch agent v2");
+  await promptInput.fill("Handle escalations");
+  await page.waitForFunction(
+    (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
+    "Dispatch agent v2",
+  );
+  assert.equal(await promptInput.inputValue(), "Handle escalations");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
 
   await clickWorkflowNode(page, "trigger-1");
   await page.waitForTimeout(250);
