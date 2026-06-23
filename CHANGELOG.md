@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Governance Agenda Handling
+
+- Added a governance-manager MCP tool that lets active governance managers mark
+  agenda items handled for groups they manage.
+- Granted the tool during governance wakes and updated guidance so managers can
+  close agenda items after deciding or routing follow-up.
+
+## 2026-06-23 - Team Add-on Governance Org Labels
+
+- Removed the extra `Manager` prefix from governance nodes in the Team Add-on org chart so governance managers display by their agent label only.
+
 ## 2026-06-23 - Team Add-on Project Assignment Model
 
 - Replaced direct agent project membership with explicit project assignment records so one team agent can participate in or lead multiple projects.

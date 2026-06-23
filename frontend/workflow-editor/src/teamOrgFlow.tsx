@@ -291,7 +291,7 @@ function GovernanceNode({ data }: { data: GovernanceNodeData }) {
         </div>
         <div className="org-flow-governance-manager">
           {data.managerAvatar ? <Avatar avatar={data.managerAvatar} extraClass="agent-avatar-small" /> : null}
-          <span>Manager {data.managerLabel}</span>
+          <span>{data.managerLabel}</span>
         </div>
       </div>
       <div className="meta-line">{data.groupId}</div>

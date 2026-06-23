@@ -12261,10 +12261,7 @@ function yk({ data: e }) {
       ] }),
       /* @__PURE__ */ _.jsxs("div", { className: "org-flow-governance-manager", children: [
         e.managerAvatar ? /* @__PURE__ */ _.jsx(mm, { avatar: e.managerAvatar, extraClass: "agent-avatar-small" }) : null,
-        /* @__PURE__ */ _.jsxs("span", { children: [
-          "Manager ",
-          e.managerLabel
-        ] })
+        /* @__PURE__ */ _.jsx("span", { children: e.managerLabel })
       ] })
     ] }),
     /* @__PURE__ */ _.jsx("div", { className: "meta-line", children: e.groupId }),
