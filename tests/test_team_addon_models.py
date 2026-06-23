@@ -16,6 +16,7 @@ from truman_team_addon.git_naming import (
 )
 from truman_team_addon.models import (
     AgentActionRecord,
+    AgentContextClearingPolicy,
     AgentInboxItem,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
@@ -802,6 +803,19 @@ def test_task_graph_derived_helpers() -> None:
         "blocked": 0,
         "open": 1,
     }
+
+
+def test_agent_runtime_maps_legacy_auto_context_clearing_to_idle_policy() -> None:
+    runtime = AgentRuntime.model_validate(
+        {
+            "agent_id": "backend",
+            "auto_context_clearing_enabled": True,
+        }
+    )
+
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.IDLE
+    assert runtime.auto_context_clearing_enabled is True
+    assert runtime.model_dump(mode="json")["context_clearing_policy"] == "idle"
 
 
 def test_team_state_payload_includes_derived_task_fields() -> None:

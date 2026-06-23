@@ -20,6 +20,14 @@ const taskBoardStateToLane = new Map(
 );
 const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
 const agentStatuses = ["active", "paused", "archived"];
+const contextClearingPolicies = [
+  ["off", "Off", "Never automatically clear context; manual clear still works."],
+  ["idle", "When idle", "Clear after the agent becomes idle following work."],
+  ["every_wake", "Every wake", "Start each Team wake with a fresh context."],
+];
+const contextClearingPolicyLabels = Object.fromEntries(
+  contextClearingPolicies.map(([value, label]) => [value, label]),
+);
 const avatarStylePresets = [
   ["professional", "Professional"],
   ["playful", "Playful"],
@@ -272,7 +280,8 @@ const fieldTooltips = {
   "register-agent-form:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at the same time.",
   "edit:agent:voice": "Base OpenAI Realtime voice used for this agent's browser calls.",
   "edit:agent:speaking_style": "Optional spoken delivery guidance appended to this agent's browser voice sessions.",
-  "edit:agent:auto_context_clearing_enabled": "When enabled, the Team runtime marks this agent for fresh context after it becomes idle.",
+  "edit:agent:context_clearing_policy": "Controls when Team wakes start this agent with a fresh context.",
+  "edit:agent:auto_context_clearing_enabled": "Legacy setting equivalent to context clearing when idle.",
 
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
   "create-task-form:project_id": "Project that owns this task and constrains parent and dependency links.",
@@ -2410,7 +2419,7 @@ function renderRuntimeAgentRow(agent) {
   const wakeLease = runtimeText(agent.wake_leased_until);
   const dispatchId = runtimeText(agent.active_dispatch_id);
   const contextPending = Boolean(agent.context_rotation_pending);
-  const contextAuto = Boolean(agent.auto_context_clearing_enabled);
+  const contextPolicy = contextClearingPolicyValue(agent);
   const lastRotated = runtimeText(agent.last_context_rotated_at);
   const handoffSummary = text(agent.last_handoff_summary);
   return `
@@ -2426,7 +2435,7 @@ function renderRuntimeAgentRow(agent) {
       <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-      <div class="meta-line">Context clearing ${escapeHtml(contextAuto ? "auto on" : "auto off")} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
       ${
         handoffSummary
           ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
@@ -2447,7 +2456,7 @@ function renderCompactRuntimeAgentRow(agent) {
   const wakeLease = runtimeText(agent.wake_leased_until);
   const dispatchId = runtimeText(agent.active_dispatch_id);
   const contextPending = Boolean(agent.context_rotation_pending);
-  const contextAuto = Boolean(agent.auto_context_clearing_enabled);
+  const contextPolicy = contextClearingPolicyValue(agent);
   const lastRotated = runtimeText(agent.last_context_rotated_at);
   const handoffSummary = text(agent.last_handoff_summary);
   const flags = [
@@ -2476,7 +2485,7 @@ function renderCompactRuntimeAgentRow(agent) {
           </div>
           <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
           <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-          <div class="meta-line">Context clearing ${escapeHtml(contextAuto ? "auto on" : "auto off")} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+          <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
           ${
             handoffSummary
               ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
@@ -3699,6 +3708,18 @@ function rolePermissionOptions() {
   ]);
 }
 
+function contextClearingPolicyValue(runtime) {
+  const policy = text(runtime?.context_clearing_policy);
+  if (policy) {
+    return policy;
+  }
+  return Boolean(runtime?.auto_context_clearing_enabled) ? "idle" : "off";
+}
+
+function contextClearingPolicyLabel(policy) {
+  return contextClearingPolicyLabels[text(policy)] || "Off";
+}
+
 function teamInlineCreateKey(teamId, kind) {
   return `${text(teamId)}:${normalizedTeamRecordKind(kind)}`;
 }
@@ -4880,9 +4901,9 @@ function agentRuntimeDetailRows(details) {
   if (runtime.lastHandoffSummary) {
     rows.push(`Last handoff ${runtime.lastHandoffSummary}`);
   }
-  if (runtime.autoContextClearingEnabled || runtime.contextRotationPending) {
+  if (runtime.contextClearingPolicy !== "off" || runtime.contextRotationPending) {
     rows.push(
-      `Context clearing ${runtime.autoContextClearingEnabled ? "auto on" : "auto off"}${
+      `Context clearing ${contextClearingPolicyLabel(runtime.contextClearingPolicy)}${
         runtime.contextRotationPending ? " - pending" : ""
       }`,
     );
@@ -5121,6 +5142,7 @@ function runtimeSummary(agentId) {
       lowPriorityBatchStartedAt: null,
       lowPriorityBatchCycleCount: 0,
       lowPriorityBatchDueAfterCycles: null,
+      contextClearingPolicy: "off",
       autoContextClearingEnabled: false,
       contextRotationPending: false,
       lastContextRotatedAt: null,
@@ -5136,7 +5158,8 @@ function runtimeSummary(agentId) {
   const lowPriorityBatchCycleCount = numberOrZero(runtime.low_priority_batch_cycle_count);
   const lowPriorityBatchDueAfterCycles = numberOrNull(runtime.low_priority_batch_due_after_cycles);
   const contextRotationPending = Boolean(runtime.context_rotation_pending);
-  const autoContextClearingEnabled = Boolean(runtime.auto_context_clearing_enabled);
+  const contextClearingPolicy = contextClearingPolicyValue(runtime);
+  const autoContextClearingEnabled = contextClearingPolicy !== "off";
   const lastContextRotatedAt = text(runtime.last_context_rotated_at);
   const parts = [];
   if (activeDispatchId) {
@@ -5175,6 +5198,7 @@ function runtimeSummary(agentId) {
     lowPriorityBatchStartedAt: lowPriorityBatchStartedAt || null,
     lowPriorityBatchCycleCount,
     lowPriorityBatchDueAfterCycles,
+    contextClearingPolicy,
     autoContextClearingEnabled,
     contextRotationPending,
     lastContextRotatedAt: lastContextRotatedAt || null,
@@ -5450,7 +5474,7 @@ function hierarchyDetailLines(agentData, { focused = false } = {}) {
     lines.push(runtimeParts.join(" - "));
   }
   lines.push(
-    `Context clearing ${agentData.runtime?.autoContextClearingEnabled ? "auto on" : "auto off"}${
+    `Context clearing ${contextClearingPolicyLabel(agentData.runtime?.contextClearingPolicy || "off")}${
       agentData.runtime?.contextRotationPending ? " - pending" : ""
     }`,
   );
@@ -7614,6 +7638,7 @@ function buildSelectOptionSets() {
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
+    "context-clearing-policies": contextClearingPolicies,
     "realtime-voices": realtimeVoiceOptions,
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
@@ -9308,6 +9333,7 @@ function renderEditFields(type, record) {
   }
   if (type === "agent") {
     const runtime = state.agent_runtimes?.[record.id] || {};
+    const contextPolicy = contextClearingPolicyValue(runtime);
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
@@ -9320,7 +9346,7 @@ function renderEditFields(type, record) {
       ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
-      ${checkboxField("Automatic context clearing", "auto_context_clearing_enabled", Boolean(runtime.auto_context_clearing_enabled))}
+      ${selectField("Context clearing", "context_clearing_policy", "context-clearing-policies", contextPolicy, { required: true })}
     `;
   }
   if (type === "role") {
@@ -9460,7 +9486,7 @@ function editPayloadForForm(type, form) {
       },
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
       status: text(data.status),
-      auto_context_clearing_enabled: Boolean(form.elements.auto_context_clearing_enabled?.checked),
+      context_clearing_policy: text(data.context_clearing_policy) || "off",
     };
   }
   if (type === "role") {

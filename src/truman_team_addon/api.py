@@ -439,6 +439,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 else None
             ),
             set_voice_profile="voice_profile" in payload,
+            context_clearing_policy=_optional(payload, "context_clearing_policy"),
+            set_context_clearing_policy="context_clearing_policy" in payload,
             auto_context_clearing_enabled=_optional_bool(
                 payload,
                 "auto_context_clearing_enabled",
@@ -2467,6 +2469,9 @@ def _build_agent_voice_projection(
             "next_wake_at": _datetime_text(getattr(runtime, "next_wake_at", None)),
             "no_progress_count": getattr(runtime, "no_progress_count", None),
             "last_progress_at": _datetime_text(getattr(runtime, "last_progress_at", None)),
+            "context_clearing_policy": _enum_value(
+                getattr(runtime, "context_clearing_policy", "off")
+            ),
             "auto_context_clearing_enabled": getattr(
                 runtime,
                 "auto_context_clearing_enabled",

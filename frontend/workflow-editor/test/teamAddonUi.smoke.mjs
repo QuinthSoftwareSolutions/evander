@@ -21,7 +21,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
 
   assert.match(markup, /team-org-flow\.css/);
   assert.match(markup, /team-org-flow\.js/);
-  assert.match(script, /auto_context_clearing_enabled/);
+  assert.match(script, /context_clearing_policy/);
+  assert.match(script, /contextClearingPolicies/);
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
   assert.match(script, /data-stand-down-agent-id/);
@@ -3270,6 +3271,7 @@ function seededGitState() {
           next_wake_at: "2026-06-09T16:05:00Z",
           wake_leased_until: "",
           no_progress_count: 1,
+          context_clearing_policy: "idle",
           context_rotation_pending: false,
           auto_context_clearing_enabled: true,
           last_context_rotated_at: "2026-06-09T15:00:00Z",

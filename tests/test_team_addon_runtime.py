@@ -25,6 +25,7 @@ from truman_team_addon.mcp import (
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentAvatar,
+    AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
     AgentTask,
@@ -1213,6 +1214,50 @@ def test_wake_due_agents_provider_rotates_context_when_pending(
     assert session_store.sessions["session-backend"].metadata["team_addon"][
         "last_context_rotated_at"
     ]
+
+
+def test_wake_due_agents_provider_rotates_every_wake_policy(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-every-wake"})
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    assert result["dispatches"][0]["context_rotation"] == {
+        "rotated": True,
+        "reason": "every_wake",
+    }
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_thread_id == "thread-every-wake"
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "context_clearing_policy"
+    ] == "every_wake"
 
 
 def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(

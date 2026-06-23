@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from truman_team_addon.models import (
     AgentAvatar,
+    AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
     AgentStandDownSource,
@@ -589,6 +590,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_started_at" in runtime_columns
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
+    assert "context_clearing_policy" in runtime_columns
     assert "voice_profile_json" in agent_columns
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
@@ -2983,7 +2985,107 @@ def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
 
     runtime = state.agent_runtimes["backend"]
     assert runtime.auto_context_clearing_enabled is True
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.IDLE
     assert runtime.context_rotation_pending is False
+
+
+def test_every_wake_context_policy_rotates_ready_task_wakes(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_or_reprioritize_task(
+        task_id="active-work",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Active work",
+        description="Every wake policy should rotate when this wake is leased.",
+        created_by_agent_id="lead",
+    )
+    state = repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    assert state.agent_runtimes["backend"].context_rotation_pending is False
+
+    state, leases = repo.lease_due_agents(agent_id="backend", now=base_time)
+
+    assert len(leases) == 1
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+    assert runtime.auto_context_clearing_enabled is True
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "every_wake"
+    assert runtime.context_rotation_requested_at == base_time
+    assert leases[0]["runtime"]["context_clearing_policy"] == "every_wake"
+    assert leases[0]["runtime"]["context_rotation_pending"] is True
+    assert leases[0]["runtime"]["context_rotation_reason"] == "every_wake"
+
+
+def test_every_wake_context_policy_does_not_wake_idle_agent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state = repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy="every_wake",
+        set_context_clearing_policy=True,
+    )
+    assert state.agent_runtimes["backend"].context_clearing_policy == (
+        AgentContextClearingPolicy.EVERY_WAKE
+    )
+
+    state, leases = repo.lease_due_agents(agent_id="backend")
+
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.context_rotation_reason is None
+
+
+def test_every_wake_context_policy_preserves_low_priority_batching(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+
+    def _add_low_inbox(state):
+        state.inbox["low-1"] = AgentInboxItem(
+            id="low-1",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_low_inbox)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time,
+        low_priority_wake_after_cycles=2,
+    )
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.low_priority_batch_cycle_count == 1
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time + timedelta(minutes=15),
+        low_priority_wake_after_cycles=2,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "low_priority_inbox"
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "every_wake"
+    assert leases[0]["runtime"]["context_rotation_pending"] is True
 
 
 def test_low_priority_inbox_wakes_after_configured_wake_cycles(tmp_path: Path) -> None:

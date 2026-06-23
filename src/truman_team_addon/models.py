@@ -78,6 +78,12 @@ class AgentStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class AgentContextClearingPolicy(str, Enum):
+    OFF = "off"
+    IDLE = "idle"
+    EVERY_WAKE = "every_wake"
+
+
 class AgentProjectAssignmentKind(str, Enum):
     PROJECT_LEAD = "project_lead"
     PROJECT_MEMBER = "project_member"
@@ -566,11 +572,12 @@ class AgentRuntime(TeamModel):
     low_priority_batch_started_at: datetime | None = None
     low_priority_batch_cycle_count: int = Field(default=0, ge=0)
     low_priority_batch_due_after_cycles: int | None = Field(default=None, ge=0)
+    context_clearing_policy: AgentContextClearingPolicy = AgentContextClearingPolicy.OFF
     auto_context_clearing_enabled: bool = False
     context_rotation_pending: bool = False
     context_rotation_requested_by: str | None = None
     context_rotation_requested_at: datetime | None = None
-    context_rotation_reason: Literal["idle", "manual"] | None = None
+    context_rotation_reason: Literal["idle", "manual", "every_wake"] | None = None
     context_rotation_request_note: str | None = None
     last_handoff_summary: str | None = None
     last_context_rotated_at: datetime | None = None
@@ -594,6 +601,41 @@ class AgentRuntime(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_context_clearing_policy(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        raw_policy = payload.get("context_clearing_policy")
+        if raw_policy in (None, ""):
+            legacy_auto = payload.get("auto_context_clearing_enabled")
+            legacy_enabled = (
+                legacy_auto is True
+                or (
+                    isinstance(legacy_auto, int)
+                    and not isinstance(legacy_auto, bool)
+                    and legacy_auto != 0
+                )
+                or (
+                    isinstance(legacy_auto, str)
+                    and legacy_auto.strip().casefold() in {"1", "true", "yes", "on"}
+                )
+            )
+            payload["context_clearing_policy"] = (
+                AgentContextClearingPolicy.IDLE.value
+                if legacy_enabled
+                else AgentContextClearingPolicy.OFF.value
+            )
+        return payload
+
+    @model_validator(mode="after")
+    def _sync_context_clearing_compat_flag(self) -> "AgentRuntime":
+        self.auto_context_clearing_enabled = (
+            self.context_clearing_policy != AgentContextClearingPolicy.OFF
+        )
+        return self
 
 
 class AgentTask(TeamModel):
@@ -2371,6 +2413,11 @@ def _runtime_agent_payload(
         ),
         "low_priority_batch_due_after_cycles": (
             runtime.low_priority_batch_due_after_cycles if runtime is not None else None
+        ),
+        "context_clearing_policy": (
+            runtime.context_clearing_policy.value
+            if runtime is not None
+            else AgentContextClearingPolicy.OFF.value
         ),
         "auto_context_clearing_enabled": (
             runtime.auto_context_clearing_enabled if runtime is not None else False

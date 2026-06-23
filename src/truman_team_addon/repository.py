@@ -24,6 +24,7 @@ from .git_naming import (
 from .models import (
     AGENT_OPERATOR_ONLY_FIELDS,
     AgentActionRecord,
+    AgentContextClearingPolicy,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
     AgentAvatar,
@@ -1100,6 +1101,8 @@ class TeamStateRepository:
         status: AgentStatus | None = None,
         voice_profile: AgentVoiceProfile | None = None,
         set_voice_profile: bool = False,
+        context_clearing_policy: AgentContextClearingPolicy | str | None = None,
+        set_context_clearing_policy: bool = False,
         auto_context_clearing_enabled: bool | None = None,
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
@@ -1109,6 +1112,12 @@ class TeamStateRepository:
         normalized_project_id = _optional_text(project_id)
         normalized_role_id = _optional_text(role_id)
         normalized_reports_to_agent_id = _optional_text(reports_to_agent_id)
+        normalized_context_clearing_policy = _resolved_context_clearing_policy(
+            context_clearing_policy=context_clearing_policy,
+            set_context_clearing_policy=set_context_clearing_policy,
+            auto_context_clearing_enabled=auto_context_clearing_enabled,
+            set_auto_context_clearing_enabled=set_auto_context_clearing_enabled,
+        )
 
         def _mutate(state: TeamState) -> TeamState:
             now = utc_now()
@@ -1216,21 +1225,18 @@ class TeamStateRepository:
                     if voice_profile is not None and voice_profile.configured
                     else None
                 )
-            if set_auto_context_clearing_enabled:
+            if normalized_context_clearing_policy is not None:
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
                 )
-                runtime.auto_context_clearing_enabled = bool(auto_context_clearing_enabled)
-                runtime.updated_at = now
-                if runtime.auto_context_clearing_enabled:
-                    _maybe_mark_idle_context_rotation_due(
-                        state,
-                        agent_id=agent.id,
-                        now=now,
-                    )
-                else:
-                    _clear_pending_idle_context_rotation(runtime)
+                _set_context_clearing_policy(
+                    state,
+                    agent=agent,
+                    runtime=runtime,
+                    policy=normalized_context_clearing_policy,
+                    now=now,
+                )
             if set_reports_to_agent_id and not detached_from_team:
                 old_superior_id = agent.reports_to_agent_id
                 if normalized_reports_to_agent_id is not None:
@@ -3080,6 +3086,19 @@ class TeamStateRepository:
                     if action_feedback
                     else "scheduled"
                 )
+                if (
+                    runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+                    and not runtime.context_rotation_pending
+                ):
+                    _mark_context_rotation_pending(
+                        state_model,
+                        agent=agent,
+                        runtime=runtime,
+                        reason="every_wake",
+                        requested_by=None,
+                        requested_at=effective_now,
+                        request_note=None,
+                    )
                 _clear_low_priority_batch(runtime)
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
@@ -3304,6 +3323,11 @@ class TeamStateRepository:
                     stand_down.model_dump(mode="json")
                     for stand_down in active_stand_downs
                 ],
+                "context_clearing_policy": (
+                    runtime.context_clearing_policy.value
+                    if runtime is not None
+                    else AgentContextClearingPolicy.OFF.value
+                ),
                 "auto_context_clearing_enabled": (
                     runtime.auto_context_clearing_enabled if runtime is not None else False
                 ),
@@ -4939,7 +4963,10 @@ def _maybe_mark_idle_context_rotation_due(
     if _active_stand_downs_for_agent(state, agent.id):
         return
     runtime = state.agent_runtimes.setdefault(agent.id, AgentRuntime(agent_id=agent.id))
-    if not runtime.auto_context_clearing_enabled or runtime.context_rotation_pending:
+    if (
+        runtime.context_clearing_policy != AgentContextClearingPolicy.IDLE
+        or runtime.context_rotation_pending
+    ):
         return
     if not _has_activity_since_last_context_rotation(state, agent=agent, runtime=runtime):
         return
@@ -5026,13 +5053,13 @@ def _mark_context_rotation_pending(
     *,
     agent: PersistentAgent,
     runtime: AgentRuntime,
-    reason: Literal["idle", "manual"],
+    reason: Literal["idle", "manual", "every_wake"],
     requested_by: str | None,
     requested_at: datetime,
     request_note: str | None,
 ) -> None:
-    if reason not in {"idle", "manual"}:
-        raise ValueError("context rotation reason must be idle or manual")
+    if reason not in {"idle", "manual", "every_wake"}:
+        raise ValueError("context rotation reason must be idle, manual, or every_wake")
     runtime.context_rotation_pending = True
     runtime.context_rotation_reason = reason
     runtime.context_rotation_requested_by = requested_by
@@ -5049,10 +5076,63 @@ def _mark_context_rotation_pending(
     runtime.updated_at = requested_at
 
 
-def _clear_pending_idle_context_rotation(runtime: AgentRuntime) -> None:
+def _resolved_context_clearing_policy(
+    *,
+    context_clearing_policy: AgentContextClearingPolicy | str | None,
+    set_context_clearing_policy: bool,
+    auto_context_clearing_enabled: bool | None,
+    set_auto_context_clearing_enabled: bool,
+) -> AgentContextClearingPolicy | None:
+    if set_context_clearing_policy:
+        return _context_clearing_policy_from_value(context_clearing_policy)
+    if set_auto_context_clearing_enabled:
+        return (
+            AgentContextClearingPolicy.IDLE
+            if bool(auto_context_clearing_enabled)
+            else AgentContextClearingPolicy.OFF
+        )
+    return None
+
+
+def _context_clearing_policy_from_value(
+    value: AgentContextClearingPolicy | str | None,
+) -> AgentContextClearingPolicy:
+    if value is None:
+        return AgentContextClearingPolicy.OFF
+    if isinstance(value, AgentContextClearingPolicy):
+        return value
+    normalized = str(value or "").strip()
+    if not normalized:
+        return AgentContextClearingPolicy.OFF
+    try:
+        return AgentContextClearingPolicy(normalized)
+    except ValueError:
+        allowed = ", ".join(policy.value for policy in AgentContextClearingPolicy)
+        raise ValueError(f"context_clearing_policy must be one of: {allowed}") from None
+
+
+def _set_context_clearing_policy(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+    policy: AgentContextClearingPolicy,
+    now: datetime,
+) -> None:
+    previous_policy = runtime.context_clearing_policy
+    if previous_policy != policy:
+        _clear_pending_auto_context_rotation(runtime)
+    runtime.context_clearing_policy = policy
+    runtime.auto_context_clearing_enabled = policy != AgentContextClearingPolicy.OFF
+    runtime.updated_at = now
+    if policy == AgentContextClearingPolicy.IDLE:
+        _maybe_mark_idle_context_rotation_due(state, agent_id=agent.id, now=now)
+
+
+def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
     if (
         not runtime.context_rotation_pending
-        or runtime.context_rotation_reason != "idle"
+        or runtime.context_rotation_reason not in {"idle", "every_wake"}
     ):
         return
     runtime.context_rotation_pending = False

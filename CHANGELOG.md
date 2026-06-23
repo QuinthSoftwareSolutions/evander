@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Context Clearing Policy
+
+- Added per-agent Team Add-on context clearing policies: `off`, `idle`, and
+  `every_wake`, with legacy automatic context clearing preserved as `idle`.
+- Updated Team wake leasing so `every_wake` starts each otherwise-eligible Team
+  wake with a fresh context without bypassing low-priority batching or waking
+  idle agents.
+
 ## 2026-06-23 - Team Add-on Agent Edit Project Selection
 
 - Fixed the Team Add-on agent edit dialog so the Project select is populated
