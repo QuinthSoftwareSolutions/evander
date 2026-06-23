@@ -492,6 +492,10 @@ class AdminRevisionConflict(ValueError):
         self.details = details
 
 
+class GitImportConflictError(RuntimeError):
+    status_code = 409
+
+
 class TriggerConfigMutationPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     trigger_id: str
@@ -6084,6 +6088,26 @@ def _git_config_value(git_dir: Path, key: str) -> str | None:
         return None
     value = (result.stdout or "").strip()
     return value or None
+
+
+def _bare_repo_agent_refs(git_dir: Path) -> list[str]:
+    if not git_dir.exists():
+        return []
+    result = _run_subprocess(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/agents",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(message or f"Failed to inspect agent branches in {git_dir}")
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
 
 
 def _infer_git_provider_from_url(url: str | None) -> str | None:
@@ -14232,6 +14256,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         import_repo_name = _normalize_import_bare_repo_name(
             bare_repo_name or resolved_repo_name
         )
+        bare_repo_path = Path(issue_setup.git_root) / f"{import_repo_name}.git"
+        agent_refs = _bare_repo_agent_refs(bare_repo_path)
+        if agent_refs:
+            sample = agent_refs[0]
+            extra = len(agent_refs) - 1
+            suffix = f" and {extra} more" if extra else ""
+            raise GitImportConflictError(
+                f"Cannot import into existing mirror {bare_repo_path}: "
+                f"it already has agent branches ({sample}{suffix}). "
+                "Create a new bare repo name or use a dedicated source-ref refresh."
+            )
         bare_repo_path = self.vm_agent_support.sync_repo_into_bare_remote(
             import_repo_name,
             resolved_repo_path,

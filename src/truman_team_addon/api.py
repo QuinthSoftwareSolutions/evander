@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
@@ -319,13 +320,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 raise ValueError("bare_repo cannot differ from bare_repo_name")
             bare_repo_name = bare_repo
         try:
-            imported = import_git_repo(
-                repo_source=_required(payload, "repo_source", "host_repo_path"),
-                bare_repo_name=bare_repo_name,
-                directory_path=_optional(payload, "directory_path") or "root",
+            repo_source = _required(payload, "repo_source", "host_repo_path")
+            directory_path = _optional(payload, "directory_path") or "root"
+            imported = await run_in_threadpool(
+                lambda: import_git_repo(
+                    repo_source=repo_source,
+                    bare_repo_name=bare_repo_name,
+                    directory_path=directory_path,
+                )
             )
         except RuntimeError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=503)
+            status_code = int(getattr(exc, "status_code", 503))
+            return JSONResponse({"error": str(exc)}, status_code=status_code)
         return JSONResponse({"imported": imported, "git": imported.get("git")}, status_code=201)
 
     async def create_role(request: Request) -> JSONResponse:

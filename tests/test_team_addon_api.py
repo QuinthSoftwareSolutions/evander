@@ -18,6 +18,7 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
+from truman_team_addon import api as team_addon_api
 from truman_team_addon.api import (
     _conversation_snapshot_events,
     _team_state_payload_for_request,
@@ -2599,6 +2600,91 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSource").stdout.strip()
         == str(source_repo)
     )
+    (source_repo / "README.md").write_text("# Source\n\nRefresh\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md")
+    _git(source_repo, "commit", "-q", "-m", "refresh")
+    refreshed_commit = _git(source_repo, "rev-parse", "refs/heads/main").stdout.strip()
+
+    refresh_response = client.post(
+        "/api/addons/team-addon/projects/git/import",
+        json={
+            "repo_source": str(source_repo),
+            "bare_repo_name": "team-project.git",
+        },
+    )
+
+    assert refresh_response.status_code == 201
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == refreshed_commit
+
+    _git_dir(bare_repo, "update-ref", "refs/heads/agents/session-1/work", refreshed_commit)
+
+    blocked_response = client.post(
+        "/api/addons/team-addon/projects/git/import",
+        json={
+            "repo_source": str(source_repo),
+            "bare_repo_name": "team-project.git",
+        },
+    )
+
+    assert blocked_response.status_code == 409
+    assert "already has agent branches" in blocked_response.json()["error"]
+    assert (
+        _git_dir(bare_repo, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip()
+        == refreshed_commit
+    )
+
+
+def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    service = AdminService(config_path)
+    calls: dict[str, object] = {}
+
+    def fake_import_git_repo(
+        *,
+        repo_source: str,
+        bare_repo_name: str | None = None,
+        directory_path: str = "root",
+    ) -> dict[str, object]:
+        calls["import"] = {
+            "repo_source": repo_source,
+            "bare_repo_name": bare_repo_name,
+            "directory_path": directory_path,
+        }
+        return {
+            "success": True,
+            "git": {
+                "host_repo_path": repo_source,
+                "bare_repo_name": bare_repo_name,
+            },
+        }
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        calls["threadpool"] = True
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(service, "import_git_repo", fake_import_git_repo)
+    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/addons/team-addon/projects/git/import",
+        json={
+            "repo_source": "/srv/repos/project",
+            "bare_repo_name": "project.git",
+            "directory_path": "root",
+        },
+    )
+
+    assert response.status_code == 201
+    assert calls["threadpool"] is True
+    assert calls["import"] == {
+        "repo_source": "/srv/repos/project",
+        "bare_repo_name": "project.git",
+        "directory_path": "root",
+    }
 
 
 def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None:

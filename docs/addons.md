@@ -300,8 +300,9 @@ path or canonical origin URL as the repo source, creates or refreshes a
 control-plane bare mirror under the configured root `issue_setup.git_root`, and
 fills the form with the resolved `host_repo_path`, `bare_repo_name`, base
 branch, canonical origin URL, and provider when they can be inferred. The import
-does not save Team state by itself; review the populated fields and submit the
-form normally.
+does not refresh an existing mirror once it contains `refs/heads/agents/**`
+work; create a new bare repo name instead. It does not save Team state by
+itself; review the populated fields and submit the form normally.
 
 The template uses a fixed hierarchy:
 

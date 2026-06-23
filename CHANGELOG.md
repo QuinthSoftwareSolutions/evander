@@ -35,6 +35,9 @@
   project Git config fields in setup, create, and edit forms.
 - Exposed the import through a Team Add-on API endpoint backed by the existing
   host Git mirror setup semantics.
+- Blocked refreshes into existing bare mirrors that already contain
+  `refs/heads/agents/**` work, and moved the import operation off the Admin Web
+  event loop.
 
 ## 2026-06-23 - Team Add-on Governance Agenda Handling
 
