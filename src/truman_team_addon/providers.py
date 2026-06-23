@@ -2274,6 +2274,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "reason": lease["reason"],
         "superior_agent_id": lease["superior_agent_id"],
         "subordinate_agent_ids": lease["subordinate_agent_ids"],
+        "subordinates": lease.get("subordinates") or [],
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
         "recent_action_feedback": lease.get("recent_action_feedback") or [],
@@ -2338,6 +2339,10 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
         f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below for this "
         "dispatch and write the requested action artifact before finishing.\n\n"
+        "Role-aware delegation: when creating tasks or requests for subordinates, "
+        "use subordinates[].role_name and subordinates[].role_description. "
+        "Reviewer roles should generally receive review_requests or review-focused "
+        "tasks, not implementation task ownership.\n\n"
         f"{_task_creation_mandate_guidance(agent)}"
         f"{_project_repo_prompt_guidance(project_repo)}"
         f"{handoff_section}"

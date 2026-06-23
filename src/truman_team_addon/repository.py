@@ -3130,6 +3130,7 @@ class TeamStateRepository:
                         "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
+                        "subordinates": _subordinate_agent_payloads(state_model, agent),
                     }
                 )
             return state_model
@@ -4459,12 +4460,23 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     effective_permissions = effective_role_permissions(state, agent)
     payload["role_name"] = role.name if role is not None else None
+    payload["role_description"] = role.description if role is not None else ""
     payload["role_permissions"] = [permission.value for permission in effective_permissions]
     payload["effective_role_permissions"] = [permission.value for permission in effective_permissions]
     payload["project_assignments"] = agent_project_assignment_payloads(state, agent.id)
     payload["project_ids"] = agent_project_ids(state, agent.id)
     payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
     return payload
+
+
+def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for subordinate_id in agent.subordinate_agent_ids:
+        subordinate = state.agents.get(subordinate_id)
+        if subordinate is None:
+            continue
+        payloads.append(_agent_payload(state, subordinate))
+    return payloads
 
 
 def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:

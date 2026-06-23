@@ -1117,6 +1117,47 @@ def test_build_prompt_allows_root_tasks_for_create_root_task_permission(
     assert "You may NOT create top-level tasks" not in prompt
 
 
+def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_role(
+        role_id="project__reviewer",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+        description="Review code for correctness; do not own implementation work.",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="reviewer",
+        team_id="team",
+        project_id="project",
+        role_id="project__reviewer",
+        session_id="session-reviewer",
+        display_name="Reviewer",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+    _add_pending_inbox(repo, item_id="lead-inbox", recipient_agent_id="lead")
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "lead")
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(prompt.split("Team context JSON:\n", 1)[1].split("\n\nTeam action contract", 1)[0])
+
+    assert context["subordinate_agent_ids"] == ["backend", "reviewer"]
+    subordinates = {item["id"]: item for item in context["subordinates"]}
+    assert subordinates["backend"]["role_name"] == "Backend"
+    assert subordinates["backend"]["project_ids"] == ["project"]
+    assert subordinates["reviewer"]["display_name"] == "Reviewer"
+    assert subordinates["reviewer"]["role_name"] == "Reviewer"
+    assert (
+        subordinates["reviewer"]["role_description"]
+        == "Review code for correctness; do not own implementation work."
+    )
+    assert "Role-aware delegation" in prompt
+    assert "Reviewer roles should generally receive review_requests" in prompt
+
+
 def test_wake_due_agents_provider_prompts_with_latest_action_feedback_once(
     tmp_path: Path,
 ) -> None:

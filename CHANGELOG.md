@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Role-Aware Wake Context
+
+- Added subordinate role summaries to Team wake prompts so managers can see
+  direct reports' role names, descriptions, permissions, and project context
+  before assigning tasks.
+- Added role-aware delegation guidance to reduce implementation tasks being
+  assigned to reviewer-role agents.
+
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 
 - Recorded governance member-team additions and removals as pending
