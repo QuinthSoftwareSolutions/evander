@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Chat Dispatch Queueing
+
+- Queued built-in Team chat sends for asynchronous dispatch instead of resuming
+  the target agent inline from the Starlette request path, preventing powered-off
+  VM dispatch attempts from freezing Admin Web.
+
 ## 2026-06-23 - Team Add-on Org Chart Inbox Badge Hover
 
 - Restored hover and focus popovers for status-request and progress-report
