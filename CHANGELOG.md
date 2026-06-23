@@ -10,6 +10,10 @@
 - Added a one-shot missing-action recovery prompt that keeps the active Team
   lease open for the same dispatch before falling back to the normal failure
   path.
+- Cleared Team runtime leases and recorded the original missing-action failure
+  when a one-shot recovery resume cannot be dispatched.
+- Rejected self-superseding review-rework deliverable IDs before mutating Team
+  state.
 - Tightened wake prompts with explicit deliverable staging, relative
   `artifact_paths`, and owned `task_id` guidance.
 

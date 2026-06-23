@@ -3000,6 +3000,7 @@ def test_missing_persistent_action_artifact_dispatches_one_shot_recovery(
             valid=False,
             error="artifact file not found: team-action.json",
             action_artifact_path="team-action.json",
+            expected_revision=TeamStateRepository(tmp_path).read().revision,
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
@@ -3030,6 +3031,54 @@ def test_missing_persistent_action_artifact_dispatches_one_shot_recovery(
     assert records[0].dispatch_id == dispatch_id
     assert records[0].success is False
     assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
+
+
+def test_missing_persistent_action_artifact_records_failure_when_recovery_resume_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = leases[0]["dispatch_id"]
+    expected_revision = repo.read().revision
+    resumer = FakeResumer(result={"success": False, "error": "resume_agent failed"})
+    apply = TeamApplyAgentActionEffectProvider()
+    apply.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            dispatch_id=dispatch_id,
+            valid=False,
+            error="artifact file not found: team-action.json",
+            action_artifact_path="team-action.json",
+            expected_revision=expected_revision,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+        ),
+    )
+
+    result = apply.execute()
+
+    assert result["success"] is False
+    assert result["recovery_dispatched"] is False
+    assert result["recovery_action_record_id"]
+    assert result["recovery_result"] == {
+        "success": False,
+        "error": "resume_agent failed",
+    }
+    assert len(resumer.calls) == 1
+    reread = TeamStateRepository(tmp_path).read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.no_progress_count == 1
+    records = sorted(reread.action_records.values(), key=lambda record: record.created_at)
+    assert len(records) == 2
+    assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
+    assert records[1].dispatch_id == dispatch_id
+    assert records[1].error == "artifact file not found: team-action.json"
 
 
 def test_missing_persistent_action_artifact_fails_after_recovery_was_prompted(
@@ -3069,6 +3118,7 @@ def test_missing_persistent_action_artifact_fails_after_recovery_was_prompted(
             valid=False,
             error="artifact file not found: team-action.json",
             action_artifact_path="team-action.json",
+            expected_revision=TeamStateRepository(tmp_path).read().revision,
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},

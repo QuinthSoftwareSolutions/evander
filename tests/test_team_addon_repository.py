@@ -4443,6 +4443,57 @@ def test_apply_agent_action_rework_requires_deliverable_supersession(
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
 
+def test_apply_agent_action_rework_rejects_self_superseding_deliverable_id(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review.",
+                }
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-1", "state": "rejected"}
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Invalid self-superseding rework.",
+                    "supersedes_deliverable_id": "deliverable",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_deliverable_ids"] == []
+    assert result["errors"] == [
+        "deliverables[0]: deliverable id cannot match supersedes_deliverable_id"
+    ]
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id is None
+
+
 def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")

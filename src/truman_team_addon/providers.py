@@ -1409,7 +1409,21 @@ def _dispatch_missing_action_recovery(
     except (TeamStateConflictError, ValueError):
         return None
     if recovery_record.get("already_prompted") or recovery_record.get("error"):
-        return None
+        recovery_error = _optional_text(recovery_record.get("error"))
+        if recovery_error is None:
+            recovery_error = "missing Team action recovery was already prompted"
+        return _apply_missing_action_after_recovery_dispatch_failed(
+            repo,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            error=error,
+            state=state,
+            recovery_record=recovery_record,
+            recovery_result={
+                "success": False,
+                "error": recovery_error,
+            },
+        )
     agent_id = _optional_text(recovery_record.get("agent_id"))
     if agent_id is None:
         return None
@@ -1426,11 +1440,30 @@ def _dispatch_missing_action_recovery(
             resume_mode=resume_mode,
             dispatch_id=dispatch_id,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return _apply_missing_action_after_recovery_dispatch_failed(
+            repo,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            error=error,
+            state=state,
+            recovery_record=recovery_record,
+            recovery_result={
+                "success": False,
+                "error": str(exc) or exc.__class__.__name__,
+            },
+        )
     result_payload = _coerce_mapping(resume_result)
     if _result_reports_failure(result_payload):
-        return None
+        return _apply_missing_action_after_recovery_dispatch_failed(
+            repo,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            error=error,
+            state=state,
+            recovery_record=recovery_record,
+            recovery_result=result_payload,
+        )
     state_payload = _filtered_team_state_payload(
         state,
         team_id=None,
@@ -1448,6 +1481,53 @@ def _dispatch_missing_action_recovery(
         "recovery_result": result_payload,
         "state": state_payload,
     }
+
+
+def _apply_missing_action_after_recovery_dispatch_failed(
+    repo: TeamStateRepository,
+    *,
+    session_id: str,
+    dispatch_id: str,
+    error: str,
+    state: TeamState,
+    recovery_record: Mapping[str, Any],
+    recovery_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    agent_id = _optional_text(recovery_record.get("agent_id"))
+    try:
+        failed_state, result = repo.apply_agent_action(
+            action={
+                "agent_id": agent_id,
+                "dispatch_id": dispatch_id,
+            },
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            valid=False,
+            error=error,
+            expected_revision=state.revision,
+        )
+    except TeamStateConflictError as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "expected_revision": exc.expected_revision,
+            "current_revision": exc.current_revision,
+        }
+    result["recovery_dispatched"] = False
+    result["recovery_action_record_id"] = recovery_record.get("action_record_id")
+    result["recovery_result"] = dict(recovery_result)
+    if agent_id is not None:
+        state_payload = _filtered_team_state_payload(
+            failed_state,
+            team_id=None,
+            project_id=None,
+            agent_id=agent_id,
+        )
+    else:
+        state_payload = team_state_payload(failed_state, include_agent_avatars=False)
+        state_payload["conversations"] = {}
+        state_payload["conversation_messages"] = {}
+    return {**result, "state": state_payload}
 
 
 def _missing_action_recovery_prompt(

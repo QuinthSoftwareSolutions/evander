@@ -3984,6 +3984,13 @@ class TeamStateRepository:
                     supersedes_deliverable_id = _optional_text(
                         deliverable_payload.get("supersedes_deliverable_id")
                     )
+                    if (
+                        supersedes_deliverable_id is not None
+                        and deliverable_id == supersedes_deliverable_id
+                    ):
+                        raise ValueError(
+                            "deliverable id cannot match supersedes_deliverable_id"
+                        )
                     superseded_deliverable = _superseded_deliverable_for_rework(
                         state_model,
                         task=task,
