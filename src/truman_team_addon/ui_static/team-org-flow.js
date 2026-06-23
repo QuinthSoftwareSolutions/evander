@@ -12168,7 +12168,7 @@ function pk({ data: e }) {
   ] });
 }
 function gk({ data: e }) {
-  const t = () => {
+  const t = F.useId(), n = () => {
     window.dispatchEvent(
       new CustomEvent("team-org-flow:edit-agent", {
         detail: { agentId: e.agentId }
@@ -12182,16 +12182,23 @@ function gk({ data: e }) {
       tabIndex: 0,
       role: "button",
       "aria-label": `Edit ${e.label}`,
-      onClick: t,
-      onKeyDown: (n) => {
-        n.key !== "Enter" && n.key !== " " || (n.preventDefault(), t());
+      "aria-describedby": t,
+      onClick: n,
+      onKeyDown: (r) => {
+        r.key !== "Enter" && r.key !== " " || (r.preventDefault(), n());
       },
       children: [
         /* @__PURE__ */ _.jsxs("div", { className: "hierarchy-node-summary", children: [
           /* @__PURE__ */ _.jsxs("div", { className: "hierarchy-node-title", children: [
-            /* @__PURE__ */ _.jsx(mm, { avatar: e.avatar }),
-            /* @__PURE__ */ _.jsx("strong", { children: e.label }),
-            e.idLabel ? /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-id", children: e.idLabel }) : null
+            /* @__PURE__ */ _.jsxs("span", { className: "hierarchy-node-avatar-wrap", children: [
+              /* @__PURE__ */ _.jsx(mm, { avatar: e.avatar }),
+              /* @__PURE__ */ _.jsxs("span", { className: "hierarchy-node-avatar-card", "aria-hidden": "true", children: [
+                /* @__PURE__ */ _.jsx("strong", { className: "hierarchy-node-avatar-name", children: e.label }),
+                e.idLabel ? /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-avatar-id", children: e.idLabel }) : null,
+                /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-avatar-role", children: e.role })
+              ] })
+            ] }),
+            /* @__PURE__ */ _.jsx("strong", { children: e.label })
           ] }),
           /* @__PURE__ */ _.jsxs("div", { className: "hierarchy-node-subtitle", children: [
             /* @__PURE__ */ _.jsx("span", { className: "hierarchy-node-role", children: e.role }),
@@ -12199,6 +12206,13 @@ function gk({ data: e }) {
             /* @__PURE__ */ _.jsx(wk, { awake: e.awake }),
             /* @__PURE__ */ _.jsx(xk, { indicators: e.inboxIndicators })
           ] })
+        ] }),
+        /* @__PURE__ */ _.jsxs("span", { id: t, className: "visually-hidden", children: [
+          "Agent ID ",
+          e.agentId,
+          ". Role ",
+          e.role,
+          "."
         ] }),
         /* @__PURE__ */ _.jsxs("div", { className: "org-node-work", children: [
           /* @__PURE__ */ _.jsxs("div", { className: "org-node-work-line org-node-work-line--now", children: [

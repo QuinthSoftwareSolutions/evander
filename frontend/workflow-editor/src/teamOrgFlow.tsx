@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useId, useMemo } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   Background,
@@ -192,6 +192,7 @@ function TeamOrgNode({ data }: NodeProps<OrgNode>) {
 }
 
 function AgentNode({ data }: { data: AgentNodeData }) {
+  const descriptionId = useId();
   const openAgent = () => {
     window.dispatchEvent(
       new CustomEvent("team-org-flow:edit-agent", {
@@ -205,6 +206,7 @@ function AgentNode({ data }: { data: AgentNodeData }) {
       tabIndex={0}
       role="button"
       aria-label={`Edit ${data.label}`}
+      aria-describedby={descriptionId}
       onClick={openAgent}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") {
@@ -216,9 +218,13 @@ function AgentNode({ data }: { data: AgentNodeData }) {
     >
       <div className="hierarchy-node-summary">
         <div className="hierarchy-node-title">
-          <Avatar avatar={data.avatar} />
+          <AvatarHoverCard
+            avatar={data.avatar}
+            label={data.label}
+            role={data.role}
+            idLabel={data.idLabel}
+          />
           <strong>{data.label}</strong>
-          {data.idLabel ? <span className="hierarchy-node-id">{data.idLabel}</span> : null}
         </div>
         <div className="hierarchy-node-subtitle">
           <span className="hierarchy-node-role">{data.role}</span>
@@ -227,6 +233,9 @@ function AgentNode({ data }: { data: AgentNodeData }) {
           <InboxIndicators indicators={data.inboxIndicators} />
         </div>
       </div>
+      <span id={descriptionId} className="visually-hidden">
+        Agent ID {data.agentId}. Role {data.role}.
+      </span>
       <div className="org-node-work">
         <div className="org-node-work-line org-node-work-line--now">
           <span>Now</span>
@@ -342,6 +351,29 @@ function Avatar({
   return (
     <span className={`${className} agent-avatar-fallback`} aria-hidden="true">
       {avatar.initials}
+    </span>
+  );
+}
+
+function AvatarHoverCard({
+  avatar,
+  label,
+  role,
+  idLabel,
+}: {
+  avatar: { src: string; alt: string; initials: string };
+  label: string;
+  role: string;
+  idLabel: string | null;
+}) {
+  return (
+    <span className="hierarchy-node-avatar-wrap">
+      <Avatar avatar={avatar} />
+      <span className="hierarchy-node-avatar-card" aria-hidden="true">
+        <strong className="hierarchy-node-avatar-name">{label}</strong>
+        {idLabel ? <span className="hierarchy-node-avatar-id">{idLabel}</span> : null}
+        <span className="hierarchy-node-avatar-role">{role}</span>
+      </span>
     </span>
   );
 }

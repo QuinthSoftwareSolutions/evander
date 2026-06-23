@@ -1190,14 +1190,27 @@ class VmAgentAdminService:
     def _persist_session(self, session_id: str, manifest: Any) -> None:
         repository = self._session_repository()
         manifest_session_id = str(getattr(manifest, "session_id", "") or "").strip()
+        target_session_id = manifest_session_id or str(session_id or "").strip()
+        get_session = getattr(repository, "get_session", None)
+        previous_session = (
+            get_session(target_session_id)
+            if callable(get_session) and target_session_id
+            else None
+        )
         if manifest_session_id:
             repository.upsert_session(manifest)
-            return
-        put = getattr(repository, "put", None)
-        if callable(put):
-            put(session_id, manifest)
-            return
-        repository.upsert_session(manifest)
+        else:
+            put = getattr(repository, "put", None)
+            if callable(put):
+                put(session_id, manifest)
+            else:
+                repository.upsert_session(manifest)
+        if isinstance(manifest, SessionManifest):
+            _admin_service._sync_added_discord_session_cursors(
+                self._deps.runtime,
+                previous_session=previous_session,
+                updated_session=manifest,
+            )
 
     @staticmethod
     def _control_ssh_users(vm_user: str) -> list[str]:
@@ -1239,6 +1252,15 @@ class VmAgentAdminService:
                 getattr(self._deps.worker_admin, "_deps", None),
                 "agent_control_store",
                 SimpleNamespace(status_for_vm=lambda vm_name: "enabled"),
+            ),
+            sync_added_discord_session_cursors=(
+                lambda *, previous_session, updated_session: (
+                    _admin_service._sync_added_discord_session_cursors(
+                        self._deps.runtime,
+                        previous_session=previous_session,
+                        updated_session=updated_session,
+                    )
+                )
             ),
         )
         return VmProviderRegistry(dependency_view)

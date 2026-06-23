@@ -39,6 +39,9 @@ class TeamApplyAgentActionEffectDefinition(EffectDefinition):
     error: ConfigValue | None = None
     session_id: ConfigValue | None = None
     dispatch_id: ConfigValue | None = None
+    action_artifact_path: ConfigValue | None = None
+    recover_missing_action: ConfigValue | None = None
+    recovery_resume_mode: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
     @field_validator("action")
@@ -229,6 +232,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "revision": {"type": "integer"},
         "leased_count": {"type": "integer"},
         "leases": {"type": "array"},
+        "chat_dispatches": {"type": "array"},
         "dispatches": {"type": "array"},
         "prepared_project_repos": {"type": "array"},
         "failed_project_repo_preparations": {"type": "array"},
@@ -266,6 +270,10 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "accepted_ephemeral_assignment_ids": {"type": "array"},
         "rejected_ephemeral_assignment_ids": {"type": "array"},
         "updated_task_ids": {"type": "array"},
+        "handled_inbox_item_ids": {"type": "array"},
+        "recovery_dispatched": {"type": "boolean"},
+        "recovery_action_record_id": {"type": ["string", "null"]},
+        "recovery_result": {"type": ["object", "null"]},
     },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},

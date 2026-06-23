@@ -18,6 +18,7 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from truman_team_addon import api as team_addon_api
 from truman_team_addon.api import (
     _conversation_snapshot_events,
@@ -655,6 +656,62 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     assert [item["sender"] for item in messages] == ["operator", "agent"]
     assert messages[0]["status"] == "replied"
     assert messages[1]["body"] == "The dependency task is still open."
+
+
+def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_calls: list[dict[str, object]] = []
+
+    def _fake_resume_agent(target, prompt, **kwargs):
+        resume_calls.append({"target": target, "prompt": prompt, **kwargs})
+        return {"success": True, "dispatch_id": kwargs.get("dispatch_id")}
+
+    monkeypatch.setattr(service, "resume_agent", _fake_resume_agent)
+    client = TestClient(create_app(service))
+
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+    assert created.status_code == 201
+    conversation = created.json()["conversations"][0]
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={
+            "body": "Can you look at this once your current wake finishes?",
+            "expected_revision": created.json()["revision"],
+        },
+    )
+
+    assert sent.status_code == 202
+    sent_payload = sent.json()
+    assert sent_payload["dispatch"]["success"] is False
+    assert sent_payload["dispatch"]["queued"] is True
+    assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
+    assert "queued for retry" in sent_payload["dispatch"]["message"]
+    assert resume_calls == []
+    message = sent_payload["message"]
+    assert message["status"] == "queued"
+    assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    reread = TeamStateRepository(tmp_path / "runtime").read()
+    assert reread.conversation_messages[message["id"]].status == "queued"
+    assert reread.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend"
 
 
 def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
@@ -1575,6 +1632,23 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _seed_runtime_operations_state(runtime_dir)
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            allowed_tools=[],
+            expires_at=datetime(2025, 12, 31, tzinfo=UTC),
+        )
+    )
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-lead",
+            vm_id="vm-lead",
+            allowed_tools=[],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
     client = _client(tmp_path)
 
     response = client.get("/api/addons/team-addon/state")
@@ -1592,9 +1666,12 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert backend["lease_active"] is True
     assert backend["active_dispatch_id"] == "dispatch-backend"
     assert backend["wake_reason"] == "inbox"
+    assert backend["session_is_expired"] is True
+    assert backend["session_expires_at"] == "2025-12-31T00:00:00+00:00"
 
     attention = {row["kind"]: row for row in state["runtime_operations"]["attention"]}
     assert set(attention) == {
+        "expired_agent_session",
         "blocked_task",
         "waiting_dependency_task",
         "pending_inbox_item",
@@ -1605,6 +1682,8 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
         "failed_ephemeral_assignment",
         "cleanup_pending_ephemeral_assignment",
     }
+    assert attention["expired_agent_session"]["agent_id"] == "backend"
+    assert attention["expired_agent_session"]["session_id"] == "session-backend"
     assert attention["blocked_task"]["id"] == "blocked-task"
     assert attention["blocked_task"]["state"] == "blocked"
     assert attention["waiting_dependency_task"]["id"] == "waiting-task"
