@@ -3269,6 +3269,172 @@ def test_create_operator_directive_accepts_governance_manager_session(
     assert state.agent_runtimes["manager"].next_wake_at is None
 
 
+def test_mark_governance_agenda_handled_accepts_governance_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    state, item = repo.mark_governance_agenda_handled_by_session(
+        agenda_item_id="agenda",
+        requesting_session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+
+    assert item.state == GovernanceAgendaItemState.HANDLED
+    assert state.governance_agenda["agenda"].state == GovernanceAgendaItemState.HANDLED
+
+    state, item = repo.mark_governance_agenda_handled_by_session(
+        agenda_item_id="agenda",
+        requesting_session_id="session-governance",
+        expected_revision=state.revision,
+    )
+    assert item.state == GovernanceAgendaItemState.HANDLED
+    assert state.governance_agenda["agenda"].state == GovernanceAgendaItemState.HANDLED
+
+
+def test_mark_governance_agenda_handled_rejects_non_governance_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="active governance manager session"):
+        repo.mark_governance_agenda_handled_by_session(
+            agenda_item_id="agenda",
+            requesting_session_id="session-manager",
+            expected_revision=repo.read().revision,
+        )
+
+
+def test_mark_governance_agenda_handled_rejects_other_group_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="other-governance-manager",
+        session_id="session-other-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="other-portfolio",
+        name="Other Portfolio",
+        manager_agent_id="other-governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="active governance manager session"):
+        repo.mark_governance_agenda_handled_by_session(
+            agenda_item_id="agenda",
+            requesting_session_id="session-other-governance",
+            expected_revision=repo.read().revision,
+        )
+
+
+@pytest.mark.parametrize("status", [AgentStatus.PAUSED, AgentStatus.ARCHIVED])
+def test_mark_governance_agenda_handled_rejects_inactive_governance_manager_session(
+    tmp_path: Path,
+    status: AgentStatus,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    def _mark_inactive(state):
+        state.agents["governance-manager"].status = status
+        return state
+
+    repo.update(_mark_inactive)
+
+    with pytest.raises(ValueError, match="active governance manager session"):
+        repo.mark_governance_agenda_handled_by_session(
+            agenda_item_id="agenda",
+            requesting_session_id="session-governance",
+            expected_revision=repo.read().revision,
+        )
+
+
 @pytest.mark.parametrize("status", [AgentStatus.PAUSED, AgentStatus.ARCHIVED])
 def test_create_operator_directive_rejects_inactive_governance_manager_session(
     tmp_path: Path,

@@ -12,7 +12,11 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, tool_name_value
 from agent_sandbox.runtime import build_runtime
-from truman_team_addon.mcp import TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
+from truman_team_addon.mcp import (
+    TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+    TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+)
+from truman_team_addon.models import GovernanceAgendaItemState
 from truman_team_addon.repository import ADDON_ID, TeamStateRepository
 
 
@@ -86,7 +90,13 @@ def _seed_governance_state(runtime_dir: Path) -> TeamStateRepository:
 
 
 def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> None:
-    context = _runtime(tmp_path, allowed_tools=[TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL])
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[
+            TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+        ],
+    )
     repo = _seed_governance_state(context.config.runtime_dir)
     server = create_server(context)
 
@@ -98,7 +108,9 @@ def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> Non
     }
 
     assert TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL in registered
+    assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in registered
     assert TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL in visible
+    assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in visible
 
     result = _call_tool(
         server,
@@ -122,6 +134,124 @@ def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> Non
     assert item.payload["created_by"] == "agent-session:session-governance"
     assert item.payload["requesting_session_id"] == "session-governance"
     assert state.agent_runtimes["manager"].next_wake_at is None
+
+
+def test_team_addon_mcp_marks_governance_agenda_handled(tmp_path: Path) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL],
+    )
+    repo = _seed_governance_state(context.config.runtime_dir)
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+        {
+            "session_id": "session-governance",
+            "agenda_item_id": "agenda",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["agenda_item_id"] == "agenda"
+    assert result["governance_group_id"] == "portfolio"
+    assert result["state"] == "handled"
+    state = repo.read()
+    assert state.governance_agenda["agenda"].state == GovernanceAgendaItemState.HANDLED
+
+
+def test_team_addon_mcp_rejects_agenda_handling_outside_governance_scope(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL],
+    )
+    repo = _seed_governance_state(context.config.runtime_dir)
+    repo.create_team(
+        team_id="unmanaged-team",
+        name="Unmanaged Team",
+        manager_agent_id="unmanaged-manager",
+        manager_session_id="session-unmanaged-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="other-governance-manager",
+        session_id="session-other-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="other-portfolio",
+        name="Other Portfolio",
+        manager_agent_id="other-governance-manager",
+        member_team_ids=["unmanaged-team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="outside-agenda",
+        governance_group_id="other-portfolio",
+        item_type="operator_directive",
+        title="Review other status",
+        summary="Check other status.",
+        team_id="unmanaged-team",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="active governance manager session"):
+        _call_tool(
+            server,
+            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+            {
+                "session_id": "session-governance",
+                "agenda_item_id": "outside-agenda",
+            },
+        )
+
+
+def test_team_addon_mcp_agenda_handling_reports_revision_conflict(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL],
+    )
+    repo = _seed_governance_state(context.config.runtime_dir)
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+        {
+            "session_id": "session-governance",
+            "agenda_item_id": "agenda",
+            "expected_revision": 0,
+        },
+    )
+
+    assert result["success"] is False
+    assert result["agenda_item_id"] == "agenda"
+    assert result["expected_revision"] == 0
+    assert result["current_revision"] == repo.read().revision
 
 
 def test_team_addon_mcp_rejects_directives_outside_governance_scope(

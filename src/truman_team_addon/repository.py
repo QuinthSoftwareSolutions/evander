@@ -673,6 +673,47 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def mark_governance_agenda_handled_by_session(
+        self,
+        *,
+        agenda_item_id: str,
+        requesting_session_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, GovernanceAgendaItem]:
+        normalized_item_id = _required_text(agenda_item_id, "agenda_item_id")
+        normalized_session_id = _required_text(
+            requesting_session_id,
+            "requesting_session_id",
+        )
+
+        def _mutate(state: TeamState) -> TeamState:
+            item = _require_present(
+                state.governance_agenda,
+                normalized_item_id,
+                "governance agenda item",
+            )
+            group = _require_present(
+                state.governance_groups,
+                item.governance_group_id,
+                "governance group",
+            )
+            requester = _agent_for_session(state, session_id=normalized_session_id)
+            if (
+                requester.status != AgentStatus.ACTIVE
+                or group.archived
+                or group.manager_agent_id != requester.id
+            ):
+                raise ValueError(
+                    "governance agenda handling requires the active governance "
+                    "manager session for the agenda item's governance group"
+                )
+            item.state = GovernanceAgendaItemState.HANDLED
+            item.updated_at = utc_now()
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        return state, state.governance_agenda[normalized_item_id]
+
     def create_project(
         self,
         *,

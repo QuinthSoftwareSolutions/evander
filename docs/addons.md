@@ -430,6 +430,10 @@ set:
   managers. It creates the same durable `operator_directive` inbox item, but
   only for member Teams of a governance group managed by the caller, and only
   for the target Team manager inbox.
+- `team_mark_governance_agenda_handled` is the add-on-owned MCP tool for
+  governance managers to mark agenda items in their own governance groups
+  handled after they have decided, routed any needed directive, or determined no
+  action is needed.
 - `query:team:session-routing` classifies a completed Truman session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
   unknown session before action artifacts are applied. Persistent agents are
@@ -600,6 +604,10 @@ Team communication is directional and enforced by the repository, not by prose:
   manager and mark the manager due, so an instruction like "ask the lead for
   status on next dispatch" becomes normal Team work instead of an out-of-band
   `team-action.json` write.
+- **Governance agenda completion** — governance managers use the
+  `team_mark_governance_agenda_handled` MCP tool to mark agenda items handled
+  for groups they manage. Operators can still use the Admin API or UI handle
+  action.
 - **Team Chat to a human** — use `chat_replies` only to answer a specific human
   operator message from the built-in Chat tab. Use `operator_chat_messages[]`
   only for human operators listed in the current dispatch context. Do not use
