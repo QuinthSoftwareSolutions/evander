@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Existing Project Leads
+
+- Changed Team Add-on project creation so the UI assigns an existing registered
+  team agent as project lead instead of collecting new lead session, display,
+  or role-name fields inline.
+
 ## 2026-06-23 - Async Agents Page Create Operations
 
 - Added reload-safe Admin Web create-operation tracking so multiple agent creates

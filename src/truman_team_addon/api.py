@@ -261,12 +261,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         goals = list(_optional_list(payload, "goals"))
+        lead_agent_id = _optional(payload, "lead_agent_id")
+        lead_session_id = _optional(payload, "lead_session_id")
+        if lead_session_id is None:
+            lead_agent_id = _required(payload, "lead_agent_id")
         state = repository.create_project(
             project_id=_optional(payload, "id") or _optional(payload, "project_id"),
             team_id=_required(payload, "team_id"),
             name=_required(payload, "name"),
-            lead_agent_id=_optional(payload, "lead_agent_id"),
-            lead_session_id=_required(payload, "lead_session_id"),
+            lead_agent_id=lead_agent_id,
+            lead_session_id=lead_session_id,
             lead_display_name=_optional(payload, "lead_display_name"),
             lead_role_id=_optional(payload, "lead_role_id"),
             lead_role_name=_optional(payload, "lead_role_name"),

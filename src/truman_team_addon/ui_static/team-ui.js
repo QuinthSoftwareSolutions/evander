@@ -253,10 +253,7 @@ const fieldTooltips = {
 
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
   "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
-  "create-project-form:lead_existing_agent_id": "Copy session and display defaults from an existing agent while creating a distinct new lead agent.",
-  "create-project-form:lead_session_id": "Session ID used to resume or wake the project lead agent.",
-  "create-project-form:lead_display_name": "Optional display name. If blank, the generated lead agent ID is shown.",
-  "create-project-form:lead_role_name": "Human-readable role name for the project lead role.",
+  "create-project-form:lead_agent_id": "Existing registered agent on the selected team that will become this project's lead.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
   "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions for the new agent.",
@@ -8550,17 +8547,9 @@ function payloadForForm(form, data = formData(form)) {
     const payload = {
       team_id: text(data.team_id),
       name: text(data.name),
-      lead_session_id: text(data.lead_session_id),
+      lead_agent_id: text(data.lead_agent_id),
       goals,
     };
-    const leadRoleName = text(data.lead_role_name);
-    if (leadRoleName) {
-      payload.lead_role_name = leadRoleName;
-    }
-    const leadDisplayName = text(data.lead_display_name);
-    if (leadDisplayName) {
-      payload.lead_display_name = leadDisplayName;
-    }
     const git = gitConfigForForm(data);
     if (git) {
       payload.git = git;

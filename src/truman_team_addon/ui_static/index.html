@@ -515,21 +515,7 @@
               <form id="create-project-form" data-endpoint="/projects" data-method="POST">
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Name <input name="name" required /></label>
-                <label>
-                  Lead existing agent
-                  <select
-                    name="lead_existing_agent_id"
-                    data-options="agents"
-                    data-placeholder="Select existing agent"
-                    data-agent-source-picker
-                    data-session-field="lead_session_id"
-                    data-display-field="lead_display_name"
-                    data-suggested-role="project-lead"
-                  ></select>
-                </label>
-                <label>Lead session ID <input name="lead_session_id" required /></label>
-                <label>Lead display name <input name="lead_display_name" /></label>
-                <label>Lead role name <input name="lead_role_name" value="Project Lead" /></label>
+                <label>Project lead <select name="lead_agent_id" required data-options="agents" data-placeholder="Select existing team agent"></select></label>
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
                 <p class="subheading">Git config (optional)</p>
                 <label>Host repo path <input name="host_repo_path" /></label>

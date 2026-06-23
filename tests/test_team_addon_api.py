@@ -1254,13 +1254,14 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ui.status_code == 200
     assert "data-team-addon-ui" in ui.text
     assert 'name="manager_display_name"' in ui.text
-    assert 'name="lead_display_name"' in ui.text
+    assert 'name="lead_agent_id"' in ui.text
+    assert 'name="lead_display_name"' not in ui.text
     assert 'name="display_name"' in ui.text
     assert "Review &amp; Delivery" in ui.text
     assert 'id="review-delivery-view"' in ui.text
     assert 'id="delivery-filter-blocked"' in ui.text
     assert 'name="parent_task_id"' in ui.text
-    assert ui.text.count('name="lead_session_id"') == 1
+    assert 'name="lead_session_id"' not in ui.text
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
     assert 'data-team-view="governance"' in ui.text

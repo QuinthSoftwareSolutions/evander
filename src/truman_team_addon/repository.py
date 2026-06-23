@@ -685,7 +685,7 @@ class TeamStateRepository:
         normalized_team_id = _required_text(team_id, "team_id")
         normalized_name = _required_text(name, "name")
         normalized_lead_agent_id = _optional_text(lead_agent_id)
-        normalized_lead_session_id = _required_text(lead_session_id, "lead_session_id")
+        normalized_lead_session_id = _optional_text(lead_session_id)
         normalized_lead_display_name = _optional_text(lead_display_name)
         normalized_lead_role_id = _optional_text(lead_role_id)
         normalized_lead_role_name = _optional_text(lead_role_name) or "Project Lead"
@@ -719,7 +719,7 @@ class TeamStateRepository:
             )
             existing_lead = state.agents.get(effective_lead_agent_id)
             if existing_lead is not None:
-                if existing_lead.team_id not in {None, normalized_team_id}:
+                if existing_lead.team_id != normalized_team_id:
                     raise ValueError(
                         f"agent {effective_lead_agent_id} belongs to team "
                         f"{existing_lead.team_id}"
@@ -729,6 +729,10 @@ class TeamStateRepository:
                         f"agent {effective_lead_agent_id} already belongs to project "
                         f"{existing_lead.project_id}"
                     )
+            elif normalized_lead_agent_id and normalized_lead_session_id is None:
+                raise ValueError(f"agent {effective_lead_agent_id} does not exist")
+            elif normalized_lead_session_id is None:
+                raise ValueError("lead_session_id is required when creating a new project lead agent")
             project_goals = _project_goals_with_generated_ids(
                 goal_inputs,
                 project_id=effective_project_id,
@@ -757,7 +761,7 @@ class TeamStateRepository:
                 lead.project_id = effective_project_id
                 lead.display_name = normalized_lead_display_name or lead.display_name
                 lead.role_id = role.id
-                lead.session_id = normalized_lead_session_id
+                lead.session_id = normalized_lead_session_id or lead.session_id
                 lead.reports_to_agent_id = team.manager_agent_id
                 lead.ephemeral_policy = role.ephemeral_policy.model_copy(deep=True)
             else:
