@@ -21,6 +21,10 @@ type InboxIndicator = {
   direction: "down" | "up";
   label: string;
   count: number;
+  items?: Array<{
+    detail: string;
+    meta: string;
+  }>;
 };
 
 type BaseNodeData = {
@@ -391,19 +395,41 @@ function InboxIndicators({ indicators }: { indicators: InboxIndicator[] }) {
   return (
     <span className="agent-inbox-indicators" aria-label="Pending inbox summary">
       {indicators.map((indicator) => (
-        <span
-          className={[
-            "agent-inbox-indicator",
-            `agent-inbox-indicator--${indicator.itemType}`,
-            indicator.count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty",
-          ].join(" ")}
-          aria-label={`${indicator.label}: ${indicator.count}`}
-          key={indicator.itemType}
-        >
-          <InboxIcon direction={indicator.direction} />
-          <strong>{indicator.count}</strong>
-        </span>
+        <InboxIndicatorBadge indicator={indicator} key={indicator.itemType} />
       ))}
+    </span>
+  );
+}
+
+function InboxIndicatorBadge({ indicator }: { indicator: InboxIndicator }) {
+  const popoverId = useId();
+  const items = indicator.items || [];
+  const hasItems = items.length > 0;
+  return (
+    <span
+      className={[
+        "agent-inbox-indicator",
+        `agent-inbox-indicator--${indicator.itemType}`,
+        indicator.count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty",
+      ].join(" ")}
+      aria-label={`${indicator.label}: ${indicator.count}`}
+      aria-describedby={hasItems ? popoverId : undefined}
+      tabIndex={hasItems ? 0 : undefined}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <InboxIcon direction={indicator.direction} />
+      <strong>{indicator.count}</strong>
+      {hasItems ? (
+        <span className="agent-inbox-popover" role="tooltip" id={popoverId} aria-label={indicator.label}>
+          {items.map((item, index) => (
+            <span className="agent-inbox-bubble" key={`${item.detail}-${item.meta}-${index}`}>
+              <strong>{item.detail}</strong>
+              {item.meta ? <small>{item.meta}</small> : null}
+            </span>
+          ))}
+        </span>
+      ) : null}
     </span>
   );
 }

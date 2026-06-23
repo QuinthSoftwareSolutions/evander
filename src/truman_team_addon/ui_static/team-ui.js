@@ -3090,6 +3090,8 @@ function orgAgentNodeData(agentData) {
     .filter(Boolean)
     .join(" ");
   const indicatorItems = agentData.inboxIndicatorItems || {};
+  const statusRequestItems = indicatorItems.status_request || [];
+  const progressReportItems = indicatorItems.progress_report || [];
   return {
     kind: "agent",
     agentId: agentData.id,
@@ -3105,17 +3107,35 @@ function orgAgentNodeData(agentData) {
         itemType: "status_request",
         direction: "down",
         label: "Status requests",
-        count: (indicatorItems.status_request || []).length,
+        count: statusRequestItems.length,
+        items: statusRequestItems.map(orgInboxIndicatorItemData),
       },
       {
         itemType: "progress_report",
         direction: "up",
         label: "Progress reports",
-        count: (indicatorItems.progress_report || []).length,
+        count: progressReportItems.length,
+        items: progressReportItems.map(orgInboxIndicatorItemData),
       },
     ],
     work,
     detailLines: hierarchyDetailLines(agentData, { focused: true }),
+  };
+}
+
+function orgInboxIndicatorItemData(item) {
+  const metaParts = [];
+  if (item.task_id) {
+    metaParts.push(`task ${item.task_id}`);
+  }
+  if (item.sender_agent_id) {
+    metaParts.push(`from ${item.sender_agent_id}`);
+  }
+  metaParts.push(inboxPriorityLabel(item));
+  metaParts.push(inboxReplyIntentLabel(item));
+  return {
+    detail: inboxItemDetail(item) || item.id,
+    meta: metaParts.join(" - "),
   };
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Org Chart Inbox Badge Hover
+
+- Restored hover and focus popovers for status-request and progress-report
+  badges in the Team Add-on ReactFlow org chart.
+
 ## 2026-06-23 - Team Add-on Duplicate Wake Suppression
 
 - Stopped Team agents from being scheduled back onto `waiting_for_review`
