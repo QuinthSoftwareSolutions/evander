@@ -7393,6 +7393,55 @@ def _resolve_session_approval_notification_target_ids(
     )
 
 
+def _sync_added_discord_session_cursors(
+    runtime: Any,
+    *,
+    previous_session: SessionManifest | None,
+    updated_session: SessionManifest,
+) -> dict[str, str]:
+    previous_channels = (
+        _wake_eligible_discord_channel_ids(runtime, previous_session)
+        if previous_session is not None
+        else set()
+    )
+    updated_channels = _wake_eligible_discord_channel_ids(runtime, updated_session)
+    added_channels = sorted(updated_channels - previous_channels)
+    if not added_channels:
+        return {}
+
+    discord_inbox_service = getattr(runtime, "discord_inbox_service", None)
+    fast_forward = getattr(discord_inbox_service, "fast_forward_session_cursors_to_latest", None)
+    if not callable(fast_forward):
+        return {}
+    return dict(
+        fast_forward(
+            session_id=updated_session.session_id,
+            channel_ids=added_channels,
+        )
+    )
+
+
+def _wake_eligible_discord_channel_ids(
+    runtime: Any,
+    session: SessionManifest,
+) -> set[str]:
+    allowed_tools = {tool_name_value(tool) for tool in session.allowed_tools}
+    if tool_name_value(ToolName.DISCORD_GET_COMMANDS) not in allowed_tools:
+        return set()
+
+    policy_config = getattr(runtime, "policy_config", None)
+    resolve = getattr(policy_config, "resolved_discord_channel_ids_for_session", None)
+    if callable(resolve):
+        channel_ids = resolve(session, capability="read")
+    else:
+        channel_ids = session.discord_channel_allowlist
+    return {
+        str(channel_id or "").strip()
+        for channel_id in channel_ids
+        if str(channel_id or "").strip()
+    }
+
+
 def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
     merged: dict[str, Any] = dict(base)
     for key, value in update.items():
@@ -12010,6 +12059,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         self.agent_create_operations.update_all(_mark)
 
+    def sync_added_discord_session_cursors(
+        self,
+        *,
+        previous_session: SessionManifest | None,
+        updated_session: SessionManifest,
+    ) -> dict[str, str]:
+        return _sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=previous_session,
+            updated_session=updated_session,
+        )
+
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(
             self._agent_optional_string(payload, "backend")
@@ -12318,6 +12379,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ],
         )
         session_repository.upsert_session(manifest)
+        _sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=None,
+            updated_session=manifest,
+        )
         session = session_repository.get_session(session_id)
         return {
             "success": True,
@@ -12727,6 +12793,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         updated = session.model_copy(update=update)
         self.runtime.session_repository.upsert_session(updated)
+        _sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=session,
+            updated_session=updated,
+        )
         return {
             "success": True,
             "agent_id": agent_id,

@@ -1005,6 +1005,14 @@ def _libvirt_create_vm(
         except ValueError:
             manifest.model = None
     session_repository.upsert_session(manifest)
+    sync_added_discord_session_cursors = getattr(
+        deps, "sync_added_discord_session_cursors", None
+    )
+    if callable(sync_added_discord_session_cursors):
+        sync_added_discord_session_cursors(
+            previous_session=existing_session,
+            updated_session=manifest,
+        )
 
     root_dir = Path(__file__).resolve().parents[3]
     vm_defaults = deps.resolve_vm_defaults(normalized_directory_path)

@@ -124,6 +124,42 @@ class DiscordInboxStore:
             self._compact_messages(connection)
             return next_cursor
 
+    def fast_forward_session_cursors_to_latest(
+        self, session_id: str, channel_ids: Sequence[str]
+    ) -> dict[str, str]:
+        normalized_channel_ids = {
+            str(channel_id or "").strip()
+            for channel_id in channel_ids
+            if str(channel_id or "").strip()
+        }
+        if not normalized_channel_ids:
+            return {}
+
+        advanced: dict[str, str] = {}
+        with self._lock, self._connect() as connection:
+            for channel_id in sorted(normalized_channel_ids):
+                row = connection.execute(
+                    """
+                    SELECT MAX(created_at) AS cursor
+                    FROM discord_inbox_messages
+                    WHERE channel_id = ?
+                    """,
+                    (channel_id,),
+                ).fetchone()
+                latest_cursor = str(row["cursor"]) if row is not None and row["cursor"] else None
+                if latest_cursor is None:
+                    continue
+                next_cursor = self._advance_session_cursor_in_connection(
+                    connection,
+                    session_id,
+                    channel_id,
+                    latest_cursor,
+                )
+                if next_cursor is not None:
+                    advanced[channel_id] = next_cursor
+            self._compact_messages(connection)
+        return advanced
+
     def has_unread_messages(self, *, session_id: str, channel_ids: list[str]) -> bool:
         with self._lock, self._connect() as connection:
             for channel_id in channel_ids:

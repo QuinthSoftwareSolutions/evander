@@ -169,6 +169,24 @@ def test_discord_inbox_store_advances_session_cursor_monotonically(
     )
 
 
+def test_discord_inbox_store_fast_forwards_session_cursor_to_latest_message(
+    tmp_path: Path,
+) -> None:
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    assert store.add_messages_if_new(
+        [
+            _message("msg-1", created_at=datetime(2026, 3, 20, tzinfo=timezone.utc)),
+            _message("msg-2", created_at=datetime(2026, 3, 21, tzinfo=timezone.utc)),
+        ]
+    ) == 2
+
+    advanced = store.fast_forward_session_cursors_to_latest("session-1", ["chan-1"])
+
+    assert advanced == {"chan-1": "2026-03-21T00:00:00.000000Z"}
+    assert store.get_session_cursor("session-1", "chan-1") == "2026-03-21T00:00:00.000000Z"
+    assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is False
+
+
 def test_discord_inbox_store_reports_unread_messages_per_session(tmp_path: Path) -> None:
     store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
     assert store.add_message_if_new(

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Discord Target Cursor Fast-Forward
+
+- Fast-forwarded per-session Discord inbox cursors when a Discord communication
+  target becomes wake-eligible for an agent, preventing historical channel
+  messages from waking newly created or newly updated agents.
+
 ## 2026-06-23 - Team Add-on Review Rework Semantics
 
 - Stopped rejected reviews from marking tasks and projects as blocked; rejected
