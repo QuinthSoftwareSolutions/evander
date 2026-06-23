@@ -3425,9 +3425,9 @@ function renderTeamRecordGroup(team, scopedRecords) {
   const teamLabel = isNoTeamRecord(team) ? noTeamRecordName : teamId;
   const teamTitle = isNoTeamRecord(team) ? noTeamRecordName : text(team.name || teamId);
   const isNoTeam = isNoTeamRecord(team);
-  const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
-  const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
+  const activeKind = isNoTeam ? "agent" : normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
   teamRecordGroupTabs[teamId] = activeKind;
+  const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
   const expanded = expandedTeamRecordGroupIds.has(teamId);
   const selected = selectedTeamRecordKind === "team" && text(selectedTeamRecordId) === text(teamId);
   const counts = [
@@ -3509,7 +3509,8 @@ function renderTeamRecordSection(kind, teamRecords) {
   const page = clampPage(teamRecordGroupPages[pageKey] || 1, totalPages);
   teamRecordGroupPages[pageKey] = page;
   const pageRecords = records.slice((page - 1) * teamRecordPageSize, page * teamRecordPageSize);
-  const canCreate = config.createLabel && !isNoTeamRecord({ id: teamRecords.teamId });
+  const isNoTeam = isNoTeamRecord({ id: teamRecords.teamId });
+  const canCreate = config.createLabel && (!isNoTeam || normalizedTeamRecordKind(kind) === "agent");
   const createOpen = canCreate && isTeamInlineCreateFormOpen(teamRecords.teamId, kind);
   return `
     <section class="team-record-section" aria-label="${escapeAttr(config.title)}">
@@ -3551,7 +3552,7 @@ function teamRecordSectionConfig(kind) {
 function renderTeamInlineCreateForm(teamId, kind) {
   const normalizedTeamId = text(teamId);
   const normalizedKind = normalizedTeamRecordKind(kind);
-  if (!normalizedTeamId || isNoTeamRecord({ id: normalizedTeamId }) || !isTeamInlineCreateFormOpen(normalizedTeamId, normalizedKind)) {
+  if (!normalizedTeamId || !isTeamInlineCreateFormOpen(normalizedTeamId, normalizedKind)) {
     return "";
   }
   if (normalizedKind === "project") {
@@ -3629,6 +3630,8 @@ function renderTeamInlineRoleForm(teamId) {
 
 function renderTeamInlineAgentForm(teamId) {
   const formId = teamInlineCreateDomId(teamId, "agent");
+  const normalizedTeamId = text(teamId);
+  const visibleTeamId = isNoTeamRecord({ id: normalizedTeamId }) ? "" : normalizedTeamId;
   return `
     <form
       id="${escapeAttr(formId)}"
@@ -3640,7 +3643,7 @@ function renderTeamInlineAgentForm(teamId) {
       data-team-record-group-id="${escapeAttr(teamId)}"
       data-team-record-kind="agent"
     >
-      <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
+      <input type="hidden" name="team_id" value="${escapeAttr(visibleTeamId)}" />
       <div class="team-inline-create-fields">
         <label>
           Existing agent defaults
@@ -3722,8 +3725,11 @@ function teamRoleOptions(teamId) {
 
 function teamAgentOptions(teamId) {
   const normalizedTeamId = text(teamId);
+  const agentFilter = isNoTeamRecord({ id: normalizedTeamId })
+    ? (agent) => isVisibleAgent(agent) && !text(agent.team_id)
+    : (agent) => isVisibleAgent(agent) && text(agent.team_id) === normalizedTeamId;
   return values(state.agents)
-    .filter((agent) => isVisibleAgent(agent) && text(agent.team_id) === normalizedTeamId)
+    .filter(agentFilter)
     .sort(comparePeopleAgents)
     .map((agent) => [agent.id, `${agentLabel(agent)} (${agent.id})`]);
 }
@@ -3763,7 +3769,7 @@ function isTeamInlineCreateFormOpen(teamId, kind) {
 function toggleTeamInlineCreateForm(teamId, kind) {
   const normalizedTeamId = text(teamId);
   const normalizedKind = normalizedTeamRecordKind(kind);
-  if (!normalizedTeamId || isNoTeamRecord({ id: normalizedTeamId })) {
+  if (!normalizedTeamId) {
     return;
   }
   const key = teamInlineCreateKey(normalizedTeamId, normalizedKind);
@@ -9156,8 +9162,10 @@ function payloadForForm(form, data = formData(form)) {
     return payload;
   }
   if (formId === "register-agent-form") {
+    const requestedTeamId = text(data.team_id);
+    const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
     const payload = {
-      team_id: text(data.team_id) || null,
+      team_id: normalizedTeamId,
       project_id: text(data.project_id) || null,
       role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
@@ -9576,8 +9584,10 @@ function editPayloadForForm(type, form) {
     const selectedProjectId = text(data.project_id);
     const currentRecord = recordForEdit("agent", text(form.dataset.editId));
     const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
+    const requestedTeamId = text(data.team_id);
+    const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
     const payload = {
-      team_id: text(data.team_id) || null,
+      team_id: normalizedTeamId,
       role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id) || null,
