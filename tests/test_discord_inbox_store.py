@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -12,6 +12,10 @@ from agent_sandbox.messaging.discord_inbox_store import (
     discord_inbox_db_path,
 )
 from agent_sandbox.models import DiscordMessageEnvelope
+
+
+def _parse_cursor(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
 def _message(
@@ -173,18 +177,61 @@ def test_discord_inbox_store_fast_forwards_session_cursor_to_latest_message(
     tmp_path: Path,
 ) -> None:
     store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    latest_message_at = datetime.now(timezone.utc) - timedelta(days=1)
     assert store.add_messages_if_new(
         [
-            _message("msg-1", created_at=datetime(2026, 3, 20, tzinfo=timezone.utc)),
-            _message("msg-2", created_at=datetime(2026, 3, 21, tzinfo=timezone.utc)),
+            _message("msg-1", created_at=latest_message_at - timedelta(days=1)),
+            _message("msg-2", created_at=latest_message_at),
         ]
     ) == 2
 
+    before = datetime.now(timezone.utc)
+    advanced = store.fast_forward_session_cursors_to_latest("session-1", ["chan-1"])
+    after = datetime.now(timezone.utc)
+
+    cursor = advanced["chan-1"]
+    parsed_cursor = _parse_cursor(cursor)
+    assert before <= parsed_cursor <= after
+    assert parsed_cursor >= latest_message_at
+    assert store.get_session_cursor("session-1", "chan-1") == cursor
+    assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is False
+
+
+def test_discord_inbox_store_fast_forwards_session_cursor_without_cached_messages(
+    tmp_path: Path,
+) -> None:
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+
+    before = datetime.now(timezone.utc)
+    advanced = store.fast_forward_session_cursors_to_latest("session-1", ["chan-1"])
+    after = datetime.now(timezone.utc)
+
+    cursor = advanced["chan-1"]
+    parsed_cursor = _parse_cursor(cursor)
+    assert before <= parsed_cursor <= after
+    assert store.get_session_cursor("session-1", "chan-1") == cursor
+
+    assert store.add_message_if_new(
+        _message("old-msg", created_at=before - timedelta(seconds=1))
+    )
+    assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is False
+
+    assert store.add_message_if_new(
+        _message("new-msg", created_at=after + timedelta(seconds=1))
+    )
+    assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is True
+
+
+def test_discord_inbox_store_fast_forwards_to_later_channel_cursor(
+    tmp_path: Path,
+) -> None:
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    store.set_cursor("chan-1", "2099-01-01T00:00:00Z")
+
     advanced = store.fast_forward_session_cursors_to_latest("session-1", ["chan-1"])
 
-    assert advanced == {"chan-1": "2026-03-21T00:00:00.000000Z"}
-    assert store.get_session_cursor("session-1", "chan-1") == "2026-03-21T00:00:00.000000Z"
-    assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is False
+    assert advanced == {"chan-1": "2099-01-01T00:00:00Z"}
+    assert store.get_session_cursor("session-1", "chan-1") == "2099-01-01T00:00:00Z"
 
 
 def test_discord_inbox_store_reports_unread_messages_per_session(tmp_path: Path) -> None:

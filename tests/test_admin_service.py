@@ -111,6 +111,17 @@ def _discord_message(
     )
 
 
+def _assert_cursor_seeded_during_operation(
+    cursor: str | None,
+    *,
+    before: datetime,
+    after: datetime,
+) -> None:
+    assert cursor is not None
+    parsed = datetime.fromisoformat(cursor.replace("Z", "+00:00")).astimezone(UTC)
+    assert before <= parsed <= after
+
+
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
@@ -1858,6 +1869,7 @@ def test_create_container_agent_fast_forwards_discord_cursor_for_new_target(
         ),
     )
 
+    before = datetime.now(UTC)
     result = service.create_admin_agent(
         {
             "backend": "container_worker_vm",
@@ -1866,14 +1878,19 @@ def test_create_container_agent_fast_forwards_discord_cursor_for_new_target(
             "communication_target_ids": ["discord-ops"],
         }
     )
+    after = datetime.now(UTC)
 
     assert result["success"] is True
     manifest = service.runtime.session_repository.get_session("container-session")
     assert manifest is not None
     assert manifest.discord_channel_allowlist == ["discord-ops"]
-    assert service.runtime.discord_inbox_service.store.get_session_cursor(
-        "container-session", "123456789012345678"
-    ) == "2026-06-23T18:53:43.000000Z"
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "container-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
     assert (
         service.runtime.discord_inbox_service.store.has_unread_messages(
             session_id="container-session",
@@ -11255,6 +11272,7 @@ def test_set_session_allowed_tools_fast_forwards_existing_discord_target_cursor(
         is None
     )
 
+    before = datetime.now(UTC)
     result = service.set_session_allowed_tools(
         "13302",
         [
@@ -11262,11 +11280,16 @@ def test_set_session_allowed_tools_fast_forwards_existing_discord_target_cursor(
             ToolName.DISCORD_GET_COMMANDS.value,
         ],
     )
+    after = datetime.now(UTC)
 
     assert result.success is True
-    assert service.runtime.discord_inbox_service.store.get_session_cursor(
-        "issue-13302-session", "123456789012345678"
-    ) == "2026-03-21T00:00:00.000000Z"
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "issue-13302-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
     assert (
         service.runtime.discord_inbox_service.store.has_unread_messages(
             session_id="issue-13302-session",
@@ -11477,20 +11500,26 @@ def test_update_session_policy_fast_forwards_added_discord_target_cursor(
         ),
     )
 
+    before = datetime.now(UTC)
     result = service.update_session_policy(
         "13302",
         {
             "discord_channel_allowlist": ["discord-ops"],
         },
     )
+    after = datetime.now(UTC)
 
     assert result.success is True
     updated = service.runtime.session_repository.get_session("issue-13302-session")
     assert updated is not None
     assert updated.discord_channel_allowlist == ["discord-ops"]
-    assert service.runtime.discord_inbox_service.store.get_session_cursor(
-        "issue-13302-session", "123456789012345678"
-    ) == "2026-06-23T18:53:43.000000Z"
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "issue-13302-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
     assert (
         service.runtime.discord_inbox_service.store.has_unread_messages(
             session_id="issue-13302-session",
@@ -13518,19 +13547,25 @@ def test_create_vm_fast_forwards_discord_cursor_for_new_target(
         ),
     )
 
+    before = datetime.now(UTC)
     result = service.create_vm(
         vm_name="lab-vm",
         session_id="lab-session",
         discord_channels=["discord-ops"],
     )
+    after = datetime.now(UTC)
 
     assert result.success is True
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.discord_channel_allowlist == ["discord-ops"]
-    assert service.runtime.discord_inbox_service.store.get_session_cursor(
-        "lab-session", "123456789012345678"
-    ) == "2026-06-23T18:53:43.000000Z"
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "lab-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
     assert (
         service.runtime.discord_inbox_service.store.has_unread_messages(
             session_id="lab-session",
