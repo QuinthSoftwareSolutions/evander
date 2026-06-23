@@ -39,7 +39,12 @@ from .mcp import (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
 )
-from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
+from .models import (
+    AGENT_OPERATOR_ONLY_FIELDS,
+    RolePermission,
+    team_session_health_payload,
+    team_state_payload,
+)
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
     TeamAgentActionArtifactQueryDefinition,
@@ -836,6 +841,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
 
         repo = TeamStateRepository(_runtime_dir(context))
         current_state = repo.read()
+        session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
             context,
             state=current_state,
@@ -906,6 +912,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         for lease in leases:
             agent = lease["agent"]
             try:
+                lease = {
+                    **lease,
+                    "session_health": team_session_health_payload(
+                        state,
+                        session_records=session_records,
+                        agent_ids={agent["id"]},
+                    ),
+                }
                 seed_result = _seed_action_contract_files(
                     context,
                     agent=agent,
@@ -1798,6 +1812,9 @@ class TeamStateQueryProvider(QueryProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
+        session_records = _session_records_by_id(
+            _session_repository_from_context(self.runtime_context)
+        )
         team_id = _optional_text(payload.get("team_id"))
         project_id = _optional_text(payload.get("project_id"))
         agent_id = _optional_text(payload.get("agent_id"))
@@ -1806,6 +1823,7 @@ class TeamStateQueryProvider(QueryProviderBase):
             team_id=team_id,
             project_id=project_id,
             agent_id=agent_id,
+            session_records=session_records,
         )
         return {
             "success": True,
@@ -2392,6 +2410,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "superior_agent_id": lease["superior_agent_id"],
         "subordinate_agent_ids": lease["subordinate_agent_ids"],
         "subordinates": lease.get("subordinates") or [],
+        "session_health": lease.get("session_health") or [],
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
         "recent_action_feedback": lease.get("recent_action_feedback") or [],
@@ -3852,6 +3871,37 @@ def _session_repository_from_context(context: Any) -> Any | None:
     return getattr(service_runtime, "session_repository", None)
 
 
+def _session_records_by_id(repository: Any | None) -> dict[str, Any] | None:
+    if repository is None:
+        return None
+    readers = (
+        getattr(repository, "read_all_sessions", None),
+        getattr(repository, "read_all_safe", None),
+        getattr(repository, "read_all", None),
+    )
+    for reader in readers:
+        if not callable(reader):
+            continue
+        try:
+            records = reader()
+        except Exception:
+            continue
+        if isinstance(records, Mapping):
+            return {str(key): value for key, value in records.items()}
+    list_sessions = getattr(repository, "list_sessions", None)
+    if callable(list_sessions):
+        try:
+            sessions = list_sessions()
+        except Exception:
+            return None
+        return {
+            str(getattr(session, "session_id")): session
+            for session in sessions
+            if getattr(session, "session_id", None)
+        }
+    return None
+
+
 def _session_repository_for_manifest_updates(context: Any) -> Any | None:
     candidates = [
         getattr(context, "session_repository", None),
@@ -4098,8 +4148,13 @@ def _filtered_team_state_payload(
     team_id: str | None,
     project_id: str | None,
     agent_id: str | None,
+    session_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    filtered = team_state_payload(state, include_agent_avatars=False)
+    filtered = team_state_payload(
+        state,
+        include_agent_avatars=False,
+        session_records=session_records,
+    )
     teams = filtered["teams"]
     projects = filtered["projects"]
     agents = filtered["agents"]
@@ -4402,10 +4457,16 @@ def _filter_runtime_operations(
             visible_assignment_ids=visible_assignment_ids,
         )
     ]
+    session_health = [
+        row
+        for row in _mapping_items(value.get("session_health"))
+        if _optional_text(row.get("agent_id")) in visible_agent_ids
+    ]
     return {
         "generated_at": value.get("generated_at"),
         "agents": agents,
         "attention": attention,
+        "session_health": session_health,
     }
 
 

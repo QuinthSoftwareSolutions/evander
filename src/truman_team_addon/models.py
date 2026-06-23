@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -2325,6 +2326,8 @@ def team_state_payload(
     *,
     include_agent_avatars: bool = True,
     include_agent_voice_profiles: bool | None = None,
+    session_records: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     if include_agent_voice_profiles is None:
         include_agent_voice_profiles = include_agent_avatars
@@ -2343,7 +2346,11 @@ def team_state_payload(
         task_id: task_payload_with_derived(state, task)
         for task_id, task in state.tasks.items()
     }
-    payload["runtime_operations"] = runtime_operations_payload(state)
+    payload["runtime_operations"] = runtime_operations_payload(
+        state,
+        now=now,
+        session_records=session_records,
+    )
     return payload
 
 
@@ -2405,17 +2412,32 @@ def runtime_operations_payload(
     state: TeamState,
     *,
     now: datetime | None = None,
+    session_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_now = _ensure_utc(now or utc_now())
+    session_health = team_session_health_payload(
+        state,
+        session_records=session_records,
+        now=effective_now,
+    )
+    session_health_by_agent = {
+        row["agent_id"]: row for row in session_health if row.get("agent_id")
+    }
     agents = [
-        _runtime_agent_payload(state, agent, effective_now)
+        _runtime_agent_payload(
+            state,
+            agent,
+            effective_now,
+            session_health=session_health_by_agent.get(agent.id),
+        )
         for agent in sorted(state.agents.values(), key=lambda item: item.id)
     ]
-    attention = _runtime_attention_payload(state)
+    attention = _runtime_attention_payload(state, session_health=session_health)
     return {
         "generated_at": effective_now.isoformat(),
         "agents": agents,
         "attention": attention,
+        "session_health": session_health,
     }
 
 
@@ -2423,6 +2445,8 @@ def _runtime_agent_payload(
     state: TeamState,
     agent: PersistentAgent,
     now: datetime,
+    *,
+    session_health: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime = state.agent_runtimes.get(agent.id)
     wake_leased_until = runtime.wake_leased_until if runtime is not None else None
@@ -2446,6 +2470,10 @@ def _runtime_agent_payload(
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     if role is not None:
         detail_parts.append(f"role {role.name}")
+    session_is_expired = bool(session_health and session_health.get("is_expired"))
+    if session_is_expired:
+        expires_at = _optional_text(session_health.get("expires_at")) or "unknown time"
+        detail_parts.append(f"session expired at {expires_at}")
     if runtime is None:
         detail_parts.append("no runtime snapshot")
     elif runtime.wake_reason is not None:
@@ -2455,7 +2483,13 @@ def _runtime_agent_payload(
     return {
         "id": agent.id,
         "kind": "agent_runtime",
-        "severity": "warning" if wake_due or lease_active or effective_stand_downs else "info",
+        "severity": (
+            "critical"
+            if session_is_expired
+            else "warning"
+            if wake_due or lease_active or effective_stand_downs
+            else "info"
+        ),
         "title": agent.id,
         "detail": "; ".join(detail_parts),
         "team_id": agent.team_id,
@@ -2467,6 +2501,18 @@ def _runtime_agent_payload(
         "role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
         "effective_role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
         "session_id": agent.session_id,
+        "session_present": (
+            session_health.get("session_present") if session_health is not None else None
+        ),
+        "session_is_expired": (
+            session_health.get("is_expired") if session_health is not None else None
+        ),
+        "session_expires_at": (
+            session_health.get("expires_at") if session_health is not None else None
+        ),
+        "session_status": (
+            session_health.get("status") if session_health is not None else None
+        ),
         "status": agent.status.value,
         "stand_down_active": bool(effective_stand_downs),
         "effective_stand_downs": effective_stand_downs,
@@ -2604,8 +2650,62 @@ def _runtime_low_priority_batch_due(runtime: AgentRuntime) -> bool:
     return runtime.low_priority_batch_cycle_count >= due_after_cycles
 
 
-def _runtime_attention_payload(state: TeamState) -> list[dict[str, Any]]:
+def team_session_health_payload(
+    state: TeamState,
+    *,
+    session_records: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+    agent_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    if session_records is None:
+        return []
+    effective_now = _ensure_utc(now or utc_now())
     rows: list[dict[str, Any]] = []
+    for agent in sorted(state.agents.values(), key=lambda item: item.id):
+        if agent_ids is not None and agent.id not in agent_ids:
+            continue
+        session_id = agent.session_id
+        session = session_records.get(session_id) if session_id else None
+        expires_at_value = getattr(session, "expires_at", None) if session is not None else None
+        expires_at = (
+            _ensure_utc(expires_at_value)
+            if isinstance(expires_at_value, datetime)
+            else None
+        )
+        is_expired = expires_at is not None and expires_at <= effective_now
+        status = (
+            "expired"
+            if is_expired
+            else "active"
+            if expires_at is not None
+            else "missing"
+            if session is None
+            else "unknown"
+        )
+        rows.append(
+            {
+                "agent_id": agent.id,
+                "team_id": agent.team_id,
+                "project_ids": agent_project_ids(state, agent.id),
+                "lead_project_ids": agent_lead_project_ids(state, agent.id),
+                "role_id": agent.role_id,
+                "session_id": session_id,
+                "session_present": session is not None,
+                "expires_at": _json_datetime(expires_at),
+                "is_expired": is_expired,
+                "status": status,
+            }
+        )
+    return rows
+
+
+def _runtime_attention_payload(
+    state: TeamState,
+    *,
+    session_health: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    rows.extend(_expired_session_rows(state, session_health or []))
     rows.extend(_blocked_task_rows(state))
     rows.extend(_waiting_dependency_rows(state))
     rows.extend(_pending_inbox_rows(state))
@@ -2614,6 +2714,42 @@ def _runtime_attention_payload(state: TeamState) -> list[dict[str, Any]]:
     rows.extend(_blocked_release_rows(state))
     rows.extend(_ephemeral_assignment_rows(state))
     rows.sort(key=lambda row: (_severity_rank(row["severity"]), row["kind"], row["id"]))
+    return rows
+
+
+def _expired_session_rows(
+    state: TeamState,
+    session_health: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for health in session_health:
+        if not bool(health.get("is_expired")):
+            continue
+        agent_id = _optional_text(health.get("agent_id"))
+        if agent_id is None:
+            continue
+        agent = state.agents.get(agent_id)
+        project_ids = _text_list(health.get("project_ids") or [], "project_ids")
+        session_id = _optional_text(health.get("session_id")) or (
+            agent.session_id if agent is not None else None
+        )
+        expires_at = _optional_text(health.get("expires_at")) or "unknown time"
+        rows.append(
+            _runtime_row(
+                id=f"{agent_id}:expired-session",
+                kind="expired_agent_session",
+                severity="critical",
+                title=f"Expired session for {agent_id}",
+                detail=f"agent {agent_id}; session {session_id or 'unknown'} expired at {expires_at}",
+                state="expired",
+                team_id=health.get("team_id") or (agent.team_id if agent is not None else None),
+                agent_id=agent_id,
+                project_id=project_ids[0] if project_ids else None,
+                project_ids=project_ids,
+                session_id=session_id,
+                session_expires_at=health.get("expires_at"),
+            )
+        )
     return rows
 
 
@@ -2843,6 +2979,8 @@ def _runtime_row(**row: Any) -> dict[str, Any]:
         "release_package_id": None,
         "dispatch_id": None,
         "session_id": None,
+        "project_ids": [],
+        "session_expires_at": None,
     }
     base.update(row)
     return base

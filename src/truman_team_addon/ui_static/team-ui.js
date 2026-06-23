@@ -132,6 +132,7 @@ const runtimeFilterChoices = [
   ["ephemeral_work", "Ephemeral work"],
 ];
 const blockedWorkKinds = new Set([
+  "expired_agent_session",
   "blocked_task",
   "waiting_dependency_task",
   "pending_inbox_item",
@@ -2415,6 +2416,8 @@ function renderRuntimeAgentRow(agent) {
   }
   const status = runtimeAgentStatus(agent);
   const refs = runtimeReferenceParts(agent);
+  const sessionStatus = normalizeAgentSessionHealth(agent);
+  const sessionSummary = runtimeAgentSessionSummary(agent);
   const wakeReason = runtimeText(agent.wake_reason);
   const lastWake = runtimeText(agent.last_wake_at);
   const nextWake = runtimeText(agent.next_wake_at);
@@ -2430,11 +2433,12 @@ function renderRuntimeAgentRow(agent) {
         <strong>${escapeHtml(agent.id)}</strong>
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+          ${sessionStatus.isExpired ? `<span class="state-pill critical">session expired</span>` : ""}
           ${renderAgentStandDownControls(agent.id, agent)}
           <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
+      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
       <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
@@ -2452,6 +2456,8 @@ function renderRuntimeAgentRow(agent) {
 function renderCompactRuntimeAgentRow(agent) {
   const status = runtimeAgentStatus(agent);
   const refs = runtimeReferenceParts(agent);
+  const sessionStatus = normalizeAgentSessionHealth(agent);
+  const sessionSummary = runtimeAgentSessionSummary(agent);
   const wakeReason = runtimeText(agent.wake_reason);
   const lastWake = runtimeText(agent.last_wake_at);
   const nextWake = runtimeText(agent.next_wake_at);
@@ -2462,6 +2468,7 @@ function renderCompactRuntimeAgentRow(agent) {
   const lastRotated = runtimeText(agent.last_context_rotated_at);
   const handoffSummary = text(agent.last_handoff_summary);
   const flags = [
+    sessionStatus.isExpired ? "session expired" : "",
     agent.wake_due ? "wake due" : "",
     agent.lease_active ? "lease active" : "",
     agent.active_dispatch_id ? `dispatch ${agent.active_dispatch_id}` : "",
@@ -2473,7 +2480,7 @@ function renderCompactRuntimeAgentRow(agent) {
         <summary class="runtime-summary compact-record-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(agent.id)}</strong>
-            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</span>
+            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</span>
           </span>
           <span class="runtime-summary-meta">
             <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
@@ -2502,6 +2509,9 @@ function renderCompactRuntimeAgentRow(agent) {
 }
 
 function runtimeAgentStatus(agent) {
+  if (Boolean(agent.session_is_expired)) {
+    return "critical";
+  }
   if (isDueOrLeasedAgent(agent)) {
     return "warning";
   }
@@ -2509,7 +2519,17 @@ function runtimeAgentStatus(agent) {
 }
 
 function isDueOrLeasedAgent(agent) {
-  return Boolean(agent.wake_due || agent.lease_active || agent.active_dispatch_id);
+  return Boolean(
+    agent.session_is_expired ||
+      agent.wake_due ||
+      agent.lease_active ||
+      agent.active_dispatch_id,
+  );
+}
+
+function runtimeAgentSessionSummary(agent) {
+  const health = normalizeAgentSessionHealth(agent);
+  return sessionHealthRuntimeLine(health, agent.session_id) || text(agent.session_id);
 }
 
 function runtimeReferenceParts(row) {
@@ -4757,6 +4777,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
         </div>
         <div class="agent-detail-badges">
           <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+          ${renderAgentSessionPill(details)}
           ${renderAgentAwakePill(details)}
           ${renderAgentInboxHeaderIndicators(details)}
         </div>
@@ -4902,11 +4923,12 @@ function renderAgentDetailField(label, value) {
 }
 
 function agentRuntimeDetailRows(details) {
+  const sessionLine = sessionHealthRuntimeLine(details.sessionHealth, details.sessionId);
   const runtime = details.runtime || {};
   if (!runtime.present) {
-    return ["No runtime snapshot"];
+    return [sessionLine, "No runtime snapshot"].filter(Boolean);
   }
-  const rows = [runtime.summary || runtime.status || "Runtime idle"];
+  const rows = [sessionLine, runtime.summary || runtime.status || "Runtime idle"].filter(Boolean);
   if (runtime.lastHandoffSummary) {
     rows.push(`Last handoff ${runtime.lastHandoffSummary}`);
   }
@@ -5078,6 +5100,7 @@ function agentCardData(agent) {
     inboxCount: inboxItems.length,
     inboxIndicatorItems,
     runtime,
+    sessionHealth: agentSessionHealth(agent.id),
     effectiveStandDowns: standDowns,
     standDownActive: Boolean(agent?.stand_down_active) || standDowns.length > 0,
     ephemeralCapacity: ephemeralCapacity(agent),
@@ -5221,7 +5244,72 @@ function runtimeOperationForAgent(agentId) {
   }) || null;
 }
 
+function agentSessionHealth(agentId) {
+  const normalizedAgentId = text(agentId);
+  const health = (state.runtime_operations?.session_health || []).find((row) => {
+    return text(row?.agent_id || row?.id) === normalizedAgentId;
+  });
+  if (health) {
+    return normalizeAgentSessionHealth(health);
+  }
+  const runtimeRow = runtimeOperationForAgent(normalizedAgentId);
+  if (runtimeRow && runtimeRow.session_is_expired !== undefined) {
+    return normalizeAgentSessionHealth(runtimeRow);
+  }
+  return {
+    available: false,
+    present: null,
+    isExpired: false,
+    expiresAt: "",
+    status: "",
+  };
+}
+
+function normalizeAgentSessionHealth(row) {
+  const status = text(row?.status || row?.session_status);
+  return {
+    available: true,
+    present: row?.session_present === undefined ? null : Boolean(row.session_present),
+    isExpired: Boolean(row?.is_expired || row?.session_is_expired || status === "expired"),
+    expiresAt: text(row?.expires_at || row?.session_expires_at),
+    status,
+  };
+}
+
+function sessionHealthRuntimeLine(health, sessionId) {
+  if (!health?.available) {
+    return "";
+  }
+  const sessionLabel = text(sessionId) || "session";
+  if (health.isExpired) {
+    return `Session ${sessionLabel} expired${health.expiresAt ? ` at ${health.expiresAt}` : ""}`;
+  }
+  if (health.present === false) {
+    return `Session ${sessionLabel} not found in the session store`;
+  }
+  if (health.expiresAt) {
+    return `Session ${sessionLabel} expires ${health.expiresAt}`;
+  }
+  return "";
+}
+
+function renderAgentSessionPill(agentData) {
+  const health = agentData.sessionHealth || {};
+  if (!health.available || !health.isExpired) {
+    return "";
+  }
+  const detail = sessionHealthRuntimeLine(health, agentData.sessionId) || "Session expired";
+  return `<span class="state-pill critical" title="${escapeAttr(detail)}">session expired</span>`;
+}
+
 function agentAwakeState(agentData) {
+  if (agentData.sessionHealth?.isExpired) {
+    return {
+      kind: "expired",
+      label: "Expired",
+      detail: sessionHealthRuntimeLine(agentData.sessionHealth, agentData.sessionId) || "session expired",
+    };
+  }
   const runtimeRow = runtimeOperationForAgent(agentData.id);
   const activeDispatchId = text(runtimeRow?.active_dispatch_id || agentData.runtime?.activeDispatchId);
   if (activeDispatchId) {
@@ -5465,7 +5553,10 @@ function hierarchyDetailLines(agentData, { focused = false } = {}) {
     lines.push(`Agent ${agentData.id}`);
   }
   if (agentData.sessionId) {
-    lines.push(`Session ${agentData.sessionId}`);
+    lines.push(
+      sessionHealthRuntimeLine(agentData.sessionHealth, agentData.sessionId) ||
+        `Session ${agentData.sessionId}`,
+    );
   }
   if (agentData.projectIds.length) {
     lines.push(`Projects ${agentData.projectLabel || agentData.projectIds.join(", ")}`);

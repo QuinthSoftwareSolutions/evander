@@ -1300,6 +1300,60 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
     assert "Reviewer roles should generally receive review_requests" in prompt
 
 
+def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].expires_at = datetime(
+        2025,
+        12,
+        31,
+        tzinfo=UTC,
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    prompt = str(resumer.calls[0]["prompt"])
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    assert context["session_health"] == [
+        {
+            "agent_id": "backend",
+            "team_id": "team",
+            "project_ids": ["project"],
+            "lead_project_ids": [],
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "session_present": True,
+            "expires_at": "2025-12-31T00:00:00+00:00",
+            "is_expired": True,
+            "status": "expired",
+        }
+    ]
+
+
 def test_wake_due_agents_provider_prompts_with_latest_action_feedback_once(
     tmp_path: Path,
 ) -> None:
@@ -3285,6 +3339,18 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         speaking_style="agent-visible state should not include this",
     )
     repo.store.write_object(state.model_dump(mode="json"))
+    session_lookup = SimpleNamespace(
+        read_all_sessions=lambda: {
+            "session-alpha-dev": SimpleNamespace(
+                session_id="session-alpha-dev",
+                expires_at=datetime(2025, 12, 31, tzinfo=UTC),
+            ),
+            "session-beta-dev": SimpleNamespace(
+                session_id="session-beta-dev",
+                expires_at=datetime(2025, 12, 31, tzinfo=UTC),
+            ),
+        }
+    )
     project_query = TeamStateQueryProvider()
     project_query.initialize(
         TeamStateQueryDefinition(
@@ -3293,7 +3359,10 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
             type="query:team:state",
             project_id="alpha-project",
         ),
-        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        QueryRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            session_lookup=session_lookup,
+        ),
     )
 
     project_state = project_query.execute()["state"]
@@ -3334,11 +3403,55 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         for row in project_runtime_operations["attention"]
         if row.get("inbox_item_id")
     } == {"alpha-inbox"}
+    assert {
+        row["agent_id"]
+        for row in project_runtime_operations["attention"]
+        if row.get("kind") == "expired_agent_session"
+    } == {"alpha-dev"}
+    assert project_runtime_operations["session_health"] == [
+        {
+            "agent_id": "alpha-dev",
+            "team_id": "alpha-team",
+            "project_ids": ["alpha-project"],
+            "lead_project_ids": [],
+            "role_id": "alpha-project__developer",
+            "session_id": "session-alpha-dev",
+            "session_present": True,
+            "expires_at": "2025-12-31T00:00:00+00:00",
+            "is_expired": True,
+            "status": "expired",
+        },
+        {
+            "agent_id": "alpha-lead",
+            "team_id": "alpha-team",
+            "project_ids": ["alpha-project"],
+            "lead_project_ids": ["alpha-project"],
+            "role_id": "alpha-project__project-lead",
+            "session_id": "session-alpha-lead",
+            "session_present": False,
+            "expires_at": None,
+            "is_expired": False,
+            "status": "missing",
+        },
+        {
+            "agent_id": "alpha-reviewer",
+            "team_id": "alpha-team",
+            "project_ids": ["alpha-project"],
+            "lead_project_ids": [],
+            "role_id": "alpha-project__reviewer",
+            "session_id": "session-alpha-reviewer",
+            "session_present": False,
+            "expires_at": None,
+            "is_expired": False,
+            "status": "missing",
+        },
+    ]
     assert all(
         "beta-" not in json.dumps(row)
         for row in (
             project_runtime_operations["agents"]
             + project_runtime_operations["attention"]
+            + project_runtime_operations["session_health"]
         )
     )
 
@@ -3350,7 +3463,10 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
             type="query:team:state",
             agent_id="alpha-dev",
         ),
-        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        QueryRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            session_lookup=session_lookup,
+        ),
     )
 
     agent_state = agent_query.execute()["state"]
@@ -3391,11 +3507,20 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         for row in agent_runtime_operations["attention"]
         if row.get("inbox_item_id")
     } == {"alpha-inbox"}
+    assert {
+        row["agent_id"]
+        for row in agent_runtime_operations["attention"]
+        if row.get("kind") == "expired_agent_session"
+    } == {"alpha-dev"}
+    assert [
+        row["agent_id"] for row in agent_runtime_operations["session_health"]
+    ] == ["alpha-dev"]
     assert all(
         "beta-" not in json.dumps(row)
         for row in (
             agent_runtime_operations["agents"]
             + agent_runtime_operations["attention"]
+            + agent_runtime_operations["session_health"]
         )
     )
 

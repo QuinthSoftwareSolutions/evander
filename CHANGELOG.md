@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Expired Session Visibility
+
+- Surfaced expired Team agent sessions in Team Add-on runtime operations,
+  scoped Team state queries, and wake prompt context so leads and agents can
+  escalate stale member sessions.
+- Added Team Add-on UI indicators for expired sessions in the Operations view
+  and agent details.
+
 ## 2026-06-23 - Agent Create Session TTL
 
 - Added a Session TTL duration field to the Admin Web Agents create dialog,

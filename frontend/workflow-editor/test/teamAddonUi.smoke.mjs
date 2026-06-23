@@ -69,6 +69,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderPeopleAgentDetail/);
   assert.match(script, /renderCompactRuntimeAgentRow/);
   assert.match(script, /agentAwakeState/);
+  assert.match(script, /session_is_expired/);
+  assert.match(script, /expired_agent_session/);
   assert.match(script, /buildOrgFlowGraph/);
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(orgFlowScript, /team-org-flow:edit-agent/);
@@ -3311,6 +3313,9 @@ function seededGitState() {
           team_id: "team-alpha",
           project_id: "alpha-project",
           session_id: "session-alpha-lead",
+          session_is_expired: true,
+          session_expires_at: "2026-06-09T15:45:00Z",
+          session_status: "expired",
           wake_due: true,
           lease_active: false,
           active_dispatch_id: "",
@@ -3327,6 +3332,18 @@ function seededGitState() {
       ],
       attention: [
         {
+          id: "alpha-lead:expired-session",
+          kind: "expired_agent_session",
+          severity: "critical",
+          title: "Expired session for alpha-lead",
+          team_id: "team-alpha",
+          project_id: "alpha-project",
+          agent_id: "alpha-lead",
+          session_id: "session-alpha-lead",
+          state: "expired",
+          detail: "agent alpha-lead; session session-alpha-lead expired at 2026-06-09T15:45:00Z",
+        },
+        {
           id: "attention-blocked",
           kind: "blocked_task",
           severity: "warning",
@@ -3337,6 +3354,20 @@ function seededGitState() {
           task_id: "task-blocked",
           state: "blocked",
           detail: "Work blocked by an upstream issue.",
+        },
+      ],
+      session_health: [
+        {
+          agent_id: "alpha-lead",
+          team_id: "team-alpha",
+          project_ids: ["alpha-project"],
+          lead_project_ids: ["alpha-project"],
+          role_id: "alpha-project__project-lead",
+          session_id: "session-alpha-lead",
+          session_present: true,
+          expires_at: "2026-06-09T15:45:00Z",
+          is_expired: true,
+          status: "expired",
         },
       ],
     },
@@ -4115,6 +4146,12 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
   await page.locator("#team-operations-page .runtime-item-compact").first().waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-operations-page").getByText("Expired session for alpha-lead").waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-operations-page").getByText("session expired").first().waitFor({
     state: "visible",
   });
   assert.equal(await page.locator("#team-operations-page .runtime-item-compact details[open]").count(), 0);

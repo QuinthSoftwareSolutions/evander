@@ -18,6 +18,7 @@ from agent_sandbox.events.internal import InternalEventBus, internal_event_store
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from truman_team_addon import api as team_addon_api
 from truman_team_addon.api import (
     _conversation_snapshot_events,
@@ -1631,6 +1632,23 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _seed_runtime_operations_state(runtime_dir)
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            allowed_tools=[],
+            expires_at=datetime(2025, 12, 31, tzinfo=UTC),
+        )
+    )
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-lead",
+            vm_id="vm-lead",
+            allowed_tools=[],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
     client = _client(tmp_path)
 
     response = client.get("/api/addons/team-addon/state")
@@ -1648,9 +1666,12 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert backend["lease_active"] is True
     assert backend["active_dispatch_id"] == "dispatch-backend"
     assert backend["wake_reason"] == "inbox"
+    assert backend["session_is_expired"] is True
+    assert backend["session_expires_at"] == "2025-12-31T00:00:00+00:00"
 
     attention = {row["kind"]: row for row in state["runtime_operations"]["attention"]}
     assert set(attention) == {
+        "expired_agent_session",
         "blocked_task",
         "waiting_dependency_task",
         "pending_inbox_item",
@@ -1661,6 +1682,8 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
         "failed_ephemeral_assignment",
         "cleanup_pending_ephemeral_assignment",
     }
+    assert attention["expired_agent_session"]["agent_id"] == "backend"
+    assert attention["expired_agent_session"]["session_id"] == "session-backend"
     assert attention["blocked_task"]["id"] == "blocked-task"
     assert attention["blocked_task"]["state"] == "blocked"
     assert attention["waiting_dependency_task"]["id"] == "waiting-task"

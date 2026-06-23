@@ -69,6 +69,7 @@ from .providers import (
     _build_team_chat_prompt,
     _seed_action_contract_files,
     _seed_team_agent_guidance,
+    _session_records_by_id,
 )
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
@@ -80,7 +81,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     avatar_storage = AvatarStorage(context.runtime_dir)
 
     def _state_payload(request: Request, state: TeamState) -> dict[str, Any]:
-        return _team_state_payload_for_request(context.auth, request, state)
+        return _team_state_payload_for_request(
+            context.auth,
+            request,
+            state,
+            session_records=_session_records_by_id(
+                _session_repository_from_context(context)
+            ),
+        )
 
     async def get_state(request: Request) -> JSONResponse:
         return JSONResponse(_state_payload(request, repository.read()))
@@ -1731,8 +1739,10 @@ def _team_state_payload_for_request(
     auth: Any | None,
     request: Request,
     state: TeamState,
+    *,
+    session_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = team_state_payload(state)
+    payload = team_state_payload(state, session_records=session_records)
     if _can_view_all_team_chats(auth, request):
         return payload
     identity = _operator_identity_from_request(auth, request)
