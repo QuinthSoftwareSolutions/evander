@@ -1762,7 +1762,9 @@ async function submitChatMessage(form) {
         activeComposer.value = "";
       }
     }
-    if (payload.dispatch?.success === false) {
+    if (payload.dispatch?.queued) {
+      setStatus(payload.dispatch.message || "Chat message queued until the agent finishes current work.", "warning");
+    } else if (payload.dispatch?.success === false) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
       setStatus("", "");
@@ -4695,6 +4697,7 @@ function chatStatusLabel(status) {
   const labels = {
     created: "Created",
     dispatching: "Dispatching",
+    queued: "Queued",
     running: "Sent",
     replied: "Replied",
     failed: "Failed",

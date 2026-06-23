@@ -6,6 +6,13 @@
   target becomes wake-eligible for an agent, preventing historical channel
   messages from waking newly created or newly updated agents.
 
+## 2026-06-23 - Team Add-on Chat Lease Retry
+
+- Queued Team Add-on chat messages when the target agent already has an active
+  Team dispatch, instead of marking the operator message failed immediately.
+- Retried queued Team chat messages from the wake cycle once the agent's active
+  Team lease is released, giving queued chat precedence over ordinary due work.
+
 ## 2026-06-23 - Team Add-on Review Rework Semantics
 
 - Stopped rejected reviews from marking tasks and projects as blocked; rejected

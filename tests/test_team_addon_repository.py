@@ -305,6 +305,70 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
     assert state.agent_runtimes["backend"].wake_leased_until is None
 
 
+def test_repository_queues_chat_dispatch_until_active_dispatch_released(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _mark_backend_busy(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="team-dispatch-active",
+            wake_leased_until=now + timedelta(minutes=10),
+        )
+        return state
+
+    repo.update(_mark_backend_busy)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you check this after the current wake?",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+
+    state, message = repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    assert message.status == "queued"
+    assert message.dispatch_id == dispatch_id
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-dispatch-active"
+
+    _state, claims = repo.claim_pending_chat_message_dispatches(now=now)
+    assert claims == []
+
+    def _release_backend(state):
+        state.agent_runtimes["backend"].wake_leased_until = None
+        return state
+
+    repo.update(_release_backend)
+    state, claims = repo.claim_pending_chat_message_dispatches(
+        now=now + timedelta(minutes=1),
+    )
+
+    assert claims == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "conversation_id": conversation.id,
+            "message_id": message.id,
+            "dispatch_id": dispatch_id,
+        }
+    ]
+    assert state.conversation_messages[message.id].status == "running"
+    assert state.agent_runtimes["backend"].active_dispatch_id == dispatch_id
+    assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
 def test_repository_fails_active_team_chat_message_when_reply_item_is_invalid(
     tmp_path: Path,
 ) -> None:

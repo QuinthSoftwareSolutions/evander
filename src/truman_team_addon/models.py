@@ -919,6 +919,7 @@ class TeamConversationMessage(TeamModel):
     status: Literal[
         "created",
         "dispatching",
+        "queued",
         "running",
         "replied",
         "failed",

@@ -952,6 +952,87 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
+def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _mark_backend_busy(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="team-dispatch-active",
+            wake_leased_until=now + timedelta(minutes=10),
+        )
+        return state
+
+    repo.update(_mark_backend_busy)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer this after your current wake finishes.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    def _release_backend(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"].wake_leased_until = None
+        return state
+
+    repo.update(_release_backend)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 0
+    assert result["leases"] == []
+    assert result["dispatches"] == []
+    assert len(result["chat_dispatches"]) == 1
+    chat_dispatch = result["chat_dispatches"][0]
+    assert chat_dispatch["dispatch_id"] == dispatch_id
+    assert chat_dispatch["message_id"] == message.id
+    assert resumer.calls[0]["target"] == "session-backend"
+    assert resumer.calls[0]["dispatch_id"] == dispatch_id
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Team Add-on Chat tab" in prompt
+    assert f"Human operator message ID: {message.id}" in prompt
+    assert "Please answer this after your current wake finishes." in prompt
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.conversation_messages[message.id].status == "running"
+    assert reread.agent_runtimes["backend"].active_dispatch_id == dispatch_id
+    assert reread.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
 def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     tmp_path: Path,
 ) -> None:

@@ -847,29 +847,61 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             _required_text(record["team_id"], "team_id")
             for record in cost_guard_blocked_teams
         }
-        state, leases = repo.lease_due_agents(
+        action_path = (
+            _optional_text(payload.get("action_artifact_path"))
+            or DEFAULT_ACTION_ARTIFACT_PATH
+        )
+        resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
+        lease_limit = _optional_int(payload.get("limit"), default=10)
+        normalized_limit = max(0, int(lease_limit or 0))
+        state, queued_chat_claims = repo.claim_pending_chat_message_dispatches(
             team_id=_optional_text(payload.get("team_id")),
             project_id=_optional_text(payload.get("project_id")),
             agent_id=_optional_text(payload.get("agent_id")),
-            limit=_optional_int(payload.get("limit"), default=10),
-            lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
-            wake_interval_seconds=_optional_int(payload.get("wake_interval_seconds"), default=900),
-            max_no_progress_count=_optional_int(
-                payload.get("max_no_progress_count"),
-                default=3,
-            ),
-            low_priority_wake_after_cycles=_optional_int(
-                payload.get("low_priority_wake_after_cycles"),
-                default=4,
-            ),
-            blocked_team_ids=blocked_team_ids,
+            limit=normalized_limit,
         )
-        action_path = _optional_text(payload.get("action_artifact_path")) or DEFAULT_ACTION_ARTIFACT_PATH
-        resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
+        chat_dispatches: list[dict[str, Any]] = []
+        errors: list[str] = []
+        state, chat_dispatches, chat_errors = _dispatch_queued_team_chat_messages(
+            context,
+            repo=repo,
+            state=state,
+            claims=queued_chat_claims,
+            resumer=resumer,
+            action_artifact_path=action_path,
+        )
+        errors.extend(chat_errors)
+        if normalized_limit and len(queued_chat_claims) >= normalized_limit:
+            leases = []
+        else:
+            regular_limit = (
+                max(0, normalized_limit - len(queued_chat_claims))
+                if normalized_limit
+                else 0
+            )
+            state, leases = repo.lease_due_agents(
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                agent_id=_optional_text(payload.get("agent_id")),
+                limit=regular_limit,
+                lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
+                wake_interval_seconds=_optional_int(
+                    payload.get("wake_interval_seconds"),
+                    default=900,
+                ),
+                max_no_progress_count=_optional_int(
+                    payload.get("max_no_progress_count"),
+                    default=3,
+                ),
+                low_priority_wake_after_cycles=_optional_int(
+                    payload.get("low_priority_wake_after_cycles"),
+                    default=4,
+                ),
+                blocked_team_ids=blocked_team_ids,
+            )
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
-        errors: list[str] = []
         for lease in leases:
             agent = lease["agent"]
             try:
@@ -973,6 +1005,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "revision": state.revision,
             "leased_count": len(leases),
             "leases": leases,
+            "chat_dispatches": chat_dispatches,
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
@@ -980,6 +1013,86 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
         }
+
+
+def _dispatch_queued_team_chat_messages(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    state: Any,
+    claims: list[dict[str, Any]],
+    resumer: Any,
+    action_artifact_path: str,
+) -> tuple[Any, list[dict[str, Any]], list[str]]:
+    dispatches: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for claim in claims:
+        agent_id = _required_text(claim.get("agent_id"), "agent_id")
+        message_id = _required_text(claim.get("message_id"), "message_id")
+        conversation_id = _required_text(claim.get("conversation_id"), "conversation_id")
+        dispatch_id = _required_text(claim.get("dispatch_id"), "dispatch_id")
+        agent = state.agents[agent_id]
+        message = state.conversation_messages[message_id]
+        conversation = state.conversations[conversation_id]
+        try:
+            agent_payload = agent.model_dump(mode="json")
+            seed_result = _seed_action_contract_files(
+                context,
+                agent=agent_payload,
+                action_artifact_path=action_artifact_path,
+            )
+            guidance_result = _seed_team_agent_guidance(context, agent=agent_payload)
+            prompt = _build_team_chat_prompt(
+                state=state,
+                conversation=conversation,
+                message=message,
+                action_artifact_path=action_artifact_path,
+            )
+            result = resumer.resume_agent(
+                target=agent.session_id,
+                prompt=prompt,
+                resume_mode="same_context",
+                dispatch_id=dispatch_id,
+            )
+            result_payload = _coerce_mapping(result)
+            if _result_reports_failure(result_payload):
+                error = _resume_failure_message(result_payload)
+                state, _message = repo.mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+                errors.append(f"{agent_id}: {error}")
+                continue
+            dispatches.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": agent.session_id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "dispatch_id": dispatch_id,
+                    "action_contract": seed_result,
+                    "agent_guidance": guidance_result,
+                    "result": result_payload,
+                }
+            )
+            _mirror_session_metadata(
+                context,
+                repo=repo,
+                state=state,
+                agent_id=agent_id,
+                session_id=agent.session_id,
+            )
+        except Exception as exc:  # pragma: no cover - covered through provider tests with fakes
+            error = str(exc)
+            try:
+                state, _message = repo.mark_chat_message_dispatch_failed(
+                    message_id=message_id,
+                    error=error,
+                )
+            except Exception as release_exc:  # pragma: no cover - defensive diagnostics
+                error = f"{error}; failed to release team chat dispatch: {release_exc}"
+            errors.append(f"{agent_id}: {error}")
+    return state, dispatches, errors
 
 
 class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
@@ -2358,6 +2471,87 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
     )
 
 
+def _build_team_chat_prompt(
+    *,
+    state: Any,
+    conversation: Any,
+    message: Any,
+    action_artifact_path: str = DEFAULT_ACTION_ARTIFACT_PATH,
+) -> str:
+    agents = _object_mapping_field(state, "agents")
+    conversation_messages = _object_mapping_field(state, "conversation_messages")
+    agent_id = _required_text(_object_field(conversation, "agent_id"), "conversation.agent_id")
+    agent = agents[agent_id]
+    conversation_id = _required_text(_object_field(conversation, "id"), "conversation.id")
+    operator_user_id = _required_text(
+        _object_field(conversation, "operator_user_id"),
+        "conversation.operator_user_id",
+    )
+    operator_label = (
+        _optional_text(_object_field(conversation, "operator_display_name"))
+        or operator_user_id
+    )
+    recent_messages = [
+        item
+        for item in conversation_messages.values()
+        if _object_field(item, "conversation_id") == conversation_id
+    ]
+    recent_messages.sort(
+        key=lambda item: (
+            _object_field(item, "created_at"),
+            _required_text(_object_field(item, "id"), "conversation_message.id"),
+        )
+    )
+    transcript_lines = []
+    for item in recent_messages[-12:]:
+        body = str(_object_field(item, "body") or "").strip()
+        if not body:
+            continue
+        sender = _object_field(item, "sender")
+        if sender == "operator":
+            sender_label = f"human operator {operator_label}"
+        elif sender == "agent":
+            sender_label = _team_chat_agent_display_name(agent)
+        else:
+            sender_label = "system"
+        transcript_lines.append(f"{sender_label}: {body}")
+    transcript = "\n".join(transcript_lines)
+    agent_display_name = _team_chat_agent_display_name(agent)
+    message_id = _required_text(_object_field(message, "id"), "message.id")
+    dispatch_id = _optional_text(_object_field(message, "dispatch_id")) or ""
+    action_artifact = f"/artifacts/{action_artifact_path}"
+    return (
+        "You have received a message from a human operator in the Team Add-on Chat tab.\n"
+        "This is not an agent-to-agent inbox message. Treat it as the current human "
+        "operator request. Reply to this human operator by writing "
+        f"{action_artifact} with a chat_replies entry. Do not use questions "
+        "or status_reports for this human chat reply; those are for agent-to-agent "
+        "inbox communication.\n\n"
+        f"Current agent: {agent_display_name} ({agent_id})\n"
+        f"Human operator: {operator_label} ({operator_user_id})\n"
+        f"Conversation ID: {conversation_id}\n"
+        f"Human operator message ID: {message_id}\n"
+        f"Dispatch ID: {dispatch_id}\n\n"
+        "Required reply shape:\n"
+        "{\n"
+        f'  "schema_version": {ACTION_CONTRACT_SCHEMA_VERSION},\n'
+        f'  "agent_id": "{agent_id}",\n'
+        f'  "dispatch_id": "{dispatch_id}",\n'
+        '  "chat_replies": [\n'
+        "    {\n"
+        f'      "conversation_id": "{conversation_id}",\n'
+        f'      "message_id": "{message_id}",\n'
+        '      "body": "Your reply to the operator."\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Recent conversation:\n"
+        f"{transcript or '(no earlier messages)'}\n\n"
+        "Human operator message:\n"
+        f"{_object_field(message, 'body')}"
+    )
+
+
 def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
     context = {
@@ -2425,6 +2619,26 @@ def _agent_prompt_payload(agent: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(agent)
     payload.pop("display_name", None)
     return payload
+
+
+def _object_field(item: object, field_name: str) -> object:
+    if isinstance(item, Mapping):
+        return item.get(field_name)
+    return getattr(item, field_name, None)
+
+
+def _object_mapping_field(item: object, field_name: str) -> Mapping[str, Any]:
+    value = _object_field(item, field_name)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    return value
+
+
+def _team_chat_agent_display_name(agent: object) -> str:
+    return (
+        _optional_text(_object_field(agent, "display_name"))
+        or _required_text(_object_field(agent, "id"), "agent.id")
+    )
 
 
 def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:

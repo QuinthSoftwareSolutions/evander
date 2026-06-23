@@ -1477,6 +1477,142 @@ class TeamStateRepository:
             raise RuntimeError("conversation message dispatch was not started")
         return state, state.conversation_messages[resolved_message_id]
 
+    def queue_chat_message_dispatch(
+        self,
+        *,
+        message_id: str,
+        dispatch_id: str,
+        reason: str | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_reason = _optional_text(reason)
+        resolved_message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_message_id
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            if message.sender != "operator":
+                raise ValueError(f"message {message.id} is not an operator message")
+            now = utc_now()
+            metadata = dict(message.metadata)
+            metadata["queued_at"] = now.isoformat()
+            if normalized_reason is not None:
+                metadata["queued_reason"] = normalized_reason
+            message.status = "queued"
+            message.dispatch_id = normalized_dispatch_id
+            message.error = None
+            message.metadata = metadata
+            message.updated_at = now
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=f"Queued: {_chat_preview(message.body)}",
+            )
+            resolved_message_id = message.id
+            return state
+
+        state = self.update(_mutate)
+        if resolved_message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch was not queued")
+        return state, state.conversation_messages[resolved_message_id]
+
+    def claim_pending_chat_message_dispatches(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 10,
+        lease_seconds: int = 172800,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> tuple[TeamState, list[dict[str, Any]]]:
+        effective_now = _ensure_utc(now or utc_now())
+        normalized_limit = max(0, int(limit))
+        normalized_team_id = _optional_text(team_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_agent_id = _optional_text(agent_id)
+        claims: list[dict[str, Any]] = []
+
+        def _mutate(state: TeamState) -> TeamState:
+            messages = sorted(
+                state.conversation_messages.values(),
+                key=lambda item: (item.created_at, item.id),
+            )
+            for message in messages:
+                if normalized_limit and len(claims) >= normalized_limit:
+                    break
+                if (
+                    message.sender != "operator"
+                    or message.message_type != "text"
+                    or message.status != "queued"
+                ):
+                    continue
+                conversation = state.conversations.get(message.conversation_id)
+                if conversation is None:
+                    continue
+                agent = state.agents.get(conversation.agent_id)
+                if agent is None or agent.status == AgentStatus.ARCHIVED:
+                    continue
+                if normalized_team_id is not None and agent.team_id != normalized_team_id:
+                    continue
+                if normalized_project_id is not None and not agent_has_project_assignment(
+                    state,
+                    agent.id,
+                    normalized_project_id,
+                ):
+                    continue
+                if normalized_agent_id is not None and agent.id != normalized_agent_id:
+                    continue
+                runtime = state.agent_runtimes.setdefault(
+                    agent.id,
+                    AgentRuntime(agent_id=agent.id),
+                )
+                if (
+                    runtime.wake_leased_until is not None
+                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                ):
+                    continue
+                dispatch_id = message.dispatch_id or f"team-chat:{message.id}"
+                runtime.active_dispatch_id = dispatch_id
+                runtime.wake_leased_until = effective_now + timedelta(
+                    seconds=max(1, int(lease_seconds))
+                )
+                runtime.wake_reason = "team_chat"
+                runtime.last_wake_at = effective_now
+                runtime.next_wake_at = None
+                runtime.updated_at = effective_now
+                message.status = "running"
+                message.dispatch_id = dispatch_id
+                message.error = None
+                message.updated_at = effective_now
+                conversation.updated_at = effective_now
+                claims.append(
+                    {
+                        "agent_id": agent.id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation.id,
+                        "message_id": message.id,
+                        "dispatch_id": dispatch_id,
+                    }
+                )
+            return state
+
+        state = self.update(_mutate)
+        return state, claims
+
     def mark_chat_message_dispatch_failed(
         self,
         *,

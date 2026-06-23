@@ -657,6 +657,62 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
     assert messages[1]["body"] == "The dependency task is still open."
 
 
+def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    service = AdminService(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_calls: list[dict[str, object]] = []
+
+    def _fake_resume_agent(target, prompt, **kwargs):
+        resume_calls.append({"target": target, "prompt": prompt, **kwargs})
+        return {"success": True, "dispatch_id": kwargs.get("dispatch_id")}
+
+    monkeypatch.setattr(service, "resume_agent", _fake_resume_agent)
+    client = TestClient(create_app(service))
+
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+    assert created.status_code == 201
+    conversation = created.json()["conversations"][0]
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={
+            "body": "Can you look at this once your current wake finishes?",
+            "expected_revision": created.json()["revision"],
+        },
+    )
+
+    assert sent.status_code == 202
+    sent_payload = sent.json()
+    assert sent_payload["dispatch"]["success"] is False
+    assert sent_payload["dispatch"]["queued"] is True
+    assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
+    assert "queued for retry" in sent_payload["dispatch"]["message"]
+    assert resume_calls == []
+    message = sent_payload["message"]
+    assert message["status"] == "queued"
+    assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
+    reread = TeamStateRepository(tmp_path / "runtime").read()
+    assert reread.conversation_messages[message["id"]].status == "queued"
+    assert reread.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend"
+
+
 def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     _repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
     client = _client(tmp_path)

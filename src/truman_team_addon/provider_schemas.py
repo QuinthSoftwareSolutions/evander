@@ -229,6 +229,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "revision": {"type": "integer"},
         "leased_count": {"type": "integer"},
         "leases": {"type": "array"},
+        "chat_dispatches": {"type": "array"},
         "dispatches": {"type": "array"},
         "prepared_project_repos": {"type": "array"},
         "failed_project_repo_preparations": {"type": "array"},
