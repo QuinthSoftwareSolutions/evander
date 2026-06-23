@@ -2374,19 +2374,30 @@ def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
 def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
     role_permissions = {
         str(permission)
-        for permission in (agent.get("role_permissions") or [])
+        for permission in (agent.get("effective_role_permissions") or agent.get("role_permissions") or [])
         if permission is not None
     }
+    project_assignments = agent.get("project_assignments") or []
+    lead_project_ids = [
+        str(item.get("project_id"))
+        for item in project_assignments
+        if isinstance(item, Mapping) and item.get("kind") == "project_lead" and item.get("project_id")
+    ]
     if RolePermission.CREATE_ROOT_TASK.value in role_permissions:
+        lead_scope = (
+            " as project lead for " + ", ".join(sorted(lead_project_ids))
+            if lead_project_ids
+            else ""
+        )
         return (
-            "Task creation mandate for this dispatch: your current role has "
-            f"{RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
+            "Task creation mandate for this dispatch: your effective permissions"
+            f"{lead_scope} include {RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
             "tasks by omitting parent_task_id when you otherwise have authority "
             "to create the task. You may also create child tasks with "
             "parent_task_id.\n\n"
         )
     return (
-        "Task creation mandate for this dispatch: your current role does not "
+        "Task creation mandate for this dispatch: your effective permissions do not "
         f"have {RolePermission.CREATE_ROOT_TASK.value}. You may NOT create "
         "top-level tasks. Every task_creations item you submit must set "
         "parent_task_id to one of your own active tasks.\n\n"
@@ -2428,20 +2439,33 @@ def _prepare_project_repo(
     state: Any,
     agent: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    project_id = _optional_text(agent.get("project_id"))
-    if project_id is None:
-        return None
     projects = getattr(state, "projects", None)
     if not isinstance(projects, Mapping):
         return None
-    project = projects.get(project_id)
-    git = getattr(project, "git", None)
+
+    def _value(item: object, field_name: str) -> object:
+        if isinstance(item, Mapping):
+            return item.get(field_name)
+        return getattr(item, field_name, None)
+
+    project_id: str | None = None
+    git: object | None = None
+    for candidate_project_id in _string_items(agent.get("project_ids")):
+        project = projects.get(candidate_project_id)
+        if project is None:
+            continue
+        candidate_git = _value(project, "git")
+        if candidate_git is None:
+            continue
+        project_id = candidate_project_id
+        git = candidate_git
+        break
     if git is None:
         return None
 
     session_id = _required_text(agent.get("session_id"), "session_id")
-    repo_source = _required_text(getattr(git, "host_repo_path", None), "project.git.host_repo_path")
-    clone_branch = _optional_text(getattr(git, "base_branch", None))
+    repo_source = _required_text(_value(git, "host_repo_path"), "project.git.host_repo_path")
+    clone_branch = _optional_text(_value(git, "base_branch"))
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
         AgentCloneRepoEffectDefinition(
@@ -2509,7 +2533,7 @@ def _project_repo_prepare_record(
     record: dict[str, Any] = {
         "agent_id": agent.get("id"),
         "session_id": agent.get("session_id"),
-        "project_id": agent.get("project_id"),
+        "project_ids": agent.get("project_ids") or [],
         "dispatch_id": dispatch_id,
     }
     if project_repo is not None:
@@ -3680,7 +3704,7 @@ def _register_team_dispatch_model_usage_context(
         ),
         effect_id=effect_id,
         team_id=_optional_text(agent.get("team_id")),
-        project_id=_optional_text(agent.get("project_id")),
+        project_id=(_string_items(agent.get("project_ids"))[0] if _string_items(agent.get("project_ids")) else None),
         agent_id=_optional_text(agent.get("id")),
         trace_id=_context_metadata_text(context, "trace_id", "workflow_trace_id"),
     )
@@ -3843,6 +3867,7 @@ def _filtered_team_state_payload(
     teams = filtered["teams"]
     projects = filtered["projects"]
     agents = filtered["agents"]
+    project_assignments = filtered.get("project_assignments", {})
 
     visible_team_ids = set(teams)
     visible_project_ids = set(projects)
@@ -3864,7 +3889,11 @@ def _filtered_team_state_payload(
             visible_agent_ids = {
                 key
                 for key in visible_agent_ids
-                if agents[key].get("project_id") == project_id
+                if any(
+                    assignment.get("agent_id") == key
+                    and assignment.get("project_id") == project_id
+                    for assignment in project_assignments.values()
+                )
             }
         else:
             visible_team_ids = set()
@@ -3877,12 +3906,12 @@ def _filtered_team_state_payload(
             visible_agent_ids = {agent_id}
             agent_team_id = _optional_text(agent.get("team_id"))
             visible_team_ids = visible_team_ids & {agent_team_id} if agent_team_id is not None else set()
-            agent_project_id = _optional_text(agent.get("project_id"))
-            visible_project_ids = (
-                visible_project_ids & {agent_project_id}
-                if agent_project_id is not None
-                else set()
-            )
+            agent_project_ids = {
+                _required_text(assignment.get("project_id"), "project_id")
+                for assignment in project_assignments.values()
+                if assignment.get("agent_id") == agent_id and assignment.get("project_id")
+            }
+            visible_project_ids = visible_project_ids & agent_project_ids
         else:
             visible_team_ids = set()
             visible_project_ids = set()
@@ -3910,11 +3939,22 @@ def _filtered_team_state_payload(
         for key, value in agents.items()
         if key in visible_agent_ids
     }
+    filtered["project_assignments"] = {
+        key: value
+        for key, value in project_assignments.items()
+        if value.get("project_id") in visible_project_ids
+        and value.get("agent_id") in visible_agent_ids
+    }
     visible_role_ids = {
         role_id
         for value in filtered["agents"].values()
         if (role_id := _optional_text(value.get("role_id"))) is not None
     }
+    visible_role_ids.update(
+        role_id
+        for value in filtered["project_assignments"].values()
+        if (role_id := _optional_text(value.get("role_id"))) is not None
+    )
     filtered["agent_runtimes"] = {
         key: value
         for key, value in filtered.get("agent_runtimes", {}).items()

@@ -28,7 +28,7 @@ from agent_sandbox.model_usage.pricing import (
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import utc_now
 
-from .models import EphemeralAssignment, PersistentAgent, TeamState
+from .models import EphemeralAssignment, PersistentAgent, TeamState, agent_project_ids
 
 CLAUDE_TRANSCRIPT_ROOTS_ENV = "AGENT_SANDBOX_CLAUDE_TRANSCRIPT_ROOTS"
 WORKER_ROOT_ENV = "AGENT_SANDBOX_WORKER_ROOT"
@@ -458,12 +458,14 @@ class TeamCostService:
 
             agent = _agent_for_session(self.state, session_id)
             if agent is not None:
+                project_ids = agent_project_ids(self.state, agent.id)
+                project_id = project_ids[0] if project_ids else None
                 return TeamCostAttribution(
                     team_id=agent.team_id,
-                    project_id=agent.project_id,
+                    project_id=project_id,
                     agent_id=agent.id,
                     source="agent_session",
-                    project_confident=bool(agent.project_id),
+                    project_confident=bool(project_id),
                 )
 
         if dispatch_id:
@@ -473,12 +475,14 @@ class TeamCostService:
                 agent = self.state.agents.get(record.agent_id)
                 if agent is None:
                     break
+                project_ids = agent_project_ids(self.state, agent.id)
+                project_id = project_ids[0] if project_ids else None
                 return TeamCostAttribution(
                     team_id=agent.team_id,
-                    project_id=agent.project_id,
+                    project_id=project_id,
                     agent_id=agent.id,
                     source="dispatch_action_record",
-                    project_confident=bool(agent.project_id),
+                    project_confident=bool(project_id),
                 )
 
         return TeamCostAttribution(
@@ -555,7 +559,7 @@ class TeamCostService:
                 session_manifest=session,
                 agent_id=agent.id,
                 team_id=agent.team_id,
-                project_id=agent.project_id,
+                project_id=(agent_project_ids(self.state, agent.id)[0] if agent_project_ids(self.state, agent.id) else None),
             )
         for assignment in self.state.ephemeral_assignments.values():
             session_id = _optional_text(assignment.session_id)

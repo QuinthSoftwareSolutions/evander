@@ -44,6 +44,10 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderSelectableProject/);
   assert.match(script, /renderSelectableRole/);
   assert.match(script, /create-team-from-teams-form/);
+  assert.match(script, /data-team-inline-create-toggle/);
+  assert.match(script, /data-team-inline-create-form/);
+  assert.match(script, /projectLeadAgentOptionsForTeam/);
+  assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
@@ -1688,21 +1692,26 @@ function applyMutation(state, pathname, payload) {
       status: "active",
     };
     state.teams[payload.team_id].project_ids.push(projectId);
-    state.agents[leadAgentId] = {
-      id: leadAgentId,
-      team_id: payload.team_id,
-      project_id: projectId,
-      display_name: payload.lead_display_name ?? null,
-      role_id: leadRoleId,
-      session_id: payload.lead_session_id,
-      reports_to_agent_id: state.teams[payload.team_id].manager_agent_id,
-      subordinate_agent_ids: [],
-      ephemeral_policy: { max_concurrent: 0 },
-      status: "active",
-    };
-    state.agents[state.teams[payload.team_id].manager_agent_id].subordinate_agent_ids.push(
-      leadAgentId,
-    );
+    const managerId = state.teams[payload.team_id].manager_agent_id;
+    const existingLead = state.agents[leadAgentId];
+    if (!existingLead) {
+      state.agents[leadAgentId] = {
+        id: leadAgentId,
+        team_id: payload.team_id,
+        project_id: projectId,
+        display_name: payload.lead_display_name ?? null,
+        role_id: leadRoleId,
+        session_id: payload.lead_session_id,
+        reports_to_agent_id: managerId,
+        subordinate_agent_ids: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        status: "active",
+      };
+      const manager = state.agents[managerId];
+      if (!manager.subordinate_agent_ids.includes(leadAgentId)) {
+        manager.subordinate_agent_ids.push(leadAgentId);
+      }
+    }
     return;
   }
   if (pathname === "/api/addons/team-addon/roles") {
@@ -1960,7 +1969,8 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   const teamId = "team-team";
   const managerId = "agent-team-team-team-manager";
   const projectId = "project-team-team-project";
-  const leadId = "agent-project-team-team-project-project-lead";
+  const leadId = "agent-project-lead";
+  const leadCandidateRoleId = "team-team__manager";
   const roleId = "role-project-team-team-project-backend";
   const backendId = "agent-project-team-team-project-backend-agent";
   const taskId = "task-project-team-team-project-build-backend";
@@ -1981,19 +1991,30 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await teamForm.getByRole("button", { name: "Create team" }).click();
   await page.getByText("Saved revision 1.").waitFor({ state: "visible" });
 
+  await openDetails(page, "Register agent");
+  await waitForSelectOption(page, '#register-agent-form [name="role_id"]', leadCandidateRoleId);
+  const leadAgentForm = page.locator("#register-agent-form");
+  await leadAgentForm.locator('[name="team_id"]').selectOption(teamId);
+  await leadAgentForm.locator('[name="role_id"]').selectOption(leadCandidateRoleId);
+  await leadAgentForm.locator('[name="session_id"]').fill("session-lead");
+  await leadAgentForm.locator('[name="display_name"]').fill("Project Lead");
+  await leadAgentForm.locator('[name="reports_to_agent_id"]').selectOption(managerId);
+  await leadAgentForm.getByRole("button", { name: "Register agent" }).click();
+  await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
+
   await openDetails(page, "Create project");
   await waitForSelectOption(page, '#create-project-form [name="team_id"]', teamId);
   const projectForm = page.locator("#create-project-form");
   await projectForm.locator('[name="team_id"]').selectOption(teamId);
+  await waitForSelectOption(page, '#create-project-form [name="lead_agent_id"]', leadId);
   await projectForm.locator('[name="name"]').fill("Project");
-  await projectForm.locator('[name="lead_session_id"]').fill("session-lead");
-  await projectForm.locator('[name="lead_display_name"]').fill("Project Lead");
+  await projectForm.locator('[name="lead_agent_id"]').selectOption(leadId);
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
   await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
   await projectForm.locator('[name="bare_repo"]').fill("project.git");
   await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
-  await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
 
   await openDetails(page, "Create role");
   await waitForSelectOption(page, '#create-role-form [name="team_id"]', teamId);
@@ -2003,7 +2024,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await roleForm.locator('[name="name"]').fill("Backend");
   await roleForm.locator('[name="max_concurrent"]').fill("2");
   await roleForm.getByRole("button", { name: "Create role" }).click();
-  await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
 
   await openDetails(page, "Register agent");
   await waitForSelectOption(page, '#register-agent-form [name="reports_to_agent_id"]', leadId);
@@ -2017,7 +2038,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await agentForm.locator('[name="reports_to_agent_id"]').selectOption(leadId);
   await agentForm.locator('[name="max_concurrent"]').fill("2");
   await agentForm.getByRole("button", { name: "Register agent" }).click();
-  await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
   await page.getByText("Team Manager").first().waitFor({ state: "visible" });
   await page.getByText("Project Lead").first().waitFor({ state: "visible" });
   await page.getByText("Backend Agent").first().waitFor({ state: "visible" });
@@ -2033,7 +2054,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await taskForm.locator('[name="created_by_agent_id"]').selectOption(leadId);
   await taskForm.getByRole("button", { name: "Create task" }).click();
   try {
-    await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+    await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
   } catch (error) {
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}; status=${await statusMessage.textContent()}; requests=${JSON.stringify(requests, null, 2)}`,
@@ -2046,7 +2067,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await updateForm.locator('[name="task_id"]').selectOption(taskId);
   await updateForm.locator('[name="state"]').selectOption("waiting_for_review");
   await updateForm.getByRole("button", { name: "Update task" }).click();
-  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
   await openDetails(page, "Record deliverable");
   await waitForSelectOption(page, '#record-deliverable-form [name="task_id"]', taskId);
@@ -2056,7 +2077,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await deliverableForm.locator('[name="summary"]').fill("Backend task is ready.");
   await deliverableForm.locator('[name="artifact_refs"]').fill("artifacts/backend.tar.gz");
   await deliverableForm.getByRole("button", { name: "Record deliverable" }).click();
-  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
 
   await openDetails(page, "Request review");
   await waitForSelectOption(page, '#record-review-form [name="deliverable_id"]', deliverableId);
@@ -2064,20 +2085,21 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await reviewForm.locator('[name="deliverable_id"]').selectOption(deliverableId);
   await reviewForm.locator('[name="reviewer_agent_id"]').selectOption(leadId);
   await reviewForm.getByRole("button", { name: "Request review" }).click();
-  await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 9.").waitFor({ state: "visible" });
 
   assert.deepEqual(
     requests.map((request) => request.payload.expected_revision),
-    [0, 1, 2, 3, 4, 5, 6, 7],
+    [0, 1, 2, 3, 4, 5, 6, 7, 8],
   );
-  assert.equal(requests[2].payload.ephemeral_policy.max_concurrent, 2);
   assert.equal(requests[3].payload.ephemeral_policy.max_concurrent, 2);
-  assert.deepEqual(requests[6].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
+  assert.equal(requests[4].payload.ephemeral_policy.max_concurrent, 2);
+  assert.deepEqual(requests[7].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
   assert.equal(requests[0].payload.manager_display_name, "Team Manager");
-  assert.equal(requests[1].payload.lead_display_name, "Project Lead");
-  assert.equal(requests[3].payload.display_name, "Backend Agent");
+  assert.equal(requests[1].payload.display_name, "Project Lead");
+  assert.equal(requests[2].payload.lead_agent_id, leadId);
+  assert.equal(requests[4].payload.display_name, "Backend Agent");
   assert.equal(requests[0].payload.operator_communication_target_id, "ops-channel");
-  assert.deepEqual(requests[1].payload.git, {
+  assert.deepEqual(requests[2].payload.git, {
     host_repo_path: "/srv/git/project",
     bare_repo_name: "project.git",
     base_branch: "main",
@@ -3353,6 +3375,89 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     state: "visible",
   });
   assert.equal((await alphaLeadCard.innerText()).includes("alpha-lead"), false);
+});
+
+test("team add-on Teams tab creates records inside the selected team", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["beta-candidate"] = {
+    id: "beta-candidate",
+    team_id: "team-beta",
+    project_id: null,
+    display_name: "Beta Candidate",
+    role_id: "team-beta__manager",
+    session_id: "session-beta-candidate",
+    reports_to_agent_id: "beta-manager",
+    subordinate_agent_ids: [],
+    ephemeral_policy: { max_concurrent: 0 },
+    status: "active",
+  };
+  initialState.agents["beta-manager"].subordinate_agent_ids.push("beta-candidate");
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+
+  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  await betaGroup.waitFor({ state: "visible" });
+  await betaGroup.locator(".team-record-group-header").click();
+  await betaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await betaGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = betaGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  assert.equal(await inlineAgentForm.locator('select[name="team_id"]').count(), 0);
+  await inlineAgentForm.locator('[name="role_id"]').selectOption("team-beta__manager");
+  await inlineAgentForm.locator('[name="session_id"]').fill("session-beta-ops");
+  await inlineAgentForm.locator('[name="display_name"]').fill("Beta Ops");
+  await inlineAgentForm.locator('[name="reports_to_agent_id"]').selectOption("beta-manager");
+  await inlineAgentForm.locator('[name="max_concurrent"]').fill("1");
+  await inlineAgentForm.getByRole("button", { name: "Register agent" }).click();
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+
+  await betaGroup.locator('[data-team-record-tab="role"]').click();
+  await betaGroup.getByRole("button", { name: "Add role" }).click();
+  const inlineRoleForm = betaGroup.locator('form[data-form-id="create-role-form"]');
+  await inlineRoleForm.waitFor({ state: "visible" });
+  assert.equal(await inlineRoleForm.locator('select[name="team_id"]').count(), 0);
+  await inlineRoleForm.locator('[name="project_id"]').selectOption("beta-project");
+  await inlineRoleForm.locator('[name="name"]').fill("QA");
+  await inlineRoleForm.locator('[name="permissions"]').selectOption(["request_release"]);
+  await inlineRoleForm.locator('[name="max_concurrent"]').fill("1");
+  await inlineRoleForm.getByRole("button", { name: "Create role" }).click();
+  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+
+  await betaGroup.locator('[data-team-record-tab="project"]').click();
+  await betaGroup.getByRole("button", { name: "Add project" }).click();
+  const inlineProjectForm = betaGroup.locator('form[data-form-id="create-project-form"]');
+  await inlineProjectForm.waitFor({ state: "visible" });
+  assert.equal(await inlineProjectForm.locator('select[name="team_id"]').count(), 0);
+  assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 1);
+  await inlineProjectForm.locator('[name="name"]').fill("Second Project");
+  await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-manager");
+  await inlineProjectForm.locator('[name="goal_description"]').fill("Ship beta follow-up");
+  await inlineProjectForm.getByRole("button", { name: "Create project" }).click();
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
+
+  assert.deepEqual(
+    requests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
+    [
+      ["POST", "/api/addons/team-addon/agents", 4],
+      ["POST", "/api/addons/team-addon/roles", 5],
+      ["POST", "/api/addons/team-addon/projects", 6],
+    ],
+  );
+  assert.equal(requests[0].payload.team_id, "team-beta");
+  assert.equal(requests[0].payload.display_name, "Beta Ops");
+  assert.equal(requests[1].payload.team_id, "team-beta");
+  assert.equal(requests[1].payload.project_id, "beta-project");
+  assert.deepEqual(requests[1].payload.permissions, ["request_release"]);
+  assert.equal(requests[2].payload.team_id, "team-beta");
+  assert.equal(requests[2].payload.lead_agent_id, "beta-manager");
+  assert.deepEqual(requests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
 });
 
 function seededLongChatState(messageCount = 120) {

@@ -29,6 +29,8 @@ from truman_team_addon.models import (
     TeamInboxItemType,
     TeamRecordState,
     TeamTaskState,
+    agent_project_ids,
+    project_lead_agent_id,
 )
 from truman_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from truman_team_addon.sqlite_store import (
@@ -897,6 +899,153 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
     assert state.agents["backend"].display_name == "Backend Agent"
+
+
+def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    manager_before = state.agents["manager"].model_copy(deep=True)
+
+    state = repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+
+    assert state.projects["project"].lead_agent_id == "manager"
+    assert project_lead_agent_id(state, "project") == "manager"
+    assert agent_project_ids(state, "manager") == ["project"]
+    assert state.agents["manager"].role_id == manager_before.role_id
+    assert state.agents["manager"].reports_to_agent_id == manager_before.reports_to_agent_id
+    assert state.agents["manager"].session_id == manager_before.session_id
+    assert "manager" not in state.agents["manager"].subordinate_agent_ids
+    assert state.roles["project__project-lead"].permissions == [
+        RolePermission.CREATE_ROOT_TASK
+    ]
+
+
+def test_create_project_existing_project_lead_is_assignment_overlay(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = repo.create_role(
+        role_id="team__lead-candidate",
+        team_id="team",
+        name="Lead Candidate",
+        expected_revision=state.revision,
+    )
+    state = repo.register_agent(
+        agent_id="candidate",
+        team_id="team",
+        project_id=None,
+        role_id="team__lead-candidate",
+        session_id="session-candidate",
+        reports_to_agent_id="manager",
+        expected_revision=state.revision,
+    )
+    candidate_before = state.agents["candidate"].model_copy(deep=True)
+
+    state = repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="candidate",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+
+    assert state.projects["project"].lead_agent_id == "candidate"
+    assert project_lead_agent_id(state, "project") == "candidate"
+    assert agent_project_ids(state, "candidate") == ["project"]
+    assert state.agents["candidate"].role_id == candidate_before.role_id
+    assert state.agents["candidate"].reports_to_agent_id == candidate_before.reports_to_agent_id
+    assert state.agents["candidate"].session_id == candidate_before.session_id
+
+    def _add_candidate_inbox(state):
+        state.inbox["candidate-inbox"] = AgentInboxItem(
+            id="candidate-inbox",
+            recipient_agent_id="candidate",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_candidate_inbox, expected_revision=state.revision)
+    state, leases = repo.lease_due_agents(agent_id="candidate")
+    assert len(leases) == 1
+    assert "create_root_task" in leases[0]["agent"]["effective_role_permissions"]
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "candidate",
+            "dispatch_id": leases[0]["dispatch_id"],
+            "task_creations": [
+                {
+                    "task_id": "root-task",
+                    "owner_agent_id": "candidate",
+                    "project_id": "project",
+                    "title": "Root task",
+                    "description": "Create a root task as project lead.",
+                }
+            ],
+        },
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is True
+    assert result["created_task_ids"] == ["root-task"]
+    assert state.tasks["root-task"].created_by_agent_id == "candidate"
+
+
+def test_create_project_allows_same_agent_to_lead_multiple_projects(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = repo.create_project(
+        project_id="first-project",
+        team_id="team",
+        name="First Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+
+    state = repo.create_project(
+        project_id="second-project",
+        team_id="team",
+        name="Second Project",
+        lead_agent_id="lead",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+
+    assert project_lead_agent_id(state, "first-project") == "lead"
+    assert project_lead_agent_id(state, "second-project") == "lead"
+    assert agent_project_ids(state, "lead") == ["first-project", "second-project"]
 
 
 def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path) -> None:
@@ -5161,7 +5310,7 @@ def test_register_teamless_agent(tmp_path: Path) -> None:
 
     agent = state.agents["unassigned"]
     assert agent.team_id is None
-    assert agent.project_id is None
+    assert agent_project_ids(state, "unassigned") == []
     assert agent.role_id is None
     assert agent.display_name == "Unassigned"
 

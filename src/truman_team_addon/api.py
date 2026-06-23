@@ -54,6 +54,9 @@ from .models import (
     TeamInboxPriority,
     TeamTaskState,
     TeamState,
+    agent_project_assignment_payloads,
+    agent_project_ids,
+    effective_role_permissions,
     team_state_payload,
 )
 from .costs import TeamCostService
@@ -261,12 +264,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         goals = list(_optional_list(payload, "goals"))
+        lead_agent_id = _optional(payload, "lead_agent_id")
+        lead_session_id = _optional(payload, "lead_session_id")
+        if lead_session_id is None:
+            lead_agent_id = _required(payload, "lead_agent_id")
         state = repository.create_project(
             project_id=_optional(payload, "id") or _optional(payload, "project_id"),
             team_id=_required(payload, "team_id"),
             name=_required(payload, "name"),
-            lead_agent_id=_optional(payload, "lead_agent_id"),
-            lead_session_id=_required(payload, "lead_session_id"),
+            lead_agent_id=lead_agent_id,
+            lead_session_id=lead_session_id,
             lead_display_name=_optional(payload, "lead_display_name"),
             lead_role_id=_optional(payload, "lead_role_id"),
             lead_role_name=_optional(payload, "lead_role_name"),
@@ -900,7 +907,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 "call_surface": "team_chat_tab" if conversation is not None else "team_people_tab",
                 "agent_id": agent.id,
                 "team_id": agent.team_id,
-                "project_id": agent.project_id,
+                "project_ids": agent_project_ids(state, agent.id),
                 "conversation_id": conversation_id,
                 "voice_profile": voice_profile,
             },
@@ -2139,7 +2146,7 @@ def _chat_agent_payload(agent: Any | None) -> dict[str, Any] | None:
         "id": agent.id,
         "display_name": _agent_display_name(agent),
         "team_id": agent.team_id,
-        "project_id": agent.project_id,
+        "project_ids": [],
         "role_id": agent.role_id,
         "role_name": None,
         "status": _enum_value(agent.status),
@@ -2327,7 +2334,8 @@ def _build_agent_voice_projection(
     tool_summary: Any | None,
 ) -> dict[str, Any]:
     team = state.teams.get(agent.team_id)
-    project = state.projects.get(agent.project_id) if agent.project_id else None
+    assigned_project_ids = agent_project_ids(state, agent.id)
+    project = state.projects.get(assigned_project_ids[0]) if assigned_project_ids else None
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     runtime = state.agent_runtimes.get(agent.id)
     subordinates = [
@@ -2404,9 +2412,10 @@ def _build_agent_voice_projection(
             "archived": bool(team.archived) if team else False,
         },
         "project": {
-            "id": project.id if project else agent.project_id,
-            "name": project.name if project else agent.project_id,
+            "id": project.id if project else None,
+            "name": project.name if project else None,
             "status": _enum_value(project.status) if project else None,
+            "assignments": agent_project_assignment_payloads(state, agent.id),
             "goals": [
                 {
                     "id": goal.id,
@@ -2420,7 +2429,10 @@ def _build_agent_voice_projection(
             "id": role.id if role else agent.role_id,
             "name": role.name if role else agent.role_id,
             "description": role.description if role else "",
-            "permissions": [_enum_value(permission) for permission in (role.permissions if role else [])],
+            "permissions": [
+                _enum_value(permission)
+                for permission in effective_role_permissions(state, agent)
+            ],
         },
         "runtime": {
             "wake_reason": getattr(runtime, "wake_reason", None),
@@ -2515,7 +2527,7 @@ def _build_agent_voice_projection(
         "query_origin_agent with a concise question and continue once the answer arrives.\n\n"
         f"Selected agent: {_agent_display_name(agent)} ({agent.id})\n"
         f"Team: {context_payload['team']['name']} ({context_payload['team']['id']})\n"
-        f"Project: {context_payload['project']['name'] or 'None'} "
+        f"Primary project: {context_payload['project']['name'] or 'None'} "
         f"({context_payload['project']['id'] or 'none'})\n"
         f"Role: {context_payload['role']['name']} ({context_payload['role']['id']})\n\n"
         "Projected context JSON:\n"
@@ -2527,7 +2539,7 @@ def _build_agent_voice_projection(
             "call_surface": "team_people_tab",
             "agent_id": agent.id,
             "team_id": agent.team_id,
-            "project_id": agent.project_id,
+            "project_ids": agent_project_ids(state, agent.id),
             "team_state_revision": state.revision,
         },
         "context": context_payload,
@@ -2554,7 +2566,7 @@ def _agent_voice_prompt_metadata(
         "team_state_revision": state.revision,
         "agent_id": agent.id,
         "team_id": agent.team_id,
-        "project_id": agent.project_id,
+        "project_ids": agent_project_ids(state, agent.id),
         "role_id": agent.role_id,
         "session_id": session.session_id,
         "call_surface": "team_people_tab",

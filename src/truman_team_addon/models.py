@@ -78,6 +78,11 @@ class AgentStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class AgentProjectAssignmentKind(str, Enum):
+    PROJECT_LEAD = "project_lead"
+    PROJECT_MEMBER = "project_member"
+
+
 class RolePermission(str, Enum):
     CREATE_ROOT_TASK = "create_root_task"
     REQUEST_RELEASE = "request_release"
@@ -473,10 +478,32 @@ class Project(TeamModel):
         return self
 
 
+class AgentProjectAssignment(TeamModel):
+    id: str
+    team_id: str
+    project_id: str
+    agent_id: str
+    role_id: str | None = None
+    kind: AgentProjectAssignmentKind = AgentProjectAssignmentKind.PROJECT_MEMBER
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "team_id", "project_id", "agent_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("role_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class PersistentAgent(TeamModel):
+    model_config = ConfigDict(extra="ignore")
+
     id: str
     team_id: str | None = None
-    project_id: str | None = None
     display_name: str | None = None
     avatar: AgentAvatar | None = None
     voice_profile: AgentVoiceProfile | None = None
@@ -494,7 +521,6 @@ class PersistentAgent(TeamModel):
 
     @field_validator(
         "team_id",
-        "project_id",
         "display_name",
         "role_id",
         "reports_to_agent_id",
@@ -516,8 +542,6 @@ class PersistentAgent(TeamModel):
         if self.id in self.subordinate_agent_ids:
             raise ValueError("agent cannot list itself as a subordinate")
         if self.team_id is None:
-            if self.project_id is not None:
-                raise ValueError("teamless agent cannot belong to a project")
             if self.role_id is not None:
                 raise ValueError("teamless agent cannot have a team-scoped role")
             if self.reports_to_agent_id is not None:
@@ -527,7 +551,6 @@ class PersistentAgent(TeamModel):
         elif self.role_id is None:
             raise ValueError("team-bound agent must have a role")
         return self
-
 
 
 
@@ -1102,6 +1125,7 @@ class TeamState(TeamModel):
     projects: dict[str, Project] = Field(default_factory=dict)
     roles: dict[str, TeamRole] = Field(default_factory=dict)
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
+    project_assignments: dict[str, AgentProjectAssignment] = Field(default_factory=dict)
     agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
@@ -1121,9 +1145,136 @@ class TeamState(TeamModel):
     def empty(cls) -> "TeamState":
         return cls()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_project_assignments(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        projects = dict(migrated.get("projects") or {})
+        agents = dict(migrated.get("agents") or {})
+        roles = dict(migrated.get("roles") or {})
+        assignments = dict(migrated.get("project_assignments") or {})
+
+        def role_project_id(role_id: object) -> str | None:
+            if role_id is None:
+                return None
+            role = roles.get(str(role_id))
+            if isinstance(role, TeamRole):
+                return role.project_id
+            if isinstance(role, dict):
+                return _optional_text(role.get("project_id"))
+            return None
+
+        def assignment_id(project_id: str, agent_id: str, kind: str) -> str:
+            return f"{project_id}__{agent_id}__{kind}"
+
+        def assignment_kind_value(value: object) -> str | None:
+            if isinstance(value, AgentProjectAssignmentKind):
+                return value.value
+            text = _optional_text(value)
+            if text is None:
+                return None
+            if text.startswith("AgentProjectAssignmentKind."):
+                key = text.rsplit(".", 1)[-1]
+                try:
+                    return AgentProjectAssignmentKind[key].value
+                except KeyError:
+                    return text
+            return text
+
+        def has_assignment(project_id: str, agent_id: str, kind: str | None = None) -> bool:
+            for assignment in assignments.values():
+                if isinstance(assignment, AgentProjectAssignment):
+                    current_project_id = assignment.project_id
+                    current_agent_id = assignment.agent_id
+                    current_kind = assignment.kind.value
+                elif isinstance(assignment, dict):
+                    current_project_id = _optional_text(assignment.get("project_id"))
+                    current_agent_id = _optional_text(assignment.get("agent_id"))
+                    current_kind = assignment_kind_value(assignment.get("kind"))
+                else:
+                    continue
+                if current_project_id == project_id and current_agent_id == agent_id and (kind is None or current_kind == kind):
+                    return True
+            return False
+
+        def put_assignment(*, project_id: str, agent_id: str, team_id: str, role_id: str | None, kind: str) -> None:
+            if has_assignment(project_id, agent_id, kind):
+                return
+            key = assignment_id(project_id, agent_id, kind)
+            suffix = 2
+            while key in assignments:
+                key = f"{assignment_id(project_id, agent_id, kind)}-{suffix}"
+                suffix += 1
+            assignments[key] = {
+                "id": key,
+                "team_id": team_id,
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "role_id": role_id,
+                "kind": kind,
+            }
+
+        for project_id, raw_project in projects.items():
+            project = raw_project.model_dump(mode="python") if isinstance(raw_project, TeamModel) else raw_project
+            if not isinstance(project, dict):
+                continue
+            lead_agent_id = _optional_text(project.get("lead_agent_id"))
+            team_id = _optional_text(project.get("team_id"))
+            if lead_agent_id is None or team_id is None:
+                continue
+            raw_agent = agents.get(lead_agent_id)
+            agent = raw_agent.model_dump(mode="python") if isinstance(raw_agent, TeamModel) else raw_agent
+            role_id = _optional_text(agent.get("role_id")) if isinstance(agent, dict) else None
+            if role_project_id(role_id) != str(project_id):
+                role_id = next(
+                    (
+                        role_key
+                        for role_key, raw_role in roles.items()
+                        if (
+                            raw_role.project_id if isinstance(raw_role, TeamRole) else _optional_text(raw_role.get("project_id")) if isinstance(raw_role, dict) else None
+                        ) == str(project_id)
+                    ),
+                    role_id,
+                )
+            put_assignment(
+                project_id=str(project_id),
+                agent_id=lead_agent_id,
+                team_id=team_id,
+                role_id=role_id,
+                kind=AgentProjectAssignmentKind.PROJECT_LEAD.value,
+            )
+
+        for agent_id, raw_agent in list(agents.items()):
+            agent = raw_agent.model_dump(mode="python") if isinstance(raw_agent, TeamModel) else dict(raw_agent) if isinstance(raw_agent, dict) else raw_agent
+            if not isinstance(agent, dict):
+                continue
+            team_id = _optional_text(agent.get("team_id"))
+            legacy_project_id = _optional_text(agent.pop("project_id", None))
+            role_id = _optional_text(agent.get("role_id"))
+            role_project = role_project_id(role_id)
+            project_id = legacy_project_id or role_project
+            if team_id is not None and project_id is not None and not has_assignment(
+                project_id, str(agent_id)
+            ):
+                put_assignment(
+                    project_id=project_id,
+                    agent_id=str(agent_id),
+                    team_id=team_id,
+                    role_id=role_id if role_project == project_id else None,
+                    kind=AgentProjectAssignmentKind.PROJECT_MEMBER.value,
+                )
+            agents[agent_id] = agent
+
+        migrated["agents"] = agents
+        migrated["project_assignments"] = assignments
+        return migrated
+
     @model_validator(mode="after")
     def _validate_state(self) -> "TeamState":
         errors: list[str] = []
+        self._ensure_project_assignment_defaults()
         self._ensure_core_role_permissions()
         self._validate_key_matches(errors)
         self._validate_teams(errors)
@@ -1133,6 +1284,7 @@ class TeamState(TeamModel):
         self._validate_projects(errors)
         self._validate_roles(errors)
         self._validate_agents(errors)
+        self._validate_project_assignments(errors)
         self._validate_agent_runtimes(errors)
         self._validate_tasks(errors)
         self._validate_task_graph(errors)
@@ -1165,6 +1317,7 @@ class TeamState(TeamModel):
             "projects",
             "roles",
             "agents",
+            "project_assignments",
             "agent_runtimes",
             "tasks",
             "deliverables",
@@ -1191,15 +1344,54 @@ class TeamState(TeamModel):
                         f"{collection_name}.{key} key does not match record id {record_id}"
                     )
 
+    def _ensure_project_assignment_defaults(self) -> None:
+        now = utc_now()
+        for project in self.projects.values():
+            if project.lead_agent_id in self.agents and not _agent_has_project_assignment(
+                self, project.lead_agent_id, project.id, kind=AgentProjectAssignmentKind.PROJECT_LEAD
+            ):
+                lead = self.agents[project.lead_agent_id]
+                role = self.roles.get(lead.role_id) if lead.role_id is not None else None
+                role_id = lead.role_id if role is not None and role.project_id == project.id else None
+                assignment_id = _project_assignment_id(project.id, lead.id, AgentProjectAssignmentKind.PROJECT_LEAD)
+                self.project_assignments[assignment_id] = AgentProjectAssignment(
+                    id=assignment_id,
+                    team_id=project.team_id,
+                    project_id=project.id,
+                    agent_id=lead.id,
+                    role_id=role_id,
+                    kind=AgentProjectAssignmentKind.PROJECT_LEAD,
+                    created_at=now,
+                    updated_at=now,
+                )
+        for agent in self.agents.values():
+            role = self.roles.get(agent.role_id) if agent.role_id is not None else None
+            if role is None or role.project_id is None or agent.team_id is None:
+                continue
+            if _agent_has_project_assignment(self, agent.id, role.project_id):
+                continue
+            assignment_id = _project_assignment_id(role.project_id, agent.id, AgentProjectAssignmentKind.PROJECT_MEMBER)
+            self.project_assignments[assignment_id] = AgentProjectAssignment(
+                id=assignment_id,
+                team_id=agent.team_id,
+                project_id=role.project_id,
+                agent_id=agent.id,
+                role_id=role.id,
+                kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+                created_at=now,
+                updated_at=now,
+            )
+
     def _ensure_core_role_permissions(self) -> None:
         for team in self.teams.values():
             manager = self.agents.get(team.manager_agent_id)
             role = self.roles.get(manager.role_id) if manager is not None else None
             if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
                 role.permissions.append(RolePermission.CREATE_ROOT_TASK)
-        for project in self.projects.values():
-            lead = self.agents.get(project.lead_agent_id)
-            role = self.roles.get(lead.role_id) if lead is not None else None
+        for assignment in self.project_assignments.values():
+            if assignment.kind != AgentProjectAssignmentKind.PROJECT_LEAD or assignment.role_id is None:
+                continue
+            role = self.roles.get(assignment.role_id)
             if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
                 role.permissions.append(RolePermission.CREATE_ROOT_TASK)
 
@@ -1306,11 +1498,12 @@ class TeamState(TeamModel):
         for project in self.projects.values():
             if project.team_id not in self.teams:
                 errors.append(f"project {project.id} references missing team {project.team_id}")
-            lead = self.agents.get(project.lead_agent_id)
+            lead_id = project_lead_agent_id(self, project.id) or project.lead_agent_id
+            lead = self.agents.get(lead_id) if lead_id is not None else None
             if lead is None:
-                errors.append(f"project {project.id} references missing lead {project.lead_agent_id}")
-            elif lead.project_id != project.id:
-                errors.append(f"project {project.id} lead {lead.id} belongs to project {lead.project_id}")
+                errors.append(f"project {project.id} references missing lead {lead_id or project.lead_agent_id}")
+            elif lead.team_id != project.team_id:
+                errors.append(f"project {project.id} lead {lead.id} belongs to team {lead.team_id}")
 
     def _validate_roles(self, errors: list[str]) -> None:
         for role in self.roles.values():
@@ -1334,18 +1527,10 @@ class TeamState(TeamModel):
                 errors.append(f"agent {agent.id} references missing role {agent.role_id}")
             elif role is not None and role.team_id != agent.team_id:
                 errors.append(f"agent {agent.id} role {role.id} belongs to team {role.team_id}")
-            elif role is not None and role.project_id is not None and role.project_id != agent.project_id:
+            elif role is not None and role.project_id is not None and not _agent_has_project_assignment(self, agent.id, role.project_id):
                 errors.append(
                     f"agent {agent.id} role {role.id} belongs to project {role.project_id}"
                 )
-            if agent.project_id is not None:
-                project = self.projects.get(agent.project_id)
-                if project is None:
-                    errors.append(f"agent {agent.id} references missing project {agent.project_id}")
-                elif project.team_id != agent.team_id:
-                    errors.append(
-                        f"agent {agent.id} project {project.id} belongs to team {project.team_id}"
-                    )
             if agent.reports_to_agent_id is not None:
                 superior = self.agents.get(agent.reports_to_agent_id)
                 if superior is None:
@@ -1354,6 +1539,59 @@ class TeamState(TeamModel):
                     )
                 elif superior.team_id != agent.team_id:
                     errors.append(f"agent {agent.id} superior {superior.id} is in another team")
+
+    def _validate_project_assignments(self, errors: list[str]) -> None:
+        lead_assignments_by_project: dict[str, list[str]] = {}
+        seen_agent_project_kind: set[tuple[str, str, AgentProjectAssignmentKind]] = set()
+        for assignment in self.project_assignments.values():
+            project = self.projects.get(assignment.project_id)
+            if project is None:
+                errors.append(
+                    f"project assignment {assignment.id} references missing project {assignment.project_id}"
+                )
+            elif project.team_id != assignment.team_id:
+                errors.append(
+                    f"project assignment {assignment.id} project {project.id} belongs to team {project.team_id}"
+                )
+            agent = self.agents.get(assignment.agent_id)
+            if agent is None:
+                errors.append(
+                    f"project assignment {assignment.id} references missing agent {assignment.agent_id}"
+                )
+            elif agent.team_id != assignment.team_id:
+                errors.append(
+                    f"project assignment {assignment.id} agent {agent.id} belongs to team {agent.team_id}"
+                )
+            role = self.roles.get(assignment.role_id) if assignment.role_id is not None else None
+            if assignment.role_id is not None and role is None:
+                errors.append(
+                    f"project assignment {assignment.id} references missing role {assignment.role_id}"
+                )
+            elif role is not None:
+                if role.team_id != assignment.team_id:
+                    errors.append(
+                        f"project assignment {assignment.id} role {role.id} belongs to team {role.team_id}"
+                    )
+                if role.project_id is not None and role.project_id != assignment.project_id:
+                    errors.append(
+                        f"project assignment {assignment.id} role {role.id} belongs to project {role.project_id}"
+                    )
+            key = (assignment.agent_id, assignment.project_id, assignment.kind)
+            if key in seen_agent_project_kind:
+                errors.append(
+                    f"duplicate {assignment.kind.value} assignment for agent {assignment.agent_id} project {assignment.project_id}"
+                )
+            seen_agent_project_kind.add(key)
+            if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD:
+                lead_assignments_by_project.setdefault(assignment.project_id, []).append(assignment.agent_id)
+        for project in self.projects.values():
+            lead_agent_ids = lead_assignments_by_project.get(project.id, [])
+            if len(lead_agent_ids) != 1:
+                errors.append(f"project {project.id} must have exactly one project lead assignment")
+            elif project.lead_agent_id != lead_agent_ids[0]:
+                errors.append(
+                    f"project {project.id} lead_agent_id {project.lead_agent_id} does not match lead assignment {lead_agent_ids[0]}"
+                )
             for subordinate_id in agent.subordinate_agent_ids:
                 subordinate = self.agents.get(subordinate_id)
                 if subordinate is None:
@@ -1730,10 +1968,12 @@ class TeamState(TeamModel):
                     f"ephemeral assignment {assignment.id} references missing task "
                     f"{assignment.task_id}"
                 )
-            if parent is not None and parent.project_id != assignment.project_id:
+            if parent is not None and not _agent_has_project_assignment(
+                self, parent.id, assignment.project_id
+            ):
                 errors.append(
                     f"ephemeral assignment {assignment.id} parent {parent.id} "
-                    f"belongs to project {parent.project_id}"
+                    f"is not assigned to project {assignment.project_id}"
                 )
             if task is not None and task.project_id != assignment.project_id:
                 errors.append(
@@ -1835,6 +2075,138 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
     return payload
 
 
+def _project_assignment_id(
+    project_id: str,
+    agent_id: str,
+    kind: AgentProjectAssignmentKind,
+) -> str:
+    return f"{project_id}__{agent_id}__{kind.value}"
+
+
+def project_assignments_for_agent(
+    state: TeamState,
+    agent_id: str,
+    *,
+    project_id: str | None = None,
+    kind: AgentProjectAssignmentKind | None = None,
+) -> list[AgentProjectAssignment]:
+    return sorted(
+        [
+            assignment
+            for assignment in state.project_assignments.values()
+            if assignment.agent_id == agent_id
+            and (project_id is None or assignment.project_id == project_id)
+            and (kind is None or assignment.kind == kind)
+        ],
+        key=lambda item: (item.project_id, item.kind.value, item.id),
+    )
+
+
+def project_assignments_for_project(
+    state: TeamState,
+    project_id: str,
+    *,
+    kind: AgentProjectAssignmentKind | None = None,
+) -> list[AgentProjectAssignment]:
+    return sorted(
+        [
+            assignment
+            for assignment in state.project_assignments.values()
+            if assignment.project_id == project_id
+            and (kind is None or assignment.kind == kind)
+        ],
+        key=lambda item: (item.kind.value, item.agent_id, item.id),
+    )
+
+
+def _agent_has_project_assignment(
+    state: TeamState,
+    agent_id: str,
+    project_id: str,
+    *,
+    kind: AgentProjectAssignmentKind | None = None,
+) -> bool:
+    return bool(project_assignments_for_agent(state, agent_id, project_id=project_id, kind=kind))
+
+
+def agent_has_project_assignment(
+    state: TeamState,
+    agent_id: str,
+    project_id: str,
+    *,
+    kind: AgentProjectAssignmentKind | None = None,
+) -> bool:
+    return _agent_has_project_assignment(state, agent_id, project_id, kind=kind)
+
+
+def project_lead_agent_id(state: TeamState, project_id: str) -> str | None:
+    leads = project_assignments_for_project(
+        state,
+        project_id,
+        kind=AgentProjectAssignmentKind.PROJECT_LEAD,
+    )
+    return leads[0].agent_id if leads else None
+
+
+def agent_project_ids(state: TeamState, agent_id: str) -> list[str]:
+    return sorted({assignment.project_id for assignment in project_assignments_for_agent(state, agent_id)})
+
+
+def agent_lead_project_ids(state: TeamState, agent_id: str) -> list[str]:
+    return sorted(
+        {
+            assignment.project_id
+            for assignment in project_assignments_for_agent(
+                state,
+                agent_id,
+                kind=AgentProjectAssignmentKind.PROJECT_LEAD,
+            )
+        }
+    )
+
+
+def agent_project_assignment_payloads(state: TeamState, agent_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for assignment in project_assignments_for_agent(state, agent_id):
+        payload = assignment.model_dump(mode="json")
+        role = state.roles.get(assignment.role_id) if assignment.role_id is not None else None
+        payload["role_name"] = role.name if role is not None else None
+        payload["role_permissions"] = (
+            [permission.value for permission in role.permissions]
+            if role is not None
+            else []
+        )
+        if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD and RolePermission.CREATE_ROOT_TASK.value not in payload["role_permissions"]:
+            payload["role_permissions"].append(RolePermission.CREATE_ROOT_TASK.value)
+        rows.append(payload)
+    return rows
+
+
+def effective_role_permissions(
+    state: TeamState,
+    agent: PersistentAgent,
+    *,
+    project_id: str | None = None,
+) -> list[RolePermission]:
+    permissions: list[RolePermission] = []
+
+    def add(items: list[RolePermission]) -> None:
+        for item in items:
+            if item not in permissions:
+                permissions.append(item)
+
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+    if role is not None and (role.project_id is None or project_id is None or role.project_id == project_id):
+        add(role.permissions)
+    for assignment in project_assignments_for_agent(state, agent.id, project_id=project_id):
+        assignment_role = state.roles.get(assignment.role_id) if assignment.role_id is not None else None
+        if assignment_role is not None:
+            add(assignment_role.permissions)
+        if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD:
+            add([RolePermission.CREATE_ROOT_TASK])
+    return permissions
+
+
 def team_state_payload(
     state: TeamState,
     *,
@@ -1876,12 +2248,13 @@ def _agent_payload_with_role(
         exclude.add("voice_profile")
     payload = agent.model_dump(mode="json", exclude=exclude)
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+    effective_permissions = effective_role_permissions(state, agent)
     payload["role_name"] = role.name if role is not None else None
-    payload["role_permissions"] = (
-        [permission.value for permission in role.permissions]
-        if role is not None
-        else []
-    )
+    payload["role_permissions"] = [permission.value for permission in effective_permissions]
+    payload["effective_role_permissions"] = [permission.value for permission in effective_permissions]
+    payload["project_assignments"] = agent_project_assignment_payloads(state, agent.id)
+    payload["project_ids"] = agent_project_ids(state, agent.id)
+    payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
     effective_stand_downs = _effective_stand_down_payloads(state, agent.id)
     payload["effective_stand_downs"] = effective_stand_downs
     payload["stand_down_active"] = bool(effective_stand_downs)
@@ -1954,8 +2327,9 @@ def _runtime_agent_payload(
         effective_stand_downs=effective_stand_downs,
     )
     detail_parts = [f"session {agent.session_id}", f"status {agent.status.value}"]
-    if agent.project_id is not None:
-        detail_parts.append(f"project {agent.project_id}")
+    project_ids = agent_project_ids(state, agent.id)
+    if project_ids:
+        detail_parts.append("projects " + ", ".join(project_ids))
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     if role is not None:
         detail_parts.append(f"role {role.name}")
@@ -1972,14 +2346,13 @@ def _runtime_agent_payload(
         "title": agent.id,
         "detail": "; ".join(detail_parts),
         "team_id": agent.team_id,
-        "project_id": agent.project_id,
+        "project_ids": project_ids,
+        "lead_project_ids": agent_lead_project_ids(state, agent.id),
+        "project_assignments": agent_project_assignment_payloads(state, agent.id),
         "role_id": agent.role_id,
         "role_name": role.name if role is not None else None,
-        "role_permissions": (
-            [permission.value for permission in role.permissions]
-            if role is not None
-            else []
-        ),
+        "role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
+        "effective_role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
         "session_id": agent.session_id,
         "status": agent.status.value,
         "stand_down_active": bool(effective_stand_downs),
@@ -2389,8 +2762,8 @@ def _project_id_for_task(state: TeamState, task_id: str | None) -> str | None:
 
 
 def _agent_project_id(state: TeamState, agent_id: str) -> str | None:
-    agent = state.agents.get(agent_id)
-    return agent.project_id if agent is not None else None
+    project_ids = agent_project_ids(state, agent_id)
+    return project_ids[0] if project_ids else None
 
 
 def _task_attention_detail(task: AgentTask, *, dependency_status: str) -> str:

@@ -190,6 +190,33 @@ export type AgentCreateRequest = {
   vm_image?: string | null;
 };
 
+export type AgentCreateOperationStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type AgentCreateOperation = {
+  operation_id: string;
+  status: AgentCreateOperationStatus;
+  backend: AgentBackend;
+  target_name: string;
+  session_id: string | null;
+  directory_path: string;
+  owner_id: string | null;
+  owner_pid: number | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+};
+
+export type AgentCreateOperationResponse = {
+  operation: AgentCreateOperation;
+};
+
+export type AgentCreateOperationListResponse = {
+  items: AgentCreateOperation[];
+};
+
 export type AgentCreateProviderOption = {
   value: string;
   label: string;

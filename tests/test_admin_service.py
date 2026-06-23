@@ -5,12 +5,13 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 from types import MethodType, SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 import agent_sandbox.admin.service as admin_service
 import httpx
@@ -18,7 +19,7 @@ import pytest
 from agent_sandbox.admin import privileged_helper
 from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.admin.facades import WorkerAdminDependencies, WorkerAdminFacade
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.service import AgentCreateOperation, AdminService
 from agent_sandbox.config import (
     DiscordIngestWorkerGlobalConfig,
     DiscordWakeWorkerGlobalConfig,
@@ -111,6 +112,26 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
         encoding="utf-8",
     )
     return config_path
+
+
+def wait_for_agent_create_operation(
+    service: AdminService,
+    operation_id: str,
+    *,
+    statuses: set[str],
+    timeout_seconds: float = 3.0,
+) -> AgentCreateOperation:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        operation = service.get_admin_agent_create_operation(operation_id)
+        if operation.status in statuses:
+            return operation
+        time.sleep(0.01)
+    operation = service.get_admin_agent_create_operation(operation_id)
+    raise AssertionError(
+        f"Operation {operation_id} did not reach {sorted(statuses)}; "
+        f"last status was {operation.status}"
+    )
 
 
 def write_failure_cluster_config(
@@ -2256,6 +2277,209 @@ def test_create_container_agent_duplicate_session_raises(
 
     with pytest.raises(ValueError, match="Session already exists: container-session"):
         service.create_admin_agent(dict(payload))
+
+
+def test_submit_admin_agent_create_operations_run_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    started = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    started_session_ids: list[str] = []
+
+    def create_admin_agent(self: AdminService, payload: Mapping[str, Any]) -> dict[str, Any]:
+        del self
+        session_id = str(payload["session_id"])
+        with lock:
+            started_session_ids.append(session_id)
+            if len(started_session_ids) == 2:
+                started.set()
+        assert release.wait(2), "create operation release event was not set"
+        return {
+            "success": True,
+            "agent_id": session_id,
+            "backend": "container_worker_vm",
+            "target_name": str(payload.get("target_name") or session_id),
+            "action": "create",
+            "message": f"created {session_id}",
+            "session_id": session_id,
+        }
+
+    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+
+    first = service.submit_admin_agent_create(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "session-a",
+            "target_name": "target-a",
+        }
+    )
+    second = service.submit_admin_agent_create(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "session-b",
+            "target_name": "target-b",
+        }
+    )
+
+    assert first.operation_id != second.operation_id
+    assert started.wait(2), "both create operations should start before either finishes"
+    release.set()
+    first_done = wait_for_agent_create_operation(
+        service, first.operation_id, statuses={"succeeded"}
+    )
+    second_done = wait_for_agent_create_operation(
+        service, second.operation_id, statuses={"succeeded"}
+    )
+    assert sorted(started_session_ids) == ["session-a", "session-b"]
+    assert first_done.result is not None
+    assert first_done.result["target_name"] == "target-a"
+    assert second_done.result is not None
+    assert second_done.result["target_name"] == "target-b"
+
+
+def test_submit_admin_agent_create_operation_records_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def create_admin_agent(self: AdminService, payload: Mapping[str, Any]) -> dict[str, Any]:
+        del self, payload
+        raise ValueError("Session already exists: container-session")
+
+    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+
+    operation = service.submit_admin_agent_create(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+        }
+    )
+
+    failed = wait_for_agent_create_operation(
+        service, operation.operation_id, statuses={"failed"}
+    )
+    assert failed.error == "Session already exists: container-session"
+    assert failed.result is None
+    assert failed.finished_at is not None
+
+
+def test_submit_admin_agent_create_operation_does_not_persist_raw_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured_payloads: list[dict[str, Any]] = []
+
+    def create_admin_agent(self: AdminService, payload: Mapping[str, Any]) -> dict[str, Any]:
+        del self
+        captured_payloads.append(dict(payload))
+        return {
+            "success": True,
+            "agent_id": str(payload["session_id"]),
+            "backend": "container_worker_vm",
+            "target_name": str(payload.get("target_name") or payload["session_id"]),
+            "action": "create",
+            "message": "created",
+            "session_id": str(payload["session_id"]),
+        }
+
+    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+
+    operation = service.submit_admin_agent_create(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+            "ignored_provider_token": "super-secret-token",
+        }
+    )
+
+    succeeded = wait_for_agent_create_operation(
+        service, operation.operation_id, statuses={"succeeded"}
+    )
+    assert captured_payloads == [
+        {
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+            "ignored_provider_token": "super-secret-token",
+        }
+    ]
+    assert "request_payload" not in succeeded.model_dump(mode="json")
+    store_text = (tmp_path / "runtime" / "agent-create-operations.json").read_text(
+        encoding="utf-8"
+    )
+    assert "ignored_provider_token" not in store_text
+    assert "super-secret-token" not in store_text
+
+
+def test_admin_service_constructor_does_not_fail_live_agent_create_operations(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path)
+    first_service = AdminService(config_path)
+    first_service.agent_create_operations.put(
+        "operation-running",
+        AgentCreateOperation(
+            operation_id="operation-running",
+            status="running",
+            backend="container_worker_vm",
+            target_name="container-target",
+            session_id="container-session",
+            directory_path="root",
+            owner_id="live-admin-web",
+            owner_pid=os.getpid(),
+        ),
+    )
+
+    unrelated_service = AdminService(config_path)
+
+    operation = unrelated_service.get_admin_agent_create_operation("operation-running")
+    assert operation.status == "running"
+    assert operation.error is None
+    assert operation.finished_at is None
+
+
+def test_admin_service_marks_abandoned_agent_create_operations_failed_on_recovery(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.agent_create_operations.put(
+        "operation-running",
+        AgentCreateOperation(
+            operation_id="operation-running",
+            status="running",
+            backend="container_worker_vm",
+            target_name="container-target",
+            session_id="container-session",
+            directory_path="root",
+            owner_id="dead-admin-web",
+            owner_pid=0,
+        ),
+    )
+    service.agent_create_operations.put(
+        "operation-unowned",
+        AgentCreateOperation(
+            operation_id="operation-unowned",
+            status="running",
+            backend="container_worker_vm",
+            target_name="legacy-container-target",
+            session_id="legacy-container-session",
+            directory_path="root",
+        ),
+    )
+
+    service.mark_abandoned_agent_create_operations_failed()
+
+    operation = service.get_admin_agent_create_operation("operation-running")
+    assert operation.status == "failed"
+    assert operation.error == "Admin Web process exited before this create operation finished."
+    assert operation.finished_at is not None
+    unowned = service.get_admin_agent_create_operation("operation-unowned")
+    assert unowned.status == "running"
+    assert unowned.error is None
 
 
 def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
@@ -8107,7 +8331,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
         content=b"sqlite run detail artifact\n",
         original_filename="sqlite-notes.txt",
         created_at=datetime(2026, 5, 16, 11, 0, tzinfo=UTC),
-        expires_at=datetime(2026, 6, 23, 11, 0, tzinfo=UTC),
+        expires_at=datetime(2099, 6, 23, 11, 0, tzinfo=UTC),
         metadata={"source": "sqlite-fixture"},
     )
     service.runtime.approvals.put(

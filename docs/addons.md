@@ -210,8 +210,12 @@ The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
 malformed hierarchy references without changing persisted state. Agent nodes
 show `display_name` when it is present and fall back to the stable agent id;
-the create-team, create-project, and register-agent forms expose optional
-display-name fields for the manager, project lead, and additional agents. Hover
+the create-team and register-agent forms expose optional display-name fields
+for managers and additional agents. The create-project form assigns an existing
+registered team agent as project lead instead of collecting a session ID,
+display name, or role name inline. Project leadership is stored on the project,
+so a team manager can also lead a project without changing that agent's primary
+team-manager role or reporting line. Hover
 or keyboard focus on an agent node reveals operational details from the add-on
 state payload, including session, project, reports-to, task, inbox, runtime
 wake, and ephemeral-capacity information when those records are available.

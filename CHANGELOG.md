@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Project Assignment Model
+
+- Replaced direct agent project membership with explicit project assignment records so one team agent can participate in or lead multiple projects.
+- Added assignment-aware effective permissions to Team Add-on wake payloads and guidance so project leads are told they can create top-level tasks.
+- Added local SQLite backfill from legacy agent project membership and project lead fields into project assignments.
+
+## 2026-06-23 - Team Add-on Project Lead Overlay
+
+- Allowed project leadership to be assigned as a project-level overlay so a team
+  manager can also lead a project without losing manager role or reporting
+  semantics.
+
+## 2026-06-23 - Team Add-on Teams Tab Creation
+
+- Added inline Teams-tab creation for projects, agents, and roles scoped to the
+  selected team, reusing the existing Setup create endpoint semantics without a
+  visible Team selector.
+
+## 2026-06-23 - Agent Create Operation Safety
+
+- Kept async agent-create request payloads in Admin Web process memory only so
+  operation status records no longer persist or return arbitrary submitted JSON.
+- Moved abandoned create-operation recovery out of generic AdminService
+  construction and tied it to Admin Web startup with operation owner liveness
+  checks.
+
+## 2026-06-23 - Team Add-on Existing Project Leads
+
+- Changed Team Add-on project creation so the UI assigns an existing registered
+  team agent as project lead instead of collecting new lead session, display,
+  or role-name fields inline.
+
+## 2026-06-23 - Async Agents Page Create Operations
+
+- Added reload-safe Admin Web create-operation tracking so multiple agent creates
+  can be submitted from the Agents page while earlier VM or container setup is
+  still running.
+- Preserved the existing synchronous agent-create API while adding polling
+  endpoints and UI status for queued, running, succeeded, and failed creates.
+
 ## 2026-06-23 - Team Add-on Governance Escalation Validation
 
 - Validated optional manager escalation `project_id` values before creating
