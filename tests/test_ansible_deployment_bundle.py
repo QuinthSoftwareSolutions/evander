@@ -16,6 +16,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "python_env",
         "runtime_bootstrap",
         "service_config",
+        "asterisk_didww",
         "systemd_install",
         "frontend_build",
         "admin_web_caddy",
@@ -46,6 +47,7 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: python_env" in site
     assert "- role: runtime_bootstrap" in site
     assert "- role: service_config" in site
+    assert "- role: asterisk_didww" in site
     assert "- role: systemd_install" in site
     assert "- role: frontend_build" in site
     assert "- role: admin_web_caddy" in site
@@ -56,6 +58,8 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: verification" in site
     assert site.index("- role: host_prereqs") < site.index("- role: apt_cache_relay")
     assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
+    assert site.index("- role: service_config") < site.index("- role: asterisk_didww")
+    assert site.index("- role: asterisk_didww") < site.index("- role: systemd_install")
     assert site.index("- role: frontend_build") < site.index("- role: admin_web_caddy")
     assert site.index("- role: admin_web_caddy") < site.index("- role: service_runtime")
     assert site.index("- role: package_cache_nexus") < site.index("- role: semantic_store_qdrant")
@@ -113,6 +117,123 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "https://${host}/index.html" in verification
     assert 'find "${dist_dir}/assets"' in verification
     assert "No built ${extension} asset found" in verification
+
+
+def test_ansible_admin_web_branding_assets_can_be_copied() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
+
+    assert "agent_sandbox_admin_web_branding_asset_dir:" in defaults
+    assert "AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR" in defaults
+    assert "agent_sandbox_admin_web_branding_assets: []" in defaults
+
+    assert "Ensure Admin Web branding asset directory exists" in service_config
+    assert "Ensure Admin Web branding asset subdirectories exist" in service_config
+    assert "Copy Admin Web branding assets" in service_config
+    assert "src: \"{{ item.source_path }}\"" in service_config
+    assert "dest: \"{{ agent_sandbox_admin_web_branding_asset_dir }}/{{ item.path }}\"" in service_config
+    assert "mode: \"{{ item.mode | default('0644') }}\"" in service_config
+    assert "agent_sandbox_admin_web_branding_asset_copy" in service_config
+
+    assert "agent_sandbox_admin_web_branding_assets" in docs
+    assert "operator-owned deployment config" in docs
+
+
+def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
+        encoding="utf-8"
+    )
+    vault_example = (
+        repo / "ansible" / "group_vars" / "all" / "vault.yml.example"
+    ).read_text(encoding="utf-8")
+    tasks = (
+        repo / "ansible" / "roles" / "asterisk_didww" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    pjsip = (
+        repo / "ansible" / "roles" / "asterisk_didww" / "templates" / "pjsip.conf.j2"
+    ).read_text(encoding="utf-8")
+    extensions = (
+        repo / "ansible" / "roles" / "asterisk_didww" / "templates" / "extensions.conf.j2"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
+
+    assert "agent_sandbox_asterisk_didww_enabled: false" in defaults
+    assert "agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls: false" in defaults
+    assert 'agent_sandbox_didww_sip_bridge_ari_user: "{{ agent_sandbox_run_user }}"' in defaults
+    assert "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: \"{{ (agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls | bool) | ternary('true', 'false') }}\"" in defaults
+    assert "agent_sandbox_asterisk_ari_user:" in defaults
+    assert "agent_sandbox_didww_sip_bridge_env.get('ASTERISK_ARI_USER'" in defaults
+    assert "agent_sandbox_shared_secrets_env.get('ASTERISK_ARI_PASSWORD'" in defaults
+    assert 'agent_sandbox_asterisk_didww_identify_section: "didww-identify"' in defaults
+    assert '"46.19.208.0/21"' in defaults
+    assert '"185.238.172.0/22"' in defaults
+    assert "agent_sandbox_asterisk_didww_inbound_route_id" in defaults
+
+    assert "agent_sandbox_asterisk_didww_enabled: false" in azure
+    assert "vault_didww_sip_username" in azure
+    assert "vault_didww_sip_password" in azure
+    assert "vault_didww_sip_identify_matches | default(['46.19.208.0/21', '185.238.172.0/22'], true)" in azure
+    assert "vault_didww_inbound_route_id" in azure
+    assert "ASTERISK_ARI_PASSWORD: \"{{ vault_asterisk_ari_password }}\"" in azure
+    assert "DIDWW_SIP_BRIDGE_TOKEN: \"{{ vault_didww_sip_bridge_token }}\"" in azure
+    assert "VOICE_MEDIA_CONTROLLER_TOKEN: \"{{ vault_voice_media_controller_token }}\"" in azure
+    assert "vault_didww_sip_username" in vault_example
+    assert "vault_didww_sip_password" in vault_example
+    assert 'vault_didww_sip_identify_matches: ""' in vault_example
+
+    assert "Skip Asterisk DIDWW provisioning when disabled" in tasks
+    assert "Install Asterisk packages" in tasks
+    assert "Render managed Asterisk config files" in tasks
+    assert "no_log: true" in tasks
+    assert "Verify Asterisk ARI credentials" in tasks
+    assert "pjsip show endpoint {{ agent_sandbox_asterisk_didww_endpoint }}" in tasks
+    assert "agent_sandbox_asterisk_ari_user == agent_sandbox_didww_sip_bridge_env.get" in tasks
+
+    assert "external_signaling_address={{ agent_sandbox_asterisk_public_address }}" in pjsip
+    assert "external_media_address={{ agent_sandbox_asterisk_public_address }}" in pjsip
+    assert "local_net={{ local_net }}" in pjsip
+    assert "allow={{ agent_sandbox_asterisk_didww_codecs | join(\",\") }}" in pjsip
+    assert "direct_media=no" in pjsip
+    assert "rewrite_contact=yes" in pjsip
+    assert "force_rport=yes" in pjsip
+    assert "rtp_symmetric=no" in pjsip
+    assert "match={{ match }}" in pjsip
+
+    assert "Set(INBOUND_PHONE_CALL=1)" in extensions
+    assert "Set(INBOUND_ROUTE_ID={{ agent_sandbox_asterisk_didww_inbound_route_id }})" in extensions
+    dialed_did_extension = extensions.split("exten => _X.,1", 1)[1].split(
+        "exten => s,1", 1
+    )[0]
+    fallback_extension = extensions.split("exten => s,1", 1)[1]
+    assert (
+        "Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN}:{{ agent_sandbox_asterisk_didww_inbound_route_id }})"
+        in dialed_did_extension
+    )
+    assert (
+        "Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:{{ agent_sandbox_asterisk_didww_inbound_route_id }})"
+        in fallback_extension
+    )
+
+    assert "Verify managed Asterisk is active" in verification
+    assert "Verify managed Asterisk ARI endpoint" in verification
+    assert "agent_sandbox_asterisk_didww_enabled | bool" in verification
+    assert "agent_sandbox_asterisk_didww_enabled" in docs
+    assert "agent_sandbox_didww_sip_bridge_ari_user" in docs
+    assert "agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls" in docs
+    assert "DIDWW source CIDRs" in docs
 
 
 def test_ansible_site_announces_control_plane_deployment_status() -> None:
@@ -695,6 +816,7 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
         "config/discord-wake/config.json",
         "config/scheduled-wake/config.json",
         "config/teams-ingest/config.json",
+        "config/teams-meeting-ingest/config.json",
         "config/trigger-orchestrator/config.json",
     ]
 
@@ -702,9 +824,58 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
     assert "agent_sandbox_force_render_worker_config" not in service_config
     assert "force: false" in service_config
     assert "Render managed worker/global JSON config" in service_config
+    assert "no_log: true" in service_config
+    assert 'path: "config/didww-sip-bridge.env"' in service_config
     for path in worker_config_paths:
         assert f'path: "{path}"' in service_config
         assert f"  - {path}" not in defaults
+
+
+def test_ansible_uv_bootstrap_uses_python_install_environment() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    host_prereqs = (repo / "ansible" / "roles" / "host_prereqs" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    worker_defaults = (repo / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Install uv for repo bootstrap" in host_prereqs
+    assert "environment: \"{{ agent_sandbox_python_install_env | default({}) }}\"" in host_prereqs
+    assert "PIP_INDEX_URL" in worker_defaults
+    assert "agent_sandbox_worker_pypi_index_url" in worker_defaults
+
+
+def test_ansible_manages_current_optional_systemd_units() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    runtime_bootstrap = (
+        repo / "ansible" / "roles" / "runtime_bootstrap" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "didww_sip_bridge: true" in defaults
+    assert "teams_meeting_ingest: true" in defaults
+    assert "agent_sandbox_didww_sip_bridge_env" in defaults
+    assert "agent_sandbox_teams_meeting_ingest_config" in defaults
+    assert "config/teams-meeting-ingest" in runtime_bootstrap
+    for key, unit in [
+        ("didww_sip_bridge", "agent-sandbox-didww-sip-bridge.service"),
+        ("teams_meeting_ingest", "agent-sandbox-teams-meeting-ingest.service"),
+    ]:
+        assert f"key: {key}" in runtime
+        assert f"unit: {unit}" in runtime
+        assert f"key: {key}" in verification
+        assert f"unit: {unit}" in verification
+    assert "agent_sandbox_services.get(item.key, false) | bool" in runtime
+    assert "agent_sandbox_services[item.key]" not in runtime
 
 
 def test_ansible_env_template_shell_quotes_values() -> None:

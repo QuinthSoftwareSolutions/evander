@@ -13,6 +13,8 @@
         unit: agent-sandbox-firewall.service
       - key: openai_relay
         unit: agent-sandbox-openai-relay.service
+      - key: didww_sip_bridge
+        unit: agent-sandbox-didww-sip-bridge.service
       - key: nuget_relay
         unit: agent-sandbox-nuget-relay.service
       - key: npm_audit_facade
@@ -37,6 +39,8 @@
         unit: agent-sandbox-scheduled-wake.service
       - key: teams_ingest
         unit: agent-sandbox-teams-ingest.service
+      - key: teams_meeting_ingest
+        unit: agent-sandbox-teams-meeting-ingest.service
       - key: effect_orchestrator
         unit: agent-sandbox-effect-orchestrator.service
       - key: trigger_orchestrator
@@ -70,6 +74,27 @@
     fail_msg: "caddy.service should be enabled and running for managed Admin Web public access."
     success_msg: "caddy.service is enabled and running for managed Admin Web public access."
   when: agent_sandbox_admin_web_caddy_enabled | bool
+
+- name: Verify managed Asterisk is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services.get('asterisk.service', {}).get('status') == 'enabled'"
+      - "ansible_facts.services.get('asterisk.service', {}).get('state') == 'running'"
+    fail_msg: "asterisk.service should be enabled and running for managed DIDWW SIP bridge access."
+    success_msg: "asterisk.service is enabled and running for managed DIDWW SIP bridge access."
+  when: agent_sandbox_asterisk_didww_enabled | bool
+
+- name: Verify managed Asterisk ARI endpoint
+  ansible.builtin.uri:
+    url: >-
+      http://{{ agent_sandbox_asterisk_http_bind_host }}:{{ agent_sandbox_asterisk_http_bind_port }}/ari/asterisk/info
+    method: GET
+    url_username: "{{ agent_sandbox_asterisk_ari_user }}"
+    url_password: "{{ agent_sandbox_asterisk_ari_password }}"
+    force_basic_auth: true
+    status_code: 200
+  no_log: true
+  when: agent_sandbox_asterisk_didww_enabled | bool
 
 - name: Verify the libvirt network exists
   ansible.builtin.command:

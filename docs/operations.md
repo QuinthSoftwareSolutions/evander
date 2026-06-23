@@ -1170,6 +1170,14 @@ Minimum host setup:
    `ASTERISK_ARI_PASSWORD` in `secrets.env` or the systemd service manager environment.
 5. Set `didww_sip_bridge_url` to the bridge listener, for example `http://127.0.0.1:11888`.
 
+For reproducible deployments, the Ansible bundle can own the Asterisk side as well. Set
+`agent_sandbox_asterisk_didww_enabled: true` in the operator deployment config, provide the DIDWW
+SIP username/password and Asterisk ARI password from Vault, and set
+`agent_sandbox_asterisk_public_address` to the public SIP/RTP address advertised by the control
+plane. The role renders the same ARI user/app and PJSIP endpoint names consumed by
+`config/didww-sip-bridge.env`, then verifies the local ARI endpoint before the bridge service is
+checked.
+
 The known-good Asterisk/DIDWW shape for a NATed Azure control-plane host is:
 
 - PJSIP UDP transport bound on `0.0.0.0:5060`.
@@ -1177,6 +1185,8 @@ The known-good Asterisk/DIDWW shape for a NATed Azure control-plane host is:
 - `local_net` set to the control-plane private subnet, for example `10.2.0.0/24`.
 - DIDWW endpoint allows `ulaw,alaw`, uses `direct_media=no`, `rewrite_contact=yes`,
   `force_rport=yes`, and `rtp_symmetric=no`.
+- DIDWW endpoint identification matches DIDWW signaling sources, for example `46.19.208.0/21` and
+  `185.238.172.0/22`.
 - Asterisk `rtp.conf` uses the narrow public RTP range `rtpstart=12000` and `rtpend=12100`.
 - Azure NSG and DIDWW trunk allowed-RTP rules allow UDP `12000-12100` to the control-plane public
   IP; SIP signaling allows UDP `5060`. The Python bridge's loopback RTP range `41000-41100` is

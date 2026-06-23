@@ -14,6 +14,7 @@
     - "{{ agent_sandbox_deploy_path }}/config/host-heartbeat"
     - "{{ agent_sandbox_deploy_path }}/config/scheduled-wake"
     - "{{ agent_sandbox_deploy_path }}/config/teams-ingest"
+    - "{{ agent_sandbox_deploy_path }}/config/teams-meeting-ingest"
     - "{{ agent_sandbox_deploy_path }}/config/trigger-orchestrator"
     - "{{ agent_sandbox_runtime_dir }}"
 

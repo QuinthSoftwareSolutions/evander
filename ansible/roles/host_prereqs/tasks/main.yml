@@ -109,3 +109,4 @@
     name: uv
     executable: pip3
     extra_args: --break-system-packages
+  environment: "{{ agent_sandbox_python_install_env | default({}) }}"

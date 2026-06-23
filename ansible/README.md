@@ -43,17 +43,18 @@ The playbook follows the repo-native bootstrap order:
 5. Create `.venv` and install the package
 6. Run `agent-sandbox-cli init-state --runtime-dir runtime`
 7. Render managed config under `config/` and optional `secrets.env`
-8. Run `scripts/install_systemd_units.sh`
-9. Build the Admin Web frontend bundle with `npm ci && npm run build`
-10. Install/configure Caddy for Admin Web public static-file serving when enabled
-11. Run `scripts/create_libvirt_network.sh` in the `full` profile
-12. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
-13. Run `scripts/create_base_vm.sh` in the `full` profile
-14. Enable and start only the selected repo-native services
-15. Install and configure the Nexus PyPI/npm package cache when enabled
-16. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, Admin
+8. Optionally install and configure Asterisk for the DIDWW SIP bridge
+9. Run `scripts/install_systemd_units.sh`
+10. Build the Admin Web frontend bundle with `npm ci && npm run build`
+11. Install/configure Caddy for Admin Web public static-file serving when enabled
+12. Run `scripts/create_libvirt_network.sh` in the `full` profile
+13. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
+14. Run `scripts/create_base_vm.sh` in the `full` profile
+15. Enable and start only the selected repo-native services
+16. Install and configure the Nexus PyPI/npm package cache when enabled
+17. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, Admin
     Web Caddy routing when enabled, and repo-aware status
-17. Clear the Admin Web deployment-status flag after a successful run
+18. Clear the Admin Web deployment-status flag after a successful run
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
@@ -99,6 +100,7 @@ Service toggles:
 - `agent_sandbox_services.gateway`
 - `agent_sandbox_services.firewall`
 - `agent_sandbox_services.openai_relay`
+- `agent_sandbox_services.didww_sip_bridge`
 - `agent_sandbox_services.nuget_relay`
 - `agent_sandbox_services.npm_audit_facade`
 - `agent_sandbox_services.package_cache`
@@ -111,8 +113,28 @@ Service toggles:
 - `agent_sandbox_services.discord_wake`
 - `agent_sandbox_services.scheduled_wake`
 - `agent_sandbox_services.teams_ingest`
+- `agent_sandbox_services.teams_meeting_ingest`
 - `agent_sandbox_services.effect_orchestrator`
 - `agent_sandbox_services.trigger_orchestrator`
+
+DIDWW SIP bridge Asterisk provisioning:
+
+- `agent_sandbox_services.didww_sip_bridge` controls the Python bridge systemd unit.
+- `agent_sandbox_asterisk_didww_enabled` controls whether Ansible also installs Asterisk and
+  renders `/etc/asterisk/http.conf`, `ari.conf`, `rtp.conf`, `pjsip.conf`, and `extensions.conf`.
+  It defaults to `false` so existing hand-managed Asterisk hosts are not overwritten.
+- When enabled, Asterisk ARI and PJSIP values are tied to the bridge env defaults:
+  `ASTERISK_ARI_USER`, `ASTERISK_ARI_APP`, and `ASTERISK_PJSIP_ENDPOINT`. Set
+  `agent_sandbox_didww_sip_bridge_ari_user` if the ARI user should differ from
+  `agent_sandbox_run_user`.
+- Set `agent_sandbox_asterisk_public_address` to the control-plane public SIP/RTP address,
+  `agent_sandbox_asterisk_local_nets` to the private subnet CIDRs, and the DIDWW trunk values from
+  Vault: `vault_didww_sip_username`, `vault_didww_sip_password`, and optionally
+  `vault_didww_sip_from_user`.
+- The default DIDWW source CIDRs are `46.19.208.0/21` and `185.238.172.0/22`; override
+  `agent_sandbox_asterisk_didww_identify_matches` if DIDWW assigns different signaling sources.
+- For inbound routes, set `agent_sandbox_asterisk_didww_inbound_route_id` and enable
+  `agent_sandbox_didww_sip_bridge_enable_inbound_phone_calls`.
 
 Admin Web public access:
 
@@ -125,6 +147,11 @@ Admin Web public access:
 - Admin Web branding still comes from `agent_sandbox_admin_web_env` at runtime. For custom local
   logo files, set `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` and use relative logo paths so Caddy
   reaches them through the proxied `/api/admin/branding/assets/...` route.
+- To copy operator-owned logo files from the Ansible controller, set
+  `agent_sandbox_admin_web_branding_assets` to records with `source_path`, destination `path`, and
+  optional `mode`. The files are copied into
+  `agent_sandbox_admin_web_branding_asset_dir`, which defaults to the configured
+  `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR`.
 - `agent_sandbox_admin_web_caddy_hostname` defaults to the host from
   `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`; override it when the public hostname differs from the
   Admin Web base URL.
@@ -162,11 +189,13 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/npm-audit-facade.env`
 - `config/http-target-relay.env`
 - `config/ado-worker.env`
+- `config/didww-sip-bridge.env`
 - `config/ado-worker/config.json`
 - `config/discord-ingest/config.json`
 - `config/discord-wake/config.json`
 - `config/scheduled-wake/config.json`
 - `config/teams-ingest/config.json`
+- `config/teams-meeting-ingest/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `secrets.env`
 
@@ -343,6 +372,7 @@ The verification role checks:
 
 - selected systemd units are enabled and active
 - disabled units remain installed but not enabled/started
+- when enabled, managed Asterisk is active and ARI credentials are accepted
 - Admin Web responds on the configured host port
 - when enabled, managed Caddy is active, proxies `/`, `/index.html`, `/public/*`, and `/healthz`,
   and serves one built JS asset plus one built CSS asset through retried local TLS/SNI resolution
@@ -374,7 +404,9 @@ Caddy exposure, set `agent_sandbox_admin_web_caddy_enabled: true`; Caddy will pr
 entrypoints and API/health routes to the local Admin Web service while serving static hashed assets
 directly. Put environment-specific Admin Web title, header, and logo settings in
 `agent_sandbox_admin_web_env`; relative logo paths are served from
-`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through `/api/admin/branding/assets/...`.
+`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through `/api/admin/branding/assets/...`. Use
+`agent_sandbox_admin_web_branding_assets` when Ansible should also copy those logo files from the
+operator-owned deployment config into that branding asset directory.
 For Azure SSO deployments, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` is a first-run seed for
 `runtime/admin-web-users.json`; after the file exists, use the Admin Web Users tab for membership
 and role changes.

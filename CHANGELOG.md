@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-06-23 - Managed DIDWW Asterisk Deployment
+
+- Added an opt-in Ansible role that installs Asterisk, renders ARI/RTP/PJSIP/dialplan
+  configuration for the DIDWW SIP bridge, and verifies local ARI plus the managed DIDWW endpoint
+  before the bridge service is checked.
+- Documented the Vault-backed DIDWW SIP variables, Azure NAT settings, DIDWW source CIDRs, and the
+  relationship between the Python bridge env and managed Asterisk ARI/PJSIP names.
+- Kept the Azure Vault example as blank template values while rendering required bridge secrets
+  into `secrets.env`, and made systemd service reconciliation tolerate older service-toggle maps.
+- Fixed the managed Asterisk `s` fallback extension so configured inbound DIDWW routes are passed
+  to the bridge instead of treating the fallback extension name as the route ID.
+
+## 2026-06-22 - Admin Login Oversized Branding
+
+- Doubled the desktop Admin Web login page branding dimensions again and
+  adjusted the login-page top spacing and mobile brandbar layout so larger
+  environment-specific logos have room without changing the in-app header.
+
+## 2026-06-22 - Admin Login Branding Scale
+
+- Increased the Admin Web login page logo sizing so environment-specific
+  product and company branding has stronger presence on the unauthenticated
+  landing page without changing the in-app header logo.
+
+## 2026-06-22 - Admin Web Branding Asset Deployment
+
+- Added Ansible variables and service-config tasks for copying operator-owned
+  Admin Web branding image files into the configured runtime branding asset
+  directory, so environment-specific deployments can use local logo sets without
+  changing bundled product assets.
+
+## 2026-06-22 - Ansible Current Service Config
+
+- Updated the Ansible deployment bundle to render Teams meeting ingest and
+  DIDWW SIP bridge config files expected by systemd preflight, manage their
+  systemd units through service toggles, and hide secret-bearing env template
+  task output.
+- Routed the bootstrap `uv` pip install through the configured Python package
+  environment so private worker VMs can use the control-plane package cache.
+
 ## 2026-06-22 - ADO Worker Exact Directory Polling
 
 - Changed ADO worker directory matching for PR-map feedback and completion
