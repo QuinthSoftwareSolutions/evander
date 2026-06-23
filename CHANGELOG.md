@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Permission Help
+
+- Added Team Add-on permission tooltips for role permission options and saved
+  role permission labels, including the `request_release` release-package
+  authorization.
+
 ## 2026-06-23 - Team Add-on Git Repo Import
 
 - Added a Team Add-on Git import action that creates or refreshes a

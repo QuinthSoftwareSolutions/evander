@@ -213,6 +213,11 @@ const deliveryStatusLabels = {
 let selectedDeliveryFilter = "all";
 let tooltipCounter = 0;
 
+const rolePermissionTooltips = {
+  create_root_task: "Allows this role to create top-level project tasks instead of only subtasks inside existing work.",
+  request_release: "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
+};
+
 const fieldTooltips = {
   "setup-template-form:template_id": "Template blueprint used to create the team, project, roles, starter tasks, and review profile.",
   "setup-template-form:team_name": "Human-readable name shown in hierarchy, filters, and timeline rows.",
@@ -295,7 +300,7 @@ const fieldTooltips = {
   "create-role-form:project_id": "Optional project scope. Blank makes the role team-wide.",
   "create-role-form:name": "Human-readable role name shown in the UI and wake prompts.",
   "create-role-form:description": "Optional role responsibility summary.",
-  "create-role-form:permissions": "Selectable permissions granted to agents assigned this role.",
+  "create-role-form:permissions": "Selectable permissions granted to agents assigned this role. Hover each permission for what it allows.",
   "create-role-form:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
 
   "create-review-profile-form:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
@@ -346,7 +351,7 @@ const fieldTooltips = {
   "edit:role:name": "Rename the role without changing its immutable ID.",
   "edit:role:project_id": "Optional project scope. Clear it to make the role team-wide.",
   "edit:role:description": "Optional role responsibility summary.",
-  "edit:role:permissions": "Selectable permissions granted to this role.",
+  "edit:role:permissions": "Selectable permissions granted to this role. Hover each permission for what it allows.",
   "edit:role:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
   "edit:role:archived": "Archived roles stay in state but should not be assigned to new agents.",
   "edit:review-profile:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
@@ -3643,9 +3648,10 @@ function renderTeamInlineCreateActions(teamId, kind, submitLabel) {
 function renderSelectOptions(options, { selectedValue = "", placeholder = "Default", includePlaceholder = true } = {}) {
   const selected = text(selectedValue);
   return `${includePlaceholder ? `<option value="">${escapeHtml(placeholder)}</option>` : ""}${options
-    .map(([value, label]) => {
+    .map(([value, label, tooltip]) => {
       const optionValue = text(value);
-      return `<option value="${escapeAttr(optionValue)}"${optionValue === selected ? " selected" : ""}>${escapeHtml(label)}</option>`;
+      const optionTooltip = text(tooltip);
+      return `<option value="${escapeAttr(optionValue)}"${optionTooltip ? ` title="${escapeAttr(optionTooltip)}"` : ""}${optionValue === selected ? " selected" : ""}>${escapeHtml(label)}</option>`;
     })
     .join("")}`;
 }
@@ -3653,9 +3659,10 @@ function renderSelectOptions(options, { selectedValue = "", placeholder = "Defau
 function renderMultiSelectOptions(options, selectedValues = []) {
   const selected = new Set(splitList(selectedValues));
   return options
-    .map(([value, label]) => {
+    .map(([value, label, tooltip]) => {
       const optionValue = text(value);
-      return `<option value="${escapeAttr(optionValue)}"${selected.has(optionValue) ? " selected" : ""}>${escapeHtml(label)}</option>`;
+      const optionTooltip = text(tooltip);
+      return `<option value="${escapeAttr(optionValue)}"${optionTooltip ? ` title="${escapeAttr(optionTooltip)}"` : ""}${selected.has(optionValue) ? " selected" : ""}>${escapeHtml(label)}</option>`;
     })
     .join("");
 }
@@ -3685,7 +3692,11 @@ function teamAgentOptions(teamId) {
 }
 
 function rolePermissionOptions() {
-  return (state.available_role_permissions || []).map((permission) => [permission, permissionLabel(permission)]);
+  return (state.available_role_permissions || []).map((permission) => [
+    permission,
+    permissionLabel(permission),
+    rolePermissionTooltip(permission),
+  ]);
 }
 
 function teamInlineCreateKey(teamId, kind) {
@@ -4120,9 +4131,7 @@ function renderTeamRoleDetail(role) {
   const team = state.teams[role.team_id] || null;
   const project = role.project_id ? state.projects[role.project_id] || null : null;
   const assignedAgents = agentsForRole(role.id);
-  const permissions = (role.permissions || []).length
-    ? role.permissions.map(permissionLabel)
-    : ["No special permissions"];
+  const permissions = splitList(role.permissions);
   return `
     <div class="agent-detail team-record-detail">
       <div class="agent-detail-header">
@@ -4150,9 +4159,11 @@ function renderTeamRoleDetail(role) {
       }
       <section class="agent-detail-section">
         <h3>Permissions</h3>
-        <ul class="inline-list agent-detail-list">
-          ${permissions.map((permission) => `<li>${escapeHtml(permission)}</li>`).join("")}
-        </ul>
+        ${
+          permissions.length
+            ? `<ul class="inline-list agent-detail-list">${permissions.map((permission) => `<li>${renderRolePermissionToken(permission)}</li>`).join("")}</ul>`
+            : `<p class="empty-state">No special permissions.</p>`
+        }
       </section>
       <section class="agent-detail-section">
         <h3>Agents</h3>
@@ -4914,9 +4925,6 @@ function renderRoles() {
       ${roles
         .map((role) => {
           const scope = role.project_id ? `project ${role.project_id}` : `team ${role.team_id}`;
-          const permissions = (role.permissions || []).length
-            ? role.permissions.map(permissionLabel).join(", ")
-            : "no special permissions";
           return `
             <li class="record-item">
               <div class="record-line">
@@ -4926,7 +4934,7 @@ function renderRoles() {
                   ${editButton("role", role.id)}
                 </div>
               </div>
-              <div class="meta-line">${escapeHtml(role.id)} - ${escapeHtml(scope)} - ${escapeHtml(permissions)}</div>
+              <div class="meta-line">${escapeHtml(role.id)} - ${escapeHtml(scope)} - ${renderRolePermissionsInline(role.permissions)}</div>
               ${role.description ? `<div class="meta-line">${escapeHtml(role.description)}</div>` : ""}
               <div class="meta-line">Max ephemeral ${escapeHtml(role.ephemeral_policy?.max_concurrent ?? 0)}</div>
             </li>
@@ -7593,7 +7601,7 @@ function buildSelectOptionSets() {
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
     "git-providers": gitProviders,
-    "role-permissions": (state.available_role_permissions || []).map((permission) => [permission, permissionLabel(permission)]),
+    "role-permissions": rolePermissionOptions(),
     "timeline-teams": timelineOptions.teams,
     "timeline-projects": timelineOptions.projects,
     "timeline-agents": timelineOptions.agents,
@@ -7636,7 +7644,10 @@ function fillSelect(select, options) {
   const includePlaceholder = !select.multiple;
   const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
   select.innerHTML = `${includePlaceholder ? `<option value="">${placeholder}</option>` : ""}${options
-    .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
+    .map(([value, label, tooltip]) => {
+      const optionTooltip = text(tooltip);
+      return `<option value="${escapeAttr(value)}"${optionTooltip ? ` title="${escapeAttr(optionTooltip)}"` : ""}>${escapeHtml(label)}</option>`;
+    })
     .join("")}`;
   if (select.multiple) {
     const currentValues = new Set(splitList(currentValue));
@@ -9833,6 +9844,39 @@ function agentTeamLabel(agent) {
 
 function permissionLabel(permission) {
   return humanizeToken(permission);
+}
+
+function rolePermissionTooltip(permission) {
+  return rolePermissionTooltips[text(permission)] || "Role-specific Team Add-on capability.";
+}
+
+function renderRolePermissionTooltip(permission) {
+  const tooltip = rolePermissionTooltip(permission);
+  const tooltipId = `team-field-tooltip-${++tooltipCounter}`;
+  return `
+    <span class="field-tooltip permission-token-tooltip" tabindex="0" role="button" aria-label="${escapeAttr(`Help: ${tooltip}`)}" aria-describedby="${escapeAttr(tooltipId)}">
+      <span class="field-tooltip-icon" aria-hidden="true">i</span>
+      <span class="field-tooltip-bubble" role="tooltip" id="${escapeAttr(tooltipId)}">${escapeHtml(tooltip)}</span>
+    </span>
+  `;
+}
+
+function renderRolePermissionToken(permission) {
+  const label = permissionLabel(permission);
+  return `
+    <span class="permission-token" title="${escapeAttr(rolePermissionTooltip(permission))}">
+      <span>${escapeHtml(label)}</span>
+      ${renderRolePermissionTooltip(permission)}
+    </span>
+  `;
+}
+
+function renderRolePermissionsInline(permissions, emptyLabel = "no special permissions") {
+  const items = splitList(permissions);
+  if (!items.length) {
+    return escapeHtml(emptyLabel);
+  }
+  return items.map(renderRolePermissionToken).join(", ");
 }
 
 function numberOrZero(value) {

@@ -47,9 +47,13 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-team-inline-create-toggle/);
   assert.match(script, /data-team-inline-create-form/);
   assert.match(script, /data-git-import-button/);
+  assert.match(script, /rolePermissionTooltips/);
+  assert.match(script, /Allows a same-project role holder to request Team release packages/);
+  assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.git-import-actions/);
+  assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
   assert.match(markup, /id="create-team-from-teams-form"/);
@@ -3499,6 +3503,10 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   const inlineRoleForm = betaGroup.locator('form[data-form-id="create-role-form"]');
   await inlineRoleForm.waitFor({ state: "visible" });
   assert.equal(await inlineRoleForm.locator('select[name="team_id"]').count(), 0);
+  assert.equal(
+    await inlineRoleForm.locator('[name="permissions"] option[value="request_release"]').getAttribute("title"),
+    "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
+  );
   await inlineRoleForm.locator('[name="project_id"]').selectOption("beta-project");
   await inlineRoleForm.locator('[name="name"]').fill("QA");
   await inlineRoleForm.locator('[name="permissions"]').selectOption(["request_release"]);

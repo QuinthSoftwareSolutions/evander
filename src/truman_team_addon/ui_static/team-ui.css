@@ -3392,6 +3392,25 @@ label {
   outline-offset: 2px;
 }
 
+.permission-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.permission-token-tooltip {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.permission-token-tooltip .field-tooltip-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  font-size: 0.62rem;
+}
+
 label input,
 label select,
 label textarea {
