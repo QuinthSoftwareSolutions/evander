@@ -10,8 +10,12 @@ from agent_sandbox.addons import AddonContext
 from .repository import TeamStateConflictError, TeamStateRepository
 
 TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL = "team_create_operator_directive"
+TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL = "team_mark_governance_agenda_handled"
 
-MCP_TOOL_NAMES = (TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,)
+MCP_TOOL_NAMES = (
+    TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+    TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+)
 
 
 def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
@@ -84,6 +88,45 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             "project_id": item.payload.get("project_id"),
             "task_id": item.task_id,
             "operator_directive": item.model_dump(mode="json"),
+            "error": None,
+        }
+
+    @server.tool()
+    def team_mark_governance_agenda_handled(
+        agenda_item_id: str,
+        session_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _require_tool(
+            session_id,
+            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+        )
+        try:
+            state, item = repo.mark_governance_agenda_handled_by_session(
+                agenda_item_id=agenda_item_id,
+                requesting_session_id=resolved_session_id,
+                expected_revision=expected_revision,
+            )
+        except TeamStateConflictError as exc:
+            return {
+                "success": False,
+                "revision": exc.current_revision,
+                "agenda_item_id": agenda_item_id,
+                "governance_group_id": None,
+                "state": None,
+                "error": str(exc),
+                "expected_revision": exc.expected_revision,
+                "current_revision": exc.current_revision,
+            }
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "success": True,
+            "revision": state.revision,
+            "agenda_item_id": item.id,
+            "governance_group_id": item.governance_group_id,
+            "state": item.state.value,
+            "governance_agenda_item": item.model_dump(mode="json"),
             "error": None,
         }
 

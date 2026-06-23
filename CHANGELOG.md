@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Governance Membership Wakes
+
+- Recorded governance member-team additions and removals as pending
+  `policy_decision` agenda items so governance managers wake with fresh member
+  summaries after their oversight scope changes.
+
+## 2026-06-23 - Team Add-on Context Clearing Policy
+
+- Added per-agent Team Add-on context clearing policies: `off`, `idle`, and
+  `every_wake`, with legacy automatic context clearing preserved as `idle`.
+- Updated Team wake leasing so `every_wake` starts each otherwise-eligible Team
+  wake with a fresh context without bypassing low-priority batching or waking
+  idle agents.
+
+## 2026-06-23 - Team Add-on Agent Edit Project Selection
+
+- Fixed the Team Add-on agent edit dialog so the Project select is populated
+  from assignment-backed `project_ids` and `project_assignments` instead of the
+  removed legacy agent `project_id` field.
+- Stopped unchanged agent edit saves from sending `project_id`, preserving
+  multi-project memberships during unrelated edits.
+
+## 2026-06-23 - Team Add-on Permission Help
+
+- Added Team Add-on permission tooltips for role permission options and saved
+  role permission labels, including the `request_release` release-package
+  authorization.
+
+## 2026-06-23 - Team Add-on Git Repo Import
+
+- Added a Team Add-on Git import action that creates or refreshes a
+  control-plane bare mirror from a host repo path or canonical URL and fills the
+  project Git config fields in setup, create, and edit forms.
+- Exposed the import through a Team Add-on API endpoint backed by the existing
+  host Git mirror setup semantics.
+- Blocked refreshes into existing bare mirrors that already contain
+  `refs/heads/agents/**` work, and moved the import operation off the Admin Web
+  event loop.
+- Preserved local `refs/heads/agents/**` and `refs/heads/review/**` output refs
+  during import mirror refreshes while still pruning stale source branches.
+
+## 2026-06-23 - Team Add-on Governance Agenda Handling
+
+- Added a governance-manager MCP tool that lets active governance managers mark
+  agenda items handled for groups they manage.
+- Granted the tool during governance wakes and updated guidance so managers can
+  close agenda items after deciding or routing follow-up.
+
+## 2026-06-23 - Team Add-on Governance Org Labels
+
+- Removed the extra `Manager` prefix from governance nodes in the Team Add-on org chart so governance managers display by their agent label only.
+
 ## 2026-06-23 - Team Add-on Project Assignment Model
 
 - Replaced direct agent project membership with explicit project assignment records so one team agent can participate in or lead multiple projects.

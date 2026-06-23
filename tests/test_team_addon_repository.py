@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from truman_team_addon.models import (
     AgentAvatar,
+    AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
     AgentStandDownSource,
@@ -18,7 +19,9 @@ from truman_team_addon.models import (
     AgentVoiceProfile,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
+    GovernanceAgendaItemType,
     GovernanceAgendaItemState,
+    GovernanceRuntime,
     ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
@@ -589,6 +592,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "low_priority_batch_started_at" in runtime_columns
     assert "low_priority_batch_cycle_count" in runtime_columns
     assert "low_priority_batch_due_after_cycles" in runtime_columns
+    assert "context_clearing_policy" in runtime_columns
     assert "voice_profile_json" in agent_columns
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
@@ -2184,6 +2188,201 @@ def test_governance_group_member_removal_handles_removed_team_agenda(
         state.governance_agenda["other-agenda"].state
         == GovernanceAgendaItemState.HANDLED
     )
+    membership_agenda = [
+        item
+        for item in state.governance_agenda.values()
+        if item.id != "other-agenda"
+    ]
+    assert len(membership_agenda) == 1
+    assert membership_agenda[0].item_type == GovernanceAgendaItemType.POLICY_DECISION
+    assert membership_agenda[0].team_id is None
+    assert membership_agenda[0].payload["removed_team_ids"] == ["other"]
+    assert membership_agenda[0].payload["current_member_team_ids"] == ["team"]
+
+
+def test_governance_group_member_addition_creates_due_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+
+    def _future_governance_wake(state):
+        state.governance_runtimes["portfolio"] = GovernanceRuntime(
+            governance_group_id="portfolio",
+            next_wake_at=now + timedelta(hours=12),
+        )
+        return state
+
+    repo.update(_future_governance_wake)
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["team", "other"],
+        set_member_team_ids=True,
+        expected_revision=repo.read().revision,
+    )
+
+    agenda = list(state.governance_agenda.values())
+    assert len(agenda) == 1
+    assert agenda[0].item_type == GovernanceAgendaItemType.POLICY_DECISION
+    assert agenda[0].title == "Governance member teams changed"
+    assert agenda[0].payload == {
+        "change_type": "member_teams_changed",
+        "added_team_ids": ["other"],
+        "removed_team_ids": [],
+        "previous_member_team_ids": ["team"],
+        "current_member_team_ids": ["team", "other"],
+    }
+    assert state.governance_runtimes["portfolio"].next_wake_at is None
+
+    state, leases = repo.lease_due_governance_managers(now=now)
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "policy_decision"
+    assert leases[0]["agenda"][0]["id"] == agenda[0].id
+    assert [item["team"]["id"] for item in leases[0]["member_teams"]] == [
+        "team",
+        "other",
+    ]
+    assert state.governance_runtimes["portfolio"].wake_reason == "policy_decision"
+
+
+def test_governance_group_unarchive_with_member_addition_creates_due_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.update_governance_group(
+        governance_group_id="portfolio",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+
+    def _future_governance_wake(state):
+        state.governance_runtimes["portfolio"] = GovernanceRuntime(
+            governance_group_id="portfolio",
+            next_wake_at=now + timedelta(hours=12),
+        )
+        return state
+
+    repo.update(_future_governance_wake)
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["team", "other"],
+        set_member_team_ids=True,
+        archived=False,
+        expected_revision=repo.read().revision,
+    )
+
+    agenda = list(state.governance_agenda.values())
+    assert state.governance_groups["portfolio"].archived is False
+    assert len(agenda) == 1
+    assert agenda[0].item_type == GovernanceAgendaItemType.POLICY_DECISION
+    assert agenda[0].payload["added_team_ids"] == ["other"]
+    assert state.governance_runtimes["portfolio"].next_wake_at is None
+
+
+def test_governance_group_archive_with_member_removal_does_not_create_due_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    future_wake = now + timedelta(hours=12)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        expected_revision=repo.read().revision,
+    )
+
+    def _future_governance_wake(state):
+        state.governance_runtimes["portfolio"] = GovernanceRuntime(
+            governance_group_id="portfolio",
+            next_wake_at=future_wake,
+        )
+        return state
+
+    repo.update(_future_governance_wake)
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["team"],
+        set_member_team_ids=True,
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.governance_groups["portfolio"].archived is True
+    assert state.governance_groups["portfolio"].member_team_ids == ["team"]
+    assert state.governance_agenda == {}
+    assert state.governance_runtimes["portfolio"].next_wake_at == future_wake
+
+
+def test_governance_group_member_reorder_does_not_create_agenda(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_team(
+        team_id="other",
+        name="Other",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.update_governance_group(
+        governance_group_id="portfolio",
+        member_team_ids=["other", "team"],
+        set_member_team_ids=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.governance_groups["portfolio"].member_team_ids == ["other", "team"]
+    assert state.governance_agenda == {}
 
 
 def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -> None:
@@ -2983,7 +3182,107 @@ def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
 
     runtime = state.agent_runtimes["backend"]
     assert runtime.auto_context_clearing_enabled is True
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.IDLE
     assert runtime.context_rotation_pending is False
+
+
+def test_every_wake_context_policy_rotates_ready_task_wakes(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.create_or_reprioritize_task(
+        task_id="active-work",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Active work",
+        description="Every wake policy should rotate when this wake is leased.",
+        created_by_agent_id="lead",
+    )
+    state = repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    assert state.agent_runtimes["backend"].context_rotation_pending is False
+
+    state, leases = repo.lease_due_agents(agent_id="backend", now=base_time)
+
+    assert len(leases) == 1
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+    assert runtime.auto_context_clearing_enabled is True
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "every_wake"
+    assert runtime.context_rotation_requested_at == base_time
+    assert leases[0]["runtime"]["context_clearing_policy"] == "every_wake"
+    assert leases[0]["runtime"]["context_rotation_pending"] is True
+    assert leases[0]["runtime"]["context_rotation_reason"] == "every_wake"
+
+
+def test_every_wake_context_policy_does_not_wake_idle_agent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state = repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy="every_wake",
+        set_context_clearing_policy=True,
+    )
+    assert state.agent_runtimes["backend"].context_clearing_policy == (
+        AgentContextClearingPolicy.EVERY_WAKE
+    )
+
+    state, leases = repo.lease_due_agents(agent_id="backend")
+
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.context_rotation_reason is None
+
+
+def test_every_wake_context_policy_preserves_low_priority_batching(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+
+    def _add_low_inbox(state):
+        state.inbox["low-1"] = AgentInboxItem(
+            id="low-1",
+            recipient_agent_id="backend",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_low_inbox)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time,
+        low_priority_wake_after_cycles=2,
+    )
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.low_priority_batch_cycle_count == 1
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time + timedelta(minutes=15),
+        low_priority_wake_after_cycles=2,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "low_priority_inbox"
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "every_wake"
+    assert leases[0]["runtime"]["context_rotation_pending"] is True
 
 
 def test_low_priority_inbox_wakes_after_configured_wake_cycles(tmp_path: Path) -> None:
@@ -3267,6 +3566,172 @@ def test_create_operator_directive_accepts_governance_manager_session(
     assert "created_by" not in item.payload
     assert item.payload["requesting_session_id"] == "session-governance"
     assert state.agent_runtimes["manager"].next_wake_at is None
+
+
+def test_mark_governance_agenda_handled_accepts_governance_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    state, item = repo.mark_governance_agenda_handled_by_session(
+        agenda_item_id="agenda",
+        requesting_session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+
+    assert item.state == GovernanceAgendaItemState.HANDLED
+    assert state.governance_agenda["agenda"].state == GovernanceAgendaItemState.HANDLED
+
+    state, item = repo.mark_governance_agenda_handled_by_session(
+        agenda_item_id="agenda",
+        requesting_session_id="session-governance",
+        expected_revision=state.revision,
+    )
+    assert item.state == GovernanceAgendaItemState.HANDLED
+    assert state.governance_agenda["agenda"].state == GovernanceAgendaItemState.HANDLED
+
+
+def test_mark_governance_agenda_handled_rejects_non_governance_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="active governance manager session"):
+        repo.mark_governance_agenda_handled_by_session(
+            agenda_item_id="agenda",
+            requesting_session_id="session-manager",
+            expected_revision=repo.read().revision,
+        )
+
+
+def test_mark_governance_agenda_handled_rejects_other_group_manager_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="other-governance-manager",
+        session_id="session-other-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="other-portfolio",
+        name="Other Portfolio",
+        manager_agent_id="other-governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="active governance manager session"):
+        repo.mark_governance_agenda_handled_by_session(
+            agenda_item_id="agenda",
+            requesting_session_id="session-other-governance",
+            expected_revision=repo.read().revision,
+        )
+
+
+@pytest.mark.parametrize("status", [AgentStatus.PAUSED, AgentStatus.ARCHIVED])
+def test_mark_governance_agenda_handled_rejects_inactive_governance_manager_session(
+    tmp_path: Path,
+    status: AgentStatus,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="governance-manager",
+        session_id="session-governance",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="governance-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review status",
+        summary="Check status.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+
+    def _mark_inactive(state):
+        state.agents["governance-manager"].status = status
+        return state
+
+    repo.update(_mark_inactive)
+
+    with pytest.raises(ValueError, match="active governance manager session"):
+        repo.mark_governance_agenda_handled_by_session(
+            agenda_item_id="agenda",
+            requesting_session_id="session-governance",
+            expected_revision=repo.read().revision,
+        )
 
 
 @pytest.mark.parametrize("status", [AgentStatus.PAUSED, AgentStatus.ARCHIVED])

@@ -18,10 +18,14 @@ from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
-from truman_team_addon.mcp import TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
+from truman_team_addon.mcp import (
+    TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+    TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+)
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentAvatar,
+    AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
     AgentTask,
@@ -1032,12 +1036,14 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     assert "Member teams remain separate execution units" in guidance
     assert "Do not take ownership of member-team project tasks" in guidance
     assert "/artifacts/team-action.json" in guidance
+    assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in guidance
     assert len(resumer.calls) == 1
     assert resumer.calls[0]["target"] == "session-portfolio-manager"
     assert "governance manager" in str(resumer.calls[0]["prompt"])
     assert "Do not take ownership of member-team project tasks" in str(
         resumer.calls[0]["prompt"]
     )
+    assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in str(resumer.calls[0]["prompt"])
     assert result["dispatches"][0]["governance_agent_guidance"] == {
         "seeded": True,
         "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
@@ -1050,13 +1056,20 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     }
     assert result["dispatches"][0]["governance_mcp_tools"] == {
         "session_id": "session-portfolio-manager",
-        "requested_tools": [TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+        "requested_tools": [
+            TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+        ],
         "already_allowed_tools": [],
-        "granted_tools": [TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+        "granted_tools": [
+            TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+        ],
         "error": None,
     }
     assert session_store.sessions["session-portfolio-manager"].allowed_tools == [
-        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
+        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+        TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     ]
     usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
         result["dispatches"][0]["dispatch_id"]
@@ -1201,6 +1214,50 @@ def test_wake_due_agents_provider_rotates_context_when_pending(
     assert session_store.sessions["session-backend"].metadata["team_addon"][
         "last_context_rotated_at"
     ]
+
+
+def test_wake_due_agents_provider_rotates_every_wake_policy(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        set_context_clearing_policy=True,
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-every-wake"})
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    assert result["dispatches"][0]["context_rotation"] == {
+        "rotated": True,
+        "reason": "every_wake",
+    }
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_thread_id == "thread-every-wake"
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "context_clearing_policy"
+    ] == "every_wake"
 
 
 def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(

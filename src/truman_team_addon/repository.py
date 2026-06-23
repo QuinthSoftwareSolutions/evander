@@ -24,6 +24,7 @@ from .git_naming import (
 from .models import (
     AGENT_OPERATOR_ONLY_FIELDS,
     AgentActionRecord,
+    AgentContextClearingPolicy,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
     AgentAvatar,
@@ -528,6 +529,8 @@ class TeamStateRepository:
             if manager_agent_id is not None:
                 _require_present(state.agents, manager_agent_id, "governance manager")
                 group.manager_agent_id = manager_agent_id
+            if archived is not None:
+                group.archived = archived
             if set_member_team_ids:
                 previous_member_team_ids = set(group.member_team_ids)
                 normalized_member_team_ids = _unique_text_list(
@@ -537,9 +540,10 @@ class TeamStateRepository:
                 for team_id in normalized_member_team_ids:
                     _require_present(state.teams, team_id, "member team")
                 group.member_team_ids = normalized_member_team_ids
+                added_team_ids = set(normalized_member_team_ids) - previous_member_team_ids
                 removed_team_ids = previous_member_team_ids - set(normalized_member_team_ids)
+                membership_changed_at = utc_now()
                 if removed_team_ids:
-                    now = utc_now()
                     for item in state.governance_agenda.values():
                         if (
                             item.governance_group_id != group.id
@@ -549,13 +553,19 @@ class TeamStateRepository:
                         item_team_id = _governance_agenda_effective_team_id(state, item)
                         if item_team_id in removed_team_ids:
                             item.state = GovernanceAgendaItemState.HANDLED
-                            item.updated_at = now
+                            item.updated_at = membership_changed_at
+                _record_governance_membership_change_agenda(
+                    state,
+                    group=group,
+                    previous_member_team_ids=sorted(previous_member_team_ids),
+                    added_team_ids=sorted(added_team_ids),
+                    removed_team_ids=sorted(removed_team_ids),
+                    now=membership_changed_at,
+                )
             if goals is not None:
                 group.goals = goals
             if set_max_cost_usd:
                 group.max_cost_usd = _optional_cost_limit(max_cost_usd)
-            if archived is not None:
-                group.archived = archived
             group.updated_at = utc_now()
             return state
 
@@ -672,6 +682,47 @@ class TeamStateRepository:
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
+
+    def mark_governance_agenda_handled_by_session(
+        self,
+        *,
+        agenda_item_id: str,
+        requesting_session_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, GovernanceAgendaItem]:
+        normalized_item_id = _required_text(agenda_item_id, "agenda_item_id")
+        normalized_session_id = _required_text(
+            requesting_session_id,
+            "requesting_session_id",
+        )
+
+        def _mutate(state: TeamState) -> TeamState:
+            item = _require_present(
+                state.governance_agenda,
+                normalized_item_id,
+                "governance agenda item",
+            )
+            group = _require_present(
+                state.governance_groups,
+                item.governance_group_id,
+                "governance group",
+            )
+            requester = _agent_for_session(state, session_id=normalized_session_id)
+            if (
+                requester.status != AgentStatus.ACTIVE
+                or group.archived
+                or group.manager_agent_id != requester.id
+            ):
+                raise ValueError(
+                    "governance agenda handling requires the active governance "
+                    "manager session for the agenda item's governance group"
+                )
+            item.state = GovernanceAgendaItemState.HANDLED
+            item.updated_at = utc_now()
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        return state, state.governance_agenda[normalized_item_id]
 
     def create_project(
         self,
@@ -1059,6 +1110,8 @@ class TeamStateRepository:
         status: AgentStatus | None = None,
         voice_profile: AgentVoiceProfile | None = None,
         set_voice_profile: bool = False,
+        context_clearing_policy: AgentContextClearingPolicy | str | None = None,
+        set_context_clearing_policy: bool = False,
         auto_context_clearing_enabled: bool | None = None,
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
@@ -1068,6 +1121,12 @@ class TeamStateRepository:
         normalized_project_id = _optional_text(project_id)
         normalized_role_id = _optional_text(role_id)
         normalized_reports_to_agent_id = _optional_text(reports_to_agent_id)
+        normalized_context_clearing_policy = _resolved_context_clearing_policy(
+            context_clearing_policy=context_clearing_policy,
+            set_context_clearing_policy=set_context_clearing_policy,
+            auto_context_clearing_enabled=auto_context_clearing_enabled,
+            set_auto_context_clearing_enabled=set_auto_context_clearing_enabled,
+        )
 
         def _mutate(state: TeamState) -> TeamState:
             now = utc_now()
@@ -1175,21 +1234,18 @@ class TeamStateRepository:
                     if voice_profile is not None and voice_profile.configured
                     else None
                 )
-            if set_auto_context_clearing_enabled:
+            if normalized_context_clearing_policy is not None:
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
                 )
-                runtime.auto_context_clearing_enabled = bool(auto_context_clearing_enabled)
-                runtime.updated_at = now
-                if runtime.auto_context_clearing_enabled:
-                    _maybe_mark_idle_context_rotation_due(
-                        state,
-                        agent_id=agent.id,
-                        now=now,
-                    )
-                else:
-                    _clear_pending_idle_context_rotation(runtime)
+                _set_context_clearing_policy(
+                    state,
+                    agent=agent,
+                    runtime=runtime,
+                    policy=normalized_context_clearing_policy,
+                    now=now,
+                )
             if set_reports_to_agent_id and not detached_from_team:
                 old_superior_id = agent.reports_to_agent_id
                 if normalized_reports_to_agent_id is not None:
@@ -3039,6 +3095,19 @@ class TeamStateRepository:
                     if action_feedback
                     else "scheduled"
                 )
+                if (
+                    runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+                    and not runtime.context_rotation_pending
+                ):
+                    _mark_context_rotation_pending(
+                        state_model,
+                        agent=agent,
+                        runtime=runtime,
+                        reason="every_wake",
+                        requested_by=None,
+                        requested_at=effective_now,
+                        request_note=None,
+                    )
                 _clear_low_priority_batch(runtime)
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
@@ -3263,6 +3332,11 @@ class TeamStateRepository:
                     stand_down.model_dump(mode="json")
                     for stand_down in active_stand_downs
                 ],
+                "context_clearing_policy": (
+                    runtime.context_clearing_policy.value
+                    if runtime is not None
+                    else AgentContextClearingPolicy.OFF.value
+                ),
                 "auto_context_clearing_enabled": (
                     runtime.auto_context_clearing_enabled if runtime is not None else False
                 ),
@@ -4400,6 +4474,81 @@ def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[
     return payload
 
 
+def _record_governance_membership_change_agenda(
+    state: TeamState,
+    *,
+    group: GovernanceGroup,
+    previous_member_team_ids: list[str],
+    added_team_ids: list[str],
+    removed_team_ids: list[str],
+    now: datetime,
+) -> None:
+    if not added_team_ids and not removed_team_ids:
+        return
+    if group.archived:
+        return
+
+    payload = {
+        "change_type": "member_teams_changed",
+        "added_team_ids": added_team_ids,
+        "removed_team_ids": removed_team_ids,
+        "previous_member_team_ids": previous_member_team_ids,
+        "current_member_team_ids": list(group.member_team_ids),
+    }
+    summary_parts: list[str] = []
+    if added_team_ids:
+        summary_parts.append(
+            "Added member teams: "
+            + ", ".join(_team_reference_label(state, team_id) for team_id in added_team_ids)
+            + "."
+        )
+    if removed_team_ids:
+        summary_parts.append(
+            "Removed member teams: "
+            + ", ".join(_team_reference_label(state, team_id) for team_id in removed_team_ids)
+            + "."
+        )
+    summary_parts.append(
+        "Current member teams: "
+        + (
+            ", ".join(
+                _team_reference_label(state, team_id)
+                for team_id in group.member_team_ids
+            )
+            if group.member_team_ids
+            else "none"
+        )
+        + "."
+    )
+    agenda_id = _generated_id(
+        prefix="governance-agenda",
+        labels=[group.id, "member-teams-changed"],
+        existing_ids=state.governance_agenda,
+    )
+    state.governance_agenda[agenda_id] = GovernanceAgendaItem(
+        id=agenda_id,
+        governance_group_id=group.id,
+        item_type=GovernanceAgendaItemType.POLICY_DECISION,
+        title="Governance member teams changed",
+        summary=" ".join(summary_parts),
+        payload=payload,
+        priority=TeamInboxPriority.NORMAL,
+        created_at=now,
+        updated_at=now,
+    )
+    runtime = state.governance_runtimes.get(group.id)
+    if runtime is not None:
+        runtime.next_wake_at = None
+        runtime.updated_at = now
+
+
+def _team_reference_label(state: TeamState, team_id: str) -> str:
+    team = state.teams.get(team_id)
+    if team is None:
+        return team_id
+    return f"{team.name} ({team.id})"
+
+
 def _governance_member_team_payload(
     state: TeamState,
     team_id: str,
@@ -4898,7 +5047,10 @@ def _maybe_mark_idle_context_rotation_due(
     if _active_stand_downs_for_agent(state, agent.id):
         return
     runtime = state.agent_runtimes.setdefault(agent.id, AgentRuntime(agent_id=agent.id))
-    if not runtime.auto_context_clearing_enabled or runtime.context_rotation_pending:
+    if (
+        runtime.context_clearing_policy != AgentContextClearingPolicy.IDLE
+        or runtime.context_rotation_pending
+    ):
         return
     if not _has_activity_since_last_context_rotation(state, agent=agent, runtime=runtime):
         return
@@ -4985,13 +5137,13 @@ def _mark_context_rotation_pending(
     *,
     agent: PersistentAgent,
     runtime: AgentRuntime,
-    reason: Literal["idle", "manual"],
+    reason: Literal["idle", "manual", "every_wake"],
     requested_by: str | None,
     requested_at: datetime,
     request_note: str | None,
 ) -> None:
-    if reason not in {"idle", "manual"}:
-        raise ValueError("context rotation reason must be idle or manual")
+    if reason not in {"idle", "manual", "every_wake"}:
+        raise ValueError("context rotation reason must be idle, manual, or every_wake")
     runtime.context_rotation_pending = True
     runtime.context_rotation_reason = reason
     runtime.context_rotation_requested_by = requested_by
@@ -5008,10 +5160,63 @@ def _mark_context_rotation_pending(
     runtime.updated_at = requested_at
 
 
-def _clear_pending_idle_context_rotation(runtime: AgentRuntime) -> None:
+def _resolved_context_clearing_policy(
+    *,
+    context_clearing_policy: AgentContextClearingPolicy | str | None,
+    set_context_clearing_policy: bool,
+    auto_context_clearing_enabled: bool | None,
+    set_auto_context_clearing_enabled: bool,
+) -> AgentContextClearingPolicy | None:
+    if set_context_clearing_policy:
+        return _context_clearing_policy_from_value(context_clearing_policy)
+    if set_auto_context_clearing_enabled:
+        return (
+            AgentContextClearingPolicy.IDLE
+            if bool(auto_context_clearing_enabled)
+            else AgentContextClearingPolicy.OFF
+        )
+    return None
+
+
+def _context_clearing_policy_from_value(
+    value: AgentContextClearingPolicy | str | None,
+) -> AgentContextClearingPolicy:
+    if value is None:
+        return AgentContextClearingPolicy.OFF
+    if isinstance(value, AgentContextClearingPolicy):
+        return value
+    normalized = str(value or "").strip()
+    if not normalized:
+        return AgentContextClearingPolicy.OFF
+    try:
+        return AgentContextClearingPolicy(normalized)
+    except ValueError:
+        allowed = ", ".join(policy.value for policy in AgentContextClearingPolicy)
+        raise ValueError(f"context_clearing_policy must be one of: {allowed}") from None
+
+
+def _set_context_clearing_policy(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+    policy: AgentContextClearingPolicy,
+    now: datetime,
+) -> None:
+    previous_policy = runtime.context_clearing_policy
+    if previous_policy != policy:
+        _clear_pending_auto_context_rotation(runtime)
+    runtime.context_clearing_policy = policy
+    runtime.auto_context_clearing_enabled = policy != AgentContextClearingPolicy.OFF
+    runtime.updated_at = now
+    if policy == AgentContextClearingPolicy.IDLE:
+        _maybe_mark_idle_context_rotation_due(state, agent_id=agent.id, now=now)
+
+
+def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
     if (
         not runtime.context_rotation_pending
-        or runtime.context_rotation_reason != "idle"
+        or runtime.context_rotation_reason not in {"idle", "every_wake"}
     ):
         return
     runtime.context_rotation_pending = False

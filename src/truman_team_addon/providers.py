@@ -35,7 +35,10 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
-from .mcp import TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL
+from .mcp import (
+    TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+    TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+)
 from .models import AGENT_OPERATOR_ONLY_FIELDS, RolePermission, team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -65,7 +68,7 @@ ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 TEAM_AGENT_GUIDANCE_VERSION = 2
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
-TEAM_GOVERNANCE_GUIDANCE_VERSION = 1
+TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "truman-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
@@ -1032,7 +1035,10 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 tool_grant_result = _ensure_session_allows_mcp_tools(
                     context,
                     session_id=agent["session_id"],
-                    tool_names=[TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL],
+                    tool_names=[
+                        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+                        TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+                    ],
                 )
                 _register_team_dispatch_model_usage_context(
                     context,
@@ -2223,6 +2229,10 @@ def _team_governance_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "blocked-team decisions. Route directives to the relevant member-team "
         f"manager with the {TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool when "
         "action is needed.\n"
+        "- Mark governance agenda items handled with the "
+        f"{TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL} MCP tool after you have "
+        "made the needed decision, routed any directive, or determined that no "
+        "action is needed.\n"
         "- Governance wakes are not normal Team action-artifact dispatches unless "
         "the wake prompt explicitly says otherwise. Do not write or rely on "
         "/artifacts/team-action.json for governance-only decisions.\n"
@@ -2365,8 +2375,10 @@ def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
         "signals, and member-team summaries. Respond with concise decisions, "
         "recommended operator actions, and any directives that should be routed "
         "to the relevant member-team managers with the "
-        f"{TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool. If no governance "
-        "action is needed, say so briefly and do not invent project work.\n\n"
+        f"{TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool. Mark agenda items "
+        f"handled with the {TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL} MCP tool "
+        "after deciding, routing required follow-up, or determining no action "
+        "is needed. Do not invent project work.\n\n"
         f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
     )
 

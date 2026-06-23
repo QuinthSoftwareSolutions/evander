@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
@@ -304,6 +305,35 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(_state_payload(request, state))
 
+    async def import_project_git_repo(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        service = getattr(context, "service", None)
+        import_git_repo = getattr(service, "import_git_repo", None)
+        if not callable(import_git_repo):
+            return JSONResponse({"error": "Git repo import is unavailable"}, status_code=503)
+        bare_repo_name = _optional(payload, "bare_repo_name") or _optional(payload, "repo_name")
+        bare_repo = _optional(payload, "bare_repo")
+        if bare_repo:
+            if bare_repo.startswith("/"):
+                raise ValueError("bare_repo must be a bare repo name for import, not a path")
+            if bare_repo_name and bare_repo_name != bare_repo:
+                raise ValueError("bare_repo cannot differ from bare_repo_name")
+            bare_repo_name = bare_repo
+        try:
+            repo_source = _required(payload, "repo_source", "host_repo_path")
+            directory_path = _optional(payload, "directory_path") or "root"
+            imported = await run_in_threadpool(
+                lambda: import_git_repo(
+                    repo_source=repo_source,
+                    bare_repo_name=bare_repo_name,
+                    directory_path=directory_path,
+                )
+            )
+        except RuntimeError as exc:
+            status_code = int(getattr(exc, "status_code", 503))
+            return JSONResponse({"error": str(exc)}, status_code=status_code)
+        return JSONResponse({"imported": imported, "git": imported.get("git")}, status_code=201)
+
     async def create_role(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
@@ -415,6 +445,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 else None
             ),
             set_voice_profile="voice_profile" in payload,
+            context_clearing_policy=_optional(payload, "context_clearing_policy"),
+            set_context_clearing_policy="context_clearing_policy" in payload,
             auto_context_clearing_enabled=_optional_bool(
                 payload,
                 "auto_context_clearing_enabled",
@@ -1471,6 +1503,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
+        Route("/projects/git/import", _with_errors(import_project_git_repo), methods=["POST"]),
         Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
         Route("/roles", _with_errors(create_role), methods=["POST"]),
         Route("/roles", _with_errors(list_roles), methods=["GET"]),
@@ -2442,6 +2475,9 @@ def _build_agent_voice_projection(
             "next_wake_at": _datetime_text(getattr(runtime, "next_wake_at", None)),
             "no_progress_count": getattr(runtime, "no_progress_count", None),
             "last_progress_at": _datetime_text(getattr(runtime, "last_progress_at", None)),
+            "context_clearing_policy": _enum_value(
+                getattr(runtime, "context_clearing_policy", "off")
+            ),
             "auto_context_clearing_enabled": getattr(
                 runtime,
                 "auto_context_clearing_enabled",

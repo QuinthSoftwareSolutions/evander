@@ -13798,6 +13798,92 @@ def test_sync_repo_into_bare_remote_unwraps_repo_cache_origin_url(
     )
 
 
+def test_sync_repo_into_bare_remote_preserves_agent_refs_while_pruning_stale_heads(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.project_dir = REPO_ROOT
+    git_root = tmp_path / "git-remotes"
+    issue_setup = admin_service.EffectiveIssueSetupConfig(
+        git_root=str(git_root),
+        git_host="192.168.250.1",
+        git_user="agent",
+        git_ssh_alias="agent-sandbox-git-host",
+    )
+    source_repo = tmp_path / "source"
+    git_env = os.environ.copy()
+    git_env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+    )
+
+    def _git(*args: str, cwd: Path | None = None) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            env=git_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def _git_dir(git_dir: Path, *args: str) -> str:
+        return _git(f"--git-dir={git_dir}", *args)
+
+    _git("init", str(source_repo))
+    _git("checkout", "-b", "main", cwd=source_repo)
+    (source_repo / "README.md").write_text("initial\n", encoding="utf-8")
+    _git("add", "README.md", cwd=source_repo)
+    _git("commit", "-m", "Initial commit", cwd=source_repo)
+
+    service._sync_repo_into_bare_remote(
+        "sample-repo",
+        str(source_repo),
+        issue_setup=issue_setup,
+        repo_source=str(source_repo),
+    )
+    bare_repo = Path(issue_setup.git_root) / "sample-repo.git"
+    base_commit = _git_dir(bare_repo, "rev-parse", "refs/heads/main")
+    _git_dir(bare_repo, "update-ref", "refs/heads/agents/session-1/work", base_commit)
+    _git_dir(bare_repo, "update-ref", "refs/heads/review/session-1/work", base_commit)
+    _git_dir(bare_repo, "update-ref", "refs/heads/stale-source-branch", base_commit)
+
+    (source_repo / "README.md").write_text("refreshed\n", encoding="utf-8")
+    _git("commit", "-am", "Refresh source", cwd=source_repo)
+    refreshed_commit = _git("rev-parse", "HEAD", cwd=source_repo)
+
+    service._sync_repo_into_bare_remote(
+        "sample-repo",
+        str(source_repo),
+        issue_setup=issue_setup,
+        repo_source=str(source_repo),
+    )
+
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main") == refreshed_commit
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/agents/session-1/work") == base_commit
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/review/session-1/work") == base_commit
+    assert (
+        subprocess.run(
+            [
+                "git",
+                f"--git-dir={bare_repo}",
+                "rev-parse",
+                "--verify",
+                "refs/heads/stale-source-branch",
+            ],
+            env=git_env,
+            capture_output=True,
+            text=True,
+        ).returncode
+        != 0
+    )
+
+
 def test_resolve_host_python_with_pip_prefers_current_interpreter(monkeypatch: Any) -> None:
     monkeypatch.delenv("HOST_PYTHON_BIN", raising=False)
     monkeypatch.setattr(admin_service.sys, "executable", "/work/.venv/bin/python")

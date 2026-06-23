@@ -21,7 +21,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
 
   assert.match(markup, /team-org-flow\.css/);
   assert.match(markup, /team-org-flow\.js/);
-  assert.match(script, /auto_context_clearing_enabled/);
+  assert.match(script, /context_clearing_policy/);
+  assert.match(script, /contextClearingPolicies/);
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
   assert.match(script, /data-stand-down-agent-id/);
@@ -46,9 +47,16 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /create-team-from-teams-form/);
   assert.match(script, /data-team-inline-create-toggle/);
   assert.match(script, /data-team-inline-create-form/);
+  assert.match(script, /data-git-import-button/);
+  assert.match(script, /rolePermissionTooltips/);
+  assert.match(script, /Allows a same-project role holder to request Team release packages/);
+  assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.team-inline-create-form/);
+  assert.match(stylesheet, /\.git-import-actions/);
+  assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
+  assert.match(markup, /data-git-import-button/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
   assert.match(script, /data-chat-scroll-conversation-id/);
@@ -1201,6 +1209,43 @@ async function createTeamAddonServer(
         );
         return;
       }
+      if (request.method === "POST" && pathname === "/api/addons/team-addon/projects/git/import") {
+        const payload = await requestJson(request);
+        requests.push({ method: request.method, pathname, payload });
+        const repoSource = String(payload.repo_source || "").trim();
+        if (!repoSource) {
+          jsonResponse(response, { error: "repo_source is required" }, 400);
+          return;
+        }
+        const baseName = path.basename(repoSource).replace(/\.git$/, "") || "project";
+        const bareRepoName = String(payload.bare_repo_name || `${baseName}.git`).replace(/\.git$/, "");
+        const git = {
+          host_repo_path: repoSource,
+          bare_repo_name: `${bareRepoName}.git`,
+          base_branch: "main",
+          canonical_origin_url: "git@github.com:Example/imported-project.git",
+          provider: "github",
+        };
+        jsonResponse(
+          response,
+          {
+            imported: {
+              success: true,
+              repo_source: repoSource,
+              host_repo_path: git.host_repo_path,
+              bare_repo_name: git.bare_repo_name,
+              bare_repo_path: `/srv/git-remotes/${git.bare_repo_name}`,
+              base_branch: git.base_branch,
+              canonical_origin_url: git.canonical_origin_url,
+              provider: git.provider,
+              git,
+            },
+            git,
+          },
+          201,
+        );
+        return;
+      }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/conversations") {
         requests.push({ method: request.method, pathname, search: url.search });
         jsonResponse(response, chatCollectionPayload(state));
@@ -1962,6 +2007,42 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   assert.equal(teamRequest.payload.operator_communication_target_id, "ops-launch");
 });
 
+test("team add-on UI imports Git repo config into project forms", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t);
+  const page = await openBrowserPage(t, port);
+
+  await openDetails(page, "Create project");
+  const projectForm = page.locator("#create-project-form");
+  await projectForm.locator('[name="host_repo_path"]').fill("/srv/repos/imported-project");
+  await projectForm.locator('[name="bare_repo"]').fill("team-import.git");
+  await projectForm.getByRole("button", { name: "Import Git repo" }).click();
+
+  await page
+    .locator("#status-message", {
+      hasText: "Imported Git repo. Review the populated Git fields, then save.",
+    })
+    .waitFor({ state: "visible" });
+  assert.equal(await projectForm.locator('[name="host_repo_path"]').inputValue(), "/srv/repos/imported-project");
+  assert.equal(await projectForm.locator('[name="bare_repo"]').inputValue(), "team-import.git");
+  assert.equal(await projectForm.locator('[name="base_branch"]').inputValue(), "main");
+  assert.equal(
+    await projectForm.locator('[name="canonical_origin_url"]').inputValue(),
+    "git@github.com:Example/imported-project.git",
+  );
+  assert.equal(await projectForm.locator('[name="provider"]').inputValue(), "github");
+
+  const importRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname === "/api/addons/team-addon/projects/git/import",
+  );
+  assert.ok(importRequest);
+  assert.deepEqual(importRequest.payload, {
+    repo_source: "/srv/repos/imported-project",
+    bare_repo_name: "team-import.git",
+  });
+});
+
 test("team add-on UI renders empty state and submits setup forms with revisions", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
@@ -2194,8 +2275,39 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
-  const { port } = await createTeamAddonServer(t, {
-    initialState: seededOrgChartState(),
+  const initialState = seededOrgChartState();
+  initialState.teams.team.project_ids.push("other-project");
+  initialState.projects["other-project"] = {
+    id: "other-project",
+    team_id: "team",
+    name: "Other Project",
+    lead_agent_id: "lead",
+    goals: [],
+    git: null,
+    status: "active",
+  };
+  delete initialState.agents.backend.project_id;
+  initialState.agents.backend.project_ids = ["project", "other-project"];
+  initialState.agents.backend.project_assignments = [
+    {
+      id: "project__backend__project_member",
+      team_id: "team",
+      project_id: "project",
+      agent_id: "backend",
+      role_id: "project__backend",
+      kind: "project_member",
+    },
+    {
+      id: "other-project__backend__project_member",
+      team_id: "team",
+      project_id: "other-project",
+      agent_id: "backend",
+      role_id: "project__backend",
+      kind: "project_member",
+    },
+  ];
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
   });
   const page = await openBrowserPage(t, port);
 
@@ -2236,7 +2348,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   const backendDetails = backendCard.locator(".hierarchy-node-details");
   await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
   await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
-  await backendDetails.getByText("Project Project (project)").waitFor({ state: "visible" });
+  await backendDetails.getByText("Projects Project").waitFor({ state: "visible" });
   await backendDetails.getByText("Reports to lead").waitFor({ state: "visible" });
   await backendDetails.getByText("Direct subordinates 1").waitFor({ state: "visible" });
   await backendDetails.getByText("Open tasks 2").waitFor({ state: "visible" });
@@ -2322,6 +2434,20 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
   });
+  assert.equal(await page.locator('#edit-record-form select[name="project_id"]').inputValue(), "project");
+  await page.locator('#edit-record-form input[name="display_name"]').fill("Backend Worker Updated");
+  await page.locator("#edit-record-form").getByRole("button", { name: "Save changes" }).click();
+  await page.locator("#status-message", { hasText: /Saved revision \d+\./ }).waitFor({
+    state: "visible",
+  });
+  const editRequest = requests.find(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname === "/api/addons/team-addon/agents/backend",
+  );
+  assert.ok(editRequest);
+  assert.equal(editRequest.payload.display_name, "Backend Worker Updated");
+  assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
@@ -3176,6 +3302,7 @@ function seededGitState() {
           next_wake_at: "2026-06-09T16:05:00Z",
           wake_leased_until: "",
           no_progress_count: 1,
+          context_clearing_policy: "idle",
           context_rotation_pending: false,
           auto_context_clearing_enabled: true,
           last_context_rotated_at: "2026-06-09T15:00:00Z",
@@ -3423,6 +3550,10 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   const inlineRoleForm = betaGroup.locator('form[data-form-id="create-role-form"]');
   await inlineRoleForm.waitFor({ state: "visible" });
   assert.equal(await inlineRoleForm.locator('select[name="team_id"]').count(), 0);
+  assert.equal(
+    await inlineRoleForm.locator('[name="permissions"] option[value="request_release"]').getAttribute("title"),
+    "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
+  );
   await inlineRoleForm.locator('[name="project_id"]').selectOption("beta-project");
   await inlineRoleForm.locator('[name="name"]').fill("QA");
   await inlineRoleForm.locator('[name="permissions"]').selectOption(["request_release"]);
