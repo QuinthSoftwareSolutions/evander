@@ -3242,6 +3242,7 @@ function renderHierarchyNode(node, options = {}) {
       ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child, options)).join("")}</ol>`
       : "";
     const focused = Boolean(options.focused);
+    const descriptionId = `team-${focused ? "org" : "hierarchy"}-agent-${domIdPart(node.agentData.id || node.agentData.label)}-description`;
     const cardClasses = [
       "hierarchy-node-card",
       focused ? "org-focus-node-card" : "",
@@ -3255,7 +3256,7 @@ function renderHierarchyNode(node, options = {}) {
       : "";
     return `
       <li class="hierarchy-branch">
-        <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
+        <article class="${cardClasses}" tabindex="0" aria-describedby="${escapeAttr(descriptionId)}" ${actionAttrs}>
           <div class="hierarchy-node-summary">
             <span class="hierarchy-node-avatar-wrap">
               ${renderAgentAvatar(node.agentData)}
@@ -3279,6 +3280,7 @@ function renderHierarchyNode(node, options = {}) {
               ${renderAgentInboxHeaderIndicators(node.agentData)}
             </div>
           </div>
+          <span id="${escapeAttr(descriptionId)}" class="visually-hidden">Agent ID ${escapeHtml(node.agentData.id)}. Role ${escapeHtml(node.agentData.role)}.</span>
           ${focused ? renderOrgNodeWorkSummary(node.agentData) : ""}
           <div class="hierarchy-node-details${focused ? " org-node-hover-panel" : ""}">${renderHierarchyDetails(node.agentData, { focused })}</div>
         </article>
@@ -9943,6 +9945,10 @@ function values(collection) {
 
 function text(value) {
   return String(value ?? "").trim();
+}
+
+function domIdPart(value) {
+  return text(value).replace(/[^A-Za-z0-9_-]+/g, "-") || "item";
 }
 
 function agentLabel(agent) {

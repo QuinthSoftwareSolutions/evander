@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useId, useMemo } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   Background,
@@ -192,6 +192,7 @@ function TeamOrgNode({ data }: NodeProps<OrgNode>) {
 }
 
 function AgentNode({ data }: { data: AgentNodeData }) {
+  const descriptionId = useId();
   const openAgent = () => {
     window.dispatchEvent(
       new CustomEvent("team-org-flow:edit-agent", {
@@ -205,6 +206,7 @@ function AgentNode({ data }: { data: AgentNodeData }) {
       tabIndex={0}
       role="button"
       aria-label={`Edit ${data.label}`}
+      aria-describedby={descriptionId}
       onClick={openAgent}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") {
@@ -231,6 +233,9 @@ function AgentNode({ data }: { data: AgentNodeData }) {
           <InboxIndicators indicators={data.inboxIndicators} />
         </div>
       </div>
+      <span id={descriptionId} className="visually-hidden">
+        Agent ID {data.agentId}. Role {data.role}.
+      </span>
       <div className="org-node-work">
         <div className="org-node-work-line org-node-work-line--now">
           <span>Now</span>

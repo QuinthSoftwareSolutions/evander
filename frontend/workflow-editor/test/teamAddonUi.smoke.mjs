@@ -73,10 +73,16 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /expired_agent_session/);
   assert.match(script, /buildOrgFlowGraph/);
   assert.match(script, /team-org-flow:edit-agent/);
+  assert.match(script, /aria-describedby/);
+  assert.match(script, /Agent ID \$\{escapeHtml\(node\.agentData\.id\)\}\. Role/);
   assert.match(orgFlowScript, /team-org-flow:edit-agent/);
+  assert.match(orgFlowScript, /aria-describedby/);
+  assert.match(orgFlowScript, /"Agent ID "/);
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
+  assert.match(stylesheet, /max-width:\s*min\(17rem,\s*calc\(100vw - 2rem\)\);/);
+  assert.doesNotMatch(stylesheet, /min-width:\s*max-content/);
   assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
   assert.doesNotMatch(markup, /content-panel people-agents-panel/);
   assert.match(markup, /data-governance-create-toggle/);
@@ -2351,6 +2357,16 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.equal(await workerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
   assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
   assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
+  const backendDescriptionId = await backendCard.getAttribute("aria-describedby");
+  assert.ok(backendDescriptionId);
+  assert.equal(await backendCard.locator(".visually-hidden").getAttribute("id"), backendDescriptionId);
+  assert.match(await backendCard.locator(".visually-hidden").textContent(), /Agent ID backend\. Role Backend\./);
+
+  await backendCard.focus();
+  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
+  await page.mouse.move(0, 0);
+  await page.locator("#show-archived-toggle").focus();
+  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "hidden" });
 
   await backendCard.locator(".hierarchy-node-avatar-wrap").hover();
   await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
@@ -2432,6 +2448,15 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await focusedBackendCard.locator(".org-node-work").getByText("Resolve dependency").waitFor({
     state: "visible",
   });
+  const focusedBackendDescriptionId = await focusedBackendCard.getAttribute("aria-describedby");
+  assert.ok(focusedBackendDescriptionId);
+  assert.match(await focusedBackendCard.locator(".visually-hidden").textContent(), /Agent ID backend\. Role Backend\./);
+
+  await focusedBackendCard.focus();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
+  await page.mouse.move(0, 0);
+  await page.getByRole("tab", { name: "Org chart" }).focus();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "hidden" });
 
   await focusedBackendCard.locator(".hierarchy-node-avatar-wrap").hover();
   await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
