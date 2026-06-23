@@ -2861,6 +2861,14 @@ def test_apply_agent_action_routes_manager_escalation_to_governance(tmp_path: Pa
     assert agenda_item.payload["governance_group_id"] == "portfolio"
     assert state.governance_runtimes["portfolio"].next_wake_at is None
 
+    _state, leases = TeamStateRepository(tmp_path).lease_due_governance_managers(
+        now=agenda_item.created_at,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "team_escalation"
+    assert leases[0]["agenda"][0]["id"] == agenda_id
+
 
 def test_apply_agent_action_publishes_git_promotion_event(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path, max_ephemeral=1)

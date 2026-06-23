@@ -6618,6 +6618,7 @@ def _apply_review_decision(
         decision_state=decision_state,
         findings=_string_list(decision.get("findings"), "findings"),
         projects_to_recalc=projects_to_recalc,
+        result=result,
     )
     return review.id
 
@@ -6691,6 +6692,7 @@ def _cascade_review_decision(
     decision_state: TeamRecordState,
     findings: list[str],
     projects_to_recalc: set[str],
+    result: dict[str, Any] | None = None,
 ) -> None:
     """Apply a review decision and cascade it to the deliverable, task, and project.
 
@@ -6723,8 +6725,34 @@ def _cascade_review_decision(
                 task.updated_at = now
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
-        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
         task.updated_at = now
+        inbox_id = f"inbox-{uuid4().hex}"
+        state.inbox[inbox_id] = AgentInboxItem(
+            id=inbox_id,
+            recipient_agent_id=deliverable.producer_agent_id,
+            sender_agent_id=review.reviewer_agent_id,
+            task_id=task.id,
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=True,
+            priority=TeamInboxPriority.NORMAL,
+            payload={
+                "kind": "review_rejected",
+                "review_request_id": review.id,
+                "deliverable_id": deliverable.id,
+                "task_id": task.id,
+                "summary": "Review rejected; revise and resubmit.",
+                "findings": list(findings),
+                "artifact_refs": list(deliverable.artifact_refs),
+            },
+        )
+        if result is not None:
+            result["created_inbox_item_ids"].append(inbox_id)
+        _mark_agent_work_due(
+            state,
+            agent_id=deliverable.producer_agent_id,
+            now=now,
+        )
     else:  # blocked
         deliverable.state = TeamRecordState.BLOCKED
         _set_task_state(task, TeamTaskState.BLOCKED, now=now)

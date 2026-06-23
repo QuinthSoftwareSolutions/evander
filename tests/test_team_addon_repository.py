@@ -4149,10 +4149,19 @@ def test_apply_agent_action_multi_deliverable_holds_back_task(tmp_path: Path) ->
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
 
 
-def test_apply_agent_action_review_rejected_blocks_task(tmp_path: Path) -> None:
+def test_apply_agent_action_review_rejected_returns_task_to_implementer(
+    tmp_path: Path,
+) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
     repo.apply_agent_action(
         action={
             "agent_id": "lead",
@@ -4181,10 +4190,30 @@ def test_apply_agent_action_review_rejected_blocks_task(tmp_path: Path) -> None:
     )
 
     assert result["success"] is True
+    assert result["decided_review_request_ids"] == ["review-1"]
+    assert len(result["created_inbox_item_ids"]) == 1
     assert state.review_requests["review-1"].state == TeamRecordState.REJECTED
+    assert state.review_requests["review-1"].findings == ["Needs rework."]
     assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
-    assert state.tasks["task"].state == TeamTaskState.BLOCKED
-    assert state.projects["project"].status == ProjectStatus.BLOCKED
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+    rework_item = state.inbox[result["created_inbox_item_ids"][0]]
+    assert rework_item.recipient_agent_id == "backend"
+    assert rework_item.sender_agent_id == "worker"
+    assert rework_item.task_id == "task"
+    assert rework_item.item_type == TeamInboxItemType.STATUS_REQUEST
+    assert rework_item.response_requested is True
+    assert rework_item.payload["kind"] == "review_rejected"
+    assert rework_item.payload["review_request_id"] == "review-1"
+    assert rework_item.payload["deliverable_id"] == "deliverable"
+    assert rework_item.payload["findings"] == ["Needs rework."]
+
+    _state, leases = repo.lease_due_governance_managers(
+        now=state.tasks["task"].state_entered_at + timedelta(minutes=1),
+    )
+
+    assert leases == []
 
 
 def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:

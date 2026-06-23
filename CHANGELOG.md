@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Review Rework Semantics
+
+- Stopped rejected reviews from marking tasks and projects as blocked; rejected
+  deliverables now return their task to in-progress rework.
+- Added a review-rework inbox item for the deliverable producer so findings are
+  handed back to the implementer while true blocked reviews still use blocker
+  handling.
+
 ## 2026-06-23 - Team Add-on Role-Aware Wake Context
 
 - Added subordinate role summaries to Team wake prompts so managers can see
