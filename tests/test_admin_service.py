@@ -54,6 +54,7 @@ from agent_sandbox.models import (
     ApprovalStatus,
     AgentRecord,
     ContainerSessionLifecycleState,
+    DiscordMessageEnvelope,
     SessionManifest,
     ToolName,
     WakeDispatchRecord,
@@ -90,6 +91,35 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _active_expires_at() -> datetime:
     return datetime.now(UTC) + timedelta(days=30)
+
+
+def _discord_message(
+    message_id: str,
+    *,
+    channel_id: str,
+    created_at: datetime,
+    content: str = "hello",
+) -> DiscordMessageEnvelope:
+    return DiscordMessageEnvelope(
+        message_id=message_id,
+        channel_id=channel_id,
+        author_id="operator",
+        author_name="Operator",
+        content=content,
+        created_at=created_at,
+        raw={"id": message_id, "channel_id": channel_id, "content": content},
+    )
+
+
+def _assert_cursor_seeded_during_operation(
+    cursor: str | None,
+    *,
+    before: datetime,
+    after: datetime,
+) -> None:
+    assert cursor is not None
+    parsed = datetime.fromisoformat(cursor.replace("Z", "+00:00")).astimezone(UTC)
+    assert before <= parsed <= after
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
@@ -1770,6 +1800,106 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert agents[0].host["image_alias"] == "dotnet-playwright"
 
 
+def test_create_container_agent_fast_forwards_discord_cursor_for_new_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "container_worker_base_url": "http://worker.test:11888",
+            "container_worker_token_env": "WORKER_TOKEN",
+        },
+    )
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "discord-ops",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read", "write"]},
+                }
+            ]
+        },
+    )
+    service.runtime.discord_inbox_service.store.add_messages_if_new(
+        [
+            _discord_message(
+                "msg-1",
+                channel_id="123456789012345678",
+                created_at=datetime(2026, 3, 21, tzinfo=UTC),
+            ),
+            _discord_message(
+                "msg-2",
+                channel_id="123456789012345678",
+                created_at=datetime(2026, 6, 23, 18, 53, 43, tzinfo=UTC),
+            ),
+        ]
+    )
+
+    def prepare_session(
+        self: ContainerWorkerClient, request: WorkerSessionPrepareRequest
+    ) -> WorkerSessionRecord:
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+    monkeypatch.setattr(
+        ContainerWorkerClient,
+        "write_files",
+        lambda self, session_id, request: WorkerFileWriteRecord(
+            session_id=session_id,
+            copied_count=len(request.files),
+            copied_paths=[file.destination_path for file in request.files],
+        ),
+    )
+
+    before = datetime.now(UTC)
+    result = service.create_admin_agent(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+            "communication_target_ids": ["discord-ops"],
+        }
+    )
+    after = datetime.now(UTC)
+
+    assert result["success"] is True
+    manifest = service.runtime.session_repository.get_session("container-session")
+    assert manifest is not None
+    assert manifest.discord_channel_allowlist == ["discord-ops"]
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "container-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
+    assert (
+        service.runtime.discord_inbox_service.store.has_unread_messages(
+            session_id="container-session",
+            channel_ids=["123456789012345678"],
+        )
+        is False
+    )
+
+
 def test_create_container_agent_infers_claude_provider_from_anthropic_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2200,6 +2330,37 @@ def test_create_admin_agent_libvirt_records_default_template_when_vm_image_omitt
     }
 
 
+def test_create_admin_agent_libvirt_forwards_ttl_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "ttl_seconds": 604800,
+        }
+    )
+
+    assert result["success"] is True
+    assert captured["ttl_seconds"] == 604800
+    assert captured["ttl_hours"] is None
+
+
 def test_create_admin_agent_libvirt_never_allows_existing_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2271,9 +2432,16 @@ def test_create_container_agent_duplicate_session_raises(
         "backend": "container_worker_vm",
         "session_id": "container-session",
         "target_name": "container-target",
+        "ttl_seconds": 42,
     }
+    before = datetime.now(UTC)
     first = service.create_admin_agent(payload)
+    after = datetime.now(UTC)
     assert first["success"] is True
+    manifest = service.runtime.session_repository.get_session("container-session")
+    assert manifest is not None
+    assert before + timedelta(seconds=42) <= manifest.expires_at
+    assert manifest.expires_at <= after + timedelta(seconds=42)
 
     with pytest.raises(ValueError, match="Session already exists: container-session"):
         service.create_admin_agent(dict(payload))
@@ -11060,6 +11228,77 @@ def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
     assert updated.allowed_tools == [ToolName.COMPLETE_ISSUE, ToolName.APPROVAL_CHECK]
 
 
+def test_set_session_allowed_tools_fast_forwards_existing_discord_target_cursor(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "discord-ops",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read", "write"]},
+                }
+            ]
+        },
+    )
+    service.runtime.discord_inbox_service.store.add_message_if_new(
+        _discord_message(
+            "msg-1",
+            channel_id="123456789012345678",
+            created_at=datetime(2026, 3, 21, tzinfo=UTC),
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            discord_channel_allowlist=["discord-ops"],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    assert (
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "issue-13302-session", "123456789012345678"
+        )
+        is None
+    )
+
+    before = datetime.now(UTC)
+    result = service.set_session_allowed_tools(
+        "13302",
+        [
+            ToolName.CLAIM_NEXT_ISSUE.value,
+            ToolName.DISCORD_GET_COMMANDS.value,
+        ],
+    )
+    after = datetime.now(UTC)
+
+    assert result.success is True
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "issue-13302-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
+    assert (
+        service.runtime.discord_inbox_service.store.has_unread_messages(
+            session_id="issue-13302-session",
+            channel_ids=["123456789012345678"],
+        )
+        is False
+    )
+
+
 def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -11215,6 +11454,79 @@ def test_update_session_policy_updates_allowlists_and_metadata(
                 "allowed_contact_ids": ["missing"],
             },
         )
+
+
+def test_update_session_policy_fast_forwards_added_discord_target_cursor(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "discord-ops",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read", "write"]},
+                }
+            ]
+        },
+    )
+    service.runtime.discord_inbox_service.store.add_messages_if_new(
+        [
+            _discord_message(
+                "msg-1",
+                channel_id="123456789012345678",
+                created_at=datetime(2026, 3, 21, tzinfo=UTC),
+            ),
+            _discord_message(
+                "msg-2",
+                channel_id="123456789012345678",
+                created_at=datetime(2026, 6, 23, 18, 53, 43, tzinfo=UTC),
+            ),
+        ]
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    before = datetime.now(UTC)
+    result = service.update_session_policy(
+        "13302",
+        {
+            "discord_channel_allowlist": ["discord-ops"],
+        },
+    )
+    after = datetime.now(UTC)
+
+    assert result.success is True
+    updated = service.runtime.session_repository.get_session("issue-13302-session")
+    assert updated is not None
+    assert updated.discord_channel_allowlist == ["discord-ops"]
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "issue-13302-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
+    assert (
+        service.runtime.discord_inbox_service.store.has_unread_messages(
+            session_id="issue-13302-session",
+            channel_ids=["123456789012345678"],
+        )
+        is False
+    )
 
 
 def test_update_session_policy_and_agent_validate_approval_notification_targets(
@@ -12427,6 +12739,37 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert result.message == "ok:setup_vm.sh"
 
 
+def test_create_vm_uses_ttl_seconds_for_session_expiry(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok:setup_vm.sh", stderr=""
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run)
+
+    before = datetime.now(UTC)
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        ttl_seconds=90,
+    )
+    after = datetime.now(UTC)
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert before + timedelta(seconds=90) <= manifest.expires_at
+    assert manifest.expires_at <= after + timedelta(seconds=90)
+
+
 def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_setup_args(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -13160,6 +13503,76 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
     assert ToolName.LIST_UNREAD_FEEDBACK in manifest.allowed_tools
     assert ToolName.POST_PR_FEEDBACK_REPLY in manifest.allowed_tools
     assert manifest.tool_argument_policies["create_ado_backlog_item"][0].id == "create-policy"
+
+
+def test_create_vm_fast_forwards_discord_cursor_for_new_target(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "discord-ops",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read", "write"]},
+                }
+            ]
+        },
+    )
+    service.runtime.discord_inbox_service.store.add_message_if_new(
+        _discord_message(
+            "msg-1",
+            channel_id="123456789012345678",
+            created_at=datetime(2026, 6, 23, 18, 53, 43, tzinfo=UTC),
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    before = datetime.now(UTC)
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        discord_channels=["discord-ops"],
+    )
+    after = datetime.now(UTC)
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.discord_channel_allowlist == ["discord-ops"]
+    _assert_cursor_seeded_during_operation(
+        service.runtime.discord_inbox_service.store.get_session_cursor(
+            "lab-session", "123456789012345678"
+        ),
+        before=before,
+        after=after,
+    )
+    assert (
+        service.runtime.discord_inbox_service.store.has_unread_messages(
+            session_id="lab-session",
+            channel_ids=["123456789012345678"],
+        )
+        is False
+    )
 
 
 def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(

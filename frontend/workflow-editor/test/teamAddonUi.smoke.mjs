@@ -69,12 +69,20 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderPeopleAgentDetail/);
   assert.match(script, /renderCompactRuntimeAgentRow/);
   assert.match(script, /agentAwakeState/);
+  assert.match(script, /session_is_expired/);
+  assert.match(script, /expired_agent_session/);
   assert.match(script, /buildOrgFlowGraph/);
   assert.match(script, /team-org-flow:edit-agent/);
+  assert.match(script, /aria-describedby/);
+  assert.match(script, /Agent ID \$\{escapeHtml\(node\.agentData\.id\)\}\. Role/);
   assert.match(orgFlowScript, /team-org-flow:edit-agent/);
+  assert.match(orgFlowScript, /aria-describedby/);
+  assert.match(orgFlowScript, /"Agent ID "/);
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
+  assert.match(stylesheet, /max-width:\s*min\(17rem,\s*calc\(100vw - 2rem\)\);/);
+  assert.doesNotMatch(stylesheet, /min-width:\s*max-content/);
   assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
   assert.doesNotMatch(markup, /content-panel people-agents-panel/);
   assert.match(markup, /data-governance-create-toggle/);
@@ -2339,12 +2347,38 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.equal(await leadCard.locator(".hierarchy-node-title strong").textContent(), "lead");
   assert.equal(await backendCard.locator(".hierarchy-node-title strong").textContent(), "Backend Worker");
   assert.equal(await workerCard.locator(".hierarchy-node-title strong").textContent(), "worker");
-  assert.equal(await managerCard.locator(".hierarchy-node-id").count(), 1);
-  assert.equal(await backendCard.locator(".hierarchy-node-id").count(), 1);
+  assert.equal(await managerCard.locator(".hierarchy-node-id").count(), 0);
+  assert.equal(await backendCard.locator(".hierarchy-node-id").count(), 0);
   assert.equal(await leadCard.locator(".hierarchy-node-id").count(), 0);
   assert.equal(await workerCard.locator(".hierarchy-node-id").count(), 0);
+  assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await leadCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await workerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
+  assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
+  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
+  const backendDescriptionId = await backendCard.getAttribute("aria-describedby");
+  assert.ok(backendDescriptionId);
+  assert.equal(await backendCard.locator(".visually-hidden").getAttribute("id"), backendDescriptionId);
+  assert.match(await backendCard.locator(".visually-hidden").textContent(), /Agent ID backend\. Role Backend\./);
 
-  await backendCard.hover();
+  await backendCard.focus();
+  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
+  await page.mouse.move(0, 0);
+  await page.locator("#show-archived-toggle").focus();
+  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "hidden" });
+
+  await backendCard.locator(".hierarchy-node-avatar-wrap").hover();
+  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
+  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), true);
+  await backendCard
+    .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
+    .getByText("Backend Worker")
+    .waitFor({ state: "visible" });
+  await backendCard
+    .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
+    .getByText("backend")
+    .waitFor({ state: "visible" });
   const backendDetails = backendCard.locator(".hierarchy-node-details");
   await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
   await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
@@ -2414,8 +2448,18 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await focusedBackendCard.locator(".org-node-work").getByText("Resolve dependency").waitFor({
     state: "visible",
   });
+  const focusedBackendDescriptionId = await focusedBackendCard.getAttribute("aria-describedby");
+  assert.ok(focusedBackendDescriptionId);
+  assert.match(await focusedBackendCard.locator(".visually-hidden").textContent(), /Agent ID backend\. Role Backend\./);
 
-  await focusedBackendCard.hover();
+  await focusedBackendCard.focus();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
+  await page.mouse.move(0, 0);
+  await page.getByRole("tab", { name: "Org chart" }).focus();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "hidden" });
+
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap").hover();
+  await focusedBackendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
   await focusedBackendCard.locator(".org-node-work-line--now").getByText("Build API").waitFor({
     state: "visible",
   });
@@ -3294,6 +3338,9 @@ function seededGitState() {
           team_id: "team-alpha",
           project_id: "alpha-project",
           session_id: "session-alpha-lead",
+          session_is_expired: true,
+          session_expires_at: "2026-06-09T15:45:00Z",
+          session_status: "expired",
           wake_due: true,
           lease_active: false,
           active_dispatch_id: "",
@@ -3310,6 +3357,18 @@ function seededGitState() {
       ],
       attention: [
         {
+          id: "alpha-lead:expired-session",
+          kind: "expired_agent_session",
+          severity: "critical",
+          title: "Expired session for alpha-lead",
+          team_id: "team-alpha",
+          project_id: "alpha-project",
+          agent_id: "alpha-lead",
+          session_id: "session-alpha-lead",
+          state: "expired",
+          detail: "agent alpha-lead; session session-alpha-lead expired at 2026-06-09T15:45:00Z",
+        },
+        {
           id: "attention-blocked",
           kind: "blocked_task",
           severity: "warning",
@@ -3320,6 +3379,20 @@ function seededGitState() {
           task_id: "task-blocked",
           state: "blocked",
           detail: "Work blocked by an upstream issue.",
+        },
+      ],
+      session_health: [
+        {
+          agent_id: "alpha-lead",
+          team_id: "team-alpha",
+          project_ids: ["alpha-project"],
+          lead_project_ids: ["alpha-project"],
+          role_id: "alpha-project__project-lead",
+          session_id: "session-alpha-lead",
+          session_present: true,
+          expires_at: "2026-06-09T15:45:00Z",
+          is_expired: true,
+          status: "expired",
         },
       ],
     },
@@ -4098,6 +4171,12 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
   await page.locator("#team-operations-page .runtime-item-compact").first().waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-operations-page").getByText("Expired session for alpha-lead").waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-operations-page").getByText("session expired").first().waitFor({
     state: "visible",
   });
   assert.equal(await page.locator("#team-operations-page .runtime-item-compact details[open]").count(), 0);

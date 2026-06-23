@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-06-23 - Team Add-on Action Handoff Hardening
+
+- Reseeded Team action contract files on every persistent wake and avoided
+  stale VM-IP metadata when copying Team guidance or action contract files.
+- Added a per-dispatch `team-finish` helper in Team agent sessions to fill
+  `schema_version`, `agent_id`, and `dispatch_id` before writing
+  `/artifacts/team-action.json`.
+- Added a one-shot missing-action recovery prompt that keeps the active Team
+  lease open for the same dispatch before falling back to the normal failure
+  path.
+- Cleared Team runtime leases and recorded the original missing-action failure
+  when a one-shot recovery resume cannot be dispatched.
+- Rejected self-superseding review-rework deliverable IDs before mutating Team
+  state.
+- Tightened wake prompts with explicit deliverable staging, relative
+  `artifact_paths`, and owned `task_id` guidance.
+
+## 2026-06-23 - Team Add-on Expired Session Visibility
+
+- Surfaced expired Team agent sessions in Team Add-on runtime operations,
+  scoped Team state queries, and wake prompt context so leads and agents can
+  escalate stale member sessions.
+- Kept multi-project expired-session attention visible in each assigned
+  project scope and expanded wake prompt session health to visible members.
+- Added Team Add-on UI indicators for expired sessions in the Operations view
+  and agent details.
+
+## 2026-06-23 - Agent Create Session TTL
+
+- Added a Session TTL duration field to the Admin Web Agents create dialog,
+  defaulting to `7d` and accepting seconds, minutes, hours, days, and weeks.
+- Added `ttl_seconds` support to agent creation so UI-created sessions can use
+  precise duration values while existing `ttl_hours` callers continue to work.
+
+## 2026-06-23 - Discord Target Cursor Fast-Forward
+
+- Fast-forwarded per-session Discord inbox cursors when a Discord communication
+  target becomes wake-eligible for an agent, preventing historical channel
+  messages from waking newly created or newly updated agents.
+
+## 2026-06-23 - Team Add-on Chat Lease Retry
+
+- Queued Team Add-on chat messages when the target agent already has an active
+  Team dispatch, instead of marking the operator message failed immediately.
+- Retried queued Team chat messages from the wake cycle once the agent's active
+  Team lease is released, giving queued chat precedence over ordinary due work.
+- Kept queued Team chat retries behind the wake loop limit and Team cost-cap
+  guard so they do not bypass paused or over-cap wake configurations.
+
+## 2026-06-23 - Team Add-on Review Rework Semantics
+
+- Stopped rejected reviews from marking tasks and projects as blocked; rejected
+  deliverables now return their task to in-progress rework.
+- Added a review-rework inbox item for the deliverable producer so findings are
+  handed back to the implementer while true blocked reviews still use blocker
+  handling.
+- Added explicit deliverable supersession for review rework so accepted revised
+  deliverables can complete a task without losing rejected-deliverable history.
+
+## 2026-06-23 - Team Add-on Role-Aware Wake Context
+
+- Added subordinate role summaries to Team wake prompts so managers can see
+  direct reports' role names, descriptions, permissions, and project context
+  before assigning tasks.
+- Added role-aware delegation guidance to reduce implementation tasks being
+  assigned to reviewer-role agents.
+
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 
 - Recorded governance member-team additions and removals as pending

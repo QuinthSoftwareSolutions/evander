@@ -267,6 +267,11 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "valid": "${{team-read-persistent-action.valid}}",
                 "error": "${{team-read-persistent-action.error}}",
                 "action": "${{team-read-persistent-action.action}}",
+                "action_artifact_path": (
+                    '${{team-read-persistent-action.path ?? "team-action.json"}}'
+                ),
+                "recover_missing_action": True,
+                "recovery_resume_mode": "same_context",
             },
             {
                 "id": "team-apply-ephemeral-action",

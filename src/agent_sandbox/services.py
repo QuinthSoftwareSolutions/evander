@@ -3135,6 +3135,14 @@ class DiscordInboxService:
             persist_session_cursor=False,
         )
 
+    def fast_forward_session_cursors_to_latest(
+        self,
+        *,
+        session_id: str,
+        channel_ids: list[str],
+    ) -> dict[str, str]:
+        return self.store.fast_forward_session_cursors_to_latest(session_id, channel_ids)
+
     def _list_messages(
         self,
         *,

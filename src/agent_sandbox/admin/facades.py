@@ -594,6 +594,7 @@ class SessionAdminFacade:
         session_id, manifest = admin_service_module._resolve_session_target(
             target, self._sessions_by_id()
         )
+        previous_manifest = manifest.model_copy(deep=True)
         normalized_tools: list[McpToolName] = []
         seen: set[str] = set()
         for tool in allowed_tools:
@@ -616,6 +617,11 @@ class SessionAdminFacade:
             if tool_name in allowed_values
         }
         self._session_repository().upsert_session(manifest)
+        admin_service_module._sync_added_discord_session_cursors(
+            self._deps.runtime,
+            previous_session=previous_manifest,
+            updated_session=manifest,
+        )
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -666,8 +672,14 @@ class SessionAdminFacade:
                 )
             )
         if update:
+            previous_manifest = manifest
             manifest = manifest.model_copy(update=update)
             self._session_repository().upsert_session(manifest)
+            admin_service_module._sync_added_discord_session_cursors(
+                self._deps.runtime,
+                previous_session=previous_manifest,
+                updated_session=manifest,
+            )
         return SessionActionResult(
             success=True,
             session_id=session_id,
