@@ -3175,6 +3175,22 @@ class TeamStateRepository:
                 teams_with_open_tasks.add(owner.team_id)
             teams_with_lease = set()
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
+                if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
+                    continue
+                if normalized_team_id is not None and agent.team_id != normalized_team_id:
+                    continue
+                if agent.team_id in blocked_teams:
+                    continue
+                if _active_stand_downs_for_agent(state_model, agent.id):
+                    continue
+                runtime = state_model.agent_runtimes.get(agent.id)
+                if (
+                    runtime is not None
+                    and runtime.wake_leased_until is not None
+                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                ):
+                    teams_with_lease.add(agent.team_id)
+            for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
                 if agent.status != AgentStatus.ACTIVE:
@@ -3197,8 +3213,6 @@ class TeamStateRepository:
                     runtime.wake_leased_until is not None
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
-                    if agent.team_id is not None:
-                        teams_with_lease.add(agent.team_id)
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)

@@ -673,6 +673,13 @@ def test_manager_fallback_not_leased_while_team_member_is_awake(
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
     assert manager_runtime is None or manager_runtime.wake_reason is None
 
+    scoped_state, scoped_leases = repo.lease_due_agents(now=now, agent_id="manager")
+
+    assert scoped_leases == []
+    manager_runtime = scoped_state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+    assert manager_runtime is None or manager_runtime.wake_reason is None
+
 
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)

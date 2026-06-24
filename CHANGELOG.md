@@ -5,6 +5,8 @@
 - Suppressed manager fallback wakes while another active team member still has
   an unexpired wake lease, avoiding oversight prompts for work already in
   progress.
+- Applied the active-lease guard before agent-specific wake scoping so targeted
+  manager wake runs follow the same fallback suppression.
 
 ## 2026-06-24 - Team Add-on Revision Conflict Recovery
 
