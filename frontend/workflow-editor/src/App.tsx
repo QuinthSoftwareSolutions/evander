@@ -4795,6 +4795,7 @@ export default function App() {
         clearTimeout(timeout);
       }
       runtimePulseTimeoutsRef.current.clear();
+      setRuntimePulseNodeIds((current) => current.size === 0 ? current : new Set<string>());
       return;
     }
     const stream = new EventSource("/api/workflow-editor/runs/stream");
