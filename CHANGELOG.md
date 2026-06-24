@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Review Profile Criteria Editor
+
+- Replaced the Team Add-on review-profile criteria textarea with structured
+  criteria rows for label, description, optional key, and required status.
+- Reused the structured criteria editor in review-profile edit dialogs while
+  preserving the existing Admin API criteria payload shape.
+
+## 2026-06-24 - Team Add-on Manager Fallback Wake Serialization
+
+- Serialized pending manager inbox items in fallback wake leases, preventing
+  prompt construction from crashing when throttled managers are woken for team
+  oversight while holding non-wakeable inbox items.
+- Tightened the manager fallback wake regression test so it explicitly creates
+  a waiting-review task and verifies the fallback lease remains JSON-safe.
+
+## 2026-06-23 - Team Add-on Chat Dispatch Queueing
+
+- Queued built-in Team chat sends for asynchronous dispatch instead of resuming
+  the target agent inline from the Starlette request path, preventing powered-off
+  VM dispatch attempts from freezing Admin Web.
+
+## 2026-06-23 - Team Add-on Org Chart Inbox Badge Hover
+
+- Restored hover and focus popovers for status-request and progress-report
+  badges in the Team Add-on ReactFlow org chart.
+- Kept those org-chart badge popovers scrollable without triggering ReactFlow
+  canvas panning.
+
+## 2026-06-23 - Team Add-on Duplicate Wake Suppression
+
+- Stopped Team agents from being scheduled back onto `waiting_for_review`
+  tasks after they have already submitted an active deliverable.
+- Changed Team wake eligibility so pending inbox items with
+  `response_requested=false` stay visible but do not wake the recipient.
+- Aligned runtime Operations `wake_due` badges with the same deliverable and
+  no-reply inbox wake rules.
+
 ## 2026-06-23 - Team Add-on Action Handoff Hardening
 
 - Reseeded Team action contract files on every persistent wake and avoided

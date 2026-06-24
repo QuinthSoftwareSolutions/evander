@@ -2578,16 +2578,21 @@ def _runtime_agent_wake_due(
         for item in state.inbox.values()
         if item.recipient_agent_id == agent.id and item.state == TeamInboxItemState.PENDING
     ]
-    immediate_inbox = [item for item in pending_inbox if item.priority != TeamInboxPriority.LOW]
-    low_priority_inbox = [item for item in pending_inbox if item.priority == TeamInboxPriority.LOW]
+    wake_inbox = [item for item in pending_inbox if item.response_requested]
+    immediate_inbox = [item for item in wake_inbox if item.priority != TeamInboxPriority.LOW]
+    low_priority_inbox = [item for item in wake_inbox if item.priority == TeamInboxPriority.LOW]
     action_feedback = _latest_undelivered_action_feedback_for_agent(state, agent.id)
     rotation_pending = runtime.context_rotation_pending
-    active_tasks = _active_tasks_for_runtime_agent(state, agent.id)
+    active_tasks = [
+        task
+        for task in _active_tasks_for_runtime_agent(state, agent.id)
+        if _runtime_task_can_wake_owner_for_work(state, task)
+    ]
     task_work_ready = any(
         state.dependency_status(task.id) == "satisfied" for task in active_tasks
     ) or any(state.subtask_counts(task.id)["open"] > 0 for task in active_tasks)
     wake_eligible = (
-        rotation_pending or bool(pending_inbox) or bool(action_feedback) or task_work_ready
+        rotation_pending or bool(wake_inbox) or bool(action_feedback) or task_work_ready
     )
     if not wake_eligible:
         return False
@@ -2598,7 +2603,7 @@ def _runtime_agent_wake_due(
         if (
             _DEFAULT_MAX_NO_PROGRESS_COUNT >= 0
             and runtime.no_progress_count >= _DEFAULT_MAX_NO_PROGRESS_COUNT
-            and not pending_inbox
+            and not wake_inbox
         ):
             return False
         return True
@@ -2614,6 +2619,30 @@ def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[Age
         for task in state.tasks.values()
         if task.owner_agent_id == agent_id and task.state not in terminal
     ]
+
+
+def _runtime_task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
+    return not _runtime_task_waits_on_active_deliverable_review(state, task)
+
+
+def _runtime_task_waits_on_active_deliverable_review(
+    state: TeamState,
+    task: AgentTask,
+) -> bool:
+    if task.state != TeamTaskState.WAITING_FOR_REVIEW:
+        return False
+    review_states = {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+        TeamRecordState.ACCEPTED,
+    }
+    return any(
+        (deliverable := state.deliverables.get(deliverable_id)) is not None
+        and deliverable.superseded_by_deliverable_id is None
+        and deliverable.state in review_states
+        for deliverable_id in task.deliverable_ids
+    )
 
 
 def _latest_undelivered_action_feedback_for_agent(
