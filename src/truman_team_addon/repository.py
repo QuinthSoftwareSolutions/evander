@@ -4378,6 +4378,12 @@ class TeamStateRepository:
                 agent_id=agent.id,
                 now=runtime.updated_at,
             )
+            _append_pending_chat_message_queued_event_for_agent(
+                state_model,
+                agent=agent,
+                completed_dispatch_id=record.dispatch_id,
+                result=result,
+            )
             result["success"] = progress or not result["errors"]
             result["applied"] = progress
             return state_model
@@ -6249,6 +6255,64 @@ def _mark_action_failure(
         error=error,
     )
     result["errors"].append(error)
+    agent = state.agents.get(agent_id)
+    if agent is not None:
+        _append_pending_chat_message_queued_event_for_agent(
+            state,
+            agent=agent,
+            completed_dispatch_id=dispatch_id,
+            result=result,
+        )
+
+
+def _append_pending_chat_message_queued_event_for_agent(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    completed_dispatch_id: str,
+    result: dict[str, Any],
+) -> None:
+    pending_message: TeamConversationMessage | None = None
+    pending_conversation: TeamConversation | None = None
+    for message in sorted(
+        state.conversation_messages.values(),
+        key=lambda item: (item.created_at, item.id),
+    ):
+        if (
+            message.sender != "operator"
+            or message.message_type != "text"
+            or message.status != "queued"
+        ):
+            continue
+        conversation = state.conversations.get(message.conversation_id)
+        if conversation is None or conversation.agent_id != agent.id:
+            continue
+        pending_message = message
+        pending_conversation = conversation
+        break
+    if pending_message is None or pending_conversation is None:
+        return
+    dispatch_id = pending_message.dispatch_id or f"team-chat:{pending_message.id}"
+    pending_message.dispatch_id = dispatch_id
+    result["events"].append(
+        {
+            "event_type": CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+            "correlation_key": dispatch_id,
+            "idempotency_key": (
+                "team-addon:"
+                f"{CHAT_MESSAGE_QUEUED_EVENT_TYPE}:agent-ready:"
+                f"{completed_dispatch_id}:{pending_message.id}"
+            ),
+            "payload": {
+                "team_id": agent.team_id,
+                "agent_id": agent.id,
+                "session_id": agent.session_id,
+                "conversation_id": pending_conversation.id,
+                "message_id": pending_message.id,
+                "dispatch_id": dispatch_id,
+            },
+        }
+    )
 
 
 def _is_direct_subordinate(actor: PersistentAgent, agent_id: str) -> bool:

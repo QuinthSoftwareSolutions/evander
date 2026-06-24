@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Chat Wake Retry
+
+- Re-emitted queued Team chat wake events when an agent finishes its current
+  Team dispatch, so chat messages queued while the agent is leased wake
+  promptly instead of waiting for the cron fallback.
+
 ## 2026-06-24 - Local OpenAI Websocket Rejection
 
 - Rejected `local_openai` websocket/realtime relay requests before dialing the

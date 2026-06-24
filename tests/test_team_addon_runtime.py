@@ -84,6 +84,7 @@ from truman_team_addon.providers import (
     _publish_deliverable_artifact_bundle,
 )
 from truman_team_addon.repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     MISSING_ACTION_RECOVERY_MARKER,
     TeamStateRepository,
 )
@@ -3342,6 +3343,77 @@ def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) 
         "title": "Need a decision",
         "message": "Operator input required.",
         "urgency": "high",
+    }
+
+
+def test_apply_agent_action_publishes_queued_chat_retry_after_active_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    active_dispatch_id = "team-dispatch-active"
+
+    def _mark_backend_busy(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id=active_dispatch_id,
+            wake_leased_until=now + timedelta(minutes=10),
+        )
+        return state
+
+    repo.update(_mark_backend_busy)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer as soon as your current wake finishes.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    queued_dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=queued_dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    provider = TeamApplyAgentActionEffectProvider()
+    provider.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            dispatch_id=active_dispatch_id,
+            action={"agent_id": "backend", "dispatch_id": active_dispatch_id},
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["published_event_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
+    assert events[0].correlation_key == queued_dispatch_id
+    assert events[0].idempotency_key == (
+        "team-addon:"
+        f"{CHAT_MESSAGE_QUEUED_EVENT_TYPE}:agent-ready:"
+        f"{active_dispatch_id}:{message.id}"
+    )
+    assert events[0].payload == {
+        "team_id": "team",
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "conversation_id": conversation.id,
+        "message_id": message.id,
+        "dispatch_id": queued_dispatch_id,
     }
 
 

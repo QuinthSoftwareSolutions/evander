@@ -35,7 +35,11 @@ from truman_team_addon.models import (
     agent_project_ids,
     project_lead_agent_id,
 )
-from truman_team_addon.repository import TeamStateConflictError, TeamStateRepository
+from truman_team_addon.repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    TeamStateConflictError,
+    TeamStateRepository,
+)
 from truman_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
     _ensure_team_conversations_operator_scope,
@@ -367,6 +371,69 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     assert state.conversation_messages[message.id].status == "running"
     assert state.agent_runtimes["backend"].active_dispatch_id == dispatch_id
     assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
+def test_repository_reemits_chat_event_when_active_dispatch_releases(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    active_dispatch_id = "team-dispatch-active"
+
+    def _mark_backend_busy(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id=active_dispatch_id,
+            wake_leased_until=now + timedelta(minutes=10),
+        )
+        return state
+
+    repo.update(_mark_backend_busy)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please pick this up as soon as your current wake finishes.",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    queued_dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=queued_dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={"agent_id": "backend", "dispatch_id": active_dispatch_id},
+        dispatch_id=active_dispatch_id,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    assert state.conversation_messages[message.id].status == "queued"
+    assert result["events"] == [
+        {
+            "event_type": CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+            "correlation_key": queued_dispatch_id,
+            "idempotency_key": (
+                "team-addon:"
+                f"{CHAT_MESSAGE_QUEUED_EVENT_TYPE}:agent-ready:"
+                f"{active_dispatch_id}:{message.id}"
+            ),
+            "payload": {
+                "team_id": "team",
+                "agent_id": "backend",
+                "session_id": "session-backend",
+                "conversation_id": conversation.id,
+                "message_id": message.id,
+                "dispatch_id": queued_dispatch_id,
+            },
+        }
+    ]
 
 
 def test_repository_claim_pending_chat_message_dispatches_honors_limit_zero(
