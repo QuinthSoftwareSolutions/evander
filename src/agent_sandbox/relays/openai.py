@@ -394,6 +394,18 @@ class OpenAIRelay:
                 )
                 await websocket.close(code=1008, reason=reason)
                 return
+            if request_context.config.model_provider_mode == "local_openai":
+                reason = (
+                    "Local OpenAI-compatible relay does not support websocket/realtime requests"
+                )
+                logger.warning(
+                    "relay_rejected_local_openai_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
+                return
 
             openai_compatible_upstream = relay._openai_compatible_upstream(request_context.config)
             if not openai_compatible_upstream.api_key:

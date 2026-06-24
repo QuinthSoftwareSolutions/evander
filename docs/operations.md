@@ -652,6 +652,9 @@ Storage layout for directory config:
   }
   ```
 - For local OpenAI-compatible Codex routing, keep `agent_provider` as `codex` and set `model_provider_mode: "local_openai"`. The relay forwards normal OpenAI-compatible HTTP requests to `local_openai_api_base_url`, sends `local_openai_api_key` as a placeholder bearer token, and records usage rows under `local_openai_provider_name`.
+- `local_openai` mode is HTTP/SSE only. The relay rejects websocket/realtime requests
+  before dialing the upstream local endpoint because the supported Ollama target does
+  not implement OpenAI websocket `/responses`.
 - Ollama is the v1 local runtime target. Pull the recommended initial model on an RTX 5090-class host:
 
   ```bash

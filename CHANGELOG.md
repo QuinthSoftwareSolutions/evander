@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Local OpenAI Websocket Rejection
+
+- Rejected `local_openai` websocket/realtime relay requests before dialing the
+  upstream Ollama-compatible endpoint, preventing unsupported websocket upgrades
+  from surfacing as retryable relay 500s during Codex startup.
+
 ## 2026-06-24 - Team Add-on Manager Fallback Context
 
 - Added team-scoped manager fallback wake context with open team tasks,
