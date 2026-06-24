@@ -3419,6 +3419,7 @@ class TeamStateRepository:
                             state_model,
                             team=team,
                             manager=manager,
+                            now=effective_now,
                         ),
                         "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": manager.reports_to_agent_id,
@@ -4867,6 +4868,7 @@ def _manager_fallback_context_payload(
     *,
     team: Team,
     manager: PersistentAgent,
+    now: datetime,
 ) -> dict[str, Any]:
     project_ids = {
         project.id
@@ -4944,7 +4946,7 @@ def _manager_fallback_context_payload(
         key=lambda item: item.id,
     )
     runtime_operations = _manager_fallback_runtime_operations_payload(
-        runtime_operations_payload(state),
+        runtime_operations_payload(state, now=now),
         team_agent_ids=team_agent_ids,
         project_ids=project_ids,
         task_ids=visible_task_ids,

@@ -3546,7 +3546,19 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     assert fallback_context["review_requests"]["review-stalled"]["reviewer_agent_id"] == "manager"
     assert fallback_context["review_requests"]["review-stalled"]["state"] == "pending"
     assert fallback_context["inbox"]["manager-note"]["response_requested"] is False
-    assert fallback_context["runtime_operations"]["agents"]
+    assert (
+        fallback_context["runtime_operations"]["generated_at"]
+        == datetime(2026, 1, 1, tzinfo=UTC).isoformat()
+    )
+    runtime_agents = {
+        row["id"]: row
+        for row in fallback_context["runtime_operations"]["agents"]
+    }
+    assert runtime_agents["manager"]["wake_reason"] == "manager_fallback"
+    assert (
+        runtime_agents["manager"]["wake_leased_until"]
+        == datetime(2026, 1, 1, 0, 15, tzinfo=UTC).isoformat()
+    )
     json.dumps(leases[0])
 
 

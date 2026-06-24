@@ -13,6 +13,8 @@
   attention signals so stalled teams can be routed from the fallback prompt.
 - Added manager fallback prompt guidance to use that team context instead of
   returning a no-op when the manager has no personally owned tasks or inbox.
+- Generated fallback runtime attention snapshots from the lease timestamp so
+  explicit scheduler times and prompt runtime state stay consistent.
 
 ## 2026-06-24 - Team Add-on Projects Tab
 
