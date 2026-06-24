@@ -75,7 +75,6 @@ from .models import (
     agent_project_ids,
     effective_role_permissions,
     project_lead_agent_id,
-    runtime_operations_payload,
     _ensure_unique,
     _unique_text_list,
 )
@@ -99,6 +98,11 @@ _NON_TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.WAITING_FOR_REVIEW,
     }
 )
+_MANAGER_FALLBACK_OPEN_WORK_LIMIT = 20
+_MANAGER_FALLBACK_PENDING_INBOX_LIMIT = 10
+_MANAGER_FALLBACK_FAILED_ACTION_LIMIT = 3
+_MANAGER_FALLBACK_ROUTING_GAP_LIMIT = 20
+_MANAGER_FALLBACK_TEXT_LIMIT = 240
 
 
 def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:
@@ -3416,7 +3420,7 @@ class TeamStateRepository:
                             state_model,
                             manager.id,
                         ),
-                        "manager_fallback_context": _manager_fallback_context_payload(
+                        "manager_fallback_summary": _manager_fallback_summary_payload(
                             state_model,
                             team=team,
                             manager=manager,
@@ -4870,7 +4874,7 @@ def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> lis
     return payloads
 
 
-def _manager_fallback_context_payload(
+def _manager_fallback_summary_payload(
     state: TeamState,
     *,
     team: Team,
@@ -4905,21 +4909,22 @@ def _manager_fallback_context_payload(
             deliverable
             for deliverable in state.deliverables.values()
             if deliverable.task_id in visible_task_ids
+            and deliverable.superseded_by_deliverable_id is None
         ),
         key=lambda item: (item.created_at, item.id),
     )
     visible_deliverable_ids = {deliverable.id for deliverable in visible_deliverables}
-    visible_inbox = sorted(
+    visible_pending_inbox = sorted(
         (
             item
             for item in state.inbox.values()
             if item.recipient_agent_id in team_agent_ids
             and (item.sender_agent_id is None or item.sender_agent_id in team_agent_ids)
             and (item.task_id is None or item.task_id in visible_task_ids)
+            and item.state == TeamInboxItemState.PENDING
         ),
         key=lambda item: (item.created_at, item.id),
     )
-    visible_inbox_ids = {item.id for item in visible_inbox}
     visible_action_records = sorted(
         (
             record
@@ -4929,18 +4934,7 @@ def _manager_fallback_context_payload(
             and record.dismissed_at is None
         ),
         key=lambda item: (item.created_at, item.id),
-    )
-    role_ids = {
-        role.id
-        for role in state.roles.values()
-        if role.team_id == team.id
-        and not role.archived
-        and (role.project_id is None or role.project_id in project_ids)
-    }
-    role_ids.update(
-        agent.role_id
-        for agent in team_agents
-        if agent.role_id is not None
+        reverse=True,
     )
     review_profiles = sorted(
         (
@@ -4952,160 +4946,553 @@ def _manager_fallback_context_payload(
         ),
         key=lambda item: item.id,
     )
-    runtime_operations = _manager_fallback_runtime_operations_payload(
-        runtime_operations_payload(state, now=now),
-        team_agent_ids=team_agent_ids,
+    visible_reviews = sorted(
+        (
+            review
+            for review in state.review_requests.values()
+            if review.deliverable_id in visible_deliverable_ids
+        ),
+        key=lambda item: (item.created_at or now, item.id),
+    )
+    visible_pending_reviews = [
+        review
+        for review in visible_reviews
+        if review.state
+        in {
+            TeamRecordState.PENDING,
+            TeamRecordState.IN_PROGRESS,
+            TeamRecordState.BLOCKED,
+        }
+    ]
+    reviewer_candidates = _manager_fallback_reviewer_candidates(
+        state,
+        team_agents=team_agents,
         project_ids=project_ids,
-        task_ids=visible_task_ids,
-        deliverable_ids=visible_deliverable_ids,
-        inbox_item_ids=visible_inbox_ids,
+        review_profiles=review_profiles,
+    )
+    open_work_rows = [
+        _manager_fallback_task_row(
+            state,
+            task=task,
+            visible_reviews=visible_reviews,
+        )
+        for task in visible_tasks
+    ]
+    deliverable_rows = [
+        _manager_fallback_deliverable_row(
+            deliverable=deliverable,
+            visible_reviews=visible_reviews,
+        )
+        for deliverable in visible_deliverables
+    ]
+    review_rows = [
+        _manager_fallback_review_row(review)
+        for review in visible_reviews
+    ]
+    inbox_rows = [
+        _manager_fallback_inbox_row(item)
+        for item in visible_pending_inbox
+    ]
+    failed_action_rows = [
+        _manager_fallback_failed_action_row(record)
+        for record in visible_action_records
+    ]
+    routing_gaps = _manager_fallback_routing_gaps(
+        state,
+        reviewer_candidates=reviewer_candidates,
+        visible_tasks=visible_tasks,
+        visible_deliverables=visible_deliverables,
+        visible_reviews=visible_reviews,
+        visible_pending_inbox=visible_pending_inbox,
+    )
+    limited_open_work, omitted_open_work = _manager_fallback_limited_rows(
+        open_work_rows,
+        _MANAGER_FALLBACK_OPEN_WORK_LIMIT,
+    )
+    limited_deliverables, omitted_deliverables = _manager_fallback_limited_rows(
+        deliverable_rows,
+        _MANAGER_FALLBACK_OPEN_WORK_LIMIT,
+    )
+    limited_reviews, omitted_reviews = _manager_fallback_limited_rows(
+        review_rows,
+        _MANAGER_FALLBACK_OPEN_WORK_LIMIT,
+    )
+    limited_inbox, omitted_inbox = _manager_fallback_limited_rows(
+        inbox_rows,
+        _MANAGER_FALLBACK_PENDING_INBOX_LIMIT,
+    )
+    limited_failed_actions, omitted_failed_actions = _manager_fallback_limited_rows(
+        failed_action_rows,
+        _MANAGER_FALLBACK_FAILED_ACTION_LIMIT,
+    )
+    limited_routing_gaps, omitted_routing_gaps = _manager_fallback_limited_rows(
+        routing_gaps,
+        _MANAGER_FALLBACK_ROUTING_GAP_LIMIT,
+    )
+    omitted_counts = _manager_fallback_omitted_counts(
+        {
+            "open_work": omitted_open_work,
+            "deliverables": omitted_deliverables,
+            "review_requests": omitted_reviews,
+            "pending_inbox": omitted_inbox,
+            "latest_failed_actions": omitted_failed_actions,
+            "routing_gaps": omitted_routing_gaps,
+        }
     )
     return {
         "reason": "manager_fallback",
-        "team_id": team.id,
-        "manager_agent_id": manager.id,
-        "teams": {team.id: team.model_dump(mode="json")},
-        "projects": {
-            project.id: project.model_dump(mode="json")
-            for project in sorted(
-                state.projects.values(),
-                key=lambda item: item.id,
-            )
+        "generated_at": _manager_fallback_time(now),
+        "team": {
+            "id": team.id,
+            "name": team.name,
+            "manager_agent_id": manager.id,
+        },
+        "projects": [
+            {
+                "id": project.id,
+                "name": project.name,
+                "lead_agent_id": project.lead_agent_id,
+                "status": project.status.value,
+            }
+            for project in sorted(state.projects.values(), key=lambda item: item.id)
             if project.id in project_ids
+        ],
+        "summary_counts": {
+            "active_agent_count": len(team_agents),
+            "open_task_count": len(visible_tasks),
+            "active_deliverable_count": len(visible_deliverables),
+            "review_request_count": len(visible_reviews),
+            "pending_review_request_count": len(visible_pending_reviews),
+            "pending_inbox_count": len(visible_pending_inbox),
+            "failed_action_count": len(visible_action_records),
+            "routing_gap_count": len(routing_gaps),
         },
-        "roles": {
-            role.id: role.model_dump(mode="json")
-            for role in sorted(state.roles.values(), key=lambda item: item.id)
-            if role.id in role_ids
-        },
-        "agents": {
-            agent.id: _agent_payload(state, agent)
-            for agent in team_agents
-        },
-        "project_assignments": {
-            assignment.id: assignment.model_dump(mode="json")
-            for assignment in sorted(
-                state.project_assignments.values(),
-                key=lambda item: item.id,
-            )
-            if assignment.team_id == team.id
-            and assignment.project_id in project_ids
-            and assignment.agent_id in team_agent_ids
-        },
-        "agent_runtimes": {
-            agent_id: runtime.model_dump(mode="json")
-            for agent_id, runtime in sorted(state.agent_runtimes.items())
-            if agent_id in team_agent_ids
-        },
-        "stand_downs": {
-            stand_down.id: stand_down.model_dump(mode="json")
-            for stand_down in sorted(
-                state.stand_downs.values(),
-                key=lambda item: item.id,
-            )
-            if stand_down.agent_id in team_agent_ids
-        },
-        "tasks": {
-            task.id: task_payload_with_derived(state, task)
-            for task in visible_tasks
-        },
-        "deliverables": {
-            deliverable.id: deliverable.model_dump(mode="json")
-            for deliverable in visible_deliverables
-        },
-        "review_requests": {
-            review.id: review.model_dump(mode="json")
-            for review in sorted(
-                state.review_requests.values(),
-                key=lambda item: item.id,
-            )
-            if review.deliverable_id in visible_deliverable_ids
-        },
-        "review_profiles": {
-            profile.id: profile.model_dump(mode="json")
-            for profile in review_profiles
-        },
-        "inbox": {
-            item.id: item.model_dump(mode="json")
-            for item in visible_inbox
-        },
-        "action_records": {
-            record.id: record.model_dump(mode="json")
-            for record in visible_action_records
-        },
-        "runtime_operations": runtime_operations,
-    }
-
-
-def _manager_fallback_runtime_operations_payload(
-    payload: Mapping[str, Any],
-    *,
-    team_agent_ids: set[str],
-    project_ids: set[str],
-    task_ids: set[str],
-    deliverable_ids: set[str],
-    inbox_item_ids: set[str],
-) -> dict[str, Any]:
-    return {
-        "generated_at": payload.get("generated_at"),
         "agents": [
-            row
-            for row in payload.get("agents") or []
-            if isinstance(row, Mapping)
-            and _optional_text(row.get("id")) in team_agent_ids
-        ],
-        "attention": [
-            row
-            for row in payload.get("attention") or []
-            if isinstance(row, Mapping)
-            and _manager_fallback_runtime_row_visible(
-                row,
-                team_agent_ids=team_agent_ids,
-                project_ids=project_ids,
-                task_ids=task_ids,
-                deliverable_ids=deliverable_ids,
-                inbox_item_ids=inbox_item_ids,
+            _manager_fallback_agent_row(
+                state,
+                agent=agent,
+                now=now,
+                visible_tasks=visible_tasks,
+                visible_pending_reviews=visible_pending_reviews,
+                visible_pending_inbox=visible_pending_inbox,
+                visible_failed_actions=visible_action_records,
             )
+            for agent in team_agents
         ],
-        "session_health": [
-            row
-            for row in payload.get("session_health") or []
-            if isinstance(row, Mapping)
-            and _optional_text(row.get("agent_id")) in team_agent_ids
-        ],
+        "reviewer_candidate_agent_ids": [agent.id for agent in reviewer_candidates],
+        "open_work": limited_open_work,
+        "deliverables": limited_deliverables,
+        "review_requests": limited_reviews,
+        "pending_inbox": limited_inbox,
+        "latest_failed_actions": limited_failed_actions,
+        "routing_gaps": limited_routing_gaps,
+        "omitted_counts": omitted_counts,
     }
 
 
-def _manager_fallback_runtime_row_visible(
-    row: Mapping[str, Any],
+def _manager_fallback_time(value: datetime | None) -> str | None:
+    return _ensure_utc(value).isoformat() if value is not None else None
+
+
+def _manager_fallback_short_text(
+    value: object,
     *,
-    team_agent_ids: set[str],
+    limit: int = _MANAGER_FALLBACK_TEXT_LIMIT,
+) -> str:
+    text = _optional_text(value) or ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _manager_fallback_limited_rows(
+    rows: list[dict[str, Any]],
+    limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    return rows[:limit], max(0, len(rows) - limit)
+
+
+def _manager_fallback_omitted_counts(
+    counts: Mapping[str, int],
+) -> dict[str, int]:
+    return {key: value for key, value in counts.items() if value > 0}
+
+
+def _manager_fallback_review_state_counts(
+    reviews: list[ReviewRequest],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for review in reviews:
+        counts[review.state.value] = counts.get(review.state.value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _manager_fallback_task_row(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    visible_reviews: list[ReviewRequest],
+) -> dict[str, Any]:
+    task_payload = task_payload_with_derived(state, task)
+    deliverables = _active_task_deliverables(state, task)
+    deliverable_ids = [deliverable.id for deliverable in deliverables]
+    reviews = [
+        review
+        for review in visible_reviews
+        if review.deliverable_id in deliverable_ids
+    ]
+    return {
+        "id": task.id,
+        "title": _manager_fallback_short_text(task.title, limit=160),
+        "state": task.state.value,
+        "owner_agent_id": task.owner_agent_id,
+        "project_id": task.project_id,
+        "priority": task.priority,
+        "dependency_status": task_payload.get("dependency_status"),
+        "blocked_by_task_ids": task_payload.get("blocked_by_task_ids") or [],
+        "deliverable_ids": deliverable_ids,
+        "review_request_ids": [review.id for review in reviews],
+        "reviewer_agent_ids": sorted(
+            {review.reviewer_agent_id for review in reviews}
+        ),
+        "review_state_counts": _manager_fallback_review_state_counts(reviews),
+    }
+
+
+def _manager_fallback_deliverable_row(
+    *,
+    deliverable: Deliverable,
+    visible_reviews: list[ReviewRequest],
+) -> dict[str, Any]:
+    reviews = [
+        review
+        for review in visible_reviews
+        if review.deliverable_id == deliverable.id
+    ]
+    return {
+        "id": deliverable.id,
+        "task_id": deliverable.task_id,
+        "producer_agent_id": deliverable.producer_agent_id,
+        "state": deliverable.state.value,
+        "summary": _manager_fallback_short_text(deliverable.summary),
+        "review_request_ids": [review.id for review in reviews],
+        "reviewer_agent_ids": sorted(
+            {review.reviewer_agent_id for review in reviews}
+        ),
+        "review_state_counts": _manager_fallback_review_state_counts(reviews),
+    }
+
+
+def _manager_fallback_review_row(review: ReviewRequest) -> dict[str, Any]:
+    criteria_counts: dict[str, int] = {}
+    for criterion in review.criteria:
+        criteria_counts[criterion.state] = criteria_counts.get(criterion.state, 0) + 1
+    return {
+        "id": review.id,
+        "deliverable_id": review.deliverable_id,
+        "reviewer_agent_id": review.reviewer_agent_id,
+        "state": review.state.value,
+        "review_profile_id": review.review_profile_id,
+        "instructions": _manager_fallback_short_text(review.instructions),
+        "finding_count": len(review.findings),
+        "latest_finding": _manager_fallback_short_text(
+            review.findings[-1] if review.findings else None
+        ),
+        "criteria_state_counts": dict(sorted(criteria_counts.items())),
+    }
+
+
+def _manager_fallback_inbox_row(item: AgentInboxItem) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "recipient_agent_id": item.recipient_agent_id,
+        "sender_agent_id": item.sender_agent_id,
+        "task_id": item.task_id,
+        "item_type": item.item_type.value,
+        "response_requested": item.response_requested,
+        "priority": item.priority.value,
+        "created_at": _manager_fallback_time(item.created_at),
+        "summary": _manager_fallback_inbox_summary(item),
+    }
+
+
+def _manager_fallback_inbox_summary(item: AgentInboxItem) -> str:
+    for key in (
+        "summary",
+        "message",
+        "body",
+        "question",
+        "instructions",
+        "note",
+        "reason",
+    ):
+        summary = _manager_fallback_short_text(item.payload.get(key))
+        if summary:
+            return summary
+    return ""
+
+
+def _manager_fallback_failed_action_row(record: AgentActionRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "agent_id": record.agent_id,
+        "dispatch_id": record.dispatch_id,
+        "created_at": _manager_fallback_time(record.created_at),
+        "error": _manager_fallback_short_text(record.error),
+    }
+
+
+def _manager_fallback_agent_row(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    now: datetime,
+    visible_tasks: list[AgentTask],
+    visible_pending_reviews: list[ReviewRequest],
+    visible_pending_inbox: list[AgentInboxItem],
+    visible_failed_actions: list[AgentActionRecord],
+) -> dict[str, Any]:
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+    runtime = state.agent_runtimes.get(agent.id)
+    active_tasks = [
+        task for task in visible_tasks if task.owner_agent_id == agent.id
+    ]
+    pending_reviews = [
+        review
+        for review in visible_pending_reviews
+        if review.reviewer_agent_id == agent.id
+    ]
+    pending_inbox = [
+        item
+        for item in visible_pending_inbox
+        if item.recipient_agent_id == agent.id
+    ]
+    failed_actions = [
+        record
+        for record in visible_failed_actions
+        if record.agent_id == agent.id
+    ]
+    stand_downs = _active_stand_downs_for_agent(state, agent.id)
+    leased_until = runtime.wake_leased_until if runtime is not None else None
+    return {
+        "id": agent.id,
+        "display_name": agent.display_name,
+        "status": agent.status.value,
+        "role_id": agent.role_id,
+        "role_name": role.name if role is not None else None,
+        "project_ids": agent_project_ids(state, agent.id),
+        "active_task_count": len(active_tasks),
+        "active_task_ids": [task.id for task in active_tasks],
+        "pending_review_request_count": len(pending_reviews),
+        "pending_review_request_ids": [review.id for review in pending_reviews],
+        "pending_inbox_count": len(pending_inbox),
+        "response_requested_inbox_count": sum(
+            1 for item in pending_inbox if item.response_requested
+        ),
+        "failed_action_count": len(failed_actions),
+        "latest_failed_action_id": failed_actions[0].id if failed_actions else None,
+        "active_dispatch_id": (
+            runtime.active_dispatch_id if runtime is not None else None
+        ),
+        "wake_reason": runtime.wake_reason if runtime is not None else None,
+        "wake_leased": (
+            leased_until is not None and _ensure_utc(leased_until) > _ensure_utc(now)
+        ),
+        "wake_leased_until": _manager_fallback_time(leased_until),
+        "next_wake_at": (
+            _manager_fallback_time(runtime.next_wake_at)
+            if runtime is not None
+            else None
+        ),
+        "active_stand_down_count": len(stand_downs),
+    }
+
+
+def _manager_fallback_reviewer_candidates(
+    state: TeamState,
+    *,
+    team_agents: list[PersistentAgent],
     project_ids: set[str],
-    task_ids: set[str],
-    deliverable_ids: set[str],
-    inbox_item_ids: set[str],
-) -> bool:
-    agent_id = _optional_text(row.get("agent_id"))
-    if agent_id in team_agent_ids:
-        return True
-    project_id = _optional_text(row.get("project_id"))
-    if project_id in project_ids:
-        return True
-    row_project_ids = row.get("project_ids")
-    if isinstance(row_project_ids, list):
-        if any(
-            _optional_text(project_id) in project_ids
-            for project_id in row_project_ids
+    review_profiles: list[ReviewProfile],
+) -> list[PersistentAgent]:
+    applicable_role_ids = {
+        role_id
+        for profile in review_profiles
+        for role_id in profile.applicable_role_ids
+    }
+    candidates: list[PersistentAgent] = []
+    for agent in team_agents:
+        role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+        if (
+            agent.role_id in applicable_role_ids
+            or _manager_fallback_role_is_reviewer(role)
         ):
-            return True
-    task_id = _optional_text(row.get("task_id"))
-    if task_id in task_ids:
+            candidate_project_ids = _manager_fallback_candidate_project_ids(
+                state,
+                agent=agent,
+                project_ids=project_ids,
+            )
+            if candidate_project_ids:
+                candidates.append(agent)
+    return candidates
+
+
+def _manager_fallback_role_is_reviewer(role: TeamRole | None) -> bool:
+    if role is None:
+        return False
+    haystack = " ".join((role.id, role.name, role.description)).casefold()
+    return "review" in haystack
+
+
+def _manager_fallback_candidate_project_ids(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    project_ids: set[str],
+) -> set[str]:
+    candidate_project_ids = set(agent_project_ids(state, agent.id)) & project_ids
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+    if role is not None and role.project_id in project_ids:
+        candidate_project_ids.add(role.project_id)
+    return candidate_project_ids
+
+
+def _manager_fallback_routing_gaps(
+    state: TeamState,
+    *,
+    reviewer_candidates: list[PersistentAgent],
+    visible_tasks: list[AgentTask],
+    visible_deliverables: list[Deliverable],
+    visible_reviews: list[ReviewRequest],
+    visible_pending_inbox: list[AgentInboxItem],
+) -> list[dict[str, Any]]:
+    if not reviewer_candidates:
+        return []
+    tasks_by_id = {task.id: task for task in visible_tasks}
+    reviews_by_deliverable: dict[str, list[ReviewRequest]] = {}
+    for review in visible_reviews:
+        reviews_by_deliverable.setdefault(review.deliverable_id, []).append(review)
+    review_work = [
+        deliverable
+        for deliverable in visible_deliverables
+        if _manager_fallback_deliverable_needs_review(
+            deliverable,
+            task=tasks_by_id.get(deliverable.task_id),
+        )
+    ]
+    if not review_work:
+        return []
+    gaps: list[dict[str, Any]] = []
+    for reviewer in reviewer_candidates:
+        reviewer_project_ids = _manager_fallback_candidate_project_ids(
+            state,
+            agent=reviewer,
+            project_ids={task.project_id for task in visible_tasks},
+        )
+        if not reviewer_project_ids:
+            continue
+        candidate_work = [
+            deliverable
+            for deliverable in review_work
+            if (
+                task := tasks_by_id.get(deliverable.task_id)
+            ) is not None
+            and task.project_id in reviewer_project_ids
+            and not any(
+                review.reviewer_agent_id == reviewer.id
+                and review.state
+                in {
+                    TeamRecordState.PENDING,
+                    TeamRecordState.IN_PROGRESS,
+                    TeamRecordState.BLOCKED,
+                }
+                for review in reviews_by_deliverable.get(deliverable.id, [])
+            )
+        ]
+        if not candidate_work:
+            continue
+        reviewer_active_tasks = [
+            task for task in visible_tasks if task.owner_agent_id == reviewer.id
+        ]
+        reviewer_pending_reviews = [
+            review
+            for review in visible_reviews
+            if review.reviewer_agent_id == reviewer.id
+            and review.state
+            in {
+                TeamRecordState.PENDING,
+                TeamRecordState.IN_PROGRESS,
+                TeamRecordState.BLOCKED,
+            }
+        ]
+        reviewer_pending_inbox = [
+            item
+            for item in visible_pending_inbox
+            if item.recipient_agent_id == reviewer.id
+        ]
+        if (
+            reviewer_active_tasks
+            or reviewer_pending_reviews
+            or reviewer_pending_inbox
+        ):
+            continue
+        display_name = reviewer.display_name or reviewer.id
+        deliverable_ids = [deliverable.id for deliverable in candidate_work[:5]]
+        task_ids = sorted(
+            {
+                deliverable.task_id
+                for deliverable in candidate_work[:5]
+            }
+        )
+        existing_reviewers = sorted(
+            {
+                review.reviewer_agent_id
+                for deliverable in candidate_work
+                for review in reviews_by_deliverable.get(deliverable.id, [])
+                if review.state
+                in {
+                    TeamRecordState.PENDING,
+                    TeamRecordState.IN_PROGRESS,
+                    TeamRecordState.BLOCKED,
+                }
+            }
+        )
+        gaps.append(
+            {
+                "kind": "reviewer_without_assigned_review_work",
+                "severity": "warning",
+                "agent_id": reviewer.id,
+                "agent_display_name": reviewer.display_name,
+                "summary": (
+                    f"{display_name} has no pending review requests, active "
+                    "tasks, or pending inbox items, but review work exists in "
+                    "their project."
+                ),
+                "suggested_action": (
+                    "Create review_requests for this reviewer for the listed "
+                    "deliverables, or assign a review-focused task."
+                ),
+                "project_ids": sorted(reviewer_project_ids),
+                "task_ids": task_ids,
+                "deliverable_ids": deliverable_ids,
+                "existing_reviewer_agent_ids": existing_reviewers,
+            }
+        )
+    return gaps
+
+
+def _manager_fallback_deliverable_needs_review(
+    deliverable: Deliverable,
+    *,
+    task: AgentTask | None,
+) -> bool:
+    if task is not None and task.state == TeamTaskState.WAITING_FOR_REVIEW:
         return True
-    deliverable_id = _optional_text(row.get("deliverable_id"))
-    if deliverable_id in deliverable_ids:
-        return True
-    inbox_item_id = _optional_text(row.get("inbox_item_id"))
-    return inbox_item_id in inbox_item_ids
+    return deliverable.state in {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+    }
 
 
 def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:

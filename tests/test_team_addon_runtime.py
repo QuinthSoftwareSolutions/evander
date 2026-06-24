@@ -1326,6 +1326,24 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
+    repo.create_role(
+        role_id="project__reviewer",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+        description="Review deliverables; do not own implementation work.",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="luke",
+        team_id="team",
+        project_id="project",
+        role_id="project__reviewer",
+        session_id="session-luke",
+        display_name="Luke",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
     state, result = repo.apply_agent_action(
         action={
             "agent_id": "backend",
@@ -1378,26 +1396,117 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
             1,
         )[0]
     )
-    fallback_context = context["manager_fallback_context"]
+    fallback_summary = context["manager_fallback_summary"]
 
     assert "Manager fallback dispatch" in prompt
     assert (
         "Do not return a no-op merely because your own tasks and inbox arrays are empty"
         in prompt
     )
-    assert fallback_context["tasks"]["task"]["state"] == "waiting_for_review"
-    assert fallback_context["deliverables"]["deliverable-stalled"]["task_id"] == "task"
-    assert (
-        fallback_context["review_requests"]["review-manager"]["reviewer_agent_id"]
-        == "manager"
-    )
-    assert fallback_context["review_requests"]["review-manager"]["state"] == "pending"
+    assert "manager_fallback_context" not in context
+    assert "runtime_operations" not in fallback_summary
+    assert "action_records" not in fallback_summary
+    assert fallback_summary["summary_counts"]["open_task_count"] == 1
+    assert fallback_summary["summary_counts"]["pending_review_request_count"] == 1
+    work = {item["id"]: item for item in fallback_summary["open_work"]}
+    assert work["task"]["state"] == "waiting_for_review"
+    assert work["task"]["deliverable_ids"] == ["deliverable-stalled"]
+    deliverables = {
+        item["id"]: item for item in fallback_summary["deliverables"]
+    }
+    assert deliverables["deliverable-stalled"]["task_id"] == "task"
+    reviews = {item["id"]: item for item in fallback_summary["review_requests"]}
+    assert reviews["review-manager"]["reviewer_agent_id"] == "manager"
+    assert reviews["review-manager"]["state"] == "pending"
+    agents = {item["id"]: item for item in fallback_summary["agents"]}
+    assert agents["luke"]["display_name"] == "Luke"
+    assert agents["luke"]["active_task_count"] == 0
+    assert agents["luke"]["pending_review_request_count"] == 0
+    assert agents["luke"]["pending_inbox_count"] == 0
+    assert fallback_summary["pending_inbox"] == []
     assert any(
-        item["state"] == "handled"
-        and item["recipient_agent_id"] == "manager"
-        and item["payload"].get("review_request_id") == "review-manager"
-        for item in fallback_context["inbox"].values()
+        item["kind"] == "reviewer_without_assigned_review_work"
+        and item["agent_id"] == "luke"
+        and item["deliverable_ids"] == ["deliverable-stalled"]
+        and item["existing_reviewer_agent_ids"] == ["manager"]
+        for item in fallback_summary["routing_gaps"]
     )
+    assert len(prompt.encode("utf-8")) < 32_000
+
+
+def test_manager_fallback_prompt_caps_large_history(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _add_large_history(state: TeamState) -> TeamState:
+        history_start = datetime(2026, 1, 1, tzinfo=UTC)
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        for index in range(80):
+            state.inbox[f"handled-{index:03d}"] = AgentInboxItem(
+                id=f"handled-{index:03d}",
+                recipient_agent_id="manager",
+                sender_agent_id="lead",
+                task_id="task",
+                item_type=TeamInboxItemType.PROGRESS_REPORT,
+                payload={"summary": "handled history " + ("x" * 4000)},
+                state=TeamInboxItemState.HANDLED,
+                created_at=history_start + timedelta(minutes=index),
+            )
+            state.action_records[f"failed-{index:03d}"] = AgentActionRecord(
+                id=f"failed-{index:03d}",
+                agent_id="backend",
+                dispatch_id=f"dispatch-{index:03d}",
+                success=False,
+                error="validation failed " + ("y" * 4000),
+                created_at=history_start + timedelta(minutes=index),
+            )
+        return state
+
+    repo.update(_add_large_history)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert len(prompt.encode("utf-8")) < 32_000
+    assert "handled-079" not in prompt
+    assert fallback_summary["summary_counts"]["failed_action_count"] == 80
+    assert len(fallback_summary["latest_failed_actions"]) == 3
+    assert fallback_summary["omitted_counts"]["latest_failed_actions"] == 77
 
 
 def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(

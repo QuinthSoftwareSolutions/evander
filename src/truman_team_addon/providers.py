@@ -2719,9 +2719,9 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "operator_chat_participants": lease.get("operator_chat_participants") or [],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
-    manager_fallback_context = lease.get("manager_fallback_context")
-    if isinstance(manager_fallback_context, Mapping):
-        context["manager_fallback_context"] = dict(manager_fallback_context)
+    manager_fallback_summary = lease.get("manager_fallback_summary")
+    if isinstance(manager_fallback_summary, Mapping):
+        context["manager_fallback_summary"] = dict(manager_fallback_summary)
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         context["project_repo"] = dict(project_repo)
@@ -2752,8 +2752,11 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Manager fallback dispatch:\n"
         "- This wake means no other team member is currently wakeable while the team "
         "still has open work.\n"
-        "- Treat manager_fallback_context as the source of stalled team and project "
-        "work, even when this manager's top-level tasks and inbox arrays are empty.\n"
+        "- Treat manager_fallback_summary as the compact source of stalled team "
+        "and project work, even when this manager's top-level tasks and inbox "
+        "arrays are empty.\n"
+        "- Start from manager_fallback_summary.routing_gaps when present; those "
+        "rows identify likely assignment or review-routing fixes.\n"
         "- If a pending review is assigned to you, handle it with review_decisions. "
         "If the review should go to another reviewer, create a fresh review_requests "
         "item with a new id for the intended reviewer.\n"

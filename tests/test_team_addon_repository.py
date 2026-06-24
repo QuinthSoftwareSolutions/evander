@@ -3603,29 +3603,33 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     assert leases[0]["tasks"] == []
     assert leases[0]["inbox"][0]["id"] == "manager-note"
     assert leases[0]["inbox"][0]["response_requested"] is False
-    fallback_context = leases[0]["manager_fallback_context"]
-    assert fallback_context["team_id"] == "team"
-    assert set(fallback_context["agents"]) == {"manager", "lead", "backend", "worker"}
-    assert set(fallback_context["projects"]) == {"project"}
-    assert set(fallback_context["tasks"]) == {"stalled-task"}
-    assert fallback_context["tasks"]["stalled-task"]["state"] == "waiting_for_review"
-    assert fallback_context["deliverables"]["deliverable-stalled"]["task_id"] == "stalled-task"
-    assert fallback_context["review_requests"]["review-stalled"]["reviewer_agent_id"] == "manager"
-    assert fallback_context["review_requests"]["review-stalled"]["state"] == "pending"
-    assert fallback_context["inbox"]["manager-note"]["response_requested"] is False
-    assert (
-        fallback_context["runtime_operations"]["generated_at"]
-        == datetime(2026, 1, 1, tzinfo=UTC).isoformat()
-    )
-    runtime_agents = {
-        row["id"]: row
-        for row in fallback_context["runtime_operations"]["agents"]
+    fallback_summary = leases[0]["manager_fallback_summary"]
+    assert fallback_summary["team"]["id"] == "team"
+    assert {item["id"] for item in fallback_summary["agents"]} == {
+        "manager",
+        "lead",
+        "backend",
+        "worker",
     }
-    assert runtime_agents["manager"]["wake_reason"] == "manager_fallback"
+    assert {item["id"] for item in fallback_summary["projects"]} == {"project"}
+    work = {item["id"]: item for item in fallback_summary["open_work"]}
+    assert work["stalled-task"]["state"] == "waiting_for_review"
+    deliverables = {
+        item["id"]: item for item in fallback_summary["deliverables"]
+    }
+    assert deliverables["deliverable-stalled"]["task_id"] == "stalled-task"
+    reviews = {item["id"]: item for item in fallback_summary["review_requests"]}
+    assert reviews["review-stalled"]["reviewer_agent_id"] == "manager"
+    assert reviews["review-stalled"]["state"] == "pending"
+    assert fallback_summary["pending_inbox"][0]["id"] == "manager-note"
+    assert fallback_summary["pending_inbox"][0]["response_requested"] is False
+    agents = {item["id"]: item for item in fallback_summary["agents"]}
+    assert agents["manager"]["wake_reason"] == "manager_fallback"
     assert (
-        runtime_agents["manager"]["wake_leased_until"]
+        agents["manager"]["wake_leased_until"]
         == datetime(2026, 1, 1, 0, 15, tzinfo=UTC).isoformat()
     )
+    assert "runtime_operations" not in fallback_summary
     json.dumps(leases[0])
 
 

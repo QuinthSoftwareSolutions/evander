@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Manager Fallback Summary
+
+- Replaced the manager fallback wake context dump with a compact summary of
+  active team work, assignments, review routing, and routing gaps so managers
+  get enough state to act without oversized wake prompts.
+
 ## 2026-06-24 - Team Add-on Chat Wake Retry
 
 - Re-emitted queued Team chat wake events when an agent finishes its current
