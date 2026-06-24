@@ -1876,11 +1876,6 @@ class TeamState(TeamModel):
                             f"deliverable {deliverable.id} supersedes deliverable "
                             f"{previous.id} from another task"
                         )
-                    if previous.producer_agent_id != deliverable.producer_agent_id:
-                        errors.append(
-                            f"deliverable {deliverable.id} supersedes deliverable "
-                            f"{previous.id} from another producer"
-                        )
                     if previous.superseded_by_deliverable_id != deliverable.id:
                         errors.append(
                             f"deliverable {deliverable.id} supersedes deliverable "
@@ -1905,11 +1900,6 @@ class TeamState(TeamModel):
                         errors.append(
                             f"deliverable {deliverable.id} is superseded by deliverable "
                             f"{replacement.id} from another task"
-                        )
-                    if replacement.producer_agent_id != deliverable.producer_agent_id:
-                        errors.append(
-                            f"deliverable {deliverable.id} is superseded by deliverable "
-                            f"{replacement.id} from another producer"
                         )
                     if replacement.supersedes_deliverable_id != deliverable.id:
                         errors.append(

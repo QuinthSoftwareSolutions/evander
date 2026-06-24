@@ -16,6 +16,8 @@
 - Allowed superior Team agents to set `owner_agent_id` in `task_updates[]` to
   claim or reassign non-terminal tasks currently owned by subordinate agents,
   while preserving owner-only task state/title/priority/description edits.
+- Kept task handoff targets inside the task project and routed rejected-review
+  rework to the current task owner so handed-off tasks can be revised cleanly.
 - Bumped the Team action contract and agent guidance versions so persistent
   agents receive the new task handoff schema and instructions.
 

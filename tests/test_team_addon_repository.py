@@ -4816,6 +4816,119 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
 
 
+def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="worker")
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "lead",
+                    "instructions": "Review.",
+                }
+            ],
+        },
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "task", "owner_agent_id": "backend"}],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["task"].owner_agent_id == "backend"
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-1",
+                    "state": "rejected",
+                    "findings": ["Needs rework."],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    rework_item = state.inbox[result["created_inbox_item_ids"][0]]
+    assert rework_item.recipient_agent_id == "backend"
+    assert rework_item.sender_agent_id == "lead"
+    assert rework_item.payload["supersedes_deliverable_id"] == "deliverable"
+    assert state.tasks["task"].owner_agent_id == "backend"
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-v2",
+                    "task_id": "task",
+                    "summary": "Reworked by the current owner.",
+                    "supersedes_deliverable_id": rework_item.payload[
+                        "supersedes_deliverable_id"
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["created_deliverable_ids"] == ["deliverable-v2"]
+    assert state.deliverables["deliverable"].producer_agent_id == "worker"
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
+        "deliverable-v2"
+    )
+    assert state.deliverables["deliverable-v2"].producer_agent_id == "backend"
+    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == (
+        "deliverable"
+    )
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    repo.register_agent(
+        agent_id="worker-2",
+        team_id="team",
+        project_id="project",
+        role_id="project__worker",
+        session_id="session-worker-2",
+        reports_to_agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "task_updates": [{"task_id": "task", "owner_agent_id": "worker-2"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["task"].owner_agent_id == "worker-2"
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
+        "deliverable-v2"
+    )
+
+
 def test_apply_agent_action_rework_requires_deliverable_supersession(
     tmp_path: Path,
 ) -> None:
@@ -6110,6 +6223,48 @@ def test_apply_agent_action_supervisor_reassigns_subordinate_task(
     assert result["success"] is True
     assert state.tasks["w1"].owner_agent_id == "worker-2"
     assert "w1" in result["updated_task_ids"]
+
+
+def test_apply_agent_action_task_reassignment_requires_target_project_assignment(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_project(
+        project_id="project-2",
+        team_id="team",
+        name="Second Project",
+        lead_agent_id="lead-2",
+        lead_session_id="session-lead-2",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_role(
+        role_id="project-2__worker",
+        team_id="team",
+        project_id="project-2",
+        name="Second Project Worker",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="worker-2",
+        team_id="team",
+        project_id="project-2",
+        role_id="project-2__worker",
+        session_id="session-worker-2",
+        reports_to_agent_id="manager",
+        expected_revision=repo.read().revision,
+    )
+    _seed_task(repo, task_id="w1", owner_agent_id="worker")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "task_updates": [{"task_id": "w1", "owner_agent_id": "worker-2"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("outside project project" in error for error in result["errors"])
+    assert state.tasks["w1"].owner_agent_id == "worker"
 
 
 def test_apply_agent_action_task_reassignment_requires_superior(

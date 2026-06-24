@@ -7351,15 +7351,7 @@ def _task_owner_reassignment_error(
         return f"agent {actor.id} cannot reassign task {task.id} outside its team"
     if new_owner.id != actor.id and not _supervises(state, actor.id, new_owner.id):
         return f"agent {actor.id} cannot reassign task {task.id} to {new_owner.id}"
-    actor_can_target_project = _is_project_lead_for(
-        state,
-        actor.id,
-        task.project_id,
-    ) or _is_team_manager(state, actor)
-    if (
-        not agent_has_project_assignment(state, new_owner.id, task.project_id)
-        and not actor_can_target_project
-    ):
+    if not agent_has_project_assignment(state, new_owner.id, task.project_id):
         return (
             f"agent {actor.id} cannot reassign task {task.id} to {new_owner.id} "
             f"outside project {task.project_id}"
@@ -8115,10 +8107,11 @@ def _cascade_review_decision(
         deliverable.state = TeamRecordState.REJECTED
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
         task.updated_at = now
+        rework_agent_id = task.owner_agent_id
         inbox_id = f"inbox-{uuid4().hex}"
         state.inbox[inbox_id] = AgentInboxItem(
             id=inbox_id,
-            recipient_agent_id=deliverable.producer_agent_id,
+            recipient_agent_id=rework_agent_id,
             sender_agent_id=review.reviewer_agent_id,
             task_id=task.id,
             item_type=TeamInboxItemType.STATUS_REQUEST,
@@ -8139,7 +8132,7 @@ def _cascade_review_decision(
             result["created_inbox_item_ids"].append(inbox_id)
         _mark_agent_work_due(
             state,
-            agent_id=deliverable.producer_agent_id,
+            agent_id=rework_agent_id,
             now=now,
         )
     else:  # blocked
@@ -8238,10 +8231,14 @@ def _superseded_deliverable_for_rework(
             f"supersedes_deliverable_id {deliverable.id} belongs to task "
             f"{deliverable.task_id}, not {task.id}"
         )
-    if deliverable.producer_agent_id != producer_agent_id:
+    if (
+        deliverable.producer_agent_id != producer_agent_id
+        and task.owner_agent_id != producer_agent_id
+    ):
         raise ValueError(
             f"supersedes_deliverable_id {deliverable.id} was produced by "
-            f"{deliverable.producer_agent_id}, not {producer_agent_id}"
+            f"{deliverable.producer_agent_id}; only that producer or current "
+            f"task owner {task.owner_agent_id} may supersede it"
         )
     if deliverable.state != TeamRecordState.REJECTED:
         raise ValueError(
