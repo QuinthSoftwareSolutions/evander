@@ -516,6 +516,22 @@ def _lease_manager_fallback(
     return next(lease for lease in leases if lease["agent"]["id"] == "manager")
 
 
+def _set_manager_fallback_runtime(repo: TeamStateRepository) -> str:
+    dispatch_id = "team-dispatch-manager-fallback"
+
+    def _mark_manager_fallback(state: TeamState) -> TeamState:
+        state.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            active_dispatch_id=dispatch_id,
+            wake_reason="manager_fallback",
+            wake_leased_until=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_mark_manager_fallback)
+    return dispatch_id
+
+
 def _add_task(
     repo: TeamStateRepository,
     *,
@@ -1636,6 +1652,41 @@ def test_manager_fallback_requires_review_profile_for_reviewer_candidate(
     )
 
 
+def test_manager_fallback_blank_review_profile_filter_allows_reviewer_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo, with_review_profile=False)
+    repo.create_review_profile(
+        profile_id="project-review-profile",
+        team_id="team",
+        project_id="project",
+        name="Project review",
+        description="Default review checks for project deliverables.",
+        applicable_role_ids=[],
+        expected_revision=repo.read().revision,
+    )
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "luke" in fallback_summary["reviewer_candidate_agent_ids"]
+    assert any(
+        item["kind"] == "reviewer_without_assigned_review_work"
+        and item["agent_id"] == "luke"
+        and item["deliverable_ids"] == ["deliverable-stalled"]
+        for item in fallback_summary["routing_gaps"]
+    )
+
+
 def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
     tmp_path: Path,
 ) -> None:
@@ -1662,6 +1713,101 @@ def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
     assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
     reread = repo.read()
     assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
+
+
+def test_manager_fallback_allows_self_review_when_reviewer_busy_elsewhere(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+    repo.create_or_reprioritize_task(
+        task_id="luke-review-task",
+        owner_agent_id="luke",
+        project_id="project",
+        priority=10,
+        title="Independent review task",
+        description="Keep Luke busy on unrelated review work.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+    dispatch_id = _set_manager_fallback_runtime(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": dispatch_id,
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
+
+
+def test_manager_fallback_allows_self_review_when_reviewer_already_reviewed_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "luke",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-luke",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _handle_luke_review_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_luke_review_inbox)
+
+    dispatch_id = _set_manager_fallback_runtime(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": dispatch_id,
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
+    assert reread.review_requests["review-luke"].state == TeamRecordState.ACCEPTED
 
 
 def test_manager_fallback_allows_self_review_with_override_reason(

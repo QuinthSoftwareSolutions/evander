@@ -5354,11 +5354,6 @@ def _manager_fallback_reviewer_candidates(
     review_profiles: list[ReviewProfile],
     now: datetime,
 ) -> list[PersistentAgent]:
-    applicable_role_ids = {
-        role_id
-        for profile in review_profiles
-        for role_id in profile.applicable_role_ids
-    }
     candidates: list[PersistentAgent] = []
     for agent in team_agents:
         if not _manager_fallback_reviewer_is_wakeable_for_routing(
@@ -5367,15 +5362,14 @@ def _manager_fallback_reviewer_candidates(
             now=now,
         ):
             continue
-        if agent.role_id in applicable_role_ids:
-            eligible_project_ids = _manager_fallback_reviewer_eligible_project_ids(
-                state,
-                agent=agent,
-                project_ids=project_ids,
-                review_profiles=review_profiles,
-            )
-            if eligible_project_ids:
-                candidates.append(agent)
+        eligible_project_ids = _manager_fallback_reviewer_eligible_project_ids(
+            state,
+            agent=agent,
+            project_ids=project_ids,
+            review_profiles=review_profiles,
+        )
+        if eligible_project_ids:
+            candidates.append(agent)
     return candidates
 
 
@@ -5408,7 +5402,10 @@ def _manager_fallback_reviewer_eligible_project_ids(
         return set()
     profile_project_ids: set[str] = set()
     for profile in review_profiles:
-        if agent.role_id not in profile.applicable_role_ids:
+        if (
+            profile.applicable_role_ids
+            and agent.role_id not in profile.applicable_role_ids
+        ):
             continue
         if profile.project_id is None:
             profile_project_ids.update(project_ids)
@@ -5485,7 +5482,6 @@ def _manager_fallback_routing_gaps(
             and task.project_id in reviewer_project_ids
             and not any(
                 review.reviewer_agent_id == reviewer.id
-                and review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
                 for review in reviews_by_deliverable.get(deliverable.id, [])
             )
         ]
@@ -5567,7 +5563,11 @@ def _manager_fallback_review_decision_guard_error(
     if team_id is None:
         return None
     now = utc_now()
-    project_ids = {task.project_id}
+    project_ids = {
+        project.id
+        for project in state.projects.values()
+        if project.team_id == team_id
+    }
     team_agents = sorted(
         (
             agent
@@ -5577,6 +5577,26 @@ def _manager_fallback_review_decision_guard_error(
         key=lambda item: item.id,
     )
     team_agent_ids = {agent.id for agent in team_agents}
+    visible_tasks = sorted(
+        (
+            item
+            for item in state.tasks.values()
+            if item.project_id in project_ids
+            and item.state in _NON_TERMINAL_TASK_STATES
+        ),
+        key=lambda item: (item.priority, item.created_at, item.id),
+    )
+    visible_task_ids = {item.id for item in visible_tasks}
+    visible_deliverables = sorted(
+        (
+            item
+            for item in state.deliverables.values()
+            if item.task_id in visible_task_ids
+            and item.superseded_by_deliverable_id is None
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+    visible_deliverable_ids = {item.id for item in visible_deliverables}
     review_profiles = sorted(
         (
             profile
@@ -5597,7 +5617,7 @@ def _manager_fallback_review_decision_guard_error(
     visible_reviews = [
         item
         for item in state.review_requests.values()
-        if item.deliverable_id == deliverable.id
+        if item.deliverable_id in visible_deliverable_ids
     ]
     visible_pending_inbox = sorted(
         (
@@ -5605,7 +5625,7 @@ def _manager_fallback_review_decision_guard_error(
             for item in state.inbox.values()
             if item.recipient_agent_id in team_agent_ids
             and (item.sender_agent_id is None or item.sender_agent_id in team_agent_ids)
-            and (item.task_id is None or item.task_id == task.id)
+            and (item.task_id is None or item.task_id in visible_task_ids)
             and item.state == TeamInboxItemState.PENDING
         ),
         key=lambda item: (item.created_at, item.id),
@@ -5614,8 +5634,8 @@ def _manager_fallback_review_decision_guard_error(
         state,
         reviewer_candidates=reviewer_candidates,
         review_profiles=review_profiles,
-        visible_tasks=[task],
-        visible_deliverables=[deliverable],
+        visible_tasks=visible_tasks,
+        visible_deliverables=visible_deliverables,
         visible_reviews=visible_reviews,
         visible_pending_inbox=visible_pending_inbox,
     )

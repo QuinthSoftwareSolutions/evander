@@ -17,6 +17,8 @@
 - Made fallback reviewer eligibility explicit through review profiles, added a
   guardrail against manager self-review when an idle profile-eligible reviewer
   can take the review, and improved duplicate review-id recovery hints.
+- Fixed fallback review routing edge cases for blank review-profile role filters,
+  busy reviewers, and reviewers who already handled the deliverable.
 
 ## 2026-06-24 - Team Add-on Manager Fallback Summary
 
