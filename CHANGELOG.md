@@ -23,8 +23,9 @@
 ## 2026-06-24 - Team Add-on Agent Removal History
 
 - Allowed removing agents from a team when the only remaining references are
-  historical deliverable producer or inbox sender records, while preserving
-  blockers for pending inbox items addressed to the agent.
+  terminal deliverable producer or inbox sender records, while preserving
+  blockers for active deliverables and pending inbox items addressed to the
+  agent.
 
 ## 2026-06-24 - Team Add-on Case Update Fixes
 
@@ -38,6 +39,8 @@
 - Added host-derived per-agent activity summaries to the Team Add-on payload so
   the org overview can show concise natural-language current work and waiting
   state without prompting agents or calling a classifier model.
+- Filtered scoped Team state payload summaries so hidden tasks, inbox items, and
+  other reason refs cannot leak through agent-visible activity summaries.
 - Wired Team org cards to prefer the derived `activity_summary` while retaining
   existing task, inbox, runtime, and session details for drill-down.
 - Made Team Add-on view tabs use delegated click handling and live DOM queries

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from truman_team_addon.models import (
     AgentInboxItem,
+    AgentProjectAssignment,
+    AgentProjectAssignmentKind,
     AgentRuntime,
     AgentStandDown,
     AgentStatus,
@@ -19,6 +22,7 @@ from truman_team_addon.models import (
     agent_activity_summaries_payload,
     team_state_payload,
 )
+from truman_team_addon.providers import _filtered_team_state_payload
 
 
 def _state(
@@ -156,5 +160,124 @@ def test_team_state_payload_embeds_activity_summaries() -> None:
 
     payload = team_state_payload(state)
 
-    assert payload["agent_activity_summaries"]["agent"]["headline"] == "Working on Checkout validation"
-    assert payload["agents"]["agent"]["activity_summary"]["headline"] == "Working on Checkout validation"
+    assert (
+        payload["agent_activity_summaries"]["agent"]["headline"]
+        == "Working on Checkout validation"
+    )
+    assert (
+        payload["agents"]["agent"]["activity_summary"]["headline"]
+        == "Working on Checkout validation"
+    )
+
+
+def test_filtered_team_state_payload_keeps_visible_activity_summary() -> None:
+    state = _state(tasks={"task": _task()})
+    state.project_assignments["assignment"] = AgentProjectAssignment(
+        id="assignment",
+        team_id="team",
+        project_id="project",
+        agent_id="agent",
+        kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+    )
+
+    payload = _filtered_team_state_payload(
+        state,
+        team_id=None,
+        project_id="project",
+        agent_id=None,
+    )
+
+    assert (
+        payload["agent_activity_summaries"]["agent"]["headline"]
+        == "Working on Checkout validation"
+    )
+    assert (
+        payload["agents"]["agent"]["activity_summary"]["headline"]
+        == "Working on Checkout validation"
+    )
+
+
+def test_filtered_team_state_payload_drops_out_of_scope_activity_summary() -> None:
+    state = TeamState(
+        teams={
+            "team": Team(
+                id="team",
+                name="Team",
+                manager_agent_id="agent",
+                project_ids=["visible-project", "hidden-project"],
+            )
+        },
+        projects={
+            "visible-project": Project(
+                id="visible-project",
+                team_id="team",
+                name="Visible Project",
+                lead_agent_id="agent",
+            ),
+            "hidden-project": Project(
+                id="hidden-project",
+                team_id="team",
+                name="Hidden Project",
+                lead_agent_id="agent",
+            ),
+        },
+        roles={
+            "team__worker": TeamRole(
+                id="team__worker",
+                team_id="team",
+                name="Worker",
+            )
+        },
+        agents={
+            "agent": PersistentAgent(
+                id="agent",
+                team_id="team",
+                role_id="team__worker",
+                session_id="session-agent",
+                status=AgentStatus.ACTIVE,
+            )
+        },
+        project_assignments={
+            "visible-assignment": AgentProjectAssignment(
+                id="visible-assignment",
+                team_id="team",
+                project_id="visible-project",
+                agent_id="agent",
+                kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+            ),
+            "hidden-assignment": AgentProjectAssignment(
+                id="hidden-assignment",
+                team_id="team",
+                project_id="hidden-project",
+                agent_id="agent",
+                kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+            ),
+        },
+        tasks={
+            "hidden-task": AgentTask(
+                id="hidden-task",
+                owner_agent_id="agent",
+                project_id="hidden-project",
+                priority=0,
+                state=TeamTaskState.IN_PROGRESS,
+                title="Secret launch plan",
+                description="Hidden work should not leak through summaries.",
+                created_by_agent_id="agent",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        },
+    )
+
+    payload = _filtered_team_state_payload(
+        state,
+        team_id=None,
+        project_id="visible-project",
+        agent_id=None,
+    )
+
+    assert "agent" in payload["agents"]
+    assert "agent" not in payload["agent_activity_summaries"]
+    assert "activity_summary" not in payload["agents"]["agent"]
+    assert "hidden-task" not in payload["tasks"]
+    assert "Secret launch plan" not in json.dumps(payload)

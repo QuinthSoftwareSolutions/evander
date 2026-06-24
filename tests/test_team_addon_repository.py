@@ -7040,6 +7040,13 @@ def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_pat
         summary="Audit report.",
     )
     repo.update(
+        lambda state: _mark_deliverable_state(
+            state,
+            "audit-deliverable",
+            TeamRecordState.ACCEPTED,
+        )
+    )
+    repo.update(
         lambda state: _add_inbox_item(
             state,
             item_id="sent-history",
@@ -7058,6 +7065,46 @@ def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_pat
     assert state.agents["observer"].team_id is None
     assert state.deliverables["audit-deliverable"].producer_agent_id == "observer"
     assert state.inbox["sent-history"].sender_agent_id == "observer"
+
+
+def test_remove_agent_from_team_blocks_active_deliverable_producer(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_role(
+        role_id="team__observer",
+        team_id="team",
+        name="Observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="observer",
+        team_id="team",
+        role_id="team__observer",
+        session_id="session-observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="active-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Active task",
+        description="Observer produced an active audit artifact for this work.",
+        created_by_agent_id="lead",
+    )
+    repo.record_deliverable(
+        deliverable_id="audit-deliverable",
+        task_id="active-task",
+        producer_agent_id="observer",
+        summary="Audit report.",
+    )
+
+    with pytest.raises(ValueError, match="produced deliverable audit-deliverable"):
+        repo.update_agent(
+            agent_id="observer",
+            team_id=None,
+            set_team_id=True,
+            expected_revision=repo.read().revision,
+        )
 
 
 def test_remove_agent_from_team_blocks_pending_inbox_recipient(tmp_path: Path) -> None:
@@ -7095,6 +7142,11 @@ def test_remove_agent_from_team_blocks_pending_inbox_recipient(tmp_path: Path) -
 
 def _mark_task_state(state, task_id: str, state_value: TeamTaskState):
     state.tasks[task_id].state = state_value
+    return state
+
+
+def _mark_deliverable_state(state, deliverable_id: str, state_value: TeamRecordState):
+    state.deliverables[deliverable_id].state = state_value
     return state
 
 

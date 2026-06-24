@@ -5240,7 +5240,120 @@ def _filtered_team_state_payload(
         visible_git_promotion_ids=visible_git_promotion_ids,
         visible_assignment_ids=set(filtered["ephemeral_assignments"]),
     )
+    visible_session_ids = {
+        session_id
+        for value in filtered["agents"].values()
+        if (session_id := _optional_text(value.get("session_id"))) is not None
+    }
+    visible_dispatch_ids = {
+        dispatch_id
+        for value in filtered.get("agent_runtimes", {}).values()
+        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
+    }
+    visible_dispatch_ids.update(
+        dispatch_id
+        for value in _mapping_items(filtered["runtime_operations"].get("agents"))
+        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
+    )
+    visible_stand_down_ids = {
+        stand_down_id
+        for value in filtered["agents"].values()
+        for item in _mapping_items(value.get("effective_stand_downs"))
+        if (stand_down_id := _optional_text(item.get("id"))) is not None
+    }
+    filtered_activity_summaries = _filter_agent_activity_summaries(
+        filtered.get("agent_activity_summaries"),
+        visible_agent_ids=visible_agent_ids,
+        visible_session_ids=visible_session_ids,
+        visible_stand_down_ids=visible_stand_down_ids,
+        visible_task_ids=visible_task_ids,
+        visible_deliverable_ids=visible_deliverable_ids,
+        visible_inbox_ids=set(filtered["inbox"]),
+        visible_action_ids=set(filtered["action_records"]),
+        visible_release_ids=visible_release_ids,
+        visible_git_promotion_ids=visible_git_promotion_ids,
+        visible_assignment_ids=set(filtered["ephemeral_assignments"]),
+        visible_dispatch_ids=visible_dispatch_ids,
+    )
+    filtered["agent_activity_summaries"] = filtered_activity_summaries
+    filtered["agents"] = {
+        key: _agent_payload_with_filtered_activity_summary(
+            value,
+            filtered_activity_summaries.get(key),
+        )
+        for key, value in filtered["agents"].items()
+    }
     return filtered
+
+
+def _filter_agent_activity_summaries(
+    value: object,
+    *,
+    visible_agent_ids: set[str],
+    visible_session_ids: set[str],
+    visible_stand_down_ids: set[str],
+    visible_task_ids: set[str],
+    visible_deliverable_ids: set[str],
+    visible_inbox_ids: set[str],
+    visible_action_ids: set[str],
+    visible_release_ids: set[str],
+    visible_git_promotion_ids: set[str],
+    visible_assignment_ids: set[str],
+    visible_dispatch_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_by_type = {
+        "agent": visible_agent_ids,
+        "session": visible_session_ids,
+        "stand_down": visible_stand_down_ids,
+        "task": visible_task_ids,
+        "deliverable": visible_deliverable_ids,
+        "inbox": visible_inbox_ids,
+        "action": visible_action_ids,
+        "release": visible_release_ids,
+        "promotion": visible_git_promotion_ids,
+        "assignment": visible_assignment_ids,
+        "dispatch": visible_dispatch_ids,
+    }
+    return {
+        agent_id: dict(summary)
+        for agent_id, summary in value.items()
+        if agent_id in visible_agent_ids
+        and isinstance(summary, dict)
+        and _activity_summary_refs_are_visible(summary.get("reason_refs"), allowed_by_type)
+    }
+
+
+def _activity_summary_refs_are_visible(
+    refs: object,
+    allowed_by_type: Mapping[str, set[str]],
+) -> bool:
+    if not isinstance(refs, list) or not refs:
+        return False
+    for ref in refs:
+        if not isinstance(ref, dict):
+            return False
+        ref_type = _optional_text(ref.get("type"))
+        ref_id = _optional_text(ref.get("id"))
+        if ref_type is None or ref_id is None:
+            return False
+        allowed_ids = allowed_by_type.get(ref_type)
+        if allowed_ids is None or ref_id not in allowed_ids:
+            return False
+    return True
+
+
+def _agent_payload_with_filtered_activity_summary(
+    value: dict[str, Any],
+    summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(value)
+    if summary is None:
+        payload.pop("activity_summary", None)
+    else:
+        payload["activity_summary"] = summary
+    return payload
 
 
 def _filter_runtime_operations(
