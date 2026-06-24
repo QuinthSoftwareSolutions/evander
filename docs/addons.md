@@ -520,15 +520,18 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   parent cycles and dependency cycles are rejected, tasks default to `pending`,
   and tasks may only start in a non-terminal state. Created ids are returned in
   `created_task_ids`.
-- `task_updates[]` — update owned task details or maintain dependency edges.
-  Shape: `{"task_id", "state"?, "priority"?, "title"?, "description"?,
-  "dependency_task_ids"?}`. State, priority, title, and description remain
-  owner-only. Dependency edits may also be made by a supervising agent, the
-  project lead, or the team manager, and use the same same-project and cycle
-  validation as task creation. Do not use `task_updates` to accept or reject
-  another agent's delivered work; use `review_requests[]` and
-  `review_decisions[]` so the deliverable/task cascade is applied. Updated ids
-  are returned in `updated_task_ids`.
+- `task_updates[]` — update owned task details, maintain dependency edges, or
+  move active work out of a subordinate queue. Shape:
+  `{"task_id", "state"?, "priority"?, "title"?, "description"?,
+  "owner_agent_id"?, "dependency_task_ids"?}`. State, priority, title, and
+  description remain owner-only. A superior agent may set `owner_agent_id` to
+  claim a non-terminal task currently owned by a subordinate, or reassign it to
+  another subordinate in the same project. Dependency edits may also be made by
+  a supervising agent, the project lead, or the team manager, and use the same
+  same-project and cycle validation as task creation. Do not use `task_updates`
+  to accept or reject another agent's delivered work; use `review_requests[]`
+  and `review_decisions[]` so the deliverable/task cascade is applied. Updated
+  ids are returned in `updated_task_ids`.
 - `status_requests[]` — ask a direct subordinate for an update (downward).
   Shape: `{"recipient_agent_id", "task_id"?, "question"?,
   "response_requested"?, "priority"?}`. The recipient must be a direct

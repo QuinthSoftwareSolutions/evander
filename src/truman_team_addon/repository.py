@@ -3828,17 +3828,37 @@ class TeamStateRepository:
                     priority = update.get("priority")
                     title = _optional_text(update.get("title"))
                     description = _optional_text(update.get("description"))
+                    new_owner_id = (
+                        _required_text(update.get("owner_agent_id"), "owner_agent_id")
+                        if "owner_agent_id" in update
+                        else None
+                    )
                     has_owner_only_edit = (
                         raw_state is not None
                         or priority is not None
                         or title is not None
                         or description is not None
                     )
+                    has_owner_reassignment = (
+                        new_owner_id is not None and new_owner_id != task.owner_agent_id
+                    )
                     has_dependency_edit = "dependency_task_ids" in update
                     # State, priority, title, and description remain owner-only.
                     if has_owner_only_edit and not is_owner:
-                        result["errors"].append(f"agent {agent.id} cannot update task {task_id}")
+                        result["errors"].append(
+                            f"agent {agent.id} cannot update task {task_id}"
+                        )
                         continue
+                    if has_owner_reassignment:
+                        reassignment_error = _task_owner_reassignment_error(
+                            state_model,
+                            actor=agent,
+                            task=task,
+                            new_owner_id=new_owner_id,
+                        )
+                        if reassignment_error is not None:
+                            result["errors"].append(reassignment_error)
+                            continue
                     new_dependency_task_ids: list[str] | None = None
                     if has_dependency_edit:
                         graph_permitted = (
@@ -3880,6 +3900,21 @@ class TeamStateRepository:
                         changed = True
                     if description is not None:
                         task.description = description
+                        changed = True
+                    if has_owner_reassignment and new_owner_id is not None:
+                        old_owner_id = task.owner_agent_id
+                        task.owner_agent_id = new_owner_id
+                        _maybe_mark_idle_context_rotation_due(
+                            state_model,
+                            agent_id=old_owner_id,
+                            now=now,
+                        )
+                        if task.state in _NON_TERMINAL_TASK_STATES:
+                            _mark_agent_work_due(
+                                state_model,
+                                agent_id=new_owner_id,
+                                now=now,
+                            )
                         changed = True
                     if new_dependency_task_ids is not None:
                         task.dependency_task_ids = new_dependency_task_ids
@@ -7293,6 +7328,43 @@ def _apply_task_creation_plan(
     if plan.task_state in _NON_TERMINAL_TASK_STATES:
         _mark_agent_work_due(state, agent_id=plan.owner_id, now=now)
     return plan.task_id
+
+
+def _task_owner_reassignment_error(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    task: AgentTask,
+    new_owner_id: str,
+) -> str | None:
+    if task.state not in _NON_TERMINAL_TASK_STATES:
+        return f"task {task.id} is terminal and cannot be reassigned"
+    if not _supervises(state, actor.id, task.owner_agent_id):
+        return f"agent {actor.id} is not permitted to reassign task {task.id}"
+    new_owner = state.agents.get(new_owner_id)
+    if new_owner is None:
+        return f"task reassignment references missing owner {new_owner_id}"
+    project = state.projects.get(task.project_id)
+    if project is None:
+        return f"task {task.id} references missing project {task.project_id}"
+    if new_owner.team_id != actor.team_id or project.team_id != actor.team_id:
+        return f"agent {actor.id} cannot reassign task {task.id} outside its team"
+    if new_owner.id != actor.id and not _supervises(state, actor.id, new_owner.id):
+        return f"agent {actor.id} cannot reassign task {task.id} to {new_owner.id}"
+    actor_can_target_project = _is_project_lead_for(
+        state,
+        actor.id,
+        task.project_id,
+    ) or _is_team_manager(state, actor)
+    if (
+        not agent_has_project_assignment(state, new_owner.id, task.project_id)
+        and not actor_can_target_project
+    ):
+        return (
+            f"agent {actor.id} cannot reassign task {task.id} to {new_owner.id} "
+            f"outside project {task.project_id}"
+        )
+    return None
 
 
 def _task_creation_batch_graph_errors(

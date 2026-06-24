@@ -941,6 +941,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "Current display name: not configured; use your agent id" in guidance
     assert "task creation mandate in your wake prompt" in guidance
     assert "Action surface guide:" in guidance
+    assert "Superior agents may set owner_agent_id" in guidance
     assert "Do not accept or reject someone else's task with task_updates" in guidance
     assert "Use review_decisions only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
@@ -955,6 +956,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "creating child tasks via task_creations with parent_task_id" in guidance
     schema = json.loads(str(copied_files[0]["content"]))
     assert schema["properties"]["task_updates"]["items"]["required"] == ["task_id"]
+    assert "owner_agent_id" in schema["properties"]["task_updates"]["items"]["properties"]
     assert "task_id" in schema["properties"]["task_creations"]["items"]["properties"]
     artifact_paths_schema = schema["properties"]["deliverables"]["items"]["properties"][
         "artifact_paths"
@@ -1056,7 +1058,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
     assert "commit_sha" in example["git_review_promotions"][0]
     helper = str(copied_files[2]["content"])
-    assert f'"agent_id": "backend"' in helper
+    assert '"agent_id": "backend"' in helper
     assert str(result["dispatches"][0]["dispatch_id"]) in helper
     assert str(copied_files[2]["mode"]) == "0755"
     assert result["dispatches"][0]["action_contract"]["seeded"] is True

@@ -6068,6 +6068,87 @@ def test_apply_agent_action_supervisor_edits_dependencies(tmp_path: Path) -> Non
     assert state.tasks["w1"].dependency_task_ids == ["w2"]
 
 
+def test_apply_agent_action_supervisor_claims_subordinate_task(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="w1", owner_agent_id="worker")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "w1", "owner_agent_id": "backend"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["w1"].owner_agent_id == "backend"
+    assert "w1" in result["updated_task_ids"]
+    assert "backend" in state.agent_runtimes
+
+
+def test_apply_agent_action_supervisor_reassigns_subordinate_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.register_agent(
+        agent_id="worker-2",
+        team_id="team",
+        project_id="project",
+        role_id="project__worker",
+        session_id="session-worker-2",
+        reports_to_agent_id="backend",
+        expected_revision=repo.read().revision,
+    )
+    _seed_task(repo, task_id="w1", owner_agent_id="worker")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "w1", "owner_agent_id": "worker-2"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["w1"].owner_agent_id == "worker-2"
+    assert "w1" in result["updated_task_ids"]
+
+
+def test_apply_agent_action_task_reassignment_requires_superior(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="b1", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "task_updates": [{"task_id": "b1", "owner_agent_id": "worker"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("not permitted to reassign" in error for error in result["errors"])
+    assert state.tasks["b1"].owner_agent_id == "backend"
+
+
+def test_apply_agent_action_rejects_terminal_task_reassignment(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="w1", owner_agent_id="worker")
+    repo.update_task(task_id="w1", state=TeamTaskState.ACCEPTED)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "w1", "owner_agent_id": "backend"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("terminal" in error for error in result["errors"])
+    assert state.tasks["w1"].owner_agent_id == "worker"
+
+
 def test_apply_agent_action_lead_and_manager_edit_dependencies(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="t1", owner_agent_id="backend")

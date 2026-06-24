@@ -77,11 +77,11 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 13
+ACTION_CONTRACT_SCHEMA_VERSION = 14
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 3
+TEAM_AGENT_GUIDANCE_VERSION = 4
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
@@ -2895,7 +2895,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "descriptions. Declare ordering between tasks with dependency_task_ids.\n\n"
         "Action surface guide:\n"
         "- Use task_updates for tasks you own. State, priority, title, and "
-        "description edits are owner-only. Do not accept or reject someone else's "
+        "description edits are owner-only. Superior agents may set owner_agent_id "
+        "to claim a subordinate's non-terminal task or reassign it to another "
+        "subordinate in the same project. Do not accept or reject someone else's "
         "task with task_updates.\n"
         "- Use review_requests to ask a specific same-team agent to review a "
         "deliverable. Include instructions when the reviewer needs a focused "
@@ -4034,7 +4036,9 @@ def _persistent_action_schema() -> dict[str, Any]:
                 "type": "array",
                 "description": (
                     "Update tasks owned by this agent. State, priority, title, "
-                    "and description are owner-only. Supervisors/leads/managers "
+                    "and description are owner-only. Superior agents may set "
+                    "owner_agent_id to claim or reassign non-terminal tasks "
+                    "currently owned by their subordinates. Supervisors/leads/managers "
                     "may maintain dependency_task_ids, but must use "
                     "review_decisions to accept or reject deliverables and the "
                     "tasks they satisfy."
@@ -4050,6 +4054,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "priority": {"type": "integer", "minimum": 0},
                         "title": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
+                        "owner_agent_id": {"type": "string", "minLength": 1},
                         "dependency_task_ids": string_array,
                     },
                 },
