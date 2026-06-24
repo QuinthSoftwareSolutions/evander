@@ -3403,10 +3403,13 @@ class TeamStateRepository:
                                 manager.id,
                             )
                         ],
-                        "inbox": _pending_inbox_for_agent(
-                            state_model,
-                            manager.id,
-                        ),
+                        "inbox": [
+                            item.model_dump(mode="json")
+                            for item in _pending_inbox_for_agent(
+                                state_model,
+                                manager.id,
+                            )
+                        ],
                         "recent_action_feedback": _latest_action_feedback_for_agent(
                             state_model,
                             manager.id,

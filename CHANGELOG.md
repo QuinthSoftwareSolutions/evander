@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Manager Fallback Wake Serialization
+
+- Serialized pending manager inbox items in fallback wake leases, preventing
+  prompt construction from crashing when throttled managers are woken for team
+  oversight while holding non-wakeable inbox items.
+- Tightened the manager fallback wake regression test so it explicitly creates
+  a waiting-review task and verifies the fallback lease remains JSON-safe.
+
 ## 2026-06-23 - Team Add-on Chat Dispatch Queueing
 
 - Queued built-in Team chat sends for asynchronous dispatch instead of resuming

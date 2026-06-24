@@ -3466,7 +3466,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="stalled-task")
-    _state, result = repo.apply_agent_action(
+    state, result = repo.apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -3479,6 +3479,12 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
         },
     )
     assert result["success"] is True
+    assert state.tasks["stalled-task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    assert any(
+        item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+        and item.task_id == "stalled-task"
+        for item in state.inbox.values()
+    )
 
     def _clear_deliverable_notices(state):
         state.inbox = {
@@ -3497,8 +3503,22 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
         state.agent_runtimes["manager"] = runtime
         return state
 
+    def _add_manager_non_wakeable_inbox(state):
+        state.inbox["manager-note"] = AgentInboxItem(
+            id="manager-note",
+            recipient_agent_id="manager",
+            sender_agent_id="lead",
+            task_id="stalled-task",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
     repo.update(_clear_deliverable_notices)
     repo.update(_throttle_manager)
+    repo.update(_add_manager_non_wakeable_inbox)
 
     state, leases = repo.lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC),
@@ -3508,6 +3528,9 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     assert leases[0]["reason"] == "manager_fallback"
     assert state.agent_runtimes["manager"].wake_reason == "manager_fallback"
     assert leases[0]["tasks"] == []
+    assert leases[0]["inbox"][0]["id"] == "manager-note"
+    assert leases[0]["inbox"][0]["response_requested"] is False
+    json.dumps(leases[0])
 
 
 def test_every_wake_context_policy_preserves_low_priority_batching(
