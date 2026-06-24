@@ -626,6 +626,10 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   `artifact-space:` refs into
   `/artifacts/team-review-inputs/<review>/<deliverable>/<artifact>/<ref-version>`
   and surface successful imports or import errors in the Team context JSON.
+  Status requests that merely mention `artifact-space:` refs or copied
+  `/artifacts/team-review-inputs` paths do not trigger this import; create a
+  `review_requests[]` item whenever another agent needs to inspect deliverable
+  artifacts.
 - `review_requests[]` — request a review of a deliverable; reviews are never
   auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
   "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's

@@ -81,7 +81,7 @@ ACTION_CONTRACT_SCHEMA_VERSION = 15
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 5
+TEAM_AGENT_GUIDANCE_VERSION = 6
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
@@ -2907,7 +2907,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "steps and can be linked to a case with task_ids or task_creations[].case_id.\n"
         "- Use review_requests to ask a specific same-team agent to review a "
         "deliverable. Include instructions when the reviewer needs a focused "
-        "check.\n"
+        "check. This is also the only Team action that automatically imports "
+        "artifact-space deliverable refs into the reviewer's /artifacts/"
+        "team-review-inputs tree; do not try to pass those local paths through "
+        "status_requests.\n"
         "- For non-Git deliverables, stage files under /artifacts and list the "
         "exact relative files or directories in deliverables[].artifact_paths. "
         "The Team runtime publishes only those paths and records artifact refs "

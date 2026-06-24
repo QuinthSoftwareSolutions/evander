@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Review Artifact Routing
+
+- Clarified that reviewer artifact imports only happen for `review_requests[]`
+  inbox items, and added coverage so status requests with copied artifact paths
+  cannot be mistaken for review artifact delivery.
+- Bumped the Team agent guidance version so existing persistent agents receive
+  the corrected review-artifact routing instruction on their next wake.
+
 ## 2026-06-24 - Team Add-on Agent Edit Filtering
 
 - Scoped agent edit Project, Role, and Reports-to dropdowns to the currently

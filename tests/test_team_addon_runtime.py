@@ -1646,6 +1646,126 @@ def test_wake_due_agents_provider_reports_review_artifact_import_errors(
     assert "review_artifact_imports" not in prompt_context
 
 
+def test_wake_due_agents_provider_does_not_import_review_artifacts_from_status_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_space_path = "/teams/team/projects/project/deliverables/deliverable-1"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_key = "team/team/project/deliverable-1/dispatch-backend/bundle"
+    PublishedArtifactStore(tmp_path).publish_single_file(
+        key=artifact_key,
+        session_id="session-backend",
+        filename="report.md",
+        artifact_path="report.md",
+        content=b"review me\n",
+    )
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        metadata={
+            "team_id": "team",
+            "project_id": "project",
+            "deliverable_id": "deliverable-1",
+            "source": "team_addon",
+        },
+        subject="team-agent:backend",
+    )
+    artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject="team-agent:backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": [artifact_ref],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "status_requests": [
+                {
+                    "recipient_agent_id": "luke",
+                    "question": (
+                        "Please inspect /artifacts/team-review-inputs/review-luke/"
+                        f"deliverable-1/bundle/ref-example/report.md for {artifact_ref}."
+                    ),
+                    "response_requested": True,
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("status requests must not import review artifacts")
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert result["review_artifact_imports"] == []
+    assert result["review_artifact_import_errors"] == []
+    prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
+    assert "review_artifact_imports" not in prompt_context
+    assert "review_artifact_import_errors" not in prompt_context
+    guidance_files = [
+        file
+        for call in file_copier.calls
+        for file in call.get("files") or []
+        if file.get("destination_path") == "/home/agent/AGENTS.md"
+    ]
+    assert guidance_files
+    assert "only Team action that automatically imports artifact-space" in str(
+        guidance_files[-1]["content"]
+    )
+    assert "do not try to pass those local paths through status_requests" in str(
+        guidance_files[-1]["content"]
+    )
+
+
 def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     tmp_path: Path,
 ) -> None:
