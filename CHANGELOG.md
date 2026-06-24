@@ -20,12 +20,31 @@
   selected team so changing the Team field no longer exposes invalid cross-team
   choices.
 
+## 2026-06-24 - Team Add-on Agent Removal History
+
+- Allowed removing agents from a team when the only remaining references are
+  historical deliverable producer or inbox sender records, while preserving
+  blockers for pending inbox items addressed to the agent.
+
 ## 2026-06-24 - Team Add-on Case Update Fixes
 
 - Rolled back failed agent `case_updates[]` items so invalid task links cannot
   persist partial case edits, inserts, or task associations.
 - Preserved explicit blank case descriptions through repository and API update
   paths so optional case text can be cleared.
+
+## 2026-06-24 - Team Add-on Activity Summaries
+
+- Added host-derived per-agent activity summaries to the Team Add-on payload so
+  the org overview can show concise natural-language current work and waiting
+  state without prompting agents or calling a classifier model.
+- Wired Team org cards to prefer the derived `activity_summary` while retaining
+  existing task, inbox, runtime, and session details for drill-down.
+- Made Team Add-on view tabs use delegated click handling and live DOM queries
+  so tab switching remains responsive if tab elements are rendered or captured
+  after the initial static element cache is built.
+- Removed a duplicate Team UI `prioritySortValue` declaration that aborted the
+  page script before Team Add-on tab handlers could initialize.
 
 ## 2026-06-24 - Team Add-on Case Domain
 

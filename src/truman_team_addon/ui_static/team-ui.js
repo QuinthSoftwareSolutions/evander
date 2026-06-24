@@ -544,10 +544,13 @@ const timelineTypeOrder = [
 ];
 
 function bindTopLevelTabs() {
-  elements.teamViewButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      setTeamView(button.dataset.teamView || defaultTeamView);
-    });
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-team-view]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    setTeamView(button.dataset.teamView || defaultTeamView);
   });
   updateTeamViewTabs();
 }
@@ -622,13 +625,13 @@ function setTeamView(view) {
 }
 
 function updateTeamViewTabs() {
-  elements.teamViewButtons.forEach((button) => {
+  document.querySelectorAll("[data-team-view]").forEach((button) => {
     const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
     button.tabIndex = active ? 0 : -1;
   });
-  elements.teamViewPanels.forEach((panel) => {
+  document.querySelectorAll("[data-team-view-panel]").forEach((panel) => {
     const active = (panel.dataset.teamViewPanel || defaultTeamView) === activeTeamView;
     panel.hidden = !active;
   });
@@ -3279,10 +3282,12 @@ function orgHierarchyNodeData(node) {
 function orgAgentNodeData(agentData) {
   const awake = agentAwakeState(agentData);
   const work = orgNodeWorkSummaryData(agentData);
+  const activityTone = activityToneClass(agentData.activitySummary?.tone);
   const cardClasses = [
     "hierarchy-node-card",
     "org-focus-node-card",
     `org-focus-node-card--${awake.kind}`,
+    activityTone ? `org-focus-node-card--activity-${activityTone}` : "",
     agentData.taskStats.blockedWaitingCount || agentData.inboxCount ? "org-focus-node-card--attention" : "",
   ]
     .filter(Boolean)
@@ -3465,6 +3470,9 @@ function renderHierarchyNode(node, options = {}) {
       "hierarchy-node-card",
       focused ? "org-focus-node-card" : "",
       focused ? `org-focus-node-card--${agentAwakeState(node.agentData).kind}` : "",
+      focused && activityToneClass(node.agentData.activitySummary?.tone)
+        ? `org-focus-node-card--activity-${activityToneClass(node.agentData.activitySummary?.tone)}`
+        : "",
       node.agentData.taskStats.blockedWaitingCount || node.agentData.inboxCount ? "org-focus-node-card--attention" : "",
     ]
       .filter(Boolean)
@@ -5308,6 +5316,9 @@ function agentCardData(agent) {
     status_request: inboxItems.filter((item) => text(item.item_type) === "status_request"),
     progress_report: inboxItems.filter((item) => text(item.item_type) === "progress_report"),
   };
+  const activitySummary = normalizeActivitySummary(
+    agent?.activity_summary || state.agent_activity_summaries?.[text(agent?.id)],
+  );
 
   return {
     id: text(agent?.id),
@@ -5328,11 +5339,40 @@ function agentCardData(agent) {
     inboxIndicatorItems,
     runtime,
     sessionHealth: agentSessionHealth(agent.id),
+    activitySummary,
     effectiveStandDowns: standDowns,
     standDownActive: Boolean(agent?.stand_down_active) || standDowns.length > 0,
     ephemeralCapacity: ephemeralCapacity(agent),
     ephemeralCurrentCount,
   };
+}
+
+function normalizeActivitySummary(summary) {
+  if (!summary || typeof summary !== "object") {
+    return null;
+  }
+  const headline = text(summary.headline);
+  const workingOn = text(summary.working_on);
+  const waitingFor = text(summary.waiting_for);
+  if (!headline && !workingOn && !waitingFor) {
+    return null;
+  }
+  return {
+    headline,
+    working_on: workingOn,
+    waiting_for: waitingFor,
+    tone: activityToneClass(summary.tone),
+    source: text(summary.source) || "derived",
+    generated_at: text(summary.generated_at),
+    reason_refs: Array.isArray(summary.reason_refs) ? summary.reason_refs : [],
+  };
+}
+
+function activityToneClass(tone) {
+  const normalized = text(tone).toLowerCase();
+  return ["working", "waiting", "blocked", "idle", "attention", "offline"].includes(normalized)
+    ? normalized
+    : "";
 }
 
 function effectiveStandDowns(record) {
@@ -5679,22 +5719,30 @@ function renderAgentInboxBubble(item) {
 }
 
 function agentWorkSnapshot(agentData) {
+  const activitySummary = agentData.activitySummary || null;
   const openTasks = agentData.taskStats.openTasks || [];
   const waitingTasks = openTasks.filter(isTaskWaitingOrBlocked);
   const currentTask = openTasks.find((task) => !isTaskWaitingOrBlocked(task)) || openTasks[0] || null;
   const inboxItems = pendingInboxForAgent(agentData.id);
   const runtimeAttention = agentRuntimeAttentionRows(agentData.id);
   const activeAssignments = activeEphemeralAssignmentsForAgent(agentData.id);
-  const primary = currentTask
+  const primary = text(activitySummary?.headline) || text(activitySummary?.working_on) || (currentTask
     ? `${currentTask.title} (${humanizeToken(currentTask.state)})`
     : inboxItems[0]
       ? `${inboxItemLabels[inboxItems[0].item_type] || inboxItems[0].item_type}: ${inboxItemDetail(inboxItems[0]) || inboxItems[0].id}`
       : activeAssignments[0]
         ? `${activeAssignments[0].title || activeAssignments[0].id} (${humanizeToken(activeAssignments[0].state)})`
-        : "No open work";
+        : "No open work");
   const waiting = [];
+  const summaryWaiting = text(activitySummary?.waiting_for);
+  if (summaryWaiting && summaryWaiting.toLowerCase() !== "clear") {
+    waiting.push(summaryWaiting);
+  }
   waitingTasks.slice(0, 2).forEach((task) => {
-    waiting.push(`${task.title} (${humanizeToken(task.state)})`);
+    const label = `${task.title} (${humanizeToken(task.state)})`;
+    if (!waiting.includes(label)) {
+      waiting.push(label);
+    }
   });
   runtimeAttention.slice(0, 2).forEach((row) => {
     const label = row.title || row.id;
@@ -5761,6 +5809,9 @@ function hierarchyDetailLines(agentData, { focused = false } = {}) {
   const snapshot = agentWorkSnapshot(agentData);
 
   if (focused) {
+    if (agentData.activitySummary?.source) {
+      lines.push(`Activity summary ${agentData.activitySummary.source} - ${agentData.activitySummary.tone || "unknown"}`);
+    }
     lines.push(`Awake status ${awake.label} - ${awake.detail}`);
     lines.push(`Current work ${snapshot.primary}`);
     if (snapshot.waiting.length) {
@@ -6441,15 +6492,6 @@ function caseStatusRank(status) {
     closed: 5,
   };
   return order[text(status)] ?? 99;
-}
-
-function prioritySortValue(priority) {
-  const order = {
-    high: 0,
-    normal: 1,
-    low: 2,
-  };
-  return order[text(priority)] ?? 1;
 }
 
 function renderProjectReviewProfileCreateForm(project) {

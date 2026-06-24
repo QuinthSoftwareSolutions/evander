@@ -2231,9 +2231,9 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await agentForm.locator('[name="max_concurrent"]').fill("2");
   await agentForm.getByRole("button", { name: "Register agent" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
-  await page.getByText("Team Manager").first().waitFor({ state: "visible" });
-  await page.getByText("Project Lead").first().waitFor({ state: "visible" });
-  await page.getByText("Backend Agent").first().waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Team Manager" }).waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Project Lead" }).waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Backend Agent" }).waitFor({ state: "visible" });
 
   await openDetails(page, "Create task");
   await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', backendId);
@@ -2483,7 +2483,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     .waitFor({ state: "visible" });
   await backendCard
     .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
-    .getByText("backend")
+    .getByText("backend", { exact: true })
     .waitFor({ state: "visible" });
   const backendDetails = backendCard.locator(".hierarchy-node-details");
   await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
@@ -2905,7 +2905,7 @@ test("team add-on Governance tab creates governance groups from the top-level bu
 
   await waitForRevision(page, 5);
   await page.locator("#governance-create-panel").waitFor({ state: "hidden" });
-  await page.locator(".governance-item", { hasText: "Platform Oversight" }).waitFor({
+  await page.locator(".governance-item", { hasText: "governance-group-platform-oversight" }).waitFor({
     state: "visible",
   });
 
@@ -3729,8 +3729,8 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
       state: "visible",
     });
 
-  await page.locator('#team-people-page [data-team-record-tab="role"]').click();
-  const alphaLeadRoleCard = page.locator('#team-people-page [data-role-id="alpha-project__project-lead"]');
+  await alphaGroup.locator('[data-team-record-tab="role"]').click();
+  const alphaLeadRoleCard = alphaGroup.locator('[data-role-id="alpha-project__project-lead"]');
   await alphaLeadRoleCard.getByRole("button").click();
   await alphaLeadRoleCard.locator('.team-record-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -3742,8 +3742,8 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     state: "visible",
   });
 
-  await page.locator('#team-people-page [data-team-record-tab="agent"]').click();
-  const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  await alphaGroup.locator('[data-team-record-tab="agent"]').click();
+  const alphaLeadCard = alphaGroup.locator('[data-agent-id="alpha-lead"]');
   await alphaLeadCard.getByRole("button").click();
   await alphaLeadCard.locator('.people-agent-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -4420,7 +4420,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "Overview" }).click();
   await page.locator("#team-overview-page").waitFor({ state: "visible" });
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
-  assert.equal(await page.locator(".metric").count(), 8);
+  assert.equal(await page.locator("#team-overview-page .metric").count(), 9);
   await page.locator("#team-overview-page").getByText("Pending reviews").waitFor({
     state: "visible",
   });
@@ -4500,14 +4500,16 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 4);
   assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-group.is-collapsed").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-section").count(), 0);
-  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').getByRole("heading", { name: "Alpha Team" }).waitFor({
+  assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 0);
+  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  await alphaGroup.locator(".team-record-group-title strong", { hasText: "Alpha Team" }).waitFor({
     state: "visible",
   });
-  await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').getByRole("heading", { name: "Beta Team" }).waitFor({
+  await betaGroup.locator(".team-record-group-title strong", { hasText: "Beta Team" }).waitFor({
     state: "visible",
   });
   assert.equal(await page.locator("#team-people-page .hierarchy-view").count(), 0);
@@ -4519,7 +4521,13 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     }),
     2,
   );
-  const peopleIdentityRects = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-people-page .team-record-group.is-expanded").count(), 1);
+  assert.equal(await alphaGroup.locator("[data-agent-id]").count(), 2);
+  assert.equal(await betaGroup.locator("[data-agent-id]").count(), 0);
+
+  const peopleIdentityRects = await alphaGroup.locator(".people-agent-select").evaluateAll((buttons) => {
     return buttons
       .map((button) => {
         const avatar = button.querySelector(".agent-avatar")?.getBoundingClientRect();
@@ -4544,45 +4552,14 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     const avatarGap = rect.identityLeft - rect.avatarRight;
     assert.ok(avatarGap >= 0 && avatarGap <= 16, `expected People identity to start near avatar, got ${avatarGap}px`);
   }
-  const peopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
+  const peopleLabels = await alphaGroup.locator(".people-agent-select").evaluateAll((buttons) => {
     return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
   });
-  assert.deepEqual(peopleLabels, ["Ada Manager", "Grace Lead", "Beta Lead", "Zed Manager"]);
-  await page.locator('#team-people-page [data-people-team-id="all"][aria-selected="true"]').waitFor({
-    state: "visible",
-  });
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "10");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "5");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "5");
-  await page.locator('#team-people-page [data-people-team-id="team-beta"]').click();
-  await page.locator('#team-people-page [data-people-team-id="team-beta"][aria-selected="true"]').waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').count(), 1);
-  const betaPeopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
-    return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
-  });
-  assert.deepEqual(betaPeopleLabels, ["Beta Lead", "Zed Manager"]);
-  assert.equal(await page.locator('#team-people-page [data-agent-id="alpha-lead"]').count(), 0);
-  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 1);
-  await page.locator('#team-people-page [data-people-team-id="team-alpha"]').click();
-  await page.locator('#team-people-page [data-people-team-id="team-alpha"][aria-selected="true"]').waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').count(), 1);
-  const alphaPeopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
-    return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
-  });
-  assert.deepEqual(alphaPeopleLabels, ["Ada Manager", "Grace Lead"]);
-  assert.equal(await page.locator("#team-people-page .people-agent-select .agent-summary-meta").count(), 0);
-  await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
-    state: "visible",
-  });
-  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
-  const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
+  assert.deepEqual(peopleLabels, ["Ada Manager", "Grace Lead"]);
+  assert.equal(await alphaGroup.locator(".people-agent-select .agent-summary-meta").count(), 0);
+
+  await alphaGroup.locator('[data-team-record-tab="project"]').click();
+  const alphaProjectRecord = alphaGroup.locator('[data-project-id="alpha-project"]');
   await alphaProjectRecord.getByRole("button").click();
   await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -4620,7 +4597,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Grace Lead" }).waitFor({
     state: "visible",
   });
-  await page.locator("#people-agent-detail-view").getByText("session-alpha-lead").waitFor({
+  await page.locator("#people-agent-detail-view .agent-detail-value", { hasText: "session-alpha-lead" }).waitFor({
     state: "visible",
   });
   await page

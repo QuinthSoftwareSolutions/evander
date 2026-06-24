@@ -7009,6 +7009,107 @@ def test_remove_agent_from_team_preserves_terminal_task_history(tmp_path: Path) 
     assert state.tasks["completed-history"].owner_agent_id == "observer"
 
 
+def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_role(
+        role_id="team__observer",
+        team_id="team",
+        name="Observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="observer",
+        team_id="team",
+        role_id="team__observer",
+        session_id="session-observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="active-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Active task",
+        description="Observer produced an audit artifact for this work.",
+        created_by_agent_id="lead",
+    )
+    repo.record_deliverable(
+        deliverable_id="audit-deliverable",
+        task_id="active-task",
+        producer_agent_id="observer",
+        summary="Audit report.",
+    )
+    repo.update(
+        lambda state: _add_inbox_item(
+            state,
+            item_id="sent-history",
+            recipient_agent_id="lead",
+            sender_agent_id="observer",
+        )
+    )
+
+    state = repo.update_agent(
+        agent_id="observer",
+        team_id=None,
+        set_team_id=True,
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.agents["observer"].team_id is None
+    assert state.deliverables["audit-deliverable"].producer_agent_id == "observer"
+    assert state.inbox["sent-history"].sender_agent_id == "observer"
+
+
+def test_remove_agent_from_team_blocks_pending_inbox_recipient(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_role(
+        role_id="team__observer",
+        team_id="team",
+        name="Observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="observer",
+        team_id="team",
+        role_id="team__observer",
+        session_id="session-observer",
+        expected_revision=repo.read().revision,
+    )
+    repo.update(
+        lambda state: _add_inbox_item(
+            state,
+            item_id="inbox-to-observer",
+            recipient_agent_id="observer",
+            sender_agent_id="lead",
+        )
+    )
+
+    with pytest.raises(ValueError, match="recipient of inbox item inbox-to-observer"):
+        repo.update_agent(
+            agent_id="observer",
+            team_id=None,
+            set_team_id=True,
+            expected_revision=repo.read().revision,
+        )
+
+
 def _mark_task_state(state, task_id: str, state_value: TeamTaskState):
     state.tasks[task_id].state = state_value
+    return state
+
+
+def _add_inbox_item(
+    state,
+    *,
+    item_id: str,
+    recipient_agent_id: str,
+    sender_agent_id: str,
+):
+    state.inbox[item_id] = AgentInboxItem(
+        id=item_id,
+        recipient_agent_id=recipient_agent_id,
+        sender_agent_id=sender_agent_id,
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        state=TeamInboxItemState.PENDING,
+    )
     return state

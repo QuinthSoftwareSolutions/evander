@@ -5193,11 +5193,6 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
         if task.created_by_agent_id == agent.id:
             blockers.append(f"created task {task.id}")
     terminal_record_states = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
-    for deliverable in state.deliverables.values():
-        if deliverable.state in terminal_record_states:
-            continue
-        if deliverable.producer_agent_id == agent.id:
-            blockers.append(f"produced deliverable {deliverable.id}")
     for review in state.review_requests.values():
         if review.state in terminal_record_states:
             continue
@@ -5208,8 +5203,6 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
             continue
         if item.recipient_agent_id == agent.id:
             blockers.append(f"recipient of inbox item {item.id}")
-        if item.sender_agent_id == agent.id:
-            blockers.append(f"sender of inbox item {item.id}")
     runtime = state.agent_runtimes.get(agent.id)
     if runtime is not None and runtime.active_dispatch_id is not None:
         blockers.append(f"active dispatch {runtime.active_dispatch_id}")
