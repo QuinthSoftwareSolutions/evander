@@ -2942,6 +2942,13 @@ test("team add-on Governance tab hides handled agenda by default and emphasizes 
   await page.locator("#team-governance-page .governance-goals-subsection .governance-goal-list").waitFor({
     state: "visible",
   });
+  assert.equal(
+    await page
+      .locator("#team-governance-page .governance-goals-subsection .governance-goal-list")
+      .getByText("pending", { exact: true })
+      .count(),
+    0,
+  );
 
   await page.locator("#show-handled-governance-agenda-toggle").check();
   await page.locator("#team-governance-page").getByText("Retired cost review").waitFor({

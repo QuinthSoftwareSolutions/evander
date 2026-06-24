@@ -8,8 +8,8 @@
 ## 2026-06-24 - Team Add-on Governance Agenda Defaults
 
 - Hid handled Governance agenda items by default behind a Governance-tab toggle,
-  and moved governance goals above member teams with a more prominent gold card
-  treatment.
+  and moved governance goals above member teams with a subtle gold card
+  treatment that does not show routine goal states.
 
 ## 2026-06-24 - Team Add-on Task Ownership Handoff
 

@@ -2161,7 +2161,7 @@ function renderGovernanceGoals(goals) {
       <div class="meta-line">Goals</div>
       <ul class="compact-record-list governance-goal-list">
         ${goals
-          .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong> <span>${escapeHtml(goal.state || "pending")}</span></li>`)
+          .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong></li>`)
           .join("")}
       </ul>
     </div>
@@ -9982,7 +9982,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       member_team_ids: splitList(data.member_team_ids),
-      goals: parseGoals(data.goals),
+      goals: parseGovernanceGoals(data.goals),
     };
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
@@ -10289,9 +10289,9 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
       ${multiSelectField("Member teams", "member_team_ids", "teams", record.member_team_ids || [], { size: 5 })}
-      ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
+      ${textareaField("Goals", "goals", governanceGoalsToText(record.goals || []), {
         rows: 4,
-        placeholder: "id | description | state",
+        placeholder: "id | description",
       })}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
@@ -10444,7 +10444,7 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       member_team_ids: splitList(data.member_team_ids),
-      goals: parseGoals(data.goals),
+      goals: parseGovernanceGoals(data.goals),
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };
@@ -11072,9 +11072,24 @@ function parseGoals(value) {
     });
 }
 
+function parseGovernanceGoals(value) {
+  return parseGoals(value);
+}
+
 function goalsToText(goals) {
   return (goals || [])
     .map((goal) => [goal.id, goal.description, goal.state || "pending"].join(" | "))
+    .join("\n");
+}
+
+function governanceGoalsToText(goals) {
+  return (goals || [])
+    .map((goal) => {
+      const state = text(goal.state);
+      return state && state !== "pending"
+        ? [goal.id, goal.description, state].join(" | ")
+        : [goal.id, goal.description].join(" | ");
+    })
     .join("\n");
 }
 
