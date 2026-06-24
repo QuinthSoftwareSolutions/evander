@@ -41,10 +41,23 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             bare_repo_name=bare_repo_name,
             agent_branch=agent_branch,
             review_branch=self._normalize_optional_string(payload.get("review_branch")),
+            target_branch=self._normalize_optional_string(payload.get("target_branch")),
             remote_name=self._normalize_optional_string(payload.get("remote_name")),
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
+        expected_commit = self._normalize_optional_string(payload.get("expected_commit_sha"))
+        promoted_commit = self._normalize_optional_string(output.get("commit_sha"))
+        if (
+            output.get("success") is True
+            and expected_commit is not None
+            and promoted_commit != expected_commit
+        ):
+            output["success"] = False
+            output["error"] = (
+                f"promoted commit {promoted_commit or 'unknown'} did not match "
+                f"expected {expected_commit}"
+            )
         return output
 
     def _effect_payload(self) -> dict[str, Any]:
@@ -56,6 +69,8 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             "bare_repo_name",
             "agent_branch",
             "review_branch",
+            "target_branch",
+            "expected_commit_sha",
             "remote_name",
         ):
             if effect is not None and hasattr(effect, field_name):

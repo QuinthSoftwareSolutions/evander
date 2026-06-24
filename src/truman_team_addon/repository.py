@@ -70,6 +70,8 @@ from .models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    release_package_payload_with_derived,
+    runtime_operations_payload,
     task_payload_with_derived,
     agent_has_project_assignment,
     agent_lead_project_ids,
@@ -90,6 +92,7 @@ EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 CHAT_MESSAGE_QUEUED_EVENT_TYPE = "team.chat.message_queued"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
+GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 MISSING_ACTION_RECOVERY_MARKER = "missing action artifact recovery prompt dispatched"
 
 _NON_TERMINAL_TASK_STATES = frozenset(
@@ -3580,6 +3583,14 @@ class TeamStateRepository:
                         ],
                         "cases": _case_payloads_for_agent(state_model, agent.id),
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
+                        "release_packages": _release_package_payloads_for_agent(
+                            state_model,
+                            agent,
+                        ),
+                        "runtime_attention": _runtime_attention_payloads_for_agent(
+                            state_model,
+                            agent,
+                        ),
                         "recent_action_feedback": action_feedback,
                         "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": agent.reports_to_agent_id,
@@ -3691,6 +3702,14 @@ class TeamStateRepository:
                                 manager.id,
                             )
                         ],
+                        "release_packages": _release_package_payloads_for_agent(
+                            state_model,
+                            manager,
+                        ),
+                        "runtime_attention": _runtime_attention_payloads_for_agent(
+                            state_model,
+                            manager,
+                        ),
                         "recent_action_feedback": _latest_action_feedback_for_agent(
                             state_model,
                             manager.id,
@@ -3957,6 +3976,7 @@ class TeamStateRepository:
             "updated_goal_ids": [],
             "operator_escalation_event_ids": [],
             "git_promotion_event_ids": [],
+            "release_recovery_event_ids": [],
             "release_package_ids": [],
             "updated_task_ids": [],
             "handled_inbox_item_ids": [],
@@ -4642,6 +4662,26 @@ class TeamStateRepository:
                     continue
                 if release_id is not None:
                     result["release_package_ids"].append(release_id)
+                    _mark_progress()
+
+            for index, recovery_request in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("git_release_recoveries"),
+                    "git_release_recoveries",
+                )
+            ):
+                try:
+                    recovery_id = _apply_git_release_recovery(
+                        state_model,
+                        actor=agent,
+                        request=recovery_request,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "git_release_recoveries", index, exc)
+                    continue
+                if recovery_id is not None:
+                    result["release_recovery_event_ids"].append(recovery_id)
                     _mark_progress()
 
             for inbox_item_id in _string_list(
@@ -6772,6 +6812,66 @@ def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, An
     return [case.model_dump(mode="json") for case in cases]
 
 
+def _visible_project_ids_for_agent(state: TeamState, agent: PersistentAgent) -> set[str]:
+    project_ids = set(agent_project_ids(state, agent.id))
+    role = state.roles.get(agent.role_id) if agent.role_id is not None else None
+    if role is not None and role.project_id is not None:
+        project_ids.add(role.project_id)
+    if agent.team_id is not None:
+        team = state.teams.get(agent.team_id)
+        for project in state.projects.values():
+            if project.team_id != agent.team_id:
+                continue
+            if project.lead_agent_id == agent.id or (
+                team is not None and team.manager_agent_id == agent.id
+            ):
+                project_ids.add(project.id)
+    return project_ids
+
+
+def _release_package_payloads_for_agent(
+    state: TeamState,
+    agent: PersistentAgent,
+) -> dict[str, dict[str, Any]]:
+    visible_project_ids = _visible_project_ids_for_agent(state, agent)
+    releases = [
+        release
+        for release in state.release_packages.values()
+        if release.project_id in visible_project_ids
+    ]
+    releases.sort(key=lambda release: (release.created_at, release.id))
+    return {
+        release.id: release_package_payload_with_derived(state, release)
+        for release in releases
+    }
+
+
+def _runtime_attention_payloads_for_agent(
+    state: TeamState,
+    agent: PersistentAgent,
+) -> list[dict[str, Any]]:
+    visible_project_ids = _visible_project_ids_for_agent(state, agent)
+    visible_release_ids = {
+        release.id
+        for release in state.release_packages.values()
+        if release.project_id in visible_project_ids
+    }
+    runtime_attention = runtime_operations_payload(state).get("attention")
+    if not isinstance(runtime_attention, list):
+        return []
+    rows = [
+        row
+        for row in runtime_attention
+        if isinstance(row, dict)
+        and (
+            row.get("agent_id") == agent.id
+            or row.get("project_id") in visible_project_ids
+            or row.get("release_package_id") in visible_release_ids
+        )
+    ]
+    return rows
+
+
 def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
     return [item for item in items if item.response_requested]
 
@@ -7396,8 +7496,9 @@ def _correction_hints(error: str) -> list[str]:
             hints.append(
                 "git_release_requests creates new release packages only. For an "
                 "existing or blocked package, inspect release_packages[id], resolve "
-                "its release_branch/error, then retry or finalize that package; do "
-                "not reuse the same id in another git_release_requests item."
+                "its release_branch/error, then submit git_release_recoveries after "
+                "the resolved commit is pushed to an agents/... ref; do not reuse "
+                "the same id in another git_release_requests item."
             )
         if "review request" in normalized:
             hints.append(
@@ -9010,6 +9111,40 @@ def _emit_git_promotion_event(
     )
 
 
+def _emit_git_release_recovery_event(
+    result: dict[str, Any],
+    *,
+    release_package_id: str,
+    agent_branch: str,
+    payload: dict[str, Any],
+) -> None:
+    recovery_key = f"{release_package_id}:{agent_branch}"
+    commit_sha = _optional_text(payload.get("expected_commit_sha"))
+    if commit_sha is not None:
+        recovery_key = f"{recovery_key}:{commit_sha}"
+    result["events"].append(
+        {
+            "event_type": GIT_RELEASE_RECOVERY_EVENT_TYPE,
+            "correlation_key": release_package_id,
+            "idempotency_key": (
+                f"team-addon:{GIT_RELEASE_RECOVERY_EVENT_TYPE}:{recovery_key}"
+            ),
+            "payload": payload,
+        }
+    )
+
+
+def _normalize_agent_branch_ref(value: object) -> str:
+    text = _required_text(value, "agent_branch")
+    prefix = "refs/heads/"
+    if text.startswith(prefix):
+        text = text[len(prefix) :]
+    branch = validate_branch_name(text)
+    if not branch.startswith("agents/"):
+        raise ValueError("agent_branch must be under agents/")
+    return branch
+
+
 def _apply_git_review_promotion(
     state: TeamState,
     *,
@@ -9332,6 +9467,133 @@ def _apply_git_release_request(
     )
 
 
+def _release_request_permitted(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    project: Project,
+) -> bool:
+    return (
+        _is_project_lead_for(state, actor.id, project.id)
+        or _agent_has_role_permission_for_project(
+            state,
+            actor,
+            RolePermission.REQUEST_RELEASE,
+            project.id,
+        )
+        or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
+    )
+
+
+def _failed_release_promotion_for_recovery(
+    state: TeamState,
+    release: ReleasePackage,
+) -> GitPromotionRecord | None:
+    promotion_ids = set(release.git_promotion_record_ids)
+    promotions = [
+        promotion
+        for promotion in state.git_promotions.values()
+        if promotion.promotion_kind == "release"
+        and promotion.state == "failed"
+        and (
+            promotion.id in promotion_ids
+            or promotion.release_package_id == release.id
+        )
+    ]
+    if not promotions:
+        return None
+    promotions.sort(
+        key=lambda promotion: (
+            promotion.updated_at,
+            promotion.created_at,
+            promotion.id,
+        ),
+        reverse=True,
+    )
+    return promotions[0]
+
+
+def _apply_git_release_recovery(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    release_id = _required_text(request.get("release_package_id"), "release_package_id")
+    release = state.release_packages.get(release_id)
+    if release is None:
+        result["errors"].append(
+            f"git release recovery references missing release package {release_id}"
+        )
+        return None
+    project = state.projects.get(release.project_id)
+    if project is None:
+        result["errors"].append(
+            f"git release recovery references missing project {release.project_id}"
+        )
+        return None
+    if not _release_request_permitted(state, actor=actor, project=project):
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to recover releases on project {project.id}"
+        )
+        return None
+    if release.state != TeamRecordState.BLOCKED:
+        result["errors"].append(
+            f"release package {release.id} is {release.state.value}; only blocked "
+            "release packages can be recovered"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    try:
+        agent_branch = _normalize_agent_branch_ref(request.get("agent_branch"))
+    except ValueError as exc:
+        result["errors"].append(f"git release recovery has invalid agent_branch: {exc}")
+        return None
+    failed_promotion = _failed_release_promotion_for_recovery(state, release)
+    if failed_promotion is None:
+        result["errors"].append(
+            f"release package {release.id} has no failed release promotion to recover"
+        )
+        return None
+    target_branch = release.release_branch or failed_promotion.target_branch
+    if release.release_branch and release.release_branch != failed_promotion.target_branch:
+        result["errors"].append(
+            f"release package {release.id} release_branch {release.release_branch} "
+            f"does not match failed promotion target {failed_promotion.target_branch}"
+        )
+        return None
+    target_branch = validate_branch_name(target_branch)
+    expected_commit_sha = _optional_text(request.get("commit_sha"))
+    payload: dict[str, Any] = {
+        "release_package_id": release.id,
+        "promotion_id": failed_promotion.id,
+        "project_id": project.id,
+        "host_repo_path": git.host_repo_path,
+        "agent_branch": agent_branch,
+        "target_branch": target_branch,
+        "release_branch": target_branch,
+        "canonical_branch": release.canonical_branch
+        or canonical_release_branch(project, release.id),
+        "base_branch": git.base_branch,
+    }
+    payload.update(_bare_repo_fields(git))
+    if expected_commit_sha is not None:
+        payload["expected_commit_sha"] = expected_commit_sha
+    summary = _optional_text(request.get("summary"))
+    if summary is not None:
+        payload["summary"] = summary
+    _emit_git_release_recovery_event(
+        result,
+        release_package_id=release.id,
+        agent_branch=agent_branch,
+        payload=payload,
+    )
+    return release.id
+
+
 def _build_release_package(
     state: TeamState,
     *,
@@ -9507,9 +9769,9 @@ def _duplicate_release_package_error(release: ReleasePackage) -> str:
     if release.error:
         parts.append(f"error {release.error}")
     parts.append(
-        "do not submit git_release_requests for this id again; resolve or finalize "
-        "the existing release package instead, or choose a new id only for a "
-        "separate release"
+        "do not submit git_release_requests for this id again; resolve the existing "
+        "release package and submit git_release_recoveries after the resolved commit "
+        "is pushed to an agents/... ref, or choose a new id only for a separate release"
     )
     return "; ".join(parts)
 
@@ -10381,6 +10643,7 @@ __all__ = [
     "EPHEMERAL_COMPLETED_EVENT_TYPE",
     "EPHEMERAL_REQUESTED_EVENT_TYPE",
     "GIT_PROMOTION_EVENT_TYPE",
+    "GIT_RELEASE_RECOVERY_EVENT_TYPE",
     "LEGACY_STATE_FILE",
     "OPERATOR_ESCALATION_EVENT_TYPE",
     "STATE_DB_FILE",

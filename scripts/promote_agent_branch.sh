@@ -3,17 +3,17 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: promote_agent_branch.sh [options] <host-repo-path> <bare-repo> <agent-branch> [review-branch]
+Usage: promote_agent_branch.sh [options] <host-repo-path> <bare-repo> <agent-branch> [target-branch]
 
 Fetch a quarantined agent branch from a host-local bare remote into a trusted
-working clone and create a local review branch from it.
+working clone and create a local target branch from it.
 
 Arguments:
   host-repo-path  Path to a normal local clone of the trusted repository.
   bare-repo       Bare repo name or full path. ".git" suffix is optional.
   agent-branch    Branch name inside the bare repo, typically:
                   agents/<session-id>/<topic>
-  review-branch   Local branch name to create. Default:
+  target-branch   Local branch name to create. Default:
                   review/<session-id>/<topic>
 
 Options:
@@ -156,6 +156,7 @@ else
 fi
 
 echo "Fetched ${AGENT_BRANCH} from ${REMOTE_NAME}"
+echo "Commit: ${FETCHED_COMMIT}"
 echo
 echo "Next steps:"
 echo "  cd ${HOST_REPO_PATH}"

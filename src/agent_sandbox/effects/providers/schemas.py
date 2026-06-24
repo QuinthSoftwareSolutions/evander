@@ -1014,6 +1014,8 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
     bare_repo_name: ConfigValue | None = None
     agent_branch: ConfigValue
     review_branch: ConfigValue | None = None
+    target_branch: ConfigValue | None = None
+    expected_commit_sha: ConfigValue | None = None
     remote_name: ConfigValue | None = None
 
     @model_validator(mode="after")

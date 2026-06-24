@@ -10,6 +10,9 @@
 - Clarified Team agent release prompts and schemas that `git_release_requests[]`
   creates new packages only and blocked packages should follow their
   `next_action_hint`.
+- Scoped release package recovery hints into normal agent wake prompts and made
+  blocked-release guidance point at the failed promotion target branch instead
+  of assuming the release branch is always the recovery branch.
 
 ## 2026-06-24 - Team Add-on Release Prefix Normalization
 
@@ -41,6 +44,9 @@
   accepted review/agent branches and automatically continue the release package
   after those promotions succeed, removing the old manual feature-then-release
   agent workflow.
+- Added `git_release_recoveries[]` and a Team runtime recovery graph so blocked
+  release merge conflicts can resume from a resolved `agents/...` ref without
+  creating a duplicate release package.
 
 ## 2026-06-24 - Team Add-on Git Release Sequencing
 

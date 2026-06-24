@@ -19,7 +19,12 @@ def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_br
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.append(cmd)
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="ok\nCommit: cafef00d\n",
+            stderr="",
+        )
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 
@@ -39,6 +44,8 @@ def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_br
     ]
     assert result["success"] is True
     assert result["review_branch"] == "review/session-1/topic"
+    assert result["target_branch"] == "review/session-1/topic"
+    assert result["commit_sha"] == "cafef00d"
     assert result["remote_name"] == "agent-dropbox-auto"
 
 
@@ -52,7 +59,12 @@ def test_admin_service_promote_agent_branch_passes_optional_flags(
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.append(cmd)
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="ok\nCommit: cafef00d\n",
+            stderr="",
+        )
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 
@@ -77,6 +89,48 @@ def test_admin_service_promote_agent_branch_passes_optional_flags(
     ]
     assert result["bare_repo_path"] == "sample"
     assert result["review_branch"] == "review/custom"
+    assert result["target_branch"] == "review/custom"
+    assert result["commit_sha"] == "cafef00d"
+
+
+def test_admin_service_promote_agent_branch_accepts_target_branch(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service = AdminService(runtime_dir)
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="ok\nCommit: 708b1b89\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.promote_agent_branch(
+        host_repo_path="/trusted/repo",
+        bare_repo_name="sample",
+        agent_branch="agents/session-1/release",
+        target_branch="team/team/releases/release-1",
+    )
+
+    assert captured == [
+        [
+            str(service.project_dir / "scripts" / "promote_agent_branch.sh"),
+            "/trusted/repo",
+            "sample",
+            "agents/session-1/release",
+            "team/team/releases/release-1",
+        ]
+    ]
+    assert result["review_branch"] == "team/team/releases/release-1"
+    assert result["target_branch"] == "team/team/releases/release-1"
+    assert result["commit_sha"] == "708b1b89"
 
 
 def test_admin_service_promote_agent_branch_surfaces_phase_specific_script_error(

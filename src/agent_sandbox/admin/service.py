@@ -4591,6 +4591,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("bare_repo_name", "Bare repo name", "string", bindable=True),
             _field("agent_branch", "Agent branch", "string", required=True, bindable=True),
             _field("review_branch", "Review branch", "string", bindable=True),
+            _field("target_branch", "Target branch", "string", bindable=True),
+            _field("expected_commit_sha", "Expected commit SHA", "string", bindable=True),
             _field("remote_name", "Remote name", "string", bindable=True),
         ],
     ),
@@ -14310,6 +14312,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         bare_repo_name: str | None = None,
         agent_branch: str,
         review_branch: str | None = None,
+        target_branch: str | None = None,
         remote_name: str | None = None,
     ) -> dict[str, Any]:
         return self.issue_git_admin.promote_agent_branch(
@@ -14318,6 +14321,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             bare_repo_name=bare_repo_name,
             agent_branch=agent_branch,
             review_branch=review_branch,
+            target_branch=target_branch,
             remote_name=remote_name,
         )
 

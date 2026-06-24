@@ -411,6 +411,14 @@ class IssueGitAdminService:
         return f"review/{normalized.removeprefix('refs/heads/')}"
 
     @staticmethod
+    def _promoted_commit_from_output(*outputs: str) -> str | None:
+        for output in outputs:
+            match = re.search(r"^Commit:\s*([0-9a-fA-F]{7,40})\s*$", output, re.MULTILINE)
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
         repo_name = Path(remote_url.strip()).name
         if repo_name.endswith(".git"):
@@ -1051,6 +1059,7 @@ class IssueGitAdminService:
         bare_repo_name: str | None = None,
         agent_branch: str,
         review_branch: str | None = None,
+        target_branch: str | None = None,
         remote_name: str | None = None,
     ) -> dict[str, Any]:
         if not bare_repo_path and not bare_repo_name:
@@ -1066,8 +1075,9 @@ class IssueGitAdminService:
         cmd.append(host_repo_path)
         cmd.append(bare_repo_path or bare_repo_name or "")
         cmd.append(agent_branch)
-        if review_branch:
-            cmd.append(review_branch)
+        explicit_target_branch = target_branch or review_branch
+        if explicit_target_branch:
+            cmd.append(explicit_target_branch)
 
         completed = _admin_service._run_subprocess(cmd, capture_output=True, text=True)
         stdout = completed.stdout or ""
@@ -1078,7 +1088,8 @@ class IssueGitAdminService:
                 or f"promote_agent_branch.sh exited with code {completed.returncode}"
             )
 
-        resolved_review_branch = review_branch or self._derive_review_branch(agent_branch)
+        resolved_target_branch = explicit_target_branch or self._derive_review_branch(agent_branch)
+        commit_sha = self._promoted_commit_from_output(stdout, stderr)
         message = (stderr or stdout).strip() or "Agent branch promoted"
         return {
             "success": True,
@@ -1089,7 +1100,9 @@ class IssueGitAdminService:
             "host_repo_path": host_repo_path,
             "bare_repo_path": bare_repo_path or bare_repo_name,
             "agent_branch": agent_branch,
-            "review_branch": resolved_review_branch,
+            "review_branch": resolved_target_branch,
+            "target_branch": resolved_target_branch,
+            "commit_sha": commit_sha,
             "remote_name": remote_name or "agent-dropbox-auto",
         }
 

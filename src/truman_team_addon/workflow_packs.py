@@ -46,6 +46,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-git-promotion-release",
                 "team-consolidate-release-branches",
                 "team-record-release-promotion",
+                "team-git-release-recovery-requested",
+                "team-promote-release-recovery-branch",
+                "team-record-release-recovery-promotion",
                 "team-git-promotion-canonical",
                 "team-push-canonical-branch",
                 "team-record-canonical-promotion",
@@ -89,6 +92,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team Git promotion requested",
                 "type": "trigger:event",
                 "event_type": "team.git.promotion_requested",
+            },
+            {
+                "id": "team-git-release-recovery-requested",
+                "display_name": "Team Git release recovery requested",
+                "type": "trigger:event",
+                "event_type": "team.git.release_recovery_requested",
             },
         ],
         "gates": [
@@ -422,6 +431,51 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 },
             },
             {
+                "id": "team-promote-release-recovery-branch",
+                "display_name": "Promote resolved release recovery branch",
+                "type": "effect:git:promote-agent-branch",
+                "host_repo_path": (
+                    "${{team-git-release-recovery-requested.payload.host_repo_path}}"
+                ),
+                "bare_repo_name": (
+                    "${{team-git-release-recovery-requested.payload.bare_repo_name ?? null}}"
+                ),
+                "bare_repo_path": (
+                    "${{team-git-release-recovery-requested.payload.bare_repo_path ?? null}}"
+                ),
+                "agent_branch": (
+                    "${{team-git-release-recovery-requested.payload.agent_branch}}"
+                ),
+                "target_branch": (
+                    "${{team-git-release-recovery-requested.payload.target_branch}}"
+                ),
+                "expected_commit_sha": (
+                    "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+                ),
+            },
+            {
+                "id": "team-record-release-recovery-promotion",
+                "display_name": "Record release recovery promotion result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": (
+                    "${{team-git-release-recovery-requested.payload.promotion_id}}"
+                ),
+                "success": "${{team-promote-release-recovery-branch.success}}",
+                "commit_sha": (
+                    "${{team-promote-release-recovery-branch.commit_sha ?? null}}"
+                ),
+                "error": "${{team-promote-release-recovery-branch.error ?? null}}",
+                "result_outputs": {
+                    "agent_branch": (
+                        "${{team-promote-release-recovery-branch.agent_branch ?? null}}"
+                    ),
+                    "target_branch": (
+                        "${{team-promote-release-recovery-branch.target_branch ?? null}}"
+                    ),
+                    "message": "${{team-promote-release-recovery-branch.message ?? null}}",
+                },
+            },
+            {
                 "id": "team-push-canonical-branch",
                 "display_name": "Push release branch to canonical remote",
                 "type": "effect:git:push-branch",
@@ -501,6 +555,14 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {"source_id": "team-consolidate-feature-branches", "target_id": "team-record-feature-promotion"},
             {"source_id": "team-git-promotion-release", "target_id": "team-consolidate-release-branches"},
             {"source_id": "team-consolidate-release-branches", "target_id": "team-record-release-promotion"},
+            {
+                "source_id": "team-git-release-recovery-requested",
+                "target_id": "team-promote-release-recovery-branch",
+            },
+            {
+                "source_id": "team-promote-release-recovery-branch",
+                "target_id": "team-record-release-recovery-promotion",
+            },
             {"source_id": "team-git-promotion-canonical", "target_id": "team-push-canonical-branch"},
             {"source_id": "team-push-canonical-branch", "target_id": "team-record-canonical-promotion"},
             {"source_id": "team-record-canonical-promotion", "target_id": "team-mark-release-published"},

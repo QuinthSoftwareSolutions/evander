@@ -2924,7 +2924,7 @@ def team_state_payload(
         for task_id, task in state.tasks.items()
     }
     payload["release_packages"] = {
-        release_id: release_package_payload_with_derived(release)
+        release_id: release_package_payload_with_derived(state, release)
         for release_id, release in state.release_packages.items()
     }
     payload["runtime_operations"] = runtime_operations_payload(
@@ -2944,32 +2944,79 @@ def team_state_payload(
     return payload
 
 
-def release_package_payload_with_derived(release: ReleasePackage) -> dict[str, Any]:
+def release_package_payload_with_derived(
+    state: TeamState,
+    release: ReleasePackage,
+) -> dict[str, Any]:
     payload = release.model_dump(mode="json")
-    next_action_hint = _release_next_action_hint(release)
+    next_action_hint = _release_next_action_hint(state, release)
     if next_action_hint is not None:
         payload["next_action"] = "resolve_blocked_release"
         payload["next_action_hint"] = next_action_hint
     return payload
 
 
-def _release_next_action_hint(release: ReleasePackage) -> str | None:
+def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str | None:
     if release.state != TeamRecordState.BLOCKED and not release.error:
         return None
+    failed_promotion = _release_blocking_promotion(state, release)
     parts = [
         f"Resolve existing release package {release.id}; do not create another "
-        "git_release_requests item with this id."
+        "git_release_requests item with this id. Assign semantic conflicts to "
+        "the owning coder, have the resolved commit pushed to an agents/... ref, "
+        "then submit git_release_recoveries for this package."
     ]
-    if release.release_branch:
-        parts.append(f"Continue from release branch {release.release_branch}.")
+    if failed_promotion is not None:
+        parts.append(
+            f"Failed {failed_promotion.promotion_kind} promotion "
+            f"{failed_promotion.id}: {failed_promotion.source_branch} -> "
+            f"{failed_promotion.target_branch}."
+        )
+        parts.append(
+            f"Resolve and commit on promotion target branch "
+            f"{failed_promotion.target_branch}."
+        )
     if release.error:
         parts.append(f"Current blocker: {release.error}")
     if release.error and "merge conflict" in release.error.casefold():
         parts.append(
-            "Resolve the merge conflict, commit on the existing release branch, "
-            "then retry or finalize the existing release package."
+            "Resolve the merge conflict on the failed promotion target branch, "
+            "push the resolved commit to an agents/... ref, then recover the "
+            "existing release package with git_release_recoveries."
+        )
+    if failed_promotion is None:
+        parts.append(
+            "Inspect the package's git_promotion_record_ids and current Git state "
+            "to find the blocked promotion target before retrying or finalizing."
         )
     return " ".join(parts)
+
+
+def _release_blocking_promotion(
+    state: TeamState,
+    release: ReleasePackage,
+) -> GitPromotionRecord | None:
+    release_promotion_ids = set(release.git_promotion_record_ids)
+    failed_promotions = [
+        promotion
+        for promotion in state.git_promotions.values()
+        if promotion.state == "failed"
+        and (
+            promotion.id in release_promotion_ids
+            or promotion.release_package_id == release.id
+        )
+    ]
+    if not failed_promotions:
+        return None
+    failed_promotions.sort(
+        key=lambda promotion: (
+            promotion.updated_at,
+            promotion.created_at,
+            promotion.id,
+        ),
+        reverse=True,
+    )
+    return failed_promotions[0]
 
 
 def _agent_payload_with_role(
@@ -3551,7 +3598,7 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     for release in sorted(state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)):
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
-        next_action_hint = _release_next_action_hint(release)
+        next_action_hint = _release_next_action_hint(state, release)
         rows.append(
             _runtime_row(
                 id=release.id,

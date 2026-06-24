@@ -930,8 +930,45 @@ def test_team_state_payload_includes_blocked_release_next_action_hint() -> None:
     release = payload["release_packages"]["release"]
     assert release["next_action"] == "resolve_blocked_release"
     assert "do not create another git_release_requests" in release["next_action_hint"]
+    assert "git_release_recoveries" in release["next_action_hint"]
     assert "team/team/releases/release" in release["next_action_hint"]
     assert "Resolve the merge conflict" in release["next_action_hint"]
+
+
+def test_blocked_release_hint_uses_failed_feature_promotion_target() -> None:
+    state = _valid_state()
+    state.release_packages["release"] = ReleasePackage(
+        id="release",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        release_branch="team/team/releases/release",
+        git_promotion_record_ids=["feature-promotion"],
+        state=TeamRecordState.BLOCKED,
+        error=(
+            "merge conflict while merging team/team/reviews/deliverable into "
+            "team/team/features/task-ui"
+        ),
+    )
+    state.git_promotions["feature-promotion"] = GitPromotionRecord(
+        id="feature-promotion",
+        project_id="project",
+        release_package_id="release",
+        task_id="task",
+        actor_agent_id="lead",
+        source_branch="team/team/reviews/deliverable",
+        target_branch="team/team/features/task-ui",
+        promotion_kind="feature",
+        state="failed",
+        error="merge conflict",
+    )
+
+    payload = team_state_payload(state)
+
+    hint = payload["release_packages"]["release"]["next_action_hint"]
+    assert "Failed feature promotion feature-promotion" in hint
+    assert "Resolve and commit on promotion target branch team/team/features/task-ui" in hint
+    assert "git_release_recoveries" in hint
+    assert "Continue from release branch" not in hint
 
 
 def test_team_state_payload_can_exclude_operator_only_agent_fields() -> None:
@@ -1002,6 +1039,9 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert "do not create another git_release_requests" in rows[
         "blocked_release_package"
     ]["next_action_hint"]
+    assert "git_release_recoveries" in rows["blocked_release_package"][
+        "next_action_hint"
+    ]
     assert "team/team/releases/release" in rows["blocked_release_package"][
         "next_action_hint"
     ]

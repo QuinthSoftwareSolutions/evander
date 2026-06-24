@@ -203,12 +203,14 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
+        "team-git-release-recovery-requested",
         "system.chat_assistant",
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
     assert "team-wake-queued-chat-message" in _node_ids(config.effects)
     assert "team-notify-operator" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
+    assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
 
     service = AdminService(tmp_path / "runtime")
     document = service.read_workflow_editor_document()
@@ -1026,6 +1028,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "release request can enqueue prerequisite feature promotions" in guidance
     assert "git_refs.review_branch or git_refs.agent_branch" in guidance
     assert "Do not combine non-empty git_feature_updates" in guidance
+    assert "git_release_recoveries" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
     assert "response_requested is false" in guidance
@@ -1081,6 +1084,17 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "auto-promote" in release_request_property["description"]
     assert "Create a new release package" in release_request_property["description"]
     assert "existing blocked package" in release_request_property["description"]
+    recovery_property = schema["properties"]["git_release_recoveries"]
+    assert "Resume an existing blocked release package" in recovery_property["description"]
+    recovery_schema = recovery_property["items"]
+    assert recovery_schema["additionalProperties"] is False
+    assert recovery_schema["required"] == ["release_package_id", "agent_branch"]
+    assert set(recovery_schema["properties"]) == {
+        "release_package_id",
+        "agent_branch",
+        "commit_sha",
+        "summary",
+    }
     release_request_schema = schema["properties"]["git_release_requests"]["items"]
     assert "Do not reuse the id" in release_request_schema["description"]
     assert release_request_schema["additionalProperties"] is False
@@ -1149,6 +1163,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert example["review_decisions"][0]["override_routing_gap_reason"] is None
     assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
     assert "commit_sha" in example["git_review_promotions"][0]
+    assert example["git_release_recoveries"] == []
     helper = str(copied_files[2]["content"])
     assert '"agent_id": "backend"' in helper
     assert str(result["dispatches"][0]["dispatch_id"]) in helper
@@ -1204,6 +1219,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "git_review_promotions",
         "git_feature_updates",
         "git_release_requests",
+        "git_release_recoveries",
         "ephemeral_requests",
         "ephemeral_acceptances",
         "dependency_status",
@@ -2189,6 +2205,62 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
     )
     assert "Role-aware delegation" in prompt
     assert "Reviewer roles should generally receive review_requests" in prompt
+
+
+def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _add_blocked_release(state: TeamState) -> TeamState:
+        state.release_packages["rel-1"] = ReleasePackage(
+            id="rel-1",
+            project_id="project",
+            deliverable_ids=[],
+            release_branch="team/team/releases/rel-1",
+            git_promotion_record_ids=["promotion-release"],
+            state=TeamRecordState.BLOCKED,
+            error="merge conflict while merging feature into team/team/releases/rel-1",
+        )
+        state.git_promotions["promotion-release"] = GitPromotionRecord(
+            id="promotion-release",
+            project_id="project",
+            release_package_id="rel-1",
+            actor_agent_id="lead",
+            source_branch="team/team/features/task",
+            target_branch="team/team/releases/rel-1",
+            promotion_kind="release",
+            state="failed",
+            error="merge conflict",
+        )
+        return state
+
+    repo.update(_add_blocked_release)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+
+    assert set(context["release_packages"]) == {"rel-1"}
+    assert context["release_packages"]["rel-1"]["next_action"] == (
+        "resolve_blocked_release"
+    )
+    assert "do not create another git_release_requests" in context[
+        "release_packages"
+    ]["rel-1"]["next_action_hint"]
+    assert "git_release_recoveries" in context["release_packages"]["rel-1"][
+        "next_action_hint"
+    ]
+    assert any(
+        row["kind"] == "blocked_release_package"
+        and row["release_package_id"] == "rel-1"
+        and "promotion target branch team/team/releases/rel-1" in row["next_action_hint"]
+        for row in context["runtime_attention"]
+    )
 
 
 def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
@@ -5725,6 +5797,32 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     )
     assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
     assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
+
+    # release recovery -> promote agent ref -> record release promotion
+    recovery_promote = effects["team-promote-release-recovery-branch"]
+    assert recovery_promote["type"] == "effect:git:promote-agent-branch"
+    assert recovery_promote["agent_branch"] == (
+        "${{team-git-release-recovery-requested.payload.agent_branch}}"
+    )
+    assert recovery_promote["target_branch"] == (
+        "${{team-git-release-recovery-requested.payload.target_branch}}"
+    )
+    assert recovery_promote["expected_commit_sha"] == (
+        "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+    )
+    recovery_record = effects["team-record-release-recovery-promotion"]
+    assert recovery_record["type"] == "effect:team:record-git-promotion"
+    assert recovery_record["promotion_id"] == (
+        "${{team-git-release-recovery-requested.payload.promotion_id}}"
+    )
+    assert recovery_record["success"] == (
+        "${{team-promote-release-recovery-branch.success}}"
+    )
+    assert ("team-git-release-recovery-requested", "team-promote-release-recovery-branch") in edges
+    assert (
+        "team-promote-release-recovery-branch",
+        "team-record-release-recovery-promotion",
+    ) in edges
 
     # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]

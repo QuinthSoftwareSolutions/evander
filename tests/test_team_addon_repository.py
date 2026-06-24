@@ -40,6 +40,7 @@ from truman_team_addon.models import (
 )
 from truman_team_addon.repository import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    GIT_RELEASE_RECOVERY_EVENT_TYPE,
     TeamStateConflictError,
     TeamStateRepository,
 )
@@ -6191,6 +6192,123 @@ def test_duplicate_git_release_request_points_to_existing_package(
     assert "state blocked" in error
     assert "release_branch team/team/releases/rel-1" in error
     assert "do not submit git_release_requests for this id again" in error
+
+
+def test_apply_agent_action_git_release_recovery_emits_recovery_event(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    release_promotion_id = state.release_packages["rel-1"].git_promotion_record_ids[0]
+    state, _failure = repo.record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=False,
+        error="merge conflict while merging team/team/features/task-backend",
+    )
+    assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_recoveries": [
+                {
+                    "release_package_id": "rel-1",
+                    "agent_branch": "refs/heads/agents/lead/release-resolved",
+                    "commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+                    "summary": "Resolved release merge conflict.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["release_package_ids"] == []
+    assert result["release_recovery_event_ids"] == ["rel-1"]
+    assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
+    assert len(result["events"]) == 1
+    event = result["events"][0]
+    assert event["event_type"] == GIT_RELEASE_RECOVERY_EVENT_TYPE
+    assert event["correlation_key"] == "rel-1"
+    assert event["payload"] == {
+        "release_package_id": "rel-1",
+        "promotion_id": release_promotion_id,
+        "project_id": "project",
+        "host_repo_path": "/opt/repos/Truman",
+        "bare_repo_name": "Truman.git",
+        "agent_branch": "agents/lead/release-resolved",
+        "target_branch": "team/team/releases/rel-1",
+        "release_branch": "team/team/releases/rel-1",
+        "canonical_branch": "releases/project/rel-1",
+        "base_branch": "main",
+        "expected_commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+        "summary": "Resolved release merge conflict.",
+    }
+
+
+def test_apply_agent_action_git_release_recovery_requires_agent_branch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release_promotion_id = state.release_packages["rel-1"].git_promotion_record_ids[0]
+    repo.record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=False,
+        error="merge conflict",
+    )
+
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_recoveries": [
+                {
+                    "release_package_id": "rel-1",
+                    "agent_branch": "team/team/releases/rel-1",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["release_recovery_event_ids"] == []
+    assert "agent_branch must be under agents/" in result["errors"][0]
 
 
 def test_apply_agent_action_git_release_request_auto_promotes_review_branch(

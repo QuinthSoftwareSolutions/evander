@@ -113,6 +113,7 @@ def test_promote_agent_branch_refreshes_existing_review_branch(tmp_path: Path) -
 
     assert result.returncode == 0, result.stderr
     assert f"Fetched {AGENT_BRANCH} from agent-dropbox-auto" in result.stdout
+    assert f"Commit: {RESOLVED_COMMIT}" in result.stdout
     assert f"Refreshed local review branch: {REVIEW_BRANCH}" in result.stdout
     assert f"fetch agent-dropbox-auto +refs/heads/{AGENT_BRANCH}:{PROMOTION_REF}" in log_text
     assert f"rev-parse --verify {PROMOTION_REF}^{{commit}}" in log_text
@@ -125,6 +126,7 @@ def test_promote_agent_branch_creates_new_review_branch(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert f"Fetched {AGENT_BRANCH} from agent-dropbox-auto" in result.stdout
+    assert f"Commit: {RESOLVED_COMMIT}" in result.stdout
     assert f"Created local review branch: {REVIEW_BRANCH}" in result.stdout
     assert f"fetch agent-dropbox-auto +refs/heads/{AGENT_BRANCH}:{PROMOTION_REF}" in log_text
     assert f"rev-parse --verify {PROMOTION_REF}^{{commit}}" in log_text
