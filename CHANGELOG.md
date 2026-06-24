@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Review Artifact Imports
+
+- Imported Team review-request `artifact-space:` refs into reviewer sessions
+  during wake preparation so review prompts include concrete
+  `/artifacts/team-review-inputs/...` paths and structured import errors.
+
 ## 2026-06-24 - Team Add-on Manager Fallback Active Lease Guard
 
 - Suppressed manager fallback wakes while another active team member still has

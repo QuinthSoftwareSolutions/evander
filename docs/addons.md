@@ -561,8 +561,10 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   appends the resulting `artifact-space:` ref to `artifact_refs`. Failed artifact
   publication rejects that deliverable item without creating a ref-less
   deliverable. Deliverable notices and review-request inbox items include the
-  final `artifact_refs` so leads and reviewers can import the referenced
-  published archive when needed.
+  final `artifact_refs`. Reviewer wakes automatically import review-request
+  `artifact-space:` refs into
+  `/artifacts/team-review-inputs/<review>/<deliverable>/<artifact>` and surface
+  successful imports or import errors in the Team context JSON.
 - `review_requests[]` — request a review of a deliverable; reviews are never
   auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
   "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's

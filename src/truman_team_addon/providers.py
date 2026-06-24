@@ -12,13 +12,17 @@ from uuid import uuid4
 
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from agent_sandbox.effects.providers.artifacts import ArtifactPublishArtifactsEffectProvider
+from agent_sandbox.effects.providers.artifacts import (
+    ArtifactImportPublishedEffectProvider,
+    ArtifactPublishArtifactsEffectProvider,
+)
 from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.artifact_spaces import ArtifactSpaceStore
+from agent_sandbox.artifact_spaces import ArtifactSpaceStore, normalize_space_path
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
 from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
+    ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
 )
 from agent_sandbox.events.models import WorkflowNodeEnvelope
@@ -79,6 +83,8 @@ TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "truman-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
+_ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
+_TEAM_REVIEW_ARTIFACT_ID_DEFAULT = "bundle"
 
 
 def _catalog_field(
@@ -934,6 +940,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
+        review_artifact_imports: list[dict[str, Any]] = []
+        review_artifact_import_errors: list[dict[str, Any]] = []
         for lease in leases:
             agent = lease["agent"]
             try:
@@ -971,6 +979,20 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             dispatch_id=lease["dispatch_id"],
                             project_repo=project_repo,
                         )
+                    )
+                review_artifacts = _prepare_review_artifacts_for_lease(
+                    context,
+                    lease=lease,
+                )
+                if review_artifacts["review_artifact_imports"] or review_artifacts[
+                    "review_artifact_import_errors"
+                ]:
+                    lease = {**lease, **review_artifacts}
+                    review_artifact_imports.extend(
+                        review_artifacts["review_artifact_imports"]
+                    )
+                    review_artifact_import_errors.extend(
+                        review_artifacts["review_artifact_import_errors"]
                     )
                 runtime_payload = lease.get("runtime")
                 context_rotation_pending = (
@@ -1013,6 +1035,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 }
                 if project_repo is not None:
                     dispatch_payload["project_repo"] = project_repo
+                if lease.get("review_artifact_imports"):
+                    dispatch_payload["review_artifact_imports"] = lease[
+                        "review_artifact_imports"
+                    ]
+                if lease.get("review_artifact_import_errors"):
+                    dispatch_payload["review_artifact_import_errors"] = lease[
+                        "review_artifact_import_errors"
+                    ]
                 if context_rotation_pending:
                     thread_id = _optional_text(result_payload.get("thread_id"))
                     state = repo.record_context_rotation_dispatch_started(
@@ -1050,6 +1080,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
+            "review_artifact_imports": review_artifact_imports,
+            "review_artifact_import_errors": review_artifact_import_errors,
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
@@ -2412,6 +2444,220 @@ def _publish_deliverable_artifact_bundle(
     }
 
 
+def _prepare_review_artifacts_for_lease(
+    context: Any,
+    *,
+    lease: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    imports: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    requests = _review_artifact_ref_requests(lease)
+    if not requests:
+        return {
+            "review_artifact_imports": imports,
+            "review_artifact_import_errors": errors,
+        }
+
+    try:
+        artifact_state = ArtifactSpaceStore(_runtime_dir(context)).read()
+    except Exception as exc:
+        for request in requests:
+            errors.append({**_review_artifact_request_payload(request), "error": str(exc)})
+        return {
+            "review_artifact_imports": imports,
+            "review_artifact_import_errors": errors,
+        }
+
+    for request in requests:
+        artifact_ref = _required_text(request.get("artifact_ref"), "artifact_ref")
+        try:
+            artifact_space_path = _artifact_space_path_from_ref(artifact_ref)
+            versions = artifact_state.latest_versions_for_space(
+                artifact_space_path,
+                artifact_id=_TEAM_REVIEW_ARTIFACT_ID_DEFAULT,
+            )
+            if not versions:
+                versions = artifact_state.latest_versions_for_space(artifact_space_path)
+            if not versions:
+                raise ValueError(
+                    "artifact space has no latest published versions: "
+                    f"{artifact_space_path}"
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    **_review_artifact_request_payload(request),
+                    "artifact_space_path": artifact_ref.removeprefix(
+                        _ARTIFACT_SPACE_REF_PREFIX
+                    ),
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        for version in versions:
+            try:
+                imports.append(
+                    _import_review_artifact_version(
+                        context,
+                        request=request,
+                        artifact_space_path=artifact_space_path,
+                        artifact_id=version.artifact_id,
+                        artifact_key=version.artifact_key,
+                        artifact_space_version_id=version.id,
+                        artifact_space_version=version.version,
+                    )
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        **_review_artifact_request_payload(request),
+                        "artifact_space_path": artifact_space_path,
+                        "artifact_id": version.artifact_id,
+                        "artifact_key": version.artifact_key,
+                        "artifact_space_version_id": version.id,
+                        "artifact_space_version": version.version,
+                        "error": str(exc),
+                    }
+                )
+
+    return {
+        "review_artifact_imports": imports,
+        "review_artifact_import_errors": errors,
+    }
+
+
+def _review_artifact_ref_requests(lease: Mapping[str, Any]) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    agent = lease.get("agent")
+    if not isinstance(agent, Mapping):
+        return requests
+    session_id = _optional_text(agent.get("session_id"))
+    if session_id is None:
+        return requests
+    for item in lease.get("inbox") or []:
+        if not isinstance(item, Mapping):
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        if _optional_text(payload.get("kind")) != "review_request":
+            continue
+        review_request_id = (
+            _optional_text(payload.get("review_request_id"))
+            or _optional_text(item.get("id"))
+            or "review"
+        )
+        deliverable_id = _optional_text(payload.get("deliverable_id")) or "deliverable"
+        for artifact_ref in _string_items(payload.get("artifact_refs")):
+            if not artifact_ref.startswith(_ARTIFACT_SPACE_REF_PREFIX):
+                continue
+            key = (review_request_id, deliverable_id, artifact_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            requests.append(
+                {
+                    "review_request_id": review_request_id,
+                    "deliverable_id": deliverable_id,
+                    "artifact_ref": artifact_ref,
+                    "inbox_item_id": _optional_text(item.get("id")),
+                    "session_id": session_id,
+                }
+            )
+    return requests
+
+
+def _review_artifact_request_payload(request: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: request[key]
+        for key in (
+            "review_request_id",
+            "deliverable_id",
+            "artifact_ref",
+            "inbox_item_id",
+        )
+        if request.get(key) is not None
+    }
+
+
+def _artifact_space_path_from_ref(artifact_ref: str) -> str:
+    if not artifact_ref.startswith(_ARTIFACT_SPACE_REF_PREFIX):
+        raise ValueError(f"unsupported artifact ref: {artifact_ref}")
+    return normalize_space_path(artifact_ref.removeprefix(_ARTIFACT_SPACE_REF_PREFIX))
+
+
+def _import_review_artifact_version(
+    context: Any,
+    *,
+    request: Mapping[str, Any],
+    artifact_space_path: str,
+    artifact_id: str,
+    artifact_key: str,
+    artifact_space_version_id: str,
+    artifact_space_version: int,
+) -> dict[str, Any]:
+    review_request_id = _required_text(
+        request.get("review_request_id"),
+        "review_request_id",
+    )
+    deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
+    destination_path = _review_artifact_destination_path(
+        review_request_id=review_request_id,
+        deliverable_id=deliverable_id,
+        artifact_id=artifact_id,
+    )
+    provider = ArtifactImportPublishedEffectProvider()
+    provider.initialize(
+        ArtifactImportPublishedEffectDefinition(
+            id=(
+                "team-review-artifact-import-"
+                f"{_artifact_space_path_segment(review_request_id, 'review_request_id')}-"
+                f"{_artifact_space_path_segment(artifact_id, 'artifact_id')}"
+            ),
+            display_name="Import Team review artifact",
+            type="effect:artifact:import-published",
+            session_id=_required_text(request.get("session_id"), "session_id"),
+            key=artifact_key,
+            destination_path=destination_path,
+            overwrite=True,
+        ),
+        context,
+    )
+    import_result = provider.execute()
+    return {
+        "review_request_id": review_request_id,
+        "deliverable_id": deliverable_id,
+        "artifact_ref": request.get("artifact_ref"),
+        "artifact_space_path": artifact_space_path,
+        "artifact_id": artifact_id,
+        "artifact_key": artifact_key,
+        "artifact_space_version_id": artifact_space_version_id,
+        "artifact_space_version": artifact_space_version,
+        "destination_path": destination_path,
+        "artifact_path": f"/artifacts/{destination_path}",
+        "imported_paths": list(import_result.get("imported_paths") or []),
+        "imported_file_count": int(import_result.get("imported_file_count") or 0),
+    }
+
+
+def _review_artifact_destination_path(
+    *,
+    review_request_id: str,
+    deliverable_id: str,
+    artifact_id: str,
+) -> str:
+    return "/".join(
+        [
+            "team-review-inputs",
+            _artifact_space_path_segment(review_request_id, "review_request_id"),
+            _artifact_space_path_segment(deliverable_id, "deliverable_id"),
+            _artifact_space_path_segment(artifact_id, "artifact_id"),
+        ]
+    )
+
+
 def _artifact_space_path_segment(value: str, field_name: str) -> str:
     text = _required_text(value, field_name)
     if (
@@ -2730,6 +2976,12 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         context["project_repo"] = dict(project_repo)
+    review_artifact_imports = lease.get("review_artifact_imports")
+    if isinstance(review_artifact_imports, list) and review_artifact_imports:
+        context["review_artifact_imports"] = review_artifact_imports
+    review_artifact_import_errors = lease.get("review_artifact_import_errors")
+    if isinstance(review_artifact_import_errors, list) and review_artifact_import_errors:
+        context["review_artifact_import_errors"] = review_artifact_import_errors
     runtime = lease.get("runtime")
     handoff_summary = (
         _optional_text(runtime.get("last_handoff_summary"))
@@ -2751,6 +3003,18 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "items.\n"
         f"{json.dumps(action_feedback, sort_keys=True, indent=2)}\n\n"
         if isinstance(action_feedback, list) and action_feedback
+        else ""
+    )
+    review_artifact_section = (
+        "Review artifact access for this dispatch:\n"
+        "- review_artifact_imports lists published deliverable archives already "
+        "imported into this session. Inspect artifact_path or imported_paths under "
+        "/artifacts instead of trying to open artifact-space refs directly.\n"
+        "- If review_artifact_import_errors is present, treat the review artifact "
+        "as unavailable and report the review as blocked or ask the lead to "
+        "republish it.\n\n"
+        if context.get("review_artifact_imports")
+        or context.get("review_artifact_import_errors")
         else ""
     )
     manager_fallback_section = (
@@ -2818,6 +3082,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"{_project_repo_prompt_guidance(project_repo)}"
         f"{handoff_section}"
         f"{action_feedback_section}"
+        f"{review_artifact_section}"
         f"{manager_fallback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
