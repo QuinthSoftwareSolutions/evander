@@ -250,11 +250,14 @@ Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for
 that role. The Admin API exposes role CRUD at `/api/addons/team-addon/roles`,
-and the bundled UI includes a `Roles` view plus create/edit forms. The only
-bundled permission today is `request_release`; release authorization checks the
-agent's role permission rather than an exact role name. The built-in
-`auto-dev-squad` template grants `request_release` to its project-scoped
-release-operator role.
+and the bundled UI includes a `Roles` view plus create/edit forms. Bundled
+permissions include `create_root_task`, `prepare_bookkeeping_action`,
+`review_bookkeeping_action`, `request_payment_preparation`, and
+`request_release`; release authorization checks the agent's role permission
+rather than an exact role name. The built-in `auto-dev-squad` template grants
+`request_release` to its project-scoped release-operator role, and the
+`accounting-department` template grants the bookkeeping permissions to its
+preparation and review roles.
 
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
@@ -268,13 +271,22 @@ The bundled Team Add-on exposes a built-in template catalog at
 `/api/addons/team-addon/templates`. The Admin Web `Teams` tab includes a
 `Setup from template` panel that loads that catalog, previews the selected
 template, and materializes it with one optimistic request to
-`POST /api/addons/team-addon/templates/auto-dev-squad/materialize`.
+`POST /api/addons/team-addon/templates/{template_id}/materialize`.
 
-The current built-in template is `auto-dev-squad`, an opinionated
-manager/project-lead/implementer/reviewer/release-operator squad for reviewed
-auto-dev delivery. The preview shows the planned role hierarchy, review rubric,
-project goal, starter tasks, optional Git fields, and the concrete inputs that
-must be supplied before creation.
+The built-in catalog currently includes:
+
+- `auto-dev-squad`: an opinionated
+  manager/project-lead/implementer/reviewer/release-operator squad for reviewed
+  auto-dev delivery.
+- `accounting-department`: an accounting operations department with an
+  accounting manager, bookkeeping lead, bookkeeping clerk, invoice reviewer,
+  payment preparer, and tax-compliance reviewer. It is intended for
+  Bokio/Skatteverket-assisted bookkeeping coordination and deliberately omits
+  Git setup fields.
+
+The preview shows the planned role hierarchy, review rubric, project goal,
+starter tasks, optional Git fields, and the concrete inputs that must be
+supplied before creation.
 
 Required inputs are:
 
@@ -285,6 +297,12 @@ Required inputs are:
 - `agents.implementer.agent_id` and `agents.implementer.session_id`
 - `agents.reviewer.agent_id` and `agents.reviewer.session_id`
 - `agents.release_operator.agent_id` and `agents.release_operator.session_id`
+
+The generalized request shape may instead provide template role keys under a
+top-level `roles` object, for example `roles.manager.session_id` and
+`roles.bookkeeping_clerk.session_id`. If `team.id`, `project.id`, or individual
+role `agent_id` values are omitted, the repository generates stable ids from
+the team, project, and role labels.
 
 Optional inputs are:
 
@@ -311,16 +329,20 @@ The template uses a fixed hierarchy:
 - `manager -> project_lead -> release_operator`
 
 It also seeds one project goal, two initial tasks, and one review profile with
-criteria for `scope`, `tests`, `risk`, and `handoff`. Generated goal, task,
-and review-profile ids are prefixed with the concrete `project.id`, so separate
-projects can be materialized from the same template without colliding.
+criteria for `scope`, `tests`, `risk`, and `handoff`. The accounting template
+seeds one bookkeeping-operations goal, five starter tasks for receipt,
+supplier-invoice, payment, and tax-compliance work, and one review profile with
+criteria for supporting documentation, Bokio mapping, tax treatment, and the
+human-approval boundary. Generated goal, task, and review-profile ids are
+prefixed with the concrete `project.id`, so separate projects can be
+materialized from the same template without colliding.
 
 Setup is atomic. The request must include `expected_revision`; stale revisions
 fail without changing state, and duplicate ids are rejected before any write.
 The resulting records live only in Team Add-on state. They do not create real
-Truman sessions, VMs, or Git repositories.
+Truman sessions, VMs, Git repositories, Bokio entries, payments, or tax filings.
 
-Example request shape:
+Example Auto-Dev compatibility request shape:
 
 ```json
 {

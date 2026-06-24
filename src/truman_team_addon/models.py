@@ -92,7 +92,10 @@ class AgentProjectAssignmentKind(str, Enum):
 
 class RolePermission(str, Enum):
     CREATE_ROOT_TASK = "create_root_task"
+    PREPARE_BOOKKEEPING_ACTION = "prepare_bookkeeping_action"
+    REQUEST_PAYMENT_PREPARATION = "request_payment_preparation"
     REQUEST_RELEASE = "request_release"
+    REVIEW_BOOKKEEPING_ACTION = "review_bookkeeping_action"
 
 
 class AgentStandDownSource(str, Enum):

@@ -3322,6 +3322,21 @@ button.people-agent-select:focus-visible,
   padding: 0;
 }
 
+.template-role-fieldset {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.65rem;
+}
+
+.template-role-fieldset legend {
+  padding: 0 0.25rem;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
 .template-preview {
   display: grid;
   gap: 0.8rem;

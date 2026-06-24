@@ -1284,6 +1284,32 @@ def _auto_dev_squad_materialization_payload(
     }
 
 
+def _accounting_department_materialization_payload(
+    *,
+    expected_revision: int = 0,
+) -> dict[str, object]:
+    return {
+        "expected_revision": expected_revision,
+        "team": {
+            "name": "Accounting Department",
+            "operator_communication_target_id": "teams://accounting-ops",
+        },
+        "project": {
+            "name": "Bookkeeping Operations",
+        },
+        "roles": {
+            "manager": {"session_id": "session-manager-accounting"},
+            "project_lead": {"session_id": "session-bookkeeping-lead-accounting"},
+            "bookkeeping_clerk": {"session_id": "session-bookkeeping-clerk-accounting"},
+            "invoice_reviewer": {"session_id": "session-invoice-reviewer-accounting"},
+            "payment_preparer": {"session_id": "session-payment-preparer-accounting"},
+            "tax_compliance_reviewer": {
+                "session_id": "session-tax-compliance-reviewer-accounting"
+            },
+        },
+    }
+
+
 def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> None:
     disabled = _client(tmp_path / "disabled", enable_team_addon=False)
     enabled = _client(tmp_path / "enabled", enable_team_addon=True)
@@ -1318,7 +1344,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     catalog = enabled.get("/api/addons/team-addon/templates")
     assert catalog.status_code == 200
     assert [template["id"] for template in catalog.json()["templates"]] == [
-        "auto-dev-squad"
+        "auto-dev-squad",
+        "accounting-department",
     ]
 
     template = enabled.get("/api/addons/team-addon/templates/auto-dev-squad")
@@ -1374,6 +1401,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-chat-conversations-view" in ui.text
     assert 'name="bare_repo"' in ui.text
     assert 'data-options="git-providers"' in ui.text
+    assert "data-template-role-fields" in ui.text
+    assert "data-template-git-fields" in ui.text
     assert "data-agent-source-picker" in ui.text
     assert "data-id-field=" not in ui.text
     assert "Team ID <input" not in ui.text
@@ -1396,6 +1425,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "due_leased_agents" in script.text
     assert "blocked_waiting_work" in script.text
     assert "ephemeral_work" in script.text
+    assert "renderTemplateRoleFields" in script.text
+    assert "const roles = {};" in script.text
     assert "dependency_task_ids" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
@@ -2493,6 +2524,70 @@ def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> Non
         body["review_profiles"]["project-auto-dev-squad-auto-dev-review"]["criteria"][0]["id"]
         == "scope"
     )
+
+
+def test_team_addon_admin_api_materializes_accounting_department(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/templates/accounting-department/materialize",
+        json=_accounting_department_materialization_payload(),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    materialized = body["materialized"]
+
+    assert materialized["success"] is True
+    assert materialized["template_id"] == "accounting-department"
+    assert materialized["template_name"] == "Accounting Department"
+    assert materialized["revision"] == 1
+    assert body["revision"] == 1
+    assert set(materialized["agent_ids"]) == {
+        "manager",
+        "project_lead",
+        "bookkeeping_clerk",
+        "invoice_reviewer",
+        "payment_preparer",
+        "tax_compliance_reviewer",
+    }
+    assert len(body["agents"]) == 6
+    assert len(body["projects"]) == 1
+    assert len(body["review_profiles"]) == 1
+    assert len(body["tasks"]) == 5
+
+    project = body["projects"][materialized["project_id"]]
+    assert project["git"] is None
+    assert project["lead_agent_id"] == materialized["agent_ids"]["project_lead"]
+    assert project["goals"][0]["id"] == materialized["goal_ids"][0]
+
+    roles = body["roles"]
+    assert roles[materialized["role_ids"]["payment_preparer"]]["permissions"] == [
+        "prepare_bookkeeping_action",
+        "request_payment_preparation",
+    ]
+    assert roles[materialized["role_ids"]["tax_compliance_reviewer"]]["permissions"] == [
+        "review_bookkeeping_action"
+    ]
+
+    assert body["teams"][materialized["team_id"]]["project_ids"] == [
+        materialized["project_id"]
+    ]
+    review_profile = body["review_profiles"][materialized["review_profile_ids"][0]]
+    assert review_profile["applicable_role_ids"] == [
+        materialized["role_ids"]["invoice_reviewer"],
+        materialized["role_ids"]["tax_compliance_reviewer"],
+    ]
+    assert [criterion["id"] for criterion in review_profile["criteria"]] == [
+        "supporting_documentation",
+        "bokio_mapping",
+        "tax_treatment",
+        "approval_boundary",
+    ]
+    assert body["tasks"][
+        f"{materialized['project_id']}-prepare-bank-payments"
+    ]["owner_agent_id"] == materialized["agent_ids"]["payment_preparer"]
 
 
 def test_team_addon_admin_api_materialize_template_rejects_duplicates_and_reruns(

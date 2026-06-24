@@ -398,18 +398,6 @@
                   <label>Template <select id="template-select" name="template_id" required></select></label>
                   <p class="subheading">Team</p>
                   <label>Team name <input name="team_name" required /></label>
-                  <label>
-                    Manager existing agent
-                    <select
-                      name="manager_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="manager_session_id"
-                      data-suggested-role="manager"
-                    ></select>
-                  </label>
-                  <label>Manager session ID <input name="manager_session_id" required /></label>
                   <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                   <label class="checkbox-label">
                     <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
@@ -417,66 +405,20 @@
                   <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
                   <p class="subheading">Project</p>
                   <label>Project name <input name="project_name" required /></label>
-                  <label>
-                    Project lead existing agent
-                    <select
-                      name="project_lead_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="project_lead_session_id"
-                      data-suggested-role="project-lead"
-                    ></select>
-                  </label>
-                  <label>Project lead session ID <input name="project_lead_session_id" required /></label>
-                  <p class="subheading">Git config (optional)</p>
-                  <label>Host repo path <input name="host_repo_path" /></label>
-                  <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
-                  <div class="git-import-actions">
-                    <button type="button" data-git-import-button>Import Git repo</button>
-                    <span class="meta-line" data-git-import-status></span>
+                  <div data-template-role-fields></div>
+                  <div data-template-git-fields>
+                    <p class="subheading">Git config (optional)</p>
+                    <label>Host repo path <input name="host_repo_path" /></label>
+                    <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+                    <div class="git-import-actions">
+                      <button type="button" data-git-import-button>Import Git repo</button>
+                      <span class="meta-line" data-git-import-status></span>
+                    </div>
+                    <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                    <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                    <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
+                    <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                   </div>
-                  <label>Base branch <input name="base_branch" placeholder="main" /></label>
-                  <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                  <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
-                  <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
-                  <p class="subheading">Agents</p>
-                  <label>
-                    Implementer existing agent
-                    <select
-                      name="implementer_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="implementer_session_id"
-                      data-suggested-role="implementer"
-                    ></select>
-                  </label>
-                  <label>Implementer session ID <input name="implementer_session_id" required /></label>
-                  <label>
-                    Reviewer existing agent
-                    <select
-                      name="reviewer_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="reviewer_session_id"
-                      data-suggested-role="reviewer"
-                    ></select>
-                  </label>
-                  <label>Reviewer session ID <input name="reviewer_session_id" required /></label>
-                  <label>
-                    Release operator existing agent
-                    <select
-                      name="release_operator_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="release_operator_session_id"
-                      data-suggested-role="release-operator"
-                    ></select>
-                  </label>
-                  <label>Release operator session ID <input name="release_operator_session_id" required /></label>
                   <button type="submit">Materialize template</button>
                 </form>
               </div>

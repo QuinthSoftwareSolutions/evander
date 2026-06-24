@@ -172,6 +172,8 @@ const elements = {
   releasesView: document.querySelector("#releases-view"),
   templateSelect: document.querySelector("#template-select"),
   templatePreview: document.querySelector("#template-preview"),
+  templateRoleFields: document.querySelector("[data-template-role-fields]"),
+  templateGitFields: document.querySelector("[data-template-git-fields]"),
   timelineSummary: document.querySelector("#timeline-summary"),
   timelineStatus: document.querySelector("#timeline-status"),
   timelineView: document.querySelector("#timeline-view"),
@@ -230,26 +232,21 @@ let tooltipCounter = 0;
 
 const rolePermissionTooltips = {
   create_root_task: "Allows this role to create top-level project tasks instead of only subtasks inside existing work.",
+  prepare_bookkeeping_action: "Allows this role to prepare local Bokio bookkeeping actions for review and human approval.",
+  request_payment_preparation: "Allows this role to prepare payment work for human approval and BankID signing in Bokio.",
   request_release: "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
+  review_bookkeeping_action: "Allows this role to review prepared bookkeeping actions before a human approval executes them.",
 };
 
 const fieldTooltips = {
   "setup-template-form:template_id": "Template blueprint used to create the team, project, roles, starter tasks, and review profile.",
   "setup-template-form:team_name": "Human-readable name shown in hierarchy, filters, and timeline rows.",
-  "setup-template-form:manager_existing_agent_id": "Copy session defaults from an existing agent for the new manager.",
-  "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
+  "setup-template-form:template_existing_agent_id": "Copy session defaults from an existing agent for this template role.",
+  "setup-template-form:template_session_id": "Session ID used when this template-created agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
   "setup-template-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
   "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
-  "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
-  "setup-template-form:project_lead_session_id": "Session ID used when the project lead agent is woken or resumed.",
-  "setup-template-form:implementer_existing_agent_id": "Copy defaults from an existing implementer for the template-created implementer.",
-  "setup-template-form:implementer_session_id": "Session ID used when the implementer agent is woken or resumed.",
-  "setup-template-form:reviewer_existing_agent_id": "Copy defaults from an existing reviewer for the template-created reviewer.",
-  "setup-template-form:reviewer_session_id": "Session ID used when the reviewer agent is woken or resumed.",
-  "setup-template-form:release_operator_existing_agent_id": "Copy defaults from an existing release operator for the release handoff role.",
-  "setup-template-form:release_operator_session_id": "Session ID used when the release operator agent is woken or resumed.",
 
   "create-team-form:name": "Human-readable team name shown throughout the Team Add-on UI.",
   "create-team-form:manager_existing_agent_id": "Copy session and display defaults from an existing agent without reusing that agent.",
@@ -404,7 +401,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindArchivedVisibilityToggle();
   bindInboxPopoverPositioning();
   elements.templateSelect?.addEventListener("change", () => {
-    renderTemplatePreview();
+    renderTemplateSetupFields();
   });
   bindTimelineFilters();
   bindTimelinePagination();
@@ -1169,6 +1166,7 @@ function tooltipForField(label, field) {
   const formId = formSemanticIdentifier(form);
   const aliasedFormId = formId === "create-team-from-teams-form" ? "create-team-form" : "";
   const fieldName = text(field.name);
+  const tooltipKey = text(field.dataset.tooltipKey);
   const editType = text(form?.dataset?.editType);
   const keys = [];
   if (editType) {
@@ -1176,11 +1174,20 @@ function tooltipForField(label, field) {
   }
   if (formId) {
     keys.push(`${formId}:${fieldName}`);
+    if (tooltipKey) {
+      keys.push(`${formId}:${tooltipKey}`);
+    }
   }
   if (aliasedFormId) {
     keys.push(`${aliasedFormId}:${fieldName}`);
+    if (tooltipKey) {
+      keys.push(`${aliasedFormId}:${tooltipKey}`);
+    }
   }
   keys.push(fieldName);
+  if (tooltipKey) {
+    keys.push(tooltipKey);
+  }
   const labelText = text(label.textContent);
   if (labelText) {
     keys.push(labelText.toLowerCase());
@@ -7161,7 +7168,7 @@ function renderCompactRelease(release) {
 
 function renderTemplateSetup() {
   fillTemplateSelect();
-  renderTemplatePreview();
+  renderTemplateSetupFields();
 }
 
 function fillTemplateSelect() {
@@ -7183,6 +7190,74 @@ function fillTemplateSelect() {
   } else if (options.length) {
     elements.templateSelect.value = options[0][0];
   }
+}
+
+function renderTemplateSetupFields({ preserveValues = true } = {}) {
+  const form = document.querySelector("#setup-template-form");
+  const template = selectedTemplate();
+  const previousValues = preserveValues && form ? formData(form) : {};
+  renderTemplateRoleFields(template, previousValues);
+  renderTemplateGitFields(template);
+  if (elements.templateRoleFields) {
+    fillSelectsIn(elements.templateRoleFields);
+    decorateFieldTooltips(elements.templateRoleFields);
+  }
+  renderTemplatePreview();
+}
+
+function renderTemplateRoleFields(template, previousValues = {}) {
+  if (!elements.templateRoleFields) {
+    return;
+  }
+  if (!template) {
+    elements.templateRoleFields.innerHTML = "";
+    return;
+  }
+
+  elements.templateRoleFields.innerHTML = `
+    <p class="subheading">Roles</p>
+    ${template.roles.map((role) => renderTemplateRoleSessionFields(role, previousValues)).join("")}
+  `;
+}
+
+function renderTemplateRoleSessionFields(role, previousValues) {
+  const roleKey = text(role.key);
+  const existingAgentField = `${roleKey}_existing_agent_id`;
+  const sessionField = `${roleKey}_session_id`;
+  const sessionValue = text(previousValues[sessionField]);
+  const existingAgentValue = text(previousValues[existingAgentField]);
+  const roleLabel = text(role.label) || humanizeToken(roleKey);
+  const suggestedRole = roleKey.replaceAll("_", "-");
+  return `
+    <fieldset class="template-role-fieldset" data-template-role-key="${escapeAttr(roleKey)}">
+      <legend>${escapeHtml(roleLabel)}</legend>
+      <label>
+        Existing agent
+        <select
+          name="${escapeAttr(existingAgentField)}"
+          data-options="agents"
+          data-placeholder="Select existing agent"
+          data-agent-source-picker
+          data-session-field="${escapeAttr(sessionField)}"
+          data-suggested-role="${escapeAttr(suggestedRole)}"
+          data-current-value="${escapeAttr(existingAgentValue)}"
+          data-tooltip-key="template_existing_agent_id"
+        ></select>
+      </label>
+      <label>Session ID <input name="${escapeAttr(sessionField)}" value="${escapeAttr(sessionValue)}" required data-template-session-field data-tooltip-key="template_session_id" /></label>
+    </fieldset>
+  `;
+}
+
+function renderTemplateGitFields(template) {
+  if (!elements.templateGitFields) {
+    return;
+  }
+  elements.templateGitFields.hidden = !templateUsesGit(template);
+}
+
+function templateUsesGit(template) {
+  return (template?.required_fields || []).some((field) => text(field.path).startsWith("project.git."));
 }
 
 function renderTemplatePreview() {
@@ -7321,11 +7396,15 @@ function renderTemplatePreview() {
       </ul>
     </section>
 
-      <section class="template-preview-section">
-        <h3>Git config</h3>
-        <div class="meta-line">Git is optional. If used, provide a host repo path and a bare repo value.</div>
-        <div class="meta-line">Bare repo values that start with / are treated as paths; other values are treated as names.</div>
-      </section>
+      ${
+        templateUsesGit(template)
+          ? `<section class="template-preview-section">
+              <h3>Git config</h3>
+              <div class="meta-line">Git is optional. If used, provide a host repo path and a bare repo value.</div>
+              <div class="meta-line">Bare repo values that start with / are treated as paths; other values are treated as names.</div>
+            </section>`
+          : ""
+      }
     `;
 }
 
@@ -9711,26 +9790,25 @@ function endpointForForm(form, data) {
 function payloadForForm(form, data = formData(form)) {
   const formId = formSemanticIdentifier(form);
   if (formId === "setup-template-form") {
+    const template = selectedTemplate();
+    const roles = {};
+    (template?.roles || []).forEach((role) => {
+      const roleKey = text(role.key);
+      if (!roleKey) {
+        return;
+      }
+      roles[roleKey] = {
+        session_id: text(data[`${roleKey}_session_id`]),
+      };
+    });
     const payload = {
       team: {
         name: text(data.team_name),
-        manager_session_id: text(data.manager_session_id),
       },
       project: {
         name: text(data.project_name),
-        lead_session_id: text(data.project_lead_session_id),
       },
-      agents: {
-        implementer: {
-          session_id: text(data.implementer_session_id),
-        },
-        reviewer: {
-          session_id: text(data.reviewer_session_id),
-        },
-        release_operator: {
-          session_id: text(data.release_operator_session_id),
-        },
-      },
+      roles,
     };
     const operatorTarget = text(data.operator_communication_target_id);
     if (operatorTarget) {
@@ -9743,9 +9821,11 @@ function payloadForForm(form, data = formData(form)) {
     if (maxCost !== null) {
       payload.team.max_cost_usd = maxCost;
     }
-    const git = gitConfigForForm(data);
-    if (git) {
-      payload.project.git = git;
+    if (templateUsesGit(template)) {
+      const git = gitConfigForForm(data);
+      if (git) {
+        payload.project.git = git;
+      }
     }
     return payload;
   }
@@ -10486,6 +10566,13 @@ function restoreFormDrafts(drafts) {
       return;
     }
     restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
+    if (formSemanticIdentifier(form) === "setup-template-form") {
+      const templateField = form.elements.template_id;
+      if (templateField && values.template_id) {
+        templateField.value = text(values.template_id);
+      }
+      renderTemplateSetupFields({ preserveValues: false });
+    }
     Object.entries(values).forEach(([name, value]) => {
       if (name === "__review_profile_criteria" || name.startsWith("criterion_")) {
         return;

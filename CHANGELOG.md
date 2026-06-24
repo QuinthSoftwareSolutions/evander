@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Accounting Template
+
+- Added an Accounting Department Team template with bookkeeping roles, starter
+  tasks, review criteria, and accounting-oriented role permissions for
+  Bokio/Skatteverket-assisted workflows.
+- Made the Team setup form render role/session fields from the selected
+  template and hide Git setup for non-Git templates.
+
 ## 2026-06-24 - Team Add-on Review Artifact Imports
 
 - Imported Team review-request `artifact-space:` refs into reviewer sessions

@@ -178,6 +178,29 @@ def _auto_dev_squad_inputs(
     }
 
 
+def _accounting_department_ui_inputs() -> dict[str, object]:
+    return {
+        "team": {
+            "name": "Accounting Department",
+            "operator_communication_target_id": "teams://accounting-ops",
+            "escalate_to_governance": True,
+        },
+        "project": {
+            "name": "Bookkeeping Operations",
+        },
+        "roles": {
+            "manager": {"session_id": "session-manager-accounting"},
+            "project_lead": {"session_id": "session-bookkeeping-lead-accounting"},
+            "bookkeeping_clerk": {"session_id": "session-bookkeeping-clerk-accounting"},
+            "invoice_reviewer": {"session_id": "session-invoice-reviewer-accounting"},
+            "payment_preparer": {"session_id": "session-payment-preparer-accounting"},
+            "tax_compliance_reviewer": {
+                "session_id": "session-tax-compliance-reviewer-accounting"
+            },
+        },
+    }
+
+
 def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
@@ -1740,6 +1763,133 @@ def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> No
     assert release_task.owner_agent_id == "release-operator-auto-dev-squad"
     assert release_task.dependency_task_ids == [
         "project-auto-dev-squad-implement-scoped-slice"
+    ]
+
+
+def test_repository_materializes_accounting_department_without_git(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state, result = repo.materialize_template(
+        "accounting-department",
+        inputs=_accounting_department_ui_inputs(),
+        expected_revision=0,
+    )
+
+    assert result["success"] is True
+    assert result["template_id"] == "accounting-department"
+    assert result["template_name"] == "Accounting Department"
+    assert set(result["agent_ids"]) == {
+        "manager",
+        "project_lead",
+        "bookkeeping_clerk",
+        "invoice_reviewer",
+        "payment_preparer",
+        "tax_compliance_reviewer",
+    }
+    assert result["goal_ids"] == [
+        f"{result['project_id']}-bookkeeping-operations"
+    ]
+    assert result["review_profile_ids"] == [
+        f"{result['project_id']}-bookkeeping-action-review"
+    ]
+    assert result["task_ids"] == [
+        f"{result['project_id']}-process-inbox-receipts",
+        f"{result['project_id']}-reconcile-supplier-invoices",
+        f"{result['project_id']}-review-prepared-bookkeeping-actions",
+        f"{result['project_id']}-prepare-bank-payments",
+        f"{result['project_id']}-review-tax-compliance-items",
+    ]
+
+    team = state.teams[result["team_id"]]
+    assert team.manager_agent_id == result["agent_ids"]["manager"]
+    assert team.operator_communication_target_id == "teams://accounting-ops"
+    assert team.escalate_to_governance is True
+    assert team.project_ids == [result["project_id"]]
+
+    project = state.projects[result["project_id"]]
+    assert project.team_id == result["team_id"]
+    assert project.lead_agent_id == result["agent_ids"]["project_lead"]
+    assert project.git is None
+    assert [goal.id for goal in project.goals] == result["goal_ids"]
+
+    assert state.agents[result["agent_ids"]["manager"]].subordinate_agent_ids == [
+        result["agent_ids"]["project_lead"]
+    ]
+    assert state.agents[result["agent_ids"]["project_lead"]].subordinate_agent_ids == [
+        result["agent_ids"]["bookkeeping_clerk"],
+        result["agent_ids"]["invoice_reviewer"],
+        result["agent_ids"]["payment_preparer"],
+        result["agent_ids"]["tax_compliance_reviewer"],
+    ]
+    for role_key in (
+        "bookkeeping_clerk",
+        "invoice_reviewer",
+        "payment_preparer",
+        "tax_compliance_reviewer",
+    ):
+        assert (
+            state.agents[result["agent_ids"][role_key]].reports_to_agent_id
+            == result["agent_ids"]["project_lead"]
+        )
+
+    assert {
+        role_key: state.agents[agent_id].ephemeral_policy.max_concurrent
+        for role_key, agent_id in result["agent_ids"].items()
+    } == {
+        "manager": 0,
+        "project_lead": 1,
+        "bookkeeping_clerk": 1,
+        "invoice_reviewer": 1,
+        "payment_preparer": 1,
+        "tax_compliance_reviewer": 1,
+    }
+    assert state.roles[result["role_ids"]["manager"]].project_id is None
+    assert state.roles[result["role_ids"]["project_lead"]].project_id == result["project_id"]
+    assert state.roles[result["role_ids"]["project_lead"]].permissions == [
+        RolePermission.CREATE_ROOT_TASK,
+        RolePermission.PREPARE_BOOKKEEPING_ACTION,
+    ]
+    assert state.roles[result["role_ids"]["bookkeeping_clerk"]].permissions == [
+        RolePermission.PREPARE_BOOKKEEPING_ACTION
+    ]
+    assert state.roles[result["role_ids"]["invoice_reviewer"]].permissions == [
+        RolePermission.REVIEW_BOOKKEEPING_ACTION
+    ]
+    assert state.roles[result["role_ids"]["payment_preparer"]].permissions == [
+        RolePermission.PREPARE_BOOKKEEPING_ACTION,
+        RolePermission.REQUEST_PAYMENT_PREPARATION,
+    ]
+    assert state.roles[result["role_ids"]["tax_compliance_reviewer"]].permissions == [
+        RolePermission.REVIEW_BOOKKEEPING_ACTION
+    ]
+
+    profile = state.review_profiles[result["review_profile_ids"][0]]
+    assert profile.team_id == result["team_id"]
+    assert profile.project_id == result["project_id"]
+    assert profile.applicable_role_ids == [
+        result["role_ids"]["invoice_reviewer"],
+        result["role_ids"]["tax_compliance_reviewer"],
+    ]
+    assert [criterion.id for criterion in profile.criteria] == [
+        "supporting_documentation",
+        "bokio_mapping",
+        "tax_treatment",
+        "approval_boundary",
+    ]
+
+    review_task = state.tasks[
+        f"{result['project_id']}-review-prepared-bookkeeping-actions"
+    ]
+    payment_task = state.tasks[f"{result['project_id']}-prepare-bank-payments"]
+    assert review_task.owner_agent_id == result["agent_ids"]["invoice_reviewer"]
+    assert review_task.dependency_task_ids == [
+        f"{result['project_id']}-process-inbox-receipts"
+    ]
+    assert payment_task.owner_agent_id == result["agent_ids"]["payment_preparer"]
+    assert payment_task.dependency_task_ids == [
+        f"{result['project_id']}-reconcile-supplier-invoices"
     ]
 
 
