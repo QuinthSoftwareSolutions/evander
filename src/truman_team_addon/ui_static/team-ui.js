@@ -109,6 +109,7 @@ let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
 let showArchived = false;
+let showHandledGovernanceAgenda = false;
 let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
@@ -187,6 +188,7 @@ const elements = {
   projectsFocusList: document.querySelector("[data-projects-focus-list]"),
   projectsFocusDetail: document.querySelector("[data-projects-focus-detail]"),
   showArchivedToggle: document.querySelector("#show-archived-toggle"),
+  showHandledGovernanceAgendaToggle: document.querySelector("#show-handled-governance-agenda-toggle"),
   teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
   teamViewActionButtons: Array.from(document.querySelectorAll("[data-team-view-action]")),
@@ -400,6 +402,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindOrgFocusTabs();
   bindOrgFlowEvents();
   bindArchivedVisibilityToggle();
+  bindGovernanceAgendaVisibilityToggle();
   bindInboxPopoverPositioning();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplateSetupFields();
@@ -1901,6 +1904,7 @@ async function submitChatMessage(form) {
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   updateArchivedVisibilityToggle();
+  updateGovernanceAgendaVisibilityToggle();
   updateTeamViewTabs();
   placeSetupFormsPanel();
   renderSummary();
@@ -2103,6 +2107,9 @@ function renderGovernanceGroup(group) {
     .filter(Boolean);
   const agenda = governanceAgendaForGroup(group.id);
   const pendingAgenda = agenda.filter((item) => item.state === "pending");
+  const visibleAgenda = showHandledGovernanceAgenda
+    ? agenda
+    : agenda.filter((item) => item.state !== "handled");
   const cost = governanceCostForGroup(group.id);
   const capReached = cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length > 0;
   return `
@@ -2117,9 +2124,9 @@ function renderGovernanceGroup(group) {
       </div>
       <div class="meta-line">${escapeHtml(group.id)} - manager ${escapeHtml(manager ? agentLabel(manager) : group.manager_agent_id)}</div>
       ${cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : ""}
-      ${renderGovernanceMemberTeams(memberTeams, cost)}
       ${renderGovernanceGoals(group.goals || [])}
-      ${renderGovernanceAgenda(group, agenda, pendingAgenda)}
+      ${renderGovernanceMemberTeams(memberTeams, cost)}
+      ${renderGovernanceAgenda(group, visibleAgenda, pendingAgenda)}
     </li>
   `;
 }
@@ -2150,9 +2157,9 @@ function renderGovernanceGoals(goals) {
     return "";
   }
   return `
-    <div class="governance-subsection">
+    <div class="governance-subsection governance-goals-subsection">
       <div class="meta-line">Goals</div>
-      <ul class="compact-record-list">
+      <ul class="compact-record-list governance-goal-list">
         ${goals
           .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong> <span>${escapeHtml(goal.state || "pending")}</span></li>`)
           .join("")}
@@ -2163,7 +2170,12 @@ function renderGovernanceGoals(goals) {
 
 function renderGovernanceAgenda(group, agenda, pendingAgenda) {
   if (!agenda.length) {
-    return `<p class="empty-state">No governance agenda items.</p>`;
+    return `
+      <div class="governance-subsection">
+        <div class="meta-line">Agenda - ${escapeHtml(pendingAgenda.length)} pending</div>
+        <p class="empty-state">No active governance agenda items.</p>
+      </div>
+    `;
   }
   return `
     <div class="governance-subsection">
@@ -2319,6 +2331,21 @@ function bindArchivedVisibilityToggle() {
 function updateArchivedVisibilityToggle() {
   if (elements.showArchivedToggle) {
     elements.showArchivedToggle.checked = showArchived;
+  }
+}
+
+function bindGovernanceAgendaVisibilityToggle() {
+  elements.showHandledGovernanceAgendaToggle?.addEventListener("change", () => {
+    const drafts = captureFormDrafts();
+    showHandledGovernanceAgenda = Boolean(elements.showHandledGovernanceAgendaToggle?.checked);
+    render();
+    restoreFormDrafts(drafts);
+  });
+}
+
+function updateGovernanceAgendaVisibilityToggle() {
+  if (elements.showHandledGovernanceAgendaToggle) {
+    elements.showHandledGovernanceAgendaToggle.checked = showHandledGovernanceAgenda;
   }
 }
 

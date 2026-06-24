@@ -2518,6 +2518,56 @@ button.org-focus-team-tab strong {
   margin-top: 0.65rem;
 }
 
+.governance-goals-subsection {
+  border: 1px solid rgba(154, 107, 19, 0.32);
+  border-radius: 8px;
+  padding: 0.58rem;
+  background:
+    linear-gradient(135deg, rgba(255, 221, 111, 0.22), rgba(255, 255, 255, 0.74) 48%, rgba(197, 143, 24, 0.16)),
+    var(--panel);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 8px 20px rgba(154, 107, 19, 0.08);
+}
+
+.governance-goals-subsection > .meta-line {
+  margin-top: 0;
+  color: var(--amber);
+  font-weight: 800;
+}
+
+.governance-goal-list li {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(154, 107, 19, 0.42);
+  background:
+    linear-gradient(112deg, rgba(255, 229, 134, 0.42), rgba(255, 255, 255, 0.82) 42%, rgba(205, 147, 19, 0.18)),
+    var(--panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.governance-goal-list li::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 0 36%, rgba(255, 255, 255, 0.52) 49%, transparent 62%);
+  pointer-events: none;
+}
+
+.governance-goal-list strong,
+.governance-goal-list span {
+  position: relative;
+}
+
+.governance-goal-list strong {
+  color: #6f4b08;
+}
+
+.governance-goal-list li span {
+  color: var(--amber);
+  font-weight: 700;
+}
+
 .compact-record-card {
   padding: 0;
 }

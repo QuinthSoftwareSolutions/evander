@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Governance Agenda Defaults
+
+- Hid handled Governance agenda items by default behind a Governance-tab toggle,
+  and moved governance goals above member teams with a more prominent gold card
+  treatment.
+
 ## 2026-06-24 - Team Add-on Task Ownership Handoff
 
 - Allowed superior Team agents to set `owner_agent_id` in `task_updates[]` to

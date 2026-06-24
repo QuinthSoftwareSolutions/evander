@@ -106,8 +106,13 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
   assert.doesNotMatch(markup, /content-panel people-agents-panel/);
   assert.match(markup, /data-governance-create-toggle/);
+  assert.match(markup, /show-handled-governance-agenda-toggle/);
   assert.match(markup, /id="governance-create-panel"[\s\S]*id="create-governance-group-form"/);
   assert.doesNotMatch(markup, /<summary>Create governance group<\/summary>/);
+  assert.match(script, /showHandledGovernanceAgenda/);
+  assert.match(script, /bindGovernanceAgendaVisibilityToggle/);
+  assert.match(stylesheet, /\.governance-goals-subsection/);
+  assert.match(stylesheet, /\.governance-goal-list li\s*{[\s\S]*linear-gradient/);
   assert.match(
     stylesheet,
     /button\.people-agent-select\s*{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);/,
@@ -2890,6 +2895,58 @@ test("team add-on Governance tab creates governance groups from the top-level bu
       state: "pending",
     },
   ]);
+});
+
+test("team add-on Governance tab hides handled agenda by default and emphasizes goals", async (t) => {
+  const initialState = seededGitState();
+  initialState.governance_groups["platform-oversight"].goals = [
+    {
+      id: "spend",
+      description: "Keep platform spend inside the agreed guardrails",
+      state: "pending",
+    },
+  ];
+  initialState.governance_agenda["platform-handled-agenda"] = {
+    id: "platform-handled-agenda",
+    governance_group_id: "platform-oversight",
+    item_type: "cost_cap_warning",
+    priority: "normal",
+    team_id: "team-beta",
+    project_id: null,
+    agent_id: null,
+    title: "Retired cost review",
+    summary: "Already handled.",
+    payload: {},
+    state: "handled",
+    created_at: "2026-06-08T00:00:00Z",
+    updated_at: "2026-06-08T00:00:00Z",
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Governance" }).click();
+  await page.locator("#team-governance-page").waitFor({ state: "visible" });
+  await page.locator("#show-handled-governance-agenda-toggle").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#show-handled-governance-agenda-toggle").isChecked(), false);
+
+  await page.locator("#team-governance-page").getByText("Review Alpha blockers").waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-governance-page").getByText("Retired cost review").count(), 0);
+
+  const subsectionHeadings = await page
+    .locator("#team-governance-page .governance-subsection > .meta-line")
+    .evaluateAll((nodes) => nodes.map((node) => node.textContent.trim()));
+  assert.deepEqual(subsectionHeadings.slice(0, 3), ["Goals", "Member teams", "Agenda - 1 pending"]);
+  await page.locator("#team-governance-page .governance-goals-subsection .governance-goal-list").waitFor({
+    state: "visible",
+  });
+
+  await page.locator("#show-handled-governance-agenda-toggle").check();
+  await page.locator("#team-governance-page").getByText("Retired cost review").waitFor({
+    state: "visible",
+  });
 });
 
 function seededGitState() {
