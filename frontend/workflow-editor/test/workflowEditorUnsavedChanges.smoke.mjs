@@ -111,6 +111,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const consoleErrorDetails = [];
   const failedResponses = [];
   const saveRequests = [];
+  const validationRequests = [];
   const tabConfirmMessages = [];
   const directoryConfirmMessages = [];
   let acceptNextDirectoryConfirm = false;
@@ -363,6 +364,29 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       return;
     }
 
+    if (pathname === "/api/workflow-editor/validate") {
+      const body = JSON.parse(route.request().postData() ?? "{}");
+      validationRequests.push(body);
+      await route.fulfill(jsonResponse({
+        config: body.config,
+        layout: body.layout,
+        graphs: body.graphs,
+        output_schemas: {
+          "effect-1": {
+            dispatch_id: { type: "string" },
+          },
+        },
+        validation_diagnostics: [
+          {
+            severity: "warning",
+            message: "Synthetic validation warning",
+            node_id: "effect-1",
+          },
+        ],
+      }));
+      return;
+    }
+
     if (pathname === "/api/workflow-editor/catalog") {
       assert.ok(["root", "root/team-a"].includes(url.searchParams.get("directory_path") ?? "root"));
       await route.fulfill(jsonResponse(workflowCatalog));
@@ -445,7 +469,18 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   const saveStatus = page.locator(".save-status");
   const saveStatusHeadline = saveStatus.locator("strong");
+  const undoButton = page.getByRole("button", { name: "Undo" }).first();
+  assert.equal(await undoButton.isDisabled(), true);
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+
+  await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/workflow-editor/validate" && response.ok()),
+    page.getByRole("button", { name: "Validate" }).first().click(),
+  ]);
+  assert.equal(validationRequests.length, 1);
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), true);
 
   await changeWorkflowCanvasViewport(page);
   const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
@@ -482,6 +517,38 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
   await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), false);
+
+  await undoButton.click();
+  await page.waitForFunction(() => {
+    const promptField = [...document.querySelectorAll(".inspector-field")]
+      .find((element) => element.textContent?.includes("Prompt"));
+    return promptField?.querySelector("input")?.value === "Handle ticket";
+  });
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
+
+  await page.keyboard.press("Control+Z");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent"),
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), true);
+
+  await displayNameInput.fill("Dispatch agent v2");
+  await promptInput.fill("Handle escalations");
+  await page.waitForFunction(
+    (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
+    "Dispatch agent v2",
+  );
+  assert.equal(await promptInput.inputValue(), "Handle escalations");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
 
   await clickWorkflowNode(page, "trigger-1");
   await page.waitForTimeout(250);
@@ -546,6 +613,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await saveStatus.filter({ hasText: "Workflow saved" }).count(), 1);
   assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  assert.equal(await undoButton.isDisabled(), true);
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
   assert.equal(await promptInput.inputValue(), "Handle escalations");
 
@@ -569,6 +637,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await page.locator(".save-error-box").count(), 0);
   assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  assert.equal(await undoButton.isDisabled(), true);
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent v3");
   assert.equal(await promptInput.inputValue(), "Handle renewals");
 
@@ -619,6 +688,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root%2Fteam-a"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/validate"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root%2Fteam-a"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));

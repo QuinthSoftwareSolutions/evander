@@ -114,6 +114,14 @@
 - Preserved the current Chat conversation selection when a refresh response
   arrives after the operator has selected a different conversation.
 
+## 2026-06-23 - Workflow Editor Undo Review Fixes
+
+- Limited workflow editor undo snapshots to editable workflow content so
+  validation diagnostics, output schemas, and revision-only refreshes do not
+  create or restore undo history entries.
+- Added smoke coverage proving validation metadata refreshes leave undo disabled
+  and save revision refreshes clear undo availability.
+
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 
 - Recorded governance member-team additions and removals as pending
