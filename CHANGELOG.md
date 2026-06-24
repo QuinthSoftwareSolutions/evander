@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Fallback Review Routing Fixes
+
+- Preserved compact artifact and Git evidence for pending-review deliverables
+  in manager fallback summaries, and excluded paused, leased, or stood-down
+  reviewers from fallback routing-gap recommendations.
+
 ## 2026-06-24 - Team Add-on Manager Fallback Summary
 
 - Replaced the manager fallback wake context dump with a compact summary of

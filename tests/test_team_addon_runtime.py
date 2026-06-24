@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.artifact_spaces import ArtifactSpaceStore
@@ -29,6 +31,7 @@ from truman_team_addon.models import (
     AgentInboxItem,
     AgentProjectAssignment,
     AgentRuntime,
+    AgentStatus,
     AgentTask,
     AgentVoiceProfile,
     Deliverable,
@@ -425,6 +428,27 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def _add_luke_reviewer(repo: TeamStateRepository) -> None:
+    repo.create_role(
+        role_id="project__reviewer",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+        description="Review deliverables; do not own implementation work.",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="luke",
+        team_id="team",
+        project_id="project",
+        role_id="project__reviewer",
+        session_id="session-luke",
+        display_name="Luke",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
 
 
 def _add_task(
@@ -1326,24 +1350,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    repo.create_role(
-        role_id="project__reviewer",
-        team_id="team",
-        project_id="project",
-        name="Reviewer",
-        description="Review deliverables; do not own implementation work.",
-        expected_revision=repo.read().revision,
-    )
-    repo.register_agent(
-        agent_id="luke",
-        team_id="team",
-        project_id="project",
-        role_id="project__reviewer",
-        session_id="session-luke",
-        display_name="Luke",
-        reports_to_agent_id="lead",
-        expected_revision=repo.read().revision,
-    )
+    _add_luke_reviewer(repo)
     state, result = repo.apply_agent_action(
         action={
             "agent_id": "backend",
@@ -1352,6 +1359,13 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
                     "id": "deliverable-stalled",
                     "task_id": "task",
                     "summary": "Backend slice ready for review.",
+                    "artifact_refs": [
+                        "artifact-space:/teams/team/projects/project/backend.tar.gz"
+                    ],
+                    "git_refs": {
+                        "agent_branch": "agents/session-backend/review",
+                        "commit_sha": "abc123",
+                    },
                 }
             ],
         },
@@ -1415,6 +1429,13 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         item["id"]: item for item in fallback_summary["deliverables"]
     }
     assert deliverables["deliverable-stalled"]["task_id"] == "task"
+    assert deliverables["deliverable-stalled"]["artifact_refs"] == [
+        "artifact-space:/teams/team/projects/project/backend.tar.gz"
+    ]
+    assert deliverables["deliverable-stalled"]["git_refs"] == {
+        "agent_branch": "agents/session-backend/review",
+        "commit_sha": "abc123",
+    }
     reviews = {item["id"]: item for item in fallback_summary["review_requests"]}
     assert reviews["review-manager"]["reviewer_agent_id"] == "manager"
     assert reviews["review-manager"]["state"] == "pending"
@@ -1432,6 +1453,88 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         for item in fallback_summary["routing_gaps"]
     )
     assert len(prompt.encode("utf-8")) < 32_000
+
+
+@pytest.mark.parametrize("blocker", ["paused", "stand_down", "leased"])
+def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
+    tmp_path: Path,
+    blocker: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+    if blocker == "paused":
+        repo.update_agent(
+            agent_id="luke",
+            status=AgentStatus.PAUSED,
+            expected_revision=repo.read().revision,
+        )
+    elif blocker == "stand_down":
+        repo.stand_down_agent(
+            agent_id="luke",
+            reason="Reviewer temporarily unavailable.",
+            set_by="operator:test",
+            expected_revision=repo.read().revision,
+        )
+    else:
+        def _lease_luke(state: TeamState) -> TeamState:
+            state.agent_runtimes["luke"] = AgentRuntime(
+                agent_id="luke",
+                active_dispatch_id="team-dispatch-luke",
+                wake_leased_until=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+            )
+            return state
+
+        repo.update(_lease_luke)
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "luke" not in fallback_summary["reviewer_candidate_agent_ids"]
+    assert not any(
+        item["agent_id"] == "luke"
+        for item in fallback_summary["routing_gaps"]
+    )
 
 
 def test_manager_fallback_prompt_caps_large_history(

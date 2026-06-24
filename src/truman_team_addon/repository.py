@@ -103,6 +103,13 @@ _MANAGER_FALLBACK_PENDING_INBOX_LIMIT = 10
 _MANAGER_FALLBACK_FAILED_ACTION_LIMIT = 3
 _MANAGER_FALLBACK_ROUTING_GAP_LIMIT = 20
 _MANAGER_FALLBACK_TEXT_LIMIT = 240
+_MANAGER_FALLBACK_PENDING_REVIEW_STATES = frozenset(
+    {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+    }
+)
 
 
 def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:
@@ -4957,18 +4964,14 @@ def _manager_fallback_summary_payload(
     visible_pending_reviews = [
         review
         for review in visible_reviews
-        if review.state
-        in {
-            TeamRecordState.PENDING,
-            TeamRecordState.IN_PROGRESS,
-            TeamRecordState.BLOCKED,
-        }
+        if review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
     ]
     reviewer_candidates = _manager_fallback_reviewer_candidates(
         state,
         team_agents=team_agents,
         project_ids=project_ids,
         review_profiles=review_profiles,
+        now=now,
     )
     open_work_rows = [
         _manager_fallback_task_row(
@@ -5169,7 +5172,12 @@ def _manager_fallback_deliverable_row(
         for review in visible_reviews
         if review.deliverable_id == deliverable.id
     ]
-    return {
+    pending_reviews = [
+        review
+        for review in reviews
+        if review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+    ]
+    row: dict[str, Any] = {
         "id": deliverable.id,
         "task_id": deliverable.task_id,
         "producer_agent_id": deliverable.producer_agent_id,
@@ -5181,6 +5189,28 @@ def _manager_fallback_deliverable_row(
         ),
         "review_state_counts": _manager_fallback_review_state_counts(reviews),
     }
+    if pending_reviews:
+        row["artifact_refs"] = list(deliverable.artifact_refs)
+        row["git_refs"] = _manager_fallback_git_refs_row(deliverable)
+    return row
+
+
+def _manager_fallback_git_refs_row(deliverable: Deliverable) -> dict[str, Any]:
+    refs = deliverable.git_refs
+    row: dict[str, Any] = {}
+    for field_name in (
+        "agent_branch",
+        "review_branch",
+        "feature_branch",
+        "release_branch",
+        "commit_sha",
+    ):
+        value = getattr(refs, field_name)
+        if value:
+            row[field_name] = value
+    if refs.promotion_record_ids:
+        row["promotion_record_ids"] = list(refs.promotion_record_ids)
+    return row
 
 
 def _manager_fallback_review_row(review: ReviewRequest) -> dict[str, Any]:
@@ -5314,6 +5344,7 @@ def _manager_fallback_reviewer_candidates(
     team_agents: list[PersistentAgent],
     project_ids: set[str],
     review_profiles: list[ReviewProfile],
+    now: datetime,
 ) -> list[PersistentAgent]:
     applicable_role_ids = {
         role_id
@@ -5322,6 +5353,12 @@ def _manager_fallback_reviewer_candidates(
     }
     candidates: list[PersistentAgent] = []
     for agent in team_agents:
+        if not _manager_fallback_reviewer_is_wakeable_for_routing(
+            state,
+            agent=agent,
+            now=now,
+        ):
+            continue
         role = state.roles.get(agent.role_id) if agent.role_id is not None else None
         if (
             agent.role_id in applicable_role_ids
@@ -5335,6 +5372,24 @@ def _manager_fallback_reviewer_candidates(
             if candidate_project_ids:
                 candidates.append(agent)
     return candidates
+
+
+def _manager_fallback_reviewer_is_wakeable_for_routing(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    now: datetime,
+) -> bool:
+    if agent.status != AgentStatus.ACTIVE:
+        return False
+    if _active_stand_downs_for_agent(state, agent.id):
+        return False
+    runtime = state.agent_runtimes.get(agent.id)
+    return not (
+        runtime is not None
+        and runtime.wake_leased_until is not None
+        and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
+    )
 
 
 def _manager_fallback_role_is_reviewer(role: TeamRole | None) -> bool:
@@ -5400,12 +5455,7 @@ def _manager_fallback_routing_gaps(
             and task.project_id in reviewer_project_ids
             and not any(
                 review.reviewer_agent_id == reviewer.id
-                and review.state
-                in {
-                    TeamRecordState.PENDING,
-                    TeamRecordState.IN_PROGRESS,
-                    TeamRecordState.BLOCKED,
-                }
+                and review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
                 for review in reviews_by_deliverable.get(deliverable.id, [])
             )
         ]
@@ -5418,12 +5468,7 @@ def _manager_fallback_routing_gaps(
             review
             for review in visible_reviews
             if review.reviewer_agent_id == reviewer.id
-            and review.state
-            in {
-                TeamRecordState.PENDING,
-                TeamRecordState.IN_PROGRESS,
-                TeamRecordState.BLOCKED,
-            }
+            and review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
         ]
         reviewer_pending_inbox = [
             item
@@ -5449,12 +5494,7 @@ def _manager_fallback_routing_gaps(
                 review.reviewer_agent_id
                 for deliverable in candidate_work
                 for review in reviews_by_deliverable.get(deliverable.id, [])
-                if review.state
-                in {
-                    TeamRecordState.PENDING,
-                    TeamRecordState.IN_PROGRESS,
-                    TeamRecordState.BLOCKED,
-                }
+                if review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
             }
         )
         gaps.append(
