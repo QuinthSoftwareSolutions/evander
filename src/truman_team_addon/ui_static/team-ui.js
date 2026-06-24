@@ -78,6 +78,7 @@ const teamViewIds = new Set([
   "overview",
   "operations",
   "delivery",
+  "projects",
   "task-board",
   "people",
   "chat",
@@ -111,6 +112,7 @@ let showArchived = false;
 let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
+let selectedProjectFocusId = null;
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -177,6 +179,8 @@ const elements = {
   timelineTypeFilter: document.querySelector("#timeline-type-filter"),
   timelineStatusFilter: document.querySelector("#timeline-status-filter"),
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
+  projectsFocusList: document.querySelector("[data-projects-focus-list]"),
+  projectsFocusDetail: document.querySelector("[data-projects-focus-detail]"),
   showArchivedToggle: document.querySelector("#show-archived-toggle"),
   teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
@@ -391,6 +395,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
+  bindProjectFocus();
   bindTaskBoardSelectors();
   bindOrgFocusTabs();
   bindOrgFlowEvents();
@@ -754,6 +759,15 @@ function bindForms() {
     void submitCreateForm(form);
   });
 
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("form[data-delegated-create-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    void submitCreateForm(form);
+  });
+
   document.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-git-import-button]");
     if (!button) {
@@ -1106,8 +1120,11 @@ function applyExistingAgentDefaults(select) {
 
 function bindProjectLeadSelects() {
   document.addEventListener("change", (event) => {
-    const teamSelect = event.target?.closest?.("#create-project-form [name='team_id']");
+    const teamSelect = event.target?.closest?.('form [name="team_id"]');
     if (!teamSelect) {
+      return;
+    }
+    if (formSemanticIdentifier(teamSelect.form) !== "create-project-form") {
       return;
     }
     refreshProjectLeadSelect(teamSelect.form);
@@ -1253,6 +1270,18 @@ function bindPlanningFilters() {
     });
   });
   updatePlanningFilterControls();
+}
+
+function bindProjectFocus() {
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-project-focus-id]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    selectedProjectFocusId = text(button.dataset.projectFocusId) || null;
+    renderProjectFocus();
+  });
 }
 
 function bindTaskBoardSelectors() {
@@ -1785,9 +1814,7 @@ async function submitChatMessage(form) {
         activeComposer.value = "";
       }
     }
-    if (payload.dispatch?.queued) {
-      setStatus(payload.dispatch.message || "Chat message queued until the agent finishes current work.", "warning");
-    } else if (payload.dispatch?.success === false) {
+    if (payload.dispatch?.success === false && !payload.dispatch?.queued) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
       setStatus("", "");
@@ -1819,6 +1846,7 @@ function render() {
   renderChat();
   renderRoles();
   renderProjects();
+  renderProjectFocus();
   renderTaskBoard();
   renderReviewProfiles();
   renderReleases();
@@ -5925,6 +5953,265 @@ function renderProjects() {
   );
 }
 
+function renderProjectFocus() {
+  if (!document.querySelector("[data-projects-focus-list]")) {
+    return;
+  }
+  const allProjects = values(state.projects).sort(compareTeamProjects);
+  const projects = allProjects.filter(isVisibleProject);
+  if (!projects.some((project) => project.id === selectedProjectFocusId)) {
+    selectedProjectFocusId = projects[0]?.id || null;
+  }
+  const selectedProject = selectedProjectFocusId ? state.projects[selectedProjectFocusId] : null;
+
+  document.querySelectorAll("[data-projects-focus-list]").forEach((target) => {
+    if (!allProjects.length) {
+      target.innerHTML = `<p class="empty-state">No projects registered.</p>`;
+      return;
+    }
+    if (!projects.length) {
+      target.innerHTML = `<p class="empty-state">No visible projects.</p>`;
+      return;
+    }
+    target.innerHTML = `
+      <div class="projects-focus-list-header">
+        <span>${projects.length} visible project${projects.length === 1 ? "" : "s"}</span>
+        ${showArchived ? `<span>Archived included</span>` : ""}
+      </div>
+      <div class="projects-focus-list-items">
+        ${projects.map((project) => renderProjectFocusListItem(project)).join("")}
+      </div>
+    `;
+  });
+
+  document.querySelectorAll("[data-projects-focus-detail]").forEach((target) => {
+    target.innerHTML = selectedProject
+      ? renderProjectFocusDetail(selectedProject)
+      : `<p class="empty-state">Select or create a project.</p>`;
+    fillSelectsIn(target);
+    decorateFieldTooltips(target);
+  });
+}
+
+function renderProjectFocusListItem(project) {
+  const active = project.id === selectedProjectFocusId;
+  const team = state.teams[project.team_id];
+  const tasks = values(state.tasks).filter((task) => task.project_id === project.id);
+  const reviewProfiles = projectSpecificReviewProfiles(project);
+  return `
+    <button
+      type="button"
+      class="projects-focus-row${active ? " active" : ""}"
+      data-project-focus-id="${escapeAttr(project.id)}"
+      aria-pressed="${active ? "true" : "false"}"
+    >
+      <span class="projects-focus-row-main">
+        <strong>${escapeHtml(project.name)}</strong>
+        <span>${escapeHtml(team ? `${team.name} (${team.id})` : project.team_id)}</span>
+      </span>
+      <span class="projects-focus-row-meta">
+        <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+        <span>${tasks.length} tasks</span>
+        <span>${reviewProfiles.length} profiles</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderProjectFocusDetail(project) {
+  const team = state.teams[project.team_id];
+  const leadAgent = state.agents[project.lead_agent_id];
+  const tasks = values(state.tasks)
+    .filter((task) => task.project_id === project.id)
+    .sort(byPriority);
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const deliverables = values(state.deliverables)
+    .filter((deliverable) => taskIds.has(deliverable.task_id))
+    .sort(byId);
+  const releases = values(state.release_packages)
+    .filter((release) => release.project_id === project.id)
+    .sort(byId);
+  const projectProfiles = projectSpecificReviewProfiles(project);
+  const teamProfiles = teamWideReviewProfilesForProject(project);
+  const projectAgents = values(state.agents)
+    .filter(isVisibleAgent)
+    .filter((agent) => agentProjectIds(agent).includes(project.id))
+    .sort(comparePeopleAgents);
+  const projectRoles = values(state.roles)
+    .filter(isVisibleRole)
+    .filter((role) => role.project_id === project.id)
+    .sort(compareTeamRoles);
+
+  return `
+    <div class="projects-detail-header">
+      <div>
+        <p class="section-label">Selected project</p>
+        <h2>${escapeHtml(project.name)}</h2>
+        <div class="meta-line">${escapeHtml(project.id)} - ${escapeHtml(team ? `${team.name} (${team.id})` : project.team_id)}</div>
+      </div>
+      <div class="record-actions">
+        <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+        ${editButton("project", project.id)}
+      </div>
+    </div>
+    <div class="project-focus-metrics">
+      ${renderProjectFocusMetric("Lead", leadAgent ? agentLabel(leadAgent) : project.lead_agent_id)}
+      ${renderProjectFocusMetric("Tasks", tasks.length)}
+      ${renderProjectFocusMetric("Deliverables", deliverables.length)}
+      ${renderProjectFocusMetric("Review profiles", projectProfiles.length)}
+      ${renderProjectFocusMetric("Agents", projectAgents.length)}
+      ${renderProjectFocusMetric("Releases", releases.length)}
+    </div>
+    ${renderProjectCostCounter(project.id)}
+    ${renderProjectGit(project.git)}
+    <div class="projects-detail-grid">
+      <section>
+        <h3>Goals</h3>
+        ${renderGoals(project.goals || [], { compact: true })}
+      </section>
+      <section>
+        <h3>Project roles</h3>
+        ${renderProjectFocusRoles(projectRoles)}
+      </section>
+      <section>
+        <h3>Project agents</h3>
+        ${renderProjectFocusAgents(projectAgents)}
+      </section>
+      <section>
+        <h3>Tasks</h3>
+        ${renderTasks(tasks, { compact: true })}
+      </section>
+      <section>
+        <h3>Deliverables</h3>
+        ${renderDeliverables(deliverables, { compact: true })}
+      </section>
+      <section>
+        <h3>Releases</h3>
+        ${releases.length ? `<ul class="release-list compact-record-list">${releases.map(renderCompactRelease).join("")}</ul>` : `<p class="empty-state">No release packages.</p>`}
+      </section>
+    </div>
+    <section class="project-review-profile-panel">
+      <div class="projects-detail-section-header">
+        <div>
+          <p class="section-label">Review profile</p>
+          <h3>Project review profiles</h3>
+        </div>
+      </div>
+      ${renderProjectReviewProfileCreateForm(project)}
+      ${renderProjectReviewProfiles(projectProfiles, teamProfiles)}
+    </section>
+  `;
+}
+
+function renderProjectFocusMetric(label, value) {
+  return `
+    <div class="project-focus-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderProjectFocusRoles(roles) {
+  if (!roles.length) {
+    return `<p class="empty-state">No project-specific roles.</p>`;
+  }
+  return `
+    <ul class="compact-record-list">
+      ${roles
+        .map((role) => `
+          <li class="record-item compact-record-card">
+            <div class="record-line">
+              <strong>${escapeHtml(role.name)}</strong>
+              <div class="record-actions">${editButton("role", role.id)}</div>
+            </div>
+            <div class="meta-line">${escapeHtml(role.id)}</div>
+            ${role.description ? `<div class="meta-line">${escapeHtml(role.description)}</div>` : ""}
+          </li>
+        `)
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderProjectFocusAgents(agents) {
+  if (!agents.length) {
+    return `<p class="empty-state">No project agents.</p>`;
+  }
+  return `
+    <ul class="compact-record-list">
+      ${agents
+        .map((agent) => `
+          <li class="record-item compact-record-card">
+            <div class="record-line">
+              <strong>${escapeHtml(agentLabel(agent))}</strong>
+              <div class="record-actions">${editButton("agent", agent.id)}</div>
+            </div>
+            <div class="meta-line">${escapeHtml(agent.id)} - ${escapeHtml(agentRoleLabel(agent))}</div>
+          </li>
+        `)
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderProjectReviewProfileCreateForm(project) {
+  return `
+    <form
+      id="create-review-profile-for-project-form"
+      class="project-review-profile-form"
+      data-form-id="create-review-profile-form"
+      data-endpoint="/review-profiles"
+      data-method="POST"
+      data-delegated-create-form
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(project.team_id)}" />
+      <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
+      <div class="project-review-profile-fields">
+        <label>Name <input name="name" required /></label>
+        <label>Description <textarea name="description" rows="2"></textarea></label>
+        <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="project-review-roles"></select></label>
+      </div>
+      ${renderReviewProfileCriteriaEditor()}
+      <button type="submit">Create profile</button>
+    </form>
+  `;
+}
+
+function renderProjectReviewProfiles(projectProfiles, teamProfiles) {
+  const projectList = projectProfiles.length
+    ? `<ul class="review-list compact-record-list">${projectProfiles.map(renderCompactReviewProfile).join("")}</ul>`
+    : `<p class="empty-state">No project-specific review profiles.</p>`;
+  const teamList = teamProfiles.length
+    ? `
+      <details class="team-wide-review-profiles">
+        <summary>Team-wide profiles available to this project</summary>
+        <ul class="review-list compact-record-list">${teamProfiles.map(renderCompactReviewProfile).join("")}</ul>
+      </details>
+    `
+    : "";
+  return `
+    <div class="project-review-profile-list">
+      ${projectList}
+      ${teamList}
+    </div>
+  `;
+}
+
+function projectSpecificReviewProfiles(project) {
+  return values(state.review_profiles)
+    .filter(isVisibleReviewProfile)
+    .filter((profile) => profile.project_id === project.id)
+    .sort(byId);
+}
+
+function teamWideReviewProfilesForProject(project) {
+  return values(state.review_profiles)
+    .filter(isVisibleReviewProfile)
+    .filter((profile) => !profile.project_id && profile.team_id === project.team_id)
+    .sort(byId);
+}
+
 function renderTaskBoard() {
   const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
   const selectedTeam = visibleTeams.find((team) => text(team.id) === text(selectedTaskBoardTeamId)) || null;
@@ -7900,6 +8187,7 @@ function buildSelectOptionSets() {
     teams,
     projects,
     roles,
+    "project-review-roles": projectReviewRoleOptionsForProject(selectedProjectFocusId),
     agents,
     "agents-by-display-name": agentsByDisplayName,
     tasks,
@@ -7956,6 +8244,24 @@ function projectLeadAgentOptionsForTeam(teamId) {
     .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
 }
 
+function projectReviewRoleOptionsForProject(projectId) {
+  const project = state.projects?.[text(projectId)];
+  if (!project) {
+    return [];
+  }
+  return values(state.roles)
+    .filter(isVisibleRole)
+    .filter((role) => {
+      if (text(role.team_id) !== text(project.team_id)) {
+        return false;
+      }
+      const roleProjectId = text(role.project_id);
+      return !roleProjectId || roleProjectId === text(project.id);
+    })
+    .sort(compareTeamRoles)
+    .map((role) => [role.id, `${role.name} (${role.id})`]);
+}
+
 function fillSelect(select, options) {
   const currentValue = select.dataset.currentValue ?? select.value;
   const includePlaceholder = !select.multiple;
@@ -7996,9 +8302,25 @@ async function submitCreateForm(form) {
   if (!endpoint) {
     return;
   }
+  const formId = formSemanticIdentifier(form);
+  const existingProjectIds =
+    formId === "create-project-form"
+      ? new Set(values(state.projects).map((project) => project.id))
+      : null;
   const payload = payloadForForm(form, data);
   const saved = await submitMutation(form, endpoint, method, payload);
-  const formId = formSemanticIdentifier(form);
+  if (saved && existingProjectIds) {
+    const createdProjects = values(state.projects)
+      .filter((project) => !existingProjectIds.has(project.id))
+      .sort((left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) || byId(left, right),
+      );
+    if (createdProjects.length) {
+      selectedProjectFocusId = createdProjects[0].id;
+      renderProjectFocus();
+      refreshSelects();
+    }
+  }
   if (saved && formId === "create-team-from-teams-form") {
     closeTeamsCreateTeamPanel({ reset: true });
     renderAgents();

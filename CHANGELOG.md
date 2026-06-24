@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Projects Tab
+
+- Added a top-level Team Add-on Projects tab that centers project creation,
+  selection, details, goals, tasks, deliverables, releases, agents, and roles.
+- Added project-scoped review-profile creation from the selected project while
+  preserving existing project visibility and editing under Teams and Planning.
+
 ## 2026-06-24 - Team Add-on Review Profile Criteria Editor
 
 - Replaced the Team Add-on review-profile criteria textarea with structured

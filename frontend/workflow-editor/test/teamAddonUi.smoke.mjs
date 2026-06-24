@@ -38,6 +38,12 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-task-board-team/);
   assert.match(script, /renderTaskBoard/);
   assert.match(script, /taskBoardLanes/);
+  assert.match(markup, /data-team-view="projects"/);
+  assert.match(markup, /id="team-projects-page"/);
+  assert.match(markup, /id="create-project-from-projects-form"/);
+  assert.match(script, /renderProjectFocus/);
+  assert.match(script, /projectReviewRoleOptionsForProject/);
+  assert.match(script, /create-review-profile-for-project-form/);
   assert.match(script, /data-select-agent-id/);
   assert.match(script, /data-select-project-id/);
   assert.match(script, /data-select-role-id/);
@@ -54,6 +60,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
+  assert.match(stylesheet, /\.projects-workbench/);
+  assert.match(stylesheet, /\.projects-focus-row/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.criteria-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
@@ -63,6 +71,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /data-review-profile-criteria-editor/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
+  assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
   assert.match(script, /data-chat-scroll-conversation-id/);
   assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
   assert.match(script, /renderTeamProjectDetail/);

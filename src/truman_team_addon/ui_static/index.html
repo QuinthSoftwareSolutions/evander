@@ -97,6 +97,17 @@
           Delivery
         </button>
         <button
+          id="team-view-projects-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-projects-page"
+          data-team-view="projects"
+        >
+          Projects
+        </button>
+        <button
           id="team-view-task-board-tab"
           class="team-view-tab"
           type="button"
@@ -815,6 +826,56 @@
           <aside class="content-panel people-agent-detail-panel" aria-label="Selected team record detail">
             <div id="people-agent-detail-view" class="people-agent-detail-view" data-agent-detail-view></div>
           </aside>
+        </div>
+      </main>
+
+      <main
+        id="team-projects-page"
+        class="focused-team-page projects-page"
+        role="tabpanel"
+        aria-labelledby="team-view-projects-tab"
+        data-team-view-panel="projects"
+        hidden
+      >
+        <div class="projects-workbench">
+          <section class="content-panel projects-list-panel" aria-labelledby="projects-workbench-heading">
+            <div class="focused-section-header">
+              <div>
+                <p class="section-label">Projects</p>
+                <h2 id="projects-workbench-heading">Project Catalog</h2>
+              </div>
+            </div>
+            <form
+              id="create-project-from-projects-form"
+              class="projects-create-form"
+              data-form-id="create-project-form"
+              data-endpoint="/projects"
+              data-method="POST"
+            >
+              <label>Team <select name="team_id" required data-options="teams"></select></label>
+              <label>Name <input name="name" required /></label>
+              <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
+              <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
+              <details>
+                <summary>Git config</summary>
+                <label>Host repo path <input name="host_repo_path" /></label>
+                <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+                <div class="git-import-actions">
+                  <button type="button" data-git-import-button>Import Git repo</button>
+                  <span class="meta-line" data-git-import-status></span>
+                </div>
+                <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
+                <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+              </details>
+              <button type="submit">Create project</button>
+            </form>
+            <div class="projects-focus-list" data-projects-focus-list></div>
+          </section>
+          <section class="content-panel projects-detail-panel" aria-label="Selected project">
+            <div class="projects-focus-detail" data-projects-focus-detail></div>
+          </section>
         </div>
       </main>
 
