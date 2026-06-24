@@ -3846,6 +3846,54 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   });
 });
 
+test("team add-on agent edit scopes project, role, and superior choices to the selected team", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+
+  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  await alphaGroup.waitFor({ state: "visible" });
+  if (!(await alphaGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await alphaGroup.locator(".team-record-group-header").click();
+  }
+  await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await alphaGroup.locator('[data-agent-id="alpha-lead"]').getByRole("button").click();
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "alpha-lead" }).waitFor({
+    state: "visible",
+  });
+  await page.locator('#people-agent-detail-view [data-edit-type="agent"][data-edit-id="alpha-lead"]').click();
+  await page.locator("#edit-modal-title", { hasText: "Edit agent alpha-lead" }).waitFor({
+    state: "visible",
+  });
+
+  const form = page.locator("#edit-record-form");
+  assert.equal(await form.locator('select[name="project_id"] option[value="alpha-project"]').count(), 1);
+  assert.equal(await form.locator('select[name="project_id"] option[value="beta-project"]').count(), 0);
+  assert.equal(await form.locator('select[name="role_id"] option[value="alpha-project__project-lead"]').count(), 1);
+  assert.equal(await form.locator('select[name="role_id"] option[value="beta-project__project-lead"]').count(), 0);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-manager"]').count(), 1);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-lead"]').count(), 0);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="beta-manager"]').count(), 0);
+
+  await form.locator('select[name="team_id"]').selectOption("team-beta");
+  await waitForSelectOption(page, '#edit-record-form select[name="project_id"]', "beta-project");
+  await waitForSelectOption(page, '#edit-record-form select[name="role_id"]', "beta-project__project-lead");
+  await waitForSelectOption(page, '#edit-record-form select[name="reports_to_agent_id"]', "beta-manager");
+
+  assert.equal(await form.locator('select[name="project_id"] option[value="alpha-project"]').count(), 0);
+  assert.equal(await form.locator('select[name="role_id"] option[value="alpha-project__project-lead"]').count(), 0);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-manager"]').count(), 0);
+  assert.equal(await form.locator('select[name="project_id"]').inputValue(), "");
+  assert.equal(await form.locator('select[name="role_id"]').inputValue(), "");
+  assert.equal(await form.locator('select[name="reports_to_agent_id"]').inputValue(), "");
+});
+
 function seededLongChatState(messageCount = 120) {
   const state = seededGitState();
   state.revision = 9;

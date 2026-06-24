@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Agent Edit Filtering
+
+- Scoped agent edit Project, Role, and Reports-to dropdowns to the currently
+  selected team so changing the Team field no longer exposes invalid cross-team
+  choices.
+
 ## 2026-06-24 - Team Add-on Case Update Fixes
 
 - Rolled back failed agent `case_updates[]` items so invalid task links cannot

@@ -428,6 +428,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRecordEditing();
   bindExistingAgentPickers();
   bindProjectLeadSelects();
+  bindAgentEditTeamScopedSelects();
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
@@ -1198,6 +1199,29 @@ function bindProjectLeadSelects() {
       return;
     }
     refreshProjectLeadSelect(teamSelect.form);
+  });
+}
+
+function bindAgentEditTeamScopedSelects() {
+  document.addEventListener("change", (event) => {
+    const teamSelect = event.target?.closest?.('select[name="team_id"]');
+    if (!teamSelect || teamSelect.form !== elements.editForm) {
+      return;
+    }
+    if (text(elements.editForm?.dataset.editType) !== "agent") {
+      return;
+    }
+    refreshAgentEditTeamScopedSelects(teamSelect.form);
+  });
+}
+
+function refreshAgentEditTeamScopedSelects(form) {
+  if (!form || text(form.dataset.editType) !== "agent") {
+    return;
+  }
+  const options = buildSelectOptionSets();
+  form.querySelectorAll('select[data-options^="agent-edit-"]').forEach((select) => {
+    fillSelect(select, optionsForSelect(select, options));
   });
 }
 
@@ -8590,7 +8614,40 @@ function optionsForSelect(select, optionSets) {
   if (select.dataset.options === "project-lead-agents") {
     return projectLeadAgentOptions(select);
   }
+  if (select.dataset.options === "agent-edit-projects") {
+    return agentEditProjectOptions(select);
+  }
+  if (select.dataset.options === "agent-edit-roles") {
+    return agentEditRoleOptions(select);
+  }
+  if (select.dataset.options === "agent-edit-superiors") {
+    return agentEditSuperiorOptions(select);
+  }
   return optionSets[select.dataset.options] || [];
+}
+
+function agentEditTeamId(select) {
+  const teamId = text(select.form?.elements?.team_id?.value);
+  return teamId === noTeamRecordId ? "" : teamId;
+}
+
+function agentEditProjectOptions(select) {
+  const teamId = agentEditTeamId(select);
+  return teamId ? teamProjectOptions(teamId) : [];
+}
+
+function agentEditRoleOptions(select) {
+  const teamId = agentEditTeamId(select);
+  return teamId ? teamRoleOptions(teamId) : [];
+}
+
+function agentEditSuperiorOptions(select) {
+  const teamId = agentEditTeamId(select);
+  if (!teamId) {
+    return [];
+  }
+  const editedAgentId = text(select.form?.dataset?.editId);
+  return teamAgentOptions(teamId).filter(([agentId]) => text(agentId) !== editedAgentId);
 }
 
 function projectLeadAgentOptions(select) {
@@ -10563,13 +10620,13 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
-      ${selectField("Project", "project_id", "projects", agentEditProjectId(record), { placeholder: "No project" })}
-      ${selectField("Role", "role_id", "roles", record.role_id || "", { placeholder: "No role" })}
+      ${selectField("Project", "project_id", "agent-edit-projects", agentEditProjectId(record), { placeholder: "No project" })}
+      ${selectField("Role", "role_id", "agent-edit-roles", record.role_id || "", { placeholder: "No role" })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
       ${renderAvatarEditControls(record)}
       ${renderVoiceProfileEditControls(record)}
-      ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
+      ${selectField("Reports to", "reports_to_agent_id", "agent-edit-superiors", record.reports_to_agent_id || "", { placeholder: "No superior" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
       ${selectField("Context clearing", "context_clearing_policy", "context-clearing-policies", contextPolicy, { required: true })}
