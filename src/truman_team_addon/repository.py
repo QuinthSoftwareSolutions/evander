@@ -2040,6 +2040,7 @@ class TeamStateRepository:
         case_id: str,
         title: str | None = None,
         description: str | None = None,
+        set_description: bool = False,
         project_id: str | None = None,
         set_project_id: bool = False,
         status: TeamCaseStatus | str | None = None,
@@ -2057,7 +2058,10 @@ class TeamStateRepository:
     ) -> TeamState:
         normalized_case_id = _required_text(case_id, "case_id")
         normalized_title = _optional_text(title)
-        normalized_description = _optional_text(description) if description is not None else None
+        description_present = set_description or description is not None
+        normalized_description = (
+            (_optional_text(description) or "") if description_present else None
+        )
         normalized_project_id = _optional_text(project_id)
         normalized_status = (
             status
@@ -2093,7 +2097,7 @@ class TeamStateRepository:
             now = utc_now()
             if normalized_title is not None:
                 case.title = normalized_title
-            if normalized_description is not None:
+            if description_present:
                 case.description = normalized_description
             if set_project_id or project_id is not None:
                 case.project_id = next_project_id
@@ -4035,6 +4039,7 @@ class TeamStateRepository:
             for index, case_update in enumerate(
                 _list_of_mappings(normalized_action.get("case_updates"), "case_updates")
             ):
+                case_task_state = _snapshot_case_task_state(state_model)
                 try:
                     case_id, created = _apply_case_update(
                         state_model,
@@ -4042,6 +4047,7 @@ class TeamStateRepository:
                         update=case_update,
                     )
                 except ValueError as exc:
+                    _restore_case_task_state(state_model, case_task_state)
                     _append_action_item_error(result, "case_updates", index, exc)
                     continue
                 if created:
@@ -7479,6 +7485,22 @@ def _agent_has_role_permission_for_project(
     if _is_team_manager(state, actor) and permission in effective_role_permissions(state, actor):
         return True
     return permission in effective_role_permissions(state, actor, project_id=project_id)
+
+
+def _snapshot_case_task_state(
+    state: TeamState,
+) -> tuple[dict[str, TeamCase], dict[str, AgentTask]]:
+    return (
+        {case_id: case.model_copy(deep=True) for case_id, case in state.cases.items()},
+        {task_id: task.model_copy(deep=True) for task_id, task in state.tasks.items()},
+    )
+
+
+def _restore_case_task_state(
+    state: TeamState,
+    snapshot: tuple[dict[str, TeamCase], dict[str, AgentTask]],
+) -> None:
+    state.cases, state.tasks = snapshot
 
 
 def _apply_case_update(

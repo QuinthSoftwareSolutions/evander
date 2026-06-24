@@ -1068,6 +1068,86 @@ def test_repository_creates_persists_and_updates_cases(tmp_path: Path) -> None:
     assert state.tasks["case-task"].case_id is None
 
 
+def test_repository_clears_case_description(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state = repo.create_case(
+        case_id="case-1",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        description="External support ticket.",
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.update_case(
+        case_id="case-1",
+        description="",
+        expected_revision=state.revision,
+    )
+
+    assert state.cases["case-1"].description == ""
+    assert TeamStateRepository(tmp_path).read().cases["case-1"].description == ""
+
+
+def test_agent_case_update_errors_restore_case_and_task_state(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_or_reprioritize_task(
+        task_id="case-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=5,
+        title="Investigate ticket",
+        description="Reproduce the reported problem.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_case(
+        case_id="case-1",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        description="External support ticket.",
+        task_ids=["case-task"],
+        expected_revision=repo.read().revision,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "case_updates": [
+                {
+                    "case_id": "case-1",
+                    "title": "Changed title",
+                    "task_ids": ["missing-task"],
+                },
+                {
+                    "id": "new-case",
+                    "project_id": "project",
+                    "title": "New case",
+                    "task_ids": ["missing-task"],
+                },
+            ],
+        },
+        expected_revision=repo.read().revision,
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert len(result["errors"]) == 2
+    assert result["errors"][0] == "case_updates[0]: task missing-task does not exist"
+    assert result["errors"][1] == "case_updates[1]: task missing-task does not exist"
+    assert "new-case" not in state.cases
+    assert state.cases["case-1"].title == "Customer ticket"
+    assert state.cases["case-1"].task_ids == ["case-task"]
+    assert state.tasks["case-task"].case_id == "case-1"
+
+    reread = TeamStateRepository(tmp_path).read()
+    assert "new-case" not in reread.cases
+    assert reread.cases["case-1"].title == "Customer ticket"
+    assert reread.cases["case-1"].task_ids == ["case-task"]
+    assert reread.tasks["case-task"].case_id == "case-1"
+
+
 def test_repository_rejects_cross_project_case_task_link(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     repo.create_project(

@@ -1456,6 +1456,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 case_id=case_id,
                 title=_optional(payload, "title"),
                 description=_optional_present_text(payload, "description"),
+                set_description="description" in payload,
                 project_id=_optional_present_text(payload, "project_id"),
                 set_project_id="project_id" in payload,
                 status=TeamCaseStatus(raw_status) if raw_status else None,

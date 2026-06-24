@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Case Update Fixes
+
+- Rolled back failed agent `case_updates[]` items so invalid task links cannot
+  persist partial case edits, inserts, or task associations.
+- Preserved explicit blank case descriptions through repository and API update
+  paths so optional case text can be cleared.
+
 ## 2026-06-24 - Team Add-on Case Domain
 
 - Added first-class Team cases for intake and ticket lifecycle tracking, with

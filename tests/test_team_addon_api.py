@@ -2154,6 +2154,7 @@ def test_team_addon_admin_api_case_flow(tmp_path: Path) -> None:
         "/api/addons/team-addon/cases/case",
         json={
             "status": "in_progress",
+            "description": "",
             "source_ref": None,
             "task_ids": [],
             "expected_revision": 6,
@@ -2162,6 +2163,7 @@ def test_team_addon_admin_api_case_flow(tmp_path: Path) -> None:
     assert response.status_code == 200
     state = response.json()
     assert state["cases"]["case"]["status"] == "in_progress"
+    assert state["cases"]["case"]["description"] == ""
     assert state["cases"]["case"]["source_ref"] is None
     assert state["cases"]["case"]["task_ids"] == []
     assert state["tasks"]["task"]["case_id"] is None
