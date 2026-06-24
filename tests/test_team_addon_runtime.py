@@ -1319,6 +1319,84 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
     assert "Reviewer roles should generally receive review_requests" in prompt
 
 
+def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "manager",
+                    "instructions": "Review the stalled backend slice.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.review_requests["review-manager"].state.value == "pending"
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+
+    assert lease["reason"] == "manager_fallback"
+    assert lease["tasks"] == []
+    assert lease["inbox"] == []
+
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    fallback_context = context["manager_fallback_context"]
+
+    assert "Manager fallback dispatch" in prompt
+    assert (
+        "Do not return a no-op merely because your own tasks and inbox arrays are empty"
+        in prompt
+    )
+    assert fallback_context["tasks"]["task"]["state"] == "waiting_for_review"
+    assert fallback_context["deliverables"]["deliverable-stalled"]["task_id"] == "task"
+    assert (
+        fallback_context["review_requests"]["review-manager"]["reviewer_agent_id"]
+        == "manager"
+    )
+    assert fallback_context["review_requests"]["review-manager"]["state"] == "pending"
+    assert any(
+        item["state"] == "handled"
+        and item["recipient_agent_id"] == "manager"
+        and item["payload"].get("review_request_id") == "review-manager"
+        for item in fallback_context["inbox"].values()
+    )
+
+
 def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
     tmp_path: Path,
 ) -> None:

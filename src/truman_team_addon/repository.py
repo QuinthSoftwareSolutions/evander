@@ -75,6 +75,7 @@ from .models import (
     agent_project_ids,
     effective_role_permissions,
     project_lead_agent_id,
+    runtime_operations_payload,
     _ensure_unique,
     _unique_text_list,
 )
@@ -3414,6 +3415,11 @@ class TeamStateRepository:
                             state_model,
                             manager.id,
                         ),
+                        "manager_fallback_context": _manager_fallback_context_payload(
+                            state_model,
+                            team=team,
+                            manager=manager,
+                        ),
                         "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": manager.reports_to_agent_id,
                         "subordinate_agent_ids": list(manager.subordinate_agent_ids),
@@ -4854,6 +4860,243 @@ def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> lis
             continue
         payloads.append(_agent_payload(state, subordinate))
     return payloads
+
+
+def _manager_fallback_context_payload(
+    state: TeamState,
+    *,
+    team: Team,
+    manager: PersistentAgent,
+) -> dict[str, Any]:
+    project_ids = {
+        project.id
+        for project in state.projects.values()
+        if project.team_id == team.id
+    }
+    team_agents = sorted(
+        (
+            agent
+            for agent in state.agents.values()
+            if agent.team_id == team.id and agent.status != AgentStatus.ARCHIVED
+        ),
+        key=lambda item: item.id,
+    )
+    team_agent_ids = {agent.id for agent in team_agents}
+    visible_tasks = sorted(
+        (
+            task
+            for task in state.tasks.values()
+            if task.project_id in project_ids and task.state in _NON_TERMINAL_TASK_STATES
+        ),
+        key=lambda item: (item.priority, item.created_at, item.id),
+    )
+    visible_task_ids = {task.id for task in visible_tasks}
+    visible_deliverables = sorted(
+        (
+            deliverable
+            for deliverable in state.deliverables.values()
+            if deliverable.task_id in visible_task_ids
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+    visible_deliverable_ids = {deliverable.id for deliverable in visible_deliverables}
+    visible_inbox = sorted(
+        (
+            item
+            for item in state.inbox.values()
+            if item.recipient_agent_id in team_agent_ids
+            and (item.sender_agent_id is None or item.sender_agent_id in team_agent_ids)
+            and (item.task_id is None or item.task_id in visible_task_ids)
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+    visible_inbox_ids = {item.id for item in visible_inbox}
+    visible_action_records = sorted(
+        (
+            record
+            for record in state.action_records.values()
+            if record.agent_id in team_agent_ids
+            and not record.success
+            and record.dismissed_at is None
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+    role_ids = {
+        role.id
+        for role in state.roles.values()
+        if role.team_id == team.id
+        and not role.archived
+        and (role.project_id is None or role.project_id in project_ids)
+    }
+    role_ids.update(
+        agent.role_id
+        for agent in team_agents
+        if agent.role_id is not None
+    )
+    review_profiles = sorted(
+        (
+            profile
+            for profile in state.review_profiles.values()
+            if profile.team_id == team.id
+            and not profile.archived
+            and (profile.project_id is None or profile.project_id in project_ids)
+        ),
+        key=lambda item: item.id,
+    )
+    runtime_operations = _manager_fallback_runtime_operations_payload(
+        runtime_operations_payload(state),
+        team_agent_ids=team_agent_ids,
+        project_ids=project_ids,
+        task_ids=visible_task_ids,
+        deliverable_ids=visible_deliverable_ids,
+        inbox_item_ids=visible_inbox_ids,
+    )
+    return {
+        "reason": "manager_fallback",
+        "team_id": team.id,
+        "manager_agent_id": manager.id,
+        "teams": {team.id: team.model_dump(mode="json")},
+        "projects": {
+            project.id: project.model_dump(mode="json")
+            for project in sorted(
+                state.projects.values(),
+                key=lambda item: item.id,
+            )
+            if project.id in project_ids
+        },
+        "roles": {
+            role.id: role.model_dump(mode="json")
+            for role in sorted(state.roles.values(), key=lambda item: item.id)
+            if role.id in role_ids
+        },
+        "agents": {
+            agent.id: _agent_payload(state, agent)
+            for agent in team_agents
+        },
+        "project_assignments": {
+            assignment.id: assignment.model_dump(mode="json")
+            for assignment in sorted(
+                state.project_assignments.values(),
+                key=lambda item: item.id,
+            )
+            if assignment.team_id == team.id
+            and assignment.project_id in project_ids
+            and assignment.agent_id in team_agent_ids
+        },
+        "agent_runtimes": {
+            agent_id: runtime.model_dump(mode="json")
+            for agent_id, runtime in sorted(state.agent_runtimes.items())
+            if agent_id in team_agent_ids
+        },
+        "stand_downs": {
+            stand_down.id: stand_down.model_dump(mode="json")
+            for stand_down in sorted(
+                state.stand_downs.values(),
+                key=lambda item: item.id,
+            )
+            if stand_down.agent_id in team_agent_ids
+        },
+        "tasks": {
+            task.id: task_payload_with_derived(state, task)
+            for task in visible_tasks
+        },
+        "deliverables": {
+            deliverable.id: deliverable.model_dump(mode="json")
+            for deliverable in visible_deliverables
+        },
+        "review_requests": {
+            review.id: review.model_dump(mode="json")
+            for review in sorted(
+                state.review_requests.values(),
+                key=lambda item: item.id,
+            )
+            if review.deliverable_id in visible_deliverable_ids
+        },
+        "review_profiles": {
+            profile.id: profile.model_dump(mode="json")
+            for profile in review_profiles
+        },
+        "inbox": {
+            item.id: item.model_dump(mode="json")
+            for item in visible_inbox
+        },
+        "action_records": {
+            record.id: record.model_dump(mode="json")
+            for record in visible_action_records
+        },
+        "runtime_operations": runtime_operations,
+    }
+
+
+def _manager_fallback_runtime_operations_payload(
+    payload: Mapping[str, Any],
+    *,
+    team_agent_ids: set[str],
+    project_ids: set[str],
+    task_ids: set[str],
+    deliverable_ids: set[str],
+    inbox_item_ids: set[str],
+) -> dict[str, Any]:
+    return {
+        "generated_at": payload.get("generated_at"),
+        "agents": [
+            row
+            for row in payload.get("agents") or []
+            if isinstance(row, Mapping)
+            and _optional_text(row.get("id")) in team_agent_ids
+        ],
+        "attention": [
+            row
+            for row in payload.get("attention") or []
+            if isinstance(row, Mapping)
+            and _manager_fallback_runtime_row_visible(
+                row,
+                team_agent_ids=team_agent_ids,
+                project_ids=project_ids,
+                task_ids=task_ids,
+                deliverable_ids=deliverable_ids,
+                inbox_item_ids=inbox_item_ids,
+            )
+        ],
+        "session_health": [
+            row
+            for row in payload.get("session_health") or []
+            if isinstance(row, Mapping)
+            and _optional_text(row.get("agent_id")) in team_agent_ids
+        ],
+    }
+
+
+def _manager_fallback_runtime_row_visible(
+    row: Mapping[str, Any],
+    *,
+    team_agent_ids: set[str],
+    project_ids: set[str],
+    task_ids: set[str],
+    deliverable_ids: set[str],
+    inbox_item_ids: set[str],
+) -> bool:
+    agent_id = _optional_text(row.get("agent_id"))
+    if agent_id in team_agent_ids:
+        return True
+    project_id = _optional_text(row.get("project_id"))
+    if project_id in project_ids:
+        return True
+    row_project_ids = row.get("project_ids")
+    if isinstance(row_project_ids, list):
+        if any(
+            _optional_text(project_id) in project_ids
+            for project_id in row_project_ids
+        ):
+            return True
+    task_id = _optional_text(row.get("task_id"))
+    if task_id in task_ids:
+        return True
+    deliverable_id = _optional_text(row.get("deliverable_id"))
+    if deliverable_id in deliverable_ids:
+        return True
+    inbox_item_id = _optional_text(row.get("inbox_item_id"))
+    return inbox_item_id in inbox_item_ids
 
 
 def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:

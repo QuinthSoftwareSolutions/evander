@@ -3479,6 +3479,12 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
         },
     )
     assert result["success"] is True
+    state = repo.record_review_request(
+        review_request_id="review-stalled",
+        deliverable_id="deliverable-stalled",
+        reviewer_agent_id="manager",
+        expected_revision=state.revision,
+    )
     assert state.tasks["stalled-task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert any(
         item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
@@ -3530,6 +3536,17 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     assert leases[0]["tasks"] == []
     assert leases[0]["inbox"][0]["id"] == "manager-note"
     assert leases[0]["inbox"][0]["response_requested"] is False
+    fallback_context = leases[0]["manager_fallback_context"]
+    assert fallback_context["team_id"] == "team"
+    assert set(fallback_context["agents"]) == {"manager", "lead", "backend", "worker"}
+    assert set(fallback_context["projects"]) == {"project"}
+    assert set(fallback_context["tasks"]) == {"stalled-task"}
+    assert fallback_context["tasks"]["stalled-task"]["state"] == "waiting_for_review"
+    assert fallback_context["deliverables"]["deliverable-stalled"]["task_id"] == "stalled-task"
+    assert fallback_context["review_requests"]["review-stalled"]["reviewer_agent_id"] == "manager"
+    assert fallback_context["review_requests"]["review-stalled"]["state"] == "pending"
+    assert fallback_context["inbox"]["manager-note"]["response_requested"] is False
+    assert fallback_context["runtime_operations"]["agents"]
     json.dumps(leases[0])
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Manager Fallback Context
+
+- Added team-scoped manager fallback wake context with open team tasks,
+  deliverables, pending reviews, related inbox items, action records, and runtime
+  attention signals so stalled teams can be routed from the fallback prompt.
+- Added manager fallback prompt guidance to use that team context instead of
+  returning a no-op when the manager has no personally owned tasks or inbox.
+
 ## 2026-06-24 - Team Add-on Projects Tab
 
 - Added a top-level Team Add-on Projects tab that centers project creation,

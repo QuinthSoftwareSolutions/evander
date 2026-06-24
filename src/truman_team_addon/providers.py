@@ -2719,6 +2719,9 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "operator_chat_participants": lease.get("operator_chat_participants") or [],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
+    manager_fallback_context = lease.get("manager_fallback_context")
+    if isinstance(manager_fallback_context, Mapping):
+        context["manager_fallback_context"] = dict(manager_fallback_context)
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         context["project_repo"] = dict(project_repo)
@@ -2743,6 +2746,20 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "items.\n"
         f"{json.dumps(action_feedback, sort_keys=True, indent=2)}\n\n"
         if isinstance(action_feedback, list) and action_feedback
+        else ""
+    )
+    manager_fallback_section = (
+        "Manager fallback dispatch:\n"
+        "- This wake means no other team member is currently wakeable while the team "
+        "still has open work.\n"
+        "- Treat manager_fallback_context as the source of stalled team and project "
+        "work, even when this manager's top-level tasks and inbox arrays are empty.\n"
+        "- If a pending review is assigned to you, handle it with review_decisions. "
+        "If the review should go to another reviewer, create a fresh review_requests "
+        "item with a new id for the intended reviewer.\n"
+        "- Do not return a no-op merely because your own tasks and inbox arrays are "
+        "empty; use the team context to route, review, report, or escalate the stall.\n\n"
+        if lease.get("reason") == "manager_fallback"
         else ""
     )
     schema = {
@@ -2787,6 +2804,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"{_project_repo_prompt_guidance(project_repo)}"
         f"{handoff_section}"
         f"{action_feedback_section}"
+        f"{manager_fallback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
