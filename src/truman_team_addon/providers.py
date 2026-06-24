@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -17,7 +18,11 @@ from agent_sandbox.effects.providers.artifacts import (
     ArtifactPublishArtifactsEffectProvider,
 )
 from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.artifact_spaces import ArtifactSpaceStore, normalize_space_path
+from agent_sandbox.artifact_spaces import (
+    ArtifactSpacePermissionError,
+    ArtifactSpaceStore,
+    normalize_space_path,
+)
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
 from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
@@ -2472,6 +2477,11 @@ def _prepare_review_artifacts_for_lease(
         artifact_ref = _required_text(request.get("artifact_ref"), "artifact_ref")
         try:
             artifact_space_path = _artifact_space_path_from_ref(artifact_ref)
+            _require_review_artifact_space_read(
+                artifact_state,
+                artifact_space_path=artifact_space_path,
+                subject=_required_text(request.get("subject"), "subject"),
+            )
             versions = artifact_state.latest_versions_for_space(
                 artifact_space_path,
                 artifact_id=_TEAM_REVIEW_ARTIFACT_ID_DEFAULT,
@@ -2533,9 +2543,13 @@ def _review_artifact_ref_requests(lease: Mapping[str, Any]) -> list[dict[str, An
     agent = lease.get("agent")
     if not isinstance(agent, Mapping):
         return requests
+    agent_id = _optional_text(agent.get("id"))
+    if agent_id is None:
+        return requests
     session_id = _optional_text(agent.get("session_id"))
     if session_id is None:
         return requests
+    subject = f"team-agent:{agent_id}"
     for item in lease.get("inbox") or []:
         if not isinstance(item, Mapping):
             continue
@@ -2564,6 +2578,7 @@ def _review_artifact_ref_requests(lease: Mapping[str, Any]) -> list[dict[str, An
                     "artifact_ref": artifact_ref,
                     "inbox_item_id": _optional_text(item.get("id")),
                     "session_id": session_id,
+                    "subject": subject,
                 }
             )
     return requests
@@ -2588,6 +2603,22 @@ def _artifact_space_path_from_ref(artifact_ref: str) -> str:
     return normalize_space_path(artifact_ref.removeprefix(_ARTIFACT_SPACE_REF_PREFIX))
 
 
+def _require_review_artifact_space_read(
+    artifact_state: Any,
+    *,
+    artifact_space_path: str,
+    subject: str,
+) -> None:
+    space = artifact_state.spaces.get(artifact_space_path)
+    if space is None:
+        raise ValueError(f"artifact space does not exist: {artifact_space_path}")
+    if not space.grants.allows(subject, "read"):
+        raise ArtifactSpacePermissionError(
+            f"subject {subject or '<anonymous>'} cannot read artifact space "
+            f"{artifact_space_path}"
+        )
+
+
 def _import_review_artifact_version(
     context: Any,
     *,
@@ -2606,15 +2637,22 @@ def _import_review_artifact_version(
     destination_path = _review_artifact_destination_path(
         review_request_id=review_request_id,
         deliverable_id=deliverable_id,
+        artifact_space_path=artifact_space_path,
         artifact_id=artifact_id,
+        artifact_space_version_id=artifact_space_version_id,
     )
     provider = ArtifactImportPublishedEffectProvider()
+    ref_version_segment = _review_artifact_ref_version_segment(
+        artifact_space_path=artifact_space_path,
+        artifact_space_version_id=artifact_space_version_id,
+    )
     provider.initialize(
         ArtifactImportPublishedEffectDefinition(
             id=(
                 "team-review-artifact-import-"
                 f"{_artifact_space_path_segment(review_request_id, 'review_request_id')}-"
-                f"{_artifact_space_path_segment(artifact_id, 'artifact_id')}"
+                f"{_artifact_space_path_segment(artifact_id, 'artifact_id')}-"
+                f"{ref_version_segment}"
             ),
             display_name="Import Team review artifact",
             type="effect:artifact:import-published",
@@ -2646,16 +2684,36 @@ def _review_artifact_destination_path(
     *,
     review_request_id: str,
     deliverable_id: str,
+    artifact_space_path: str,
     artifact_id: str,
+    artifact_space_version_id: str,
 ) -> str:
+    ref_version_segment = _review_artifact_ref_version_segment(
+        artifact_space_path=artifact_space_path,
+        artifact_space_version_id=artifact_space_version_id,
+    )
     return "/".join(
         [
             "team-review-inputs",
             _artifact_space_path_segment(review_request_id, "review_request_id"),
             _artifact_space_path_segment(deliverable_id, "deliverable_id"),
             _artifact_space_path_segment(artifact_id, "artifact_id"),
+            ref_version_segment,
         ]
     )
+
+
+def _review_artifact_ref_version_segment(
+    *,
+    artifact_space_path: str,
+    artifact_space_version_id: str,
+) -> str:
+    ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
+    version_segment = _artifact_space_path_segment(
+        artifact_space_version_id,
+        "artifact_space_version_id",
+    )
+    return f"ref-{ref_hash}-{version_segment}"
 
 
 def _artifact_space_path_segment(value: str, field_name: str) -> str:

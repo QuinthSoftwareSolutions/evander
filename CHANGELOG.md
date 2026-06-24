@@ -5,6 +5,8 @@
 - Imported Team review-request `artifact-space:` refs into reviewer sessions
   during wake preparation so review prompts include concrete
   `/artifacts/team-review-inputs/...` paths and structured import errors.
+- Enforced artifact-space read grants before review wake imports and isolated
+  each imported ref/version under its own destination path.
 
 ## 2026-06-24 - Team Add-on Manager Fallback Active Lease Guard
 

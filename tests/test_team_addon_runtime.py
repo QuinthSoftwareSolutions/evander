@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import tarfile
 from datetime import UTC, datetime, timedelta
@@ -1167,12 +1168,16 @@ def test_wake_due_agents_provider_imports_review_artifact_refs(
         },
         subject="team-agent:backend",
     )
-    artifact_store.publish_version(
+    artifact_state = artifact_store.publish_version(
         space_path=artifact_space_path,
         artifact_id="bundle",
         artifact_key=artifact_key,
         created_by_subject="team-agent:backend",
     )
+    artifact_version = artifact_state.latest_versions_for_space(
+        artifact_space_path,
+        artifact_id="bundle",
+    )[0]
     state, result = repo.apply_agent_action(
         action={
             "agent_id": "backend",
@@ -1200,7 +1205,11 @@ def test_wake_due_agents_provider_imports_review_artifact_refs(
         },
     )
     assert result["success"] is True
-    expected_destination = "team-review-inputs/review-luke/deliverable-1/bundle"
+    ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
+    expected_destination = (
+        "team-review-inputs/review-luke/deliverable-1/"
+        f"bundle/ref-{ref_hash}-{artifact_version.id}"
+    )
     exec_commands: list[str] = []
 
     def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
@@ -1288,6 +1297,246 @@ def test_wake_due_agents_provider_imports_review_artifact_refs(
     )
 
 
+def test_wake_due_agents_provider_respects_review_artifact_space_read_grants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_space_path = "/teams/team/projects/project/deliverables/restricted"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_key = "team/team/project/restricted/dispatch-backend/bundle"
+    PublishedArtifactStore(tmp_path).publish_single_file(
+        key=artifact_key,
+        session_id="session-backend",
+        filename="secret.md",
+        artifact_path="secret.md",
+        content=b"secret\n",
+    )
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        grants={
+            "read_subjects": ["team-agent:lead"],
+            "write_subjects": ["team-agent:backend"],
+            "manage_subjects": ["team-agent:lead"],
+        },
+        subject="team-agent:lead",
+    )
+    artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject="team-agent:backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": [artifact_ref],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-1",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("unreadable artifact-space version should not import")
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["review_artifact_imports"] == []
+    assert len(result["review_artifact_import_errors"]) == 1
+    import_error = result["review_artifact_import_errors"][0]
+    assert import_error["review_request_id"] == "review-luke"
+    assert import_error["artifact_ref"] == artifact_ref
+    assert import_error["artifact_space_path"] == artifact_space_path
+    assert "team-agent:luke cannot read artifact space" in import_error["error"]
+    assert "artifact_key" not in import_error
+    prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
+    assert prompt_context["review_artifact_import_errors"] == result[
+        "review_artifact_import_errors"
+    ]
+
+
+def test_wake_due_agents_provider_isolates_multiple_review_artifact_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    refs: list[str] = []
+    keys: list[str] = []
+    for index in (1, 2):
+        artifact_space_path = (
+            f"/teams/team/projects/project/deliverables/deliverable-{index}"
+        )
+        artifact_key = f"team/team/project/deliverable-{index}/dispatch-backend/bundle"
+        PublishedArtifactStore(tmp_path).publish_single_file(
+            key=artifact_key,
+            session_id="session-backend",
+            filename=f"report-{index}.md",
+            artifact_path="report.md",
+            content=f"review {index}\n".encode("utf-8"),
+        )
+        artifact_store.ensure_space(
+            path=artifact_space_path,
+            metadata={
+                "team_id": "team",
+                "project_id": "project",
+                "deliverable_id": f"deliverable-{index}",
+                "source": "team_addon",
+            },
+            subject="team-agent:backend",
+        )
+        artifact_store.publish_version(
+            space_path=artifact_space_path,
+            artifact_id="bundle",
+            artifact_key=artifact_key,
+            created_by_subject="team-agent:backend",
+        )
+        refs.append(f"artifact-space:{artifact_space_path}")
+        keys.append(artifact_key)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": refs,
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-1",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        return {
+            "success": True,
+            "session_id": "session-luke",
+            "vm_name": "vm-luke",
+            "execution_backend": "libvirt_vm",
+            "stdout": json.dumps(
+                {
+                    "success": True,
+                    "artifacts_root": "/artifacts",
+                    "destination_path": "ignored",
+                    "imported_file_count": 1,
+                    "imported_paths": ["ignored/report.md"],
+                    "source_byte_count": len("review 1\n"),
+                    "overwrite": True,
+                }
+            ),
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["review_artifact_import_errors"] == []
+    assert len(result["review_artifact_imports"]) == 2
+    destinations = [
+        record["destination_path"] for record in result["review_artifact_imports"]
+    ]
+    assert len(set(destinations)) == 2
+    assert all(
+        destination.startswith("team-review-inputs/review-luke/deliverable-1/bundle/ref-")
+        for destination in destinations
+    )
+    assert {record["artifact_key"] for record in result["review_artifact_imports"]} == set(
+        keys
+    )
+
+
 def test_wake_due_agents_provider_reports_review_artifact_import_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1366,7 +1615,7 @@ def test_wake_due_agents_provider_reports_review_artifact_import_errors(
     assert import_error["deliverable_id"] == "deliverable-1"
     assert import_error["artifact_ref"] == artifact_ref
     assert import_error["artifact_space_path"] == artifact_space_path
-    assert "no latest published versions" in import_error["error"]
+    assert "artifact space does not exist" in import_error["error"]
     assert "session_id" not in import_error
     prompt = str(resumer.calls[0]["prompt"])
     assert "Review artifact access for this dispatch" in prompt
