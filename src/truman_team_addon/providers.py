@@ -77,11 +77,11 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 15
+ACTION_CONTRACT_SCHEMA_VERSION = 16
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 6
+TEAM_AGENT_GUIDANCE_VERSION = 7
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
@@ -2929,7 +2929,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Before git_release_requests for Git work, make sure every deliverable "
         "is accepted and already has git_refs.feature_branch. Raw agent or review "
         "branches are not release sources; use git_review_promotions and "
-        "git_feature_updates first.\n"
+        "git_feature_updates first. Do not combine non-empty git_feature_updates "
+        "and git_release_requests in the same action; feature promotions run "
+        "asynchronously, so request the feature update first and release on a "
+        "later wake after git_refs.feature_branch is visible.\n"
         "- If a deliverable should be reviewed by another agent, create a "
         "review_requests item for that reviewer; do not mark the task accepted "
         "yourself unless the task is actually yours.\n"
@@ -3087,6 +3090,14 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         or context.get("review_artifact_import_errors")
         else ""
     )
+    git_release_sequence_section = (
+        "Git release sequencing:\n"
+        "- Do not combine non-empty git_feature_updates and git_release_requests "
+        "in one Team action. Feature promotions run asynchronously. Submit "
+        "git_feature_updates first, wait for promotion results and visible "
+        "deliverable git_refs.feature_branch, then submit git_release_requests "
+        "on a later wake.\n\n"
+    )
     manager_fallback_section = (
         "Manager fallback dispatch:\n"
         "- This wake means no other team member is currently wakeable while the team "
@@ -3154,6 +3165,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"{handoff_section}"
         f"{action_feedback_section}"
         f"{review_artifact_section}"
+        f"{git_release_sequence_section}"
         f"{manager_fallback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
@@ -4035,10 +4047,24 @@ def _persistent_action_schema() -> dict[str, Any]:
         "title": "Team Add-on persistent agent action",
         "description": (
             "Action artifact written by a persistent Team agent to "
-            "/artifacts/team-action.json after a Team wake."
+            "/artifacts/team-action.json after a Team wake. Do not combine "
+            "non-empty git_feature_updates and git_release_requests; feature "
+            "promotion is asynchronous and release requests must wait until "
+            "git_refs.feature_branch is visible."
         ),
         "type": "object",
         "additionalProperties": False,
+        "allOf": [
+            {
+                "not": {
+                    "required": ["git_feature_updates", "git_release_requests"],
+                    "properties": {
+                        "git_feature_updates": {"type": "array", "minItems": 1},
+                        "git_release_requests": {"type": "array", "minItems": 1},
+                    },
+                }
+            }
+        ],
         "required": ["agent_id"],
         "properties": {
             "schema_version": {"type": "integer", "const": ACTION_CONTRACT_SCHEMA_VERSION},
@@ -4369,8 +4395,11 @@ def _persistent_action_schema() -> dict[str, Any]:
                     "Create a release package from accepted deliverables. Git deliverables "
                     "must already have git_refs.feature_branch; use git_review_promotions "
                     "and git_feature_updates first when a deliverable only has agent or "
-                    "review refs. The repository derives source branches from deliverable git_refs; "
-                    "do not provide source_branch, target_branch, or commit_sha here."
+                    "review refs, then submit git_release_requests in a later action after "
+                    "promotion results are visible. Do not combine non-empty git_feature_updates "
+                    "and git_release_requests in one action. The repository derives source "
+                    "branches from deliverable git_refs; do not provide source_branch, "
+                    "target_branch, or commit_sha here."
                 ),
                 "default": [],
                 "items": {
@@ -4379,7 +4408,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "Create a release package from accepted deliverables. Git deliverables "
                         "must already have git_refs.feature_branch; use git_review_promotions "
                         "and git_feature_updates first when a deliverable only has agent or "
-                        "review refs."
+                        "review refs, then wait for visible promotion results before releasing."
                     ),
                     "additionalProperties": False,
                     "required": ["project_id", "deliverable_ids"],

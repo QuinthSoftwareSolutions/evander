@@ -3989,6 +3989,20 @@ class TeamStateRepository:
                 )
                 return state_model
 
+            git_sequence_error = _git_release_sequence_error(normalized_action)
+            if git_sequence_error is not None:
+                _mark_action_failure(
+                    state_model,
+                    runtime=runtime,
+                    agent_id=agent.id,
+                    dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id or action_id,
+                    action=normalized_action,
+                    error=git_sequence_error,
+                    action_id=action_id,
+                    result=result,
+                )
+                return state_model
+
             progress = False
             context_rotation_activity = False
             projects_to_recalc: set[str] = set()
@@ -7145,9 +7159,34 @@ def _non_empty_action_fields(action: Mapping[str, Any]) -> list[str]:
     )
 
 
+def _git_release_sequence_error(action: Mapping[str, Any]) -> str | None:
+    feature_updates = action.get("git_feature_updates")
+    release_requests = action.get("git_release_requests")
+    if (
+        isinstance(feature_updates, list)
+        and feature_updates
+        and isinstance(release_requests, list)
+        and release_requests
+    ):
+        return (
+            "cannot combine git_feature_updates and git_release_requests in one "
+            "Team action; feature promotions are asynchronous. Submit "
+            "git_feature_updates first, wait for promotion results to attach "
+            "deliverable git_refs.feature_branch, then submit git_release_requests "
+            "in a later wake."
+        )
+    return None
+
+
 def _correction_hints(error: str) -> list[str]:
     normalized = error.casefold()
     hints: list[str] = []
+    if "cannot combine git_feature_updates and git_release_requests" in normalized:
+        hints.append(
+            "Split Git release work into two Team actions: submit git_feature_updates "
+            "first, then wait for git_refs.feature_branch before submitting "
+            "git_release_requests."
+        )
     if "must not start with 'refs/'" in normalized:
         hints.append(
             "Use bare branch names like agents/... or team/..., not refs/heads/...."

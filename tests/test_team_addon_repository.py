@@ -5806,6 +5806,50 @@ def _seed_accepted_feature_deliverable(
     repo.update(_mutate)
 
 
+def test_apply_agent_action_rejects_combined_feature_update_and_release_request(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_feature_updates": [
+                {
+                    "task_id": "task",
+                    "source_review_branches": ["team/team/reviews/deliverable"],
+                }
+            ],
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert result["git_promotion_event_ids"] == []
+    assert result["release_package_ids"] == []
+    assert state.git_promotions == {}
+    assert state.release_packages == {}
+    error = result["errors"][0]
+    assert "cannot combine git_feature_updates and git_release_requests" in error
+    action_record = next(iter(state.action_records.values()))
+    assert action_record.success is False
+    assert action_record.error == error
+
+
 def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)

@@ -867,6 +867,38 @@ def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) ->
     assert any("git_refs.feature_branch" in hint for hint in feedback["correction_hints"])
 
 
+def test_combined_git_release_feedback_points_to_two_step_sequence(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _add_action_record(
+        repo,
+        action_id="action-combined",
+        dispatch_id="dispatch-combined",
+        created_at=base_time,
+        success=False,
+        error=(
+            "cannot combine git_feature_updates and git_release_requests in one "
+            "Team action"
+        ),
+        action={
+            "git_feature_updates": [{"task_id": "task"}],
+            "git_release_requests": [{"project_id": "project"}],
+        },
+    )
+
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=1))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    feedback = backend_lease["recent_action_feedback"][0]
+    assert feedback["action_fields"] == ["git_feature_updates", "git_release_requests"]
+    assert any(
+        "Split Git release work into two Team actions" in hint
+        for hint in feedback["correction_hints"]
+    )
+
+
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     repo.set_agent_avatar(
@@ -958,6 +990,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "idle profile-eligible reviewer" in guidance
     assert "override_routing_gap_reason" in guidance
     assert "Raw agent or review branches are not release sources" in guidance
+    assert "Do not combine non-empty git_feature_updates" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
     assert "response_requested is false" in guidance
@@ -967,6 +1000,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "case_updates" in guidance
     assert "creating child tasks via task_creations with parent_task_id" in guidance
     schema = json.loads(str(copied_files[0]["content"]))
+    assert "Do not combine non-empty git_feature_updates" in schema["description"]
+    combined_git_rule = schema["allOf"][0]["not"]
+    assert combined_git_rule["properties"]["git_feature_updates"]["minItems"] == 1
+    assert combined_git_rule["properties"]["git_release_requests"]["minItems"] == 1
     assert "case_updates" in schema["properties"]
     assert "task_ids" in schema["properties"]["case_updates"]["items"]["properties"]
     assert schema["properties"]["task_updates"]["items"]["required"] == ["task_id"]
@@ -1006,6 +1043,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "source_branch" in review_promotion_shapes[1]["properties"]
     release_request_property = schema["properties"]["git_release_requests"]
     assert "git_refs.feature_branch" in release_request_property["description"]
+    assert "later action" in release_request_property["description"]
     release_request_schema = schema["properties"]["git_release_requests"]["items"]
     assert release_request_schema["additionalProperties"] is False
     assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
@@ -1100,6 +1138,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "pipe a JSON object to it" in prompt
     assert '"schema_version":' in prompt
     assert "Deliverable mechanics for this dispatch" in prompt
+    assert "Git release sequencing" in prompt
+    assert "Do not combine non-empty git_feature_updates" in prompt
     assert "Valid owned task_id values for deliverables are: task" in prompt
     assert "/artifacts/team-deliverables/task/report.md" in prompt
     assert "team-deliverables/task/report.md" in prompt

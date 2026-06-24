@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Git Release Sequencing
+
+- Rejected Team actions that combine non-empty `git_feature_updates[]` and
+  `git_release_requests[]` before they can enqueue partial Git promotion events.
+- Clarified the seeded Team action schema, wake prompt, and durable agent
+  guidance so agents request feature promotion first, then release on a later
+  wake after `git_refs.feature_branch` is visible.
+- Added action-feedback hints for the combined Git release mistake and bumped
+  the Team action contract and agent guidance versions.
+
 ## 2026-06-24 - Team Add-on Review Artifact Routing
 
 - Clarified that reviewer artifact imports only happen for `review_requests[]`
