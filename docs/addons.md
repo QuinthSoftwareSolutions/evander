@@ -295,6 +295,12 @@ persistent action contract exposes `case_updates[]` for agents to create or
 update intake/lifecycle records, while `task_creations[]` may include `case_id`
 to attach new work to an existing case.
 
+Workflow automation can manage cases directly through the add-on-owned
+`effect:team:create-case` and `effect:team:update-case` nodes. These effects use
+the same repository validation as the Admin API, may link existing `task_ids`,
+and are intended for ticket/accounting intake bridges that should create or
+refresh Team cases before waking persistent Team agents.
+
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
 Team state revision. Workflow effects and agent-action application may omit

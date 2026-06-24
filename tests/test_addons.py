@@ -285,10 +285,13 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert "addon:team-addon" in enabled.loaded_plugins
     assert "effect:team:wake-due-agents" in enabled.effect_providers
     assert "effect:team:apply-agent-action" in enabled.effect_providers
+    assert "effect:team:create-case" in enabled.effect_providers
+    assert "effect:team:update-case" in enabled.effect_providers
     assert "effect:team:mark-ephemeral-cleaned-up" in enabled.effect_providers
     assert "effect:team:record-git-promotion" in enabled.effect_providers
     assert "effect:team:mark-release-published" in enabled.effect_providers
     assert "effect:team:consolidate-git-branches" in enabled.effect_providers
+    assert "effect:team:create-case" in enabled.node_definition_resolvers
     assert "effect:team:record-git-promotion" in enabled.node_definition_resolvers
     assert "query:team:agent-action-artifact" in enabled.query_providers
     assert "query:team:session-routing" in enabled.query_providers
@@ -296,8 +299,11 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
     assert "effect:team:wake-due-agents" in catalog_entries
     assert "effect:team:apply-agent-action" in catalog_entries
+    assert "effect:team:create-case" in catalog_entries
+    assert "effect:team:update-case" in catalog_entries
     assert "query:team:state" in catalog_entries
     assert catalog_entries["effect:team:wake-due-agents"].label == "Wake Team agents"
+    assert catalog_entries["effect:team:create-case"].label == "Create Team case"
     assert catalog_entries["effect:team:wake-due-agents"].description
     assert all(
         field.description

@@ -47,10 +47,12 @@ from truman_team_addon.models import (
     ReviewRequest,
     Team,
     TeamCase,
+    TeamCaseStatus,
     TeamConversation,
     TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamInboxPriority,
     TeamRecordState,
     TeamRole,
     TeamState,
@@ -60,11 +62,13 @@ from truman_team_addon.provider_schemas import (
     TeamAgentActionArtifactQueryDefinition,
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
+    TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamSessionRoutingQueryDefinition,
     TeamStateQueryDefinition,
+    TeamUpdateCaseEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
 )
@@ -79,11 +83,13 @@ from truman_team_addon.providers import (
     TeamAgentActionArtifactQueryProvider,
     TeamApplyAgentActionEffectProvider,
     TeamApplyEphemeralActionEffectProvider,
+    TeamCreateCaseEffectProvider,
     TeamCreateOperatorDirectiveEffectProvider,
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamSessionRoutingQueryProvider,
     TeamStateQueryProvider,
+    TeamUpdateCaseEffectProvider,
     TeamWakeDueAgentsEffectProvider,
     TeamWakeGovernanceManagersEffectProvider,
     _build_prompt,
@@ -4243,6 +4249,110 @@ def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
     assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
     assert item.payload["message"] == "Ask the lead for a status report."
     assert reread.agent_runtimes["manager"].next_wake_at is None
+
+
+def test_create_case_effect_links_existing_tasks(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    provider = TeamCreateCaseEffectProvider()
+    provider.initialize(
+        TeamCreateCaseEffectDefinition(
+            id="create-case",
+            display_name="Create case",
+            type="effect:team:create-case",
+            case_id="case",
+            team_id="team",
+            project_id="project",
+            title="Customer ticket",
+            description="Investigate the accounting ticket.",
+            status="triage",
+            priority="high",
+            owner_agent_id="backend",
+            source="zendesk",
+            source_ref="ZD-42",
+            tags=["accounting", "vat"],
+            metadata={"external_url": "https://tickets.example/ZD-42"},
+            task_ids=["task"],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case_id"] == "case"
+    assert result["team_id"] == "team"
+    assert result["project_id"] == "project"
+    assert result["task_ids"] == ["task"]
+    assert result["case"]["source_ref"] == "ZD-42"
+    reread = TeamStateRepository(tmp_path).read()
+    case = reread.cases["case"]
+    assert case.status == TeamCaseStatus.TRIAGE
+    assert case.priority == TeamInboxPriority.HIGH
+    assert case.task_ids == ["task"]
+    assert reread.tasks["task"].case_id == "case"
+
+
+def test_update_case_effect_clears_optional_fields_and_task_links(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_case(
+        case_id="case",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        description="Initial details",
+        owner_agent_id="backend",
+        source="zendesk",
+        source_ref="ZD-42",
+        tags=["accounting"],
+        metadata={"external_url": "https://tickets.example/ZD-42"},
+        task_ids=["task"],
+        expected_revision=repo.read().revision,
+    )
+    provider = TeamUpdateCaseEffectProvider()
+    provider.initialize(
+        TeamUpdateCaseEffectDefinition(
+            id="update-case",
+            display_name="Update case",
+            type="effect:team:update-case",
+            case_id="case",
+            title="Accounting ticket",
+            description="",
+            project_id=None,
+            status="waiting",
+            priority="low",
+            owner_agent_id=None,
+            source_ref=None,
+            tags=[],
+            metadata={},
+            task_ids=[],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case_id"] == "case"
+    assert result["project_id"] is None
+    assert result["task_ids"] == []
+    reread = TeamStateRepository(tmp_path).read()
+    case = reread.cases["case"]
+    assert case.title == "Accounting ticket"
+    assert case.description == ""
+    assert case.project_id is None
+    assert case.status == TeamCaseStatus.WAITING
+    assert case.priority == TeamInboxPriority.LOW
+    assert case.owner_agent_id is None
+    assert case.source == "zendesk"
+    assert case.source_ref is None
+    assert case.tags == []
+    assert case.metadata == {}
+    assert case.task_ids == []
+    assert reread.tasks["task"].case_id is None
 
 
 def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(

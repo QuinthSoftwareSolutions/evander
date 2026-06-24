@@ -100,6 +100,8 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     nodes = {node["type"]: node for node in payload["nodes"]}
     wake = nodes["effect:team:wake-due-agents"]
     apply_action = nodes["effect:team:apply-agent-action"]
+    create_case = nodes["effect:team:create-case"]
+    update_case = nodes["effect:team:update-case"]
     read_state = nodes["query:team:state"]
 
     assert wake["kind"] == "effect"
@@ -123,6 +125,18 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert action_fields["action"]["json_value_type"] == "object"
     assert action_fields["valid"]["kind"] == "boolean"
     assert action_fields["valid"]["bindable"]
+    create_case_fields = {field["key"]: field for field in create_case["fields"]}
+    assert create_case["kind"] == "effect"
+    assert create_case["label"] == "Create Team case"
+    assert create_case_fields["team_id"]["required"] is True
+    assert create_case_fields["title"]["required"] is True
+    assert create_case_fields["metadata"]["kind"] == "json"
+    assert create_case_fields["metadata"]["json_value_type"] == "object"
+    assert create_case_fields["task_ids"]["json_value_type"] == "array"
+    update_case_fields = {field["key"]: field for field in update_case["fields"]}
+    assert update_case["label"] == "Update Team case"
+    assert update_case_fields["case_id"]["required"] is True
+    assert update_case_fields["description"]["multiline"] is True
     state_fields = {field["key"]: field for field in read_state["fields"]}
     assert state_fields["include_records"]["kind"] == "boolean"
     assert state_fields["include_records"]["default_value"] is True

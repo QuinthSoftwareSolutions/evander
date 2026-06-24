@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Case Workflow Effects
+
+- Added `effect:team:create-case` and `effect:team:update-case` workflow nodes
+  so ticket/accounting intake workflows can create, update, and task-link Team
+  cases without routing through a persistent agent action.
+- Exposed the new Team case effects in the add-on workflow editor catalog with
+  output schemas and focused runtime/catalog coverage.
+
 ## 2026-06-24 - Team Add-on Git Release Sequencing
 
 - Rejected Team actions that combine non-empty `git_feature_updates[]` and

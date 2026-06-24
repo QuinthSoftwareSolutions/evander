@@ -62,6 +62,7 @@ from .provider_schemas import (
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
     TeamConsolidateGitBranchesEffectDefinition,
+    TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
@@ -71,6 +72,7 @@ from .provider_schemas import (
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
+    TeamUpdateCaseEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
 )
@@ -463,6 +465,201 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Requesting session ID",
                 "string",
                 description="Optional Truman session that requested the directive.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:create-case",
+        "Create Team case",
+        "Create a Team intake or lifecycle case, optionally linked to existing execution tasks.",
+        [
+            _catalog_field(
+                "case_id",
+                "Case ID",
+                "string",
+                description="Optional stable case id. Leave blank to generate one.",
+                placeholder="case-customer-ticket",
+            ),
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                required=True,
+                description="Team that owns the case.",
+                placeholder="team-accounting",
+            ),
+            _catalog_field(
+                "title",
+                "Title",
+                "string",
+                required=True,
+                description="Short case title shown in Team case views.",
+            ),
+            _catalog_field(
+                "description",
+                "Description",
+                "string",
+                multiline=True,
+                description="Intake details, ticket summary, or lifecycle context.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional Team project scope for the case.",
+            ),
+            _catalog_field(
+                "status",
+                "Status",
+                "string",
+                description=(
+                    "Initial case status: open, triage, in_progress, waiting, "
+                    "resolved, or closed."
+                ),
+                default_value="open",
+                placeholder="open",
+            ),
+            _catalog_field(
+                "priority",
+                "Priority",
+                "string",
+                description="Initial priority: low, normal, or high.",
+                default_value="normal",
+                placeholder="normal",
+            ),
+            _catalog_field(
+                "owner_agent_id",
+                "Owner agent ID",
+                "string",
+                description="Optional same-team persistent agent that owns the case.",
+            ),
+            _catalog_field(
+                "source",
+                "Source",
+                "string",
+                description="Optional external system label such as jira, zendesk, or email.",
+                placeholder="jira",
+            ),
+            _catalog_field(
+                "source_ref",
+                "Source ref",
+                "string",
+                description="Optional upstream ticket, issue, message, or conversation id.",
+            ),
+            _catalog_field(
+                "tags",
+                "Tags",
+                "json",
+                description="Optional case tags.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "metadata",
+                "Metadata",
+                "json",
+                description="Optional structured case metadata.",
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "task_ids",
+                "Task IDs",
+                "json",
+                description="Existing Team tasks to link to this case.",
+                json_value_type="array",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:update-case",
+        "Update Team case",
+        "Update a Team intake or lifecycle case and synchronize task links.",
+        [
+            _catalog_field(
+                "case_id",
+                "Case ID",
+                "string",
+                required=True,
+                description="Team case to update.",
+                placeholder="case-customer-ticket",
+            ),
+            _catalog_field(
+                "title",
+                "Title",
+                "string",
+                description="Replacement case title when configured.",
+            ),
+            _catalog_field(
+                "description",
+                "Description",
+                "string",
+                multiline=True,
+                description="Replacement case description. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Replacement project scope. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "status",
+                "Status",
+                "string",
+                description=(
+                    "Replacement status: open, triage, in_progress, waiting, "
+                    "resolved, or closed."
+                ),
+                placeholder="in_progress",
+            ),
+            _catalog_field(
+                "priority",
+                "Priority",
+                "string",
+                description="Replacement priority: low, normal, or high.",
+                placeholder="high",
+            ),
+            _catalog_field(
+                "owner_agent_id",
+                "Owner agent ID",
+                "string",
+                description="Replacement owner. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "source",
+                "Source",
+                "string",
+                description="Replacement external system label. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "source_ref",
+                "Source ref",
+                "string",
+                description="Replacement external reference. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "tags",
+                "Tags",
+                "json",
+                description="Replacement case tags when configured.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "metadata",
+                "Metadata",
+                "json",
+                description="Replacement structured case metadata when configured.",
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "task_ids",
+                "Task IDs",
+                "json",
+                description="Replacement linked Team task ids when configured.",
+                json_value_type="array",
             ),
             _revision_field(),
         ],
@@ -1724,6 +1921,195 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
         }
 
 
+class TeamCreateCaseEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateCaseEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "case_id",
+            "team_id",
+            "title",
+            "description",
+            "project_id",
+            "status",
+            "priority",
+            "owner_agent_id",
+            "source",
+            "source_ref",
+            "tags",
+            "metadata",
+            "task_ids",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        case_id = _optional_text(payload.get("case_id"))
+        before_case_ids = set(repo.read().cases)
+        try:
+            state = repo.create_case(
+                case_id=case_id,
+                team_id=_required_text(payload.get("team_id"), "team_id"),
+                title=_required_text(payload.get("title"), "title"),
+                description=_optional_text(payload.get("description")) or "",
+                project_id=_optional_text(payload.get("project_id")),
+                status=_optional_text(payload.get("status")) or "open",
+                priority=_optional_text(payload.get("priority")) or "normal",
+                owner_agent_id=_optional_text(payload.get("owner_agent_id")),
+                source=_optional_text(payload.get("source")),
+                source_ref=_optional_text(payload.get("source_ref")),
+                tags=_string_list(payload.get("tags"), "tags"),
+                metadata=_optional_mapping(payload.get("metadata"), "metadata") or {},
+                task_ids=_string_list(payload.get("task_ids"), "task_ids"),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _case_effect_error_result(
+                revision=exc.current_revision,
+                case_id=case_id,
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            return _case_effect_error_result(
+                revision=repo.read().revision,
+                case_id=case_id,
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+            )
+        effective_case_id = case_id or _single_created_id(before_case_ids, set(state.cases))
+        return _case_effect_success_result(state, case_id=effective_case_id)
+
+
+class TeamUpdateCaseEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamUpdateCaseEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "case_id",
+            "title",
+            "description",
+            "project_id",
+            "status",
+            "priority",
+            "owner_agent_id",
+            "source",
+            "source_ref",
+            "tags",
+            "metadata",
+            "task_ids",
+            "expected_revision",
+        )
+        resolved_fields = set(resolved_config or {})
+        definition_fields = _configured_definition_fields(self.effect_definition)
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        case_id = _optional_text(payload.get("case_id"))
+        try:
+            required_case_id = _required_text(payload.get("case_id"), "case_id")
+            state = repo.update_case(
+                case_id=required_case_id,
+                title=_optional_text(payload.get("title")),
+                description=_optional_text(payload.get("description")),
+                set_description=_payload_field_configured(
+                    "description",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                project_id=_optional_text(payload.get("project_id")),
+                set_project_id=_payload_field_configured(
+                    "project_id",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                status=_optional_text(payload.get("status")),
+                priority=_optional_text(payload.get("priority")),
+                owner_agent_id=_optional_text(payload.get("owner_agent_id")),
+                set_owner_agent_id=_payload_field_configured(
+                    "owner_agent_id",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                source=_optional_text(payload.get("source")),
+                set_source=_payload_field_configured(
+                    "source",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                source_ref=_optional_text(payload.get("source_ref")),
+                set_source_ref=_payload_field_configured(
+                    "source_ref",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                tags=(
+                    _string_list(payload.get("tags"), "tags")
+                    if _payload_field_configured(
+                        "tags",
+                        definition_fields=definition_fields,
+                        resolved_fields=resolved_fields,
+                    )
+                    and payload.get("tags") is not None
+                    else None
+                ),
+                metadata=(
+                    _optional_mapping(payload.get("metadata"), "metadata")
+                    if _payload_field_configured(
+                        "metadata",
+                        definition_fields=definition_fields,
+                        resolved_fields=resolved_fields,
+                    )
+                    and payload.get("metadata") is not None
+                    else None
+                ),
+                task_ids=(
+                    _string_list(payload.get("task_ids"), "task_ids")
+                    if _payload_field_configured(
+                        "task_ids",
+                        definition_fields=definition_fields,
+                        resolved_fields=resolved_fields,
+                    )
+                    and payload.get("task_ids") is not None
+                    else None
+                ),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _case_effect_error_result(
+                revision=exc.current_revision,
+                case_id=case_id,
+                team_id=None,
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            return _case_effect_error_result(
+                revision=repo.read().revision,
+                case_id=case_id,
+                team_id=None,
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+            )
+        return _case_effect_success_result(state, case_id=required_case_id)
+
+
 class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -2786,6 +3172,8 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:create-operator-directive": (
                 TeamCreateOperatorDirectiveEffectProvider
             ),
+            "effect:team:create-case": TeamCreateCaseEffectProvider,
+            "effect:team:update-case": TeamUpdateCaseEffectProvider,
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
             "effect:team:apply-ephemeral-action": TeamApplyEphemeralActionEffectProvider,
@@ -2825,6 +3213,12 @@ def register_providers() -> ProviderPluginRegistration:
                     TeamCreateOperatorDirectiveEffectDefinition,
                     node,
                 )
+            ),
+            "effect:team:create-case": (
+                lambda node: _materialize(TeamCreateCaseEffectDefinition, node)
+            ),
+            "effect:team:update-case": (
+                lambda node: _materialize(TeamUpdateCaseEffectDefinition, node)
             ),
             "effect:team:request-ephemeral-agents": (
                 lambda node: _materialize(TeamRequestEphemeralAgentsEffectDefinition, node)
@@ -4916,6 +5310,77 @@ def _definition_payload(definition: Any, *field_names: str) -> dict[str, Any]:
         for field_name in field_names
         if definition is not None and hasattr(definition, field_name)
     }
+
+
+def _configured_definition_fields(definition: Any) -> set[str]:
+    fields_set = getattr(definition, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(definition, "__fields_set__", None)
+    if isinstance(fields_set, set):
+        return {str(field) for field in fields_set}
+    return set()
+
+
+def _payload_field_configured(
+    field_name: str,
+    *,
+    definition_fields: set[str],
+    resolved_fields: set[str],
+) -> bool:
+    return field_name in definition_fields or field_name in resolved_fields
+
+
+def _single_created_id(before_ids: set[str], after_ids: set[str]) -> str | None:
+    created_ids = after_ids - before_ids
+    if len(created_ids) == 1:
+        return next(iter(created_ids))
+    return None
+
+
+def _case_effect_success_result(
+    state: TeamState,
+    *,
+    case_id: str | None,
+) -> dict[str, Any]:
+    case = state.cases.get(case_id or "")
+    case_payload = case.model_dump(mode="json") if case is not None else None
+    return {
+        "success": case is not None,
+        "revision": state.revision,
+        "case_id": case.id if case is not None else case_id,
+        "team_id": case.team_id if case is not None else None,
+        "project_id": case.project_id if case is not None else None,
+        "task_ids": list(case.task_ids) if case is not None else [],
+        "case": case_payload,
+        "error": None if case is not None else "case was not found after mutation",
+    }
+
+
+def _case_effect_error_result(
+    *,
+    revision: int,
+    case_id: str | None,
+    team_id: str | None,
+    project_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "case_id": case_id,
+        "team_id": team_id,
+        "project_id": project_id,
+        "task_ids": [],
+        "case": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
 
 
 def _result_outputs_payload(payload: Mapping[str, Any]) -> Any:

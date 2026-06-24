@@ -67,6 +67,69 @@ class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamCreateCaseEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-case"]
+    case_id: ConfigValue | None = None
+    team_id: ConfigValue
+    title: ConfigValue
+    description: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    status: ConfigValue | None = None
+    priority: ConfigValue | None = None
+    owner_agent_id: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_ref: ConfigValue | None = None
+    tags: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+    task_ids: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("tags", "task_ids")
+    @classmethod
+    def validate_string_list(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:create-case list fields must be JSON arrays")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:team:create-case metadata must be a JSON object")
+
+
+class TeamUpdateCaseEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:update-case"]
+    case_id: ConfigValue
+    title: ConfigValue | None = None
+    description: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    status: ConfigValue | None = None
+    priority: ConfigValue | None = None
+    owner_agent_id: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_ref: ConfigValue | None = None
+    tags: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+    task_ids: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("tags", "task_ids")
+    @classmethod
+    def validate_string_list(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:update-case list fields must be JSON arrays")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:team:update-case metadata must be a JSON object")
+
+
 class TeamRequestEphemeralAgentsEffectDefinition(EffectDefinition):
     type: Literal["effect:team:request-ephemeral-agents"]
     parent_agent_id: ConfigValue
@@ -285,6 +348,26 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "team_id": {"type": ["string", "null"]},
         "project_id": {"type": ["string", "null"]},
         "task_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-case": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "case_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "task_ids": {"type": "array"},
+        "case": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:update-case": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "case_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "task_ids": {"type": "array"},
+        "case": {"type": ["object", "null"]},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:request-ephemeral-agents": {
