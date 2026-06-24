@@ -16,6 +16,13 @@
 - Generated fallback runtime attention snapshots from the lease timestamp so
   explicit scheduler times and prompt runtime state stay consistent.
 
+## 2026-06-24 - Team Add-on Chat Status
+
+- Stopped showing a separate queued-success status card after operators send
+  Team chat messages while keeping dispatch-failure warnings visible.
+- Published a Team chat queued event so chat sends trigger the async Team wake
+  dispatcher immediately instead of waiting for the next 15-minute runtime tick.
+
 ## 2026-06-24 - Team Add-on Projects Tab
 
 - Added a top-level Team Add-on Projects tab that centers project creation,

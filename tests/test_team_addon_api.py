@@ -40,7 +40,10 @@ from truman_team_addon.models import (
     TeamRecordState,
     TeamTaskState,
 )
-from truman_team_addon.repository import TeamStateRepository
+from truman_team_addon.repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    TeamStateRepository,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -613,6 +616,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
     assert "queued for asynchronous agent dispatch" in sent_payload["dispatch"]["message"]
+    assert len(sent_payload["published_event_ids"]) == 1
     assert copy_calls == []
     message = sent_payload["message"]
     assert message["sender"] == "operator"
@@ -621,6 +625,19 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     assert message["metadata"]["sender_kind"] == "human_operator"
     assert message["metadata"]["operator_user_id"] == "admin"
     assert resume_calls == []
+    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
+    assert events[0].correlation_key == message["dispatch_id"]
+    assert events[0].idempotency_key == f"team-chat-message-queued:{message['id']}"
+    assert events[0].payload == {
+        "team_id": "team",
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "conversation_id": conversation["id"],
+        "message_id": message["id"],
+        "dispatch_id": message["dispatch_id"],
+    }
 
     state, result = repo.apply_agent_action(
         action={
@@ -697,6 +714,7 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
     assert "queued for asynchronous agent dispatch" in sent_payload["dispatch"]["message"]
+    assert len(sent_payload["published_event_ids"]) == 1
     assert resume_calls == []
     message = sent_payload["message"]
     assert message["status"] == "queued"

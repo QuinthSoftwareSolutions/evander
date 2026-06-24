@@ -62,7 +62,11 @@ from .models import (
 from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
-from .repository import TeamStateConflictError, TeamStateRepository
+from .repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    TeamStateConflictError,
+    TeamStateRepository,
+)
 from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
@@ -702,6 +706,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "message": "Chat message queued for asynchronous agent dispatch.",
         }
         conversation = state.conversations[conversation_id]
+        agent = state.agents[conversation.agent_id]
+        published_event_ids = _publish_team_events(
+            context,
+            [
+                {
+                    "event_type": CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+                    "correlation_key": dispatch_id,
+                    "idempotency_key": f"team-chat-message-queued:{message.id}",
+                    "payload": {
+                        "team_id": agent.team_id,
+                        "agent_id": agent.id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation.id,
+                        "message_id": message.id,
+                        "dispatch_id": dispatch_id,
+                    },
+                }
+            ],
+        )
         return JSONResponse(
             {
                 "revision": state.revision,
@@ -723,6 +746,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 ),
                 "message": _conversation_message_payload(message),
                 "dispatch": dispatch_payload,
+                "published_event_ids": published_event_ids,
             },
             status_code=202,
         )

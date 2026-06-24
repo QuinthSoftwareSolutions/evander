@@ -186,12 +186,14 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert _node_ids(config.triggers) == [
         "team-cron",
         "team-agent-run-completed",
+        "team-chat-message-queued",
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
         "system.chat_assistant",
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
+    assert "team-wake-queued-chat-message" in _node_ids(config.effects)
     assert "team-notify-operator" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
 
@@ -3933,6 +3935,17 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert triggers["team-operator-escalation"]["event_type"] == (
         "team.operator.escalation_requested"
     )
+    assert triggers["team-chat-message-queued"]["type"] == "trigger:event"
+    assert triggers["team-chat-message-queued"]["event_type"] == (
+        "team.chat.message_queued"
+    )
+    assert effects["team-wake-queued-chat-message"]["type"] == (
+        "effect:team:wake-due-agents"
+    )
+    assert effects["team-wake-queued-chat-message"]["agent_id"] == (
+        "${{team-chat-message-queued.payload.agent_id}}"
+    )
+    assert effects["team-wake-queued-chat-message"]["limit"] == 1
 
     notify = effects["team-notify-operator"]
     assert notify["type"] == "effect:communication:send-message"
@@ -3943,6 +3956,7 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.message}}" in notify["message"]
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
     assert ("team-operator-escalation", "team-notify-operator") in edges
+    assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:

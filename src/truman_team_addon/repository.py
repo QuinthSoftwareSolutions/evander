@@ -86,6 +86,7 @@ ADDON_ID = "team-addon"
 STATE_FILE = STATE_DB_FILE
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
+CHAT_MESSAGE_QUEUED_EVENT_TYPE = "team.chat.message_queued"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
 MISSING_ACTION_RECOVERY_MARKER = "missing action artifact recovery prompt dispatched"

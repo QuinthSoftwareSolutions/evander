@@ -15,7 +15,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             "directory_path": "root",
             "node_ids": [
                 "team-cron",
+                "team-chat-message-queued",
                 "team-wake-due-agents",
+                "team-wake-queued-chat-message",
                 "team-wake-governance-managers",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
@@ -63,6 +65,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "id": "team-agent-run-completed",
                 "display_name": "Team agent run completed",
                 "type": "trigger:agent:run:completed",
+            },
+            {
+                "id": "team-chat-message-queued",
+                "display_name": "Team chat message queued",
+                "type": "trigger:event",
+                "event_type": "team.chat.message_queued",
             },
             {
                 "id": "team-ephemeral-requested",
@@ -205,6 +213,19 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Wake due team agents",
                 "type": "effect:team:wake-due-agents",
                 "limit": 10,
+                "lease_seconds": 900,
+                "wake_interval_seconds": 900,
+                "max_no_progress_count": 3,
+                "low_priority_wake_after_cycles": 4,
+                "action_artifact_path": "team-action.json",
+                "resume_mode": "same_context",
+            },
+            {
+                "id": "team-wake-queued-chat-message",
+                "display_name": "Wake queued chat message agent",
+                "type": "effect:team:wake-due-agents",
+                "agent_id": "${{team-chat-message-queued.payload.agent_id}}",
+                "limit": 1,
                 "lease_seconds": 900,
                 "wake_interval_seconds": 900,
                 "max_no_progress_count": 3,
@@ -451,6 +472,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
         ],
         "edges": [
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
+            {
+                "source_id": "team-chat-message-queued",
+                "target_id": "team-wake-queued-chat-message",
+            },
             {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
             {"source_id": "team-ephemeral-requested", "target_id": "team-create-ephemeral-agent"},
             {"source_id": "team-create-ephemeral-agent", "target_id": "team-mark-ephemeral-spawned"},
