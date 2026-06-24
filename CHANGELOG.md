@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Inline Git Import
+
+- Added the Git repo import action to team-scoped inline project creation so all
+  Team Add-on project create/edit surfaces with Git fields can seed bare mirror
+  config from the UI.
+
 ## 2026-06-24 - Team Add-on Accounting Template
 
 - Added an Accounting Department Team template with bookkeeping roles, starter

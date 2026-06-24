@@ -3722,28 +3722,64 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   await inlineProjectForm.waitFor({ state: "visible" });
   assert.equal(await inlineProjectForm.locator('select[name="team_id"]').count(), 0);
   assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 1);
+  await inlineProjectForm.locator("summary", { hasText: "Git config" }).click();
+  assert.equal(await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).count(), 1);
+  await inlineProjectForm.locator('[name="host_repo_path"]').fill("/srv/repos/second-project");
+  await inlineProjectForm.locator('[name="bare_repo"]').fill("second-project.git");
+  await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).click();
+  await page
+    .locator("#status-message", {
+      hasText: "Imported Git repo. Review the populated Git fields, then save.",
+    })
+    .waitFor({ state: "visible" });
+  assert.equal(await inlineProjectForm.locator('[name="base_branch"]').inputValue(), "main");
+  assert.equal(
+    await inlineProjectForm.locator('[name="canonical_origin_url"]').inputValue(),
+    "git@github.com:Example/imported-project.git",
+  );
+  assert.equal(await inlineProjectForm.locator('[name="provider"]').inputValue(), "github");
   await inlineProjectForm.locator('[name="name"]').fill("Second Project");
   await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-manager");
   await inlineProjectForm.locator('[name="goal_description"]').fill("Ship beta follow-up");
   await inlineProjectForm.getByRole("button", { name: "Create project" }).click();
   await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
+  const mutationRequests = requests.filter(
+    (request) => request.pathname !== "/api/addons/team-addon/projects/git/import",
+  );
   assert.deepEqual(
-    requests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
+    mutationRequests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
     [
       ["POST", "/api/addons/team-addon/agents", 4],
       ["POST", "/api/addons/team-addon/roles", 5],
       ["POST", "/api/addons/team-addon/projects", 6],
     ],
   );
-  assert.equal(requests[0].payload.team_id, "team-beta");
-  assert.equal(requests[0].payload.display_name, "Beta Ops");
-  assert.equal(requests[1].payload.team_id, "team-beta");
-  assert.equal(requests[1].payload.project_id, "beta-project");
-  assert.deepEqual(requests[1].payload.permissions, ["request_release"]);
-  assert.equal(requests[2].payload.team_id, "team-beta");
-  assert.equal(requests[2].payload.lead_agent_id, "beta-manager");
-  assert.deepEqual(requests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
+  const inlineImportRequest = requests.find(
+    (request) =>
+      request.pathname === "/api/addons/team-addon/projects/git/import" &&
+      request.payload.repo_source === "/srv/repos/second-project",
+  );
+  assert.ok(inlineImportRequest);
+  assert.deepEqual(inlineImportRequest.payload, {
+    repo_source: "/srv/repos/second-project",
+    bare_repo_name: "second-project.git",
+  });
+  assert.equal(mutationRequests[0].payload.team_id, "team-beta");
+  assert.equal(mutationRequests[0].payload.display_name, "Beta Ops");
+  assert.equal(mutationRequests[1].payload.team_id, "team-beta");
+  assert.equal(mutationRequests[1].payload.project_id, "beta-project");
+  assert.deepEqual(mutationRequests[1].payload.permissions, ["request_release"]);
+  assert.equal(mutationRequests[2].payload.team_id, "team-beta");
+  assert.equal(mutationRequests[2].payload.lead_agent_id, "beta-manager");
+  assert.deepEqual(mutationRequests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
+  assert.deepEqual(mutationRequests[2].payload.git, {
+    host_repo_path: "/srv/repos/second-project",
+    bare_repo_name: "second-project.git",
+    base_branch: "main",
+    canonical_origin_url: "git@github.com:Example/imported-project.git",
+    provider: "github",
+  });
 });
 
 function seededLongChatState(messageCount = 120) {

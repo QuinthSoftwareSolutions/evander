@@ -3676,6 +3676,7 @@ function renderTeamInlineProjectForm(teamId) {
         <div class="team-inline-create-fields">
           <label>Host repo path <input name="host_repo_path" /></label>
           <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+          ${gitImportControls()}
           <label>Base branch <input name="base_branch" placeholder="main" /></label>
           <label>Canonical origin URL <input name="canonical_origin_url" /></label>
           <label>Provider <select name="provider">${renderSelectOptions(gitProviders, { placeholder: "Default" })}</select></label>
