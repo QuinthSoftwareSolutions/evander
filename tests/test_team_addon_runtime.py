@@ -857,8 +857,8 @@ def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) ->
         created_at=base_time,
         success=False,
         error=(
-            "deliverable deliverable has neither a feature branch nor artifact refs; "
-            "Git release requests require feature-promoted deliverables"
+            "deliverable deliverable has neither a feature branch, review branch, "
+            "agent branch, nor artifact refs"
         ),
         action={"git_release_requests": [{"project_id": "project"}]},
     )
@@ -869,8 +869,8 @@ def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) ->
     assert backend_lease["reason"] == "action_feedback"
     feedback = backend_lease["recent_action_feedback"][0]
     assert feedback["action_fields"] == ["git_release_requests"]
-    assert any("git_feature_updates" in hint for hint in feedback["correction_hints"])
-    assert any("git_refs.feature_branch" in hint for hint in feedback["correction_hints"])
+    assert any("review branch" in hint for hint in feedback["correction_hints"])
+    assert any("git_refs.agent_branch" in hint for hint in feedback["correction_hints"])
 
 
 def test_combined_git_release_feedback_points_to_two_step_sequence(
@@ -899,10 +899,7 @@ def test_combined_git_release_feedback_points_to_two_step_sequence(
     backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
     feedback = backend_lease["recent_action_feedback"][0]
     assert feedback["action_fields"] == ["git_feature_updates", "git_release_requests"]
-    assert any(
-        "Split Git release work into two Team actions" in hint
-        for hint in feedback["correction_hints"]
-    )
+    assert any("git_release_requests alone" in hint for hint in feedback["correction_hints"])
 
 
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
@@ -995,7 +992,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "Use review_decisions only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
     assert "override_routing_gap_reason" in guidance
-    assert "Raw agent or review branches are not release sources" in guidance
+    assert "release request can enqueue prerequisite feature promotions" in guidance
+    assert "git_refs.review_branch or git_refs.agent_branch" in guidance
     assert "Do not combine non-empty git_feature_updates" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
@@ -1049,7 +1047,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "source_branch" in review_promotion_shapes[1]["properties"]
     release_request_property = schema["properties"]["git_release_requests"]
     assert "git_refs.feature_branch" in release_request_property["description"]
-    assert "later action" in release_request_property["description"]
+    assert "auto-promote" in release_request_property["description"]
     release_request_schema = schema["properties"]["git_release_requests"]["items"]
     assert release_request_schema["additionalProperties"] is False
     assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
@@ -1886,6 +1884,8 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     prompt = str(resumer.calls[0]["prompt"])
     assert "Team Add-on Chat tab" in prompt
     assert f"Human operator message ID: {message.id}" in prompt
+    assert "include the corresponding Team action fields" in prompt
+    assert "alongside chat_replies" in prompt
     assert "Please answer this after your current wake finishes." in prompt
     reread = TeamStateRepository(tmp_path).read()
     assert reread.conversation_messages[message.id].status == "running"
@@ -2265,6 +2265,73 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         for item in fallback_summary["routing_gaps"]
     )
     assert len(prompt.encode("utf-8")) < 32_000
+
+
+def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-feature",
+                    "task_id": "task",
+                    "summary": "Feature branch is ready for release review.",
+                    "git_refs": {
+                        "feature_branch": "team/team/features/task-backend",
+                        "commit_sha": "feedface",
+                    },
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _make_task_terminal_without_review(state: TeamState) -> TeamState:
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        state.deliverables["deliverable-feature"].git_refs.feature_branch = (
+            "team/team/features/task-backend"
+        )
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_make_task_terminal_without_review)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    lease = leases[0]
+    assert lease["reason"] == "manager_fallback"
+
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    fallback_summary = context["manager_fallback_summary"]
+    assert fallback_summary["summary_counts"]["open_task_count"] == 1
+    assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
+    work = {item["id"]: item for item in fallback_summary["open_work"]}
+    assert work["task"]["state"] == "accepted"
+    deliverables = {
+        item["id"]: item for item in fallback_summary["deliverables"]
+    }
+    assert deliverables["deliverable-feature"]["state"] == "pending"
+    assert deliverables["deliverable-feature"]["git_refs"] == {
+        "feature_branch": "team/team/features/task-backend",
+        "commit_sha": "feedface",
+    }
+    assert any(
+        item["kind"] == "reviewer_without_assigned_review_work"
+        and item["agent_id"] == "luke"
+        and item["deliverable_ids"] == ["deliverable-feature"]
+        for item in fallback_summary["routing_gaps"]
+    )
+    assert "deliverable-feature" in prompt
 
 
 @pytest.mark.parametrize("blocker", ["paused", "stand_down"])

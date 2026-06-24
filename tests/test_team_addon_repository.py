@@ -17,8 +17,11 @@ from truman_team_addon.models import (
     AgentStandDownSource,
     AgentStatus,
     AgentVoiceProfile,
+    Deliverable,
+    DeliverableGitRefs,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
+    GitPromotionRecord,
     GovernanceAgendaItemType,
     GovernanceAgendaItemState,
     GovernanceRuntime,
@@ -3949,6 +3952,41 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     json.dumps(leases[0])
 
 
+def test_manager_fallback_leases_for_pending_deliverable_on_terminal_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="done-task")
+    repo.record_deliverable(
+        deliverable_id="deliverable-pending",
+        task_id="done-task",
+        producer_agent_id="backend",
+        summary="Consolidated feature branch team/team/features/done-task-backend",
+        state=TeamRecordState.PENDING,
+    )
+
+    def _mark_task_terminal(state):
+        state.tasks["done-task"].state = TeamTaskState.ACCEPTED
+        return state
+
+    repo.update(_mark_task_terminal)
+    state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    assert leases[0]["reason"] == "manager_fallback"
+    assert state.agent_runtimes["manager"].wake_reason == "manager_fallback"
+    fallback_summary = leases[0]["manager_fallback_summary"]
+    work = {item["id"]: item for item in fallback_summary["open_work"]}
+    assert work["done-task"]["state"] == "accepted"
+    assert work["done-task"]["deliverable_ids"] == ["deliverable-pending"]
+    deliverables = {
+        item["id"]: item for item in fallback_summary["deliverables"]
+    }
+    assert deliverables["deliverable-pending"]["state"] == "pending"
+    assert fallback_summary["summary_counts"]["open_task_count"] == 1
+    assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
+
+
 def test_every_wake_context_policy_preserves_low_priority_batching(
     tmp_path: Path,
 ) -> None:
@@ -5779,6 +5817,130 @@ def test_apply_agent_action_git_feature_update_rejects_bad_branch(tmp_path: Path
     assert state.git_promotions == {}
 
 
+def test_record_git_feature_promotion_result_attaches_to_accepted_source_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    def _set_review_branch(state):
+        state.deliverables["deliverable"].git_refs.review_branch = (
+            "team/team/reviews/deliverable"
+        )
+        return state
+
+    repo.update(_set_review_branch)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_feature_updates": [
+                {
+                    "task_id": "task",
+                    "source_review_branches": [
+                        "local-evander/team/team/reviews/deliverable"
+                    ],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    promotion_id = result["git_promotion_event_ids"][0]
+
+    state, promotion_result = repo.record_git_promotion_result(
+        promotion_id=promotion_id,
+        success=True,
+        outputs={
+            "merged_branches": [
+                "local-evander/team/team/reviews/deliverable"
+            ]
+        },
+        commit_sha="feedface",
+    )
+
+    assert promotion_result["created_deliverable_ids"] == []
+    assert promotion_result["updated_deliverable_ids"] == ["deliverable"]
+    assert state.git_promotions[promotion_id].deliverable_id == "deliverable"
+    assert set(state.deliverables) == {"deliverable"}
+    refs = state.deliverables["deliverable"].git_refs
+    assert refs.review_branch == "team/team/reviews/deliverable"
+    assert refs.feature_branch == "team/team/features/task-backend"
+    assert refs.commit_sha == "feedface"
+    assert refs.promotion_record_ids == [promotion_id]
+
+
+def test_repair_feature_promotion_deliverables_removes_safe_synthetic_pending(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    def _seed_stale_synthetic(state):
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        state.deliverables["deliverable"].git_refs.review_branch = (
+            "team/team/reviews/deliverable"
+        )
+        state.deliverables["synthetic"] = Deliverable(
+            id="synthetic",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="Consolidated feature branch team/team/features/task-backend",
+            state=TeamRecordState.PENDING,
+            git_refs=DeliverableGitRefs(
+                feature_branch="team/team/features/task-backend",
+                commit_sha="feedface",
+                promotion_record_ids=["promotion-feature"],
+            ),
+        )
+        state.tasks["task"].deliverable_ids.append("synthetic")
+        state.git_promotions["promotion-feature"] = GitPromotionRecord(
+            id="promotion-feature",
+            project_id="project",
+            task_id="task",
+            actor_agent_id="backend",
+            source_branch="local-evander/team/team/reviews/deliverable",
+            target_branch="team/team/features/task-backend",
+            promotion_kind="feature",
+            deliverable_id="synthetic",
+            state="succeeded",
+            commit_sha="feedface",
+            outputs={
+                "merged_branches": [
+                    "local-evander/team/team/reviews/deliverable"
+                ]
+            },
+        )
+        return state
+
+    repo.update(_seed_stale_synthetic)
+    state, repair = repo.repair_feature_promotion_deliverables()
+
+    assert repair["success"] is True
+    assert repair["applied"] is True
+    assert repair["repaired_promotion_ids"] == ["promotion-feature"]
+    assert repair["removed_deliverable_ids"] == ["synthetic"]
+    assert repair["updated_deliverable_ids"] == ["deliverable"]
+    assert "synthetic" not in state.deliverables
+    assert state.tasks["task"].deliverable_ids == ["deliverable"]
+    promotion = state.git_promotions["promotion-feature"]
+    assert promotion.deliverable_id == "deliverable"
+    refs = state.deliverables["deliverable"].git_refs
+    assert refs.feature_branch == "team/team/features/task-backend"
+    assert refs.commit_sha == "feedface"
+    assert refs.promotion_record_ids == ["promotion-feature"]
+
+
 def _seed_accepted_feature_deliverable(
     repo: TeamStateRepository,
     *,
@@ -5922,6 +6084,88 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert state.projects["project"].status == ProjectStatus.ACTIVE
 
 
+def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    def _set_review_branch(state):
+        state.deliverables["deliverable"].git_refs.review_branch = (
+            "team/team/reviews/deliverable"
+        )
+        return state
+
+    repo.update(_set_review_branch)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["release_package_ids"] == ["rel-1"]
+    release = state.release_packages["rel-1"]
+    assert release.feature_branches == []
+    assert release.release_branch == "team/team/releases/rel-1"
+    assert release.canonical_branch == "releases/project/rel-1"
+    assert len(release.git_promotion_record_ids) == 1
+    feature_promotion_id = release.git_promotion_record_ids[0]
+    feature_promotion = state.git_promotions[feature_promotion_id]
+    assert feature_promotion.promotion_kind == "feature"
+    assert feature_promotion.release_package_id == "rel-1"
+    assert feature_promotion.task_id == "task"
+    assert feature_promotion.source_branch == "team/team/reviews/deliverable"
+    assert feature_promotion.target_branch == "team/team/features/task-lead"
+    assert result["git_promotion_event_ids"] == [feature_promotion_id]
+    payload = result["events"][0]["payload"]
+    assert payload["promotion_kind"] == "feature"
+    assert payload["release_package_id"] == "rel-1"
+    assert payload["source_branches"] == ["team/team/reviews/deliverable"]
+
+    state, promotion_result = repo.record_git_promotion_result(
+        promotion_id=feature_promotion_id,
+        success=True,
+        outputs={"merged_branches": ["team/team/reviews/deliverable"]},
+        commit_sha="feedface",
+    )
+
+    deliverable = state.deliverables["deliverable"]
+    assert deliverable.git_refs.feature_branch == "team/team/features/task-lead"
+    assert deliverable.git_refs.commit_sha == "feedface"
+    release = state.release_packages["rel-1"]
+    assert release.feature_branches == ["team/team/features/task-lead"]
+    release_promotions = [
+        state.git_promotions[promotion_id]
+        for promotion_id in release.git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "release"
+    ]
+    assert len(release_promotions) == 1
+    release_promotion = release_promotions[0]
+    assert release_promotion.source_branch == "team/team/features/task-lead"
+    assert release_promotion.target_branch == "team/team/releases/rel-1"
+    assert promotion_result["git_promotion_event_ids"] == [release_promotion.id]
+    payloads = {
+        event["payload"]["promotion_kind"]: event["payload"]
+        for event in promotion_result["events"]
+    }
+    assert payloads["release"]["source_branches"] == ["team/team/features/task-lead"]
+    assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
+
+
 def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_accepted_feature_deliverable(
@@ -6013,7 +6257,7 @@ def test_apply_agent_action_git_release_request_git_only_requires_git_config(
     assert any("no git configuration" in error for error in result["errors"])
 
 
-def test_apply_agent_action_git_release_request_requires_feature_promoted_git_deliverable(
+def test_apply_agent_action_git_release_request_requires_releasable_ref_or_artifact(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -6036,8 +6280,9 @@ def test_apply_agent_action_git_release_request_requires_feature_promoted_git_de
 
     assert result["success"] is False
     assert state.release_packages == {}
-    assert any("git_feature_updates" in error for error in result["errors"])
-    assert any("git_refs.feature_branch" in error for error in result["errors"])
+    assert any("review branch" in error for error in result["errors"])
+    assert any("agent branch" in error for error in result["errors"])
+    assert any("artifact refs" in error for error in result["errors"])
 
 
 def test_apply_agent_action_git_release_request_allows_project_release_operator(

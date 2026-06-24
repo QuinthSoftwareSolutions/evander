@@ -704,10 +704,12 @@ Team communication is directional and enforced by the repository, not by prose:
   for groups they manage. Operators can still use the Admin API or UI handle
   action.
 - **Team Chat to a human** — use `chat_replies` only to answer a specific human
-  operator message from the built-in Chat tab. Use `operator_chat_messages[]`
-  only for human operators listed in the current dispatch context. Do not use
-  `questions`, `status_reports`, or `operator_chat_messages[]` for normal
-  agent-to-agent coordination.
+  operator message from the built-in Chat tab. If that operator message
+  explicitly asks for a Team state change, include the corresponding action
+  fields in the same action object alongside `chat_replies`; otherwise send only
+  the chat reply. Use `operator_chat_messages[]` only for human operators listed
+  in the current dispatch context. Do not use `questions`, `status_reports`, or
+  `operator_chat_messages[]` for normal agent-to-agent coordination.
 - `Team.operator_communication_target_id` is outbound-only. It does not grant the
   manager's real session inbound Discord or Teams access and does not wake that
   session by itself. If the operator should message or wake the manager through
@@ -817,15 +819,16 @@ repository only records intent; the packaged pack routes each event on its
   "project_id", "deliverable_ids"[], "release_branch"?, "canonical_branch"?}`):
   only the project lead, the team manager, or an agent whose same-project role
   has `request_release` may request a release, and every deliverable must belong
-  to the project, be accepted, and carry either a `git_refs.feature_branch` or
-  non-Git `artifact_refs`. Deliverables that only have an agent branch or review
-  branch are not release sources yet; first publish a review branch if needed,
-  then run `git_feature_updates[]` so the deliverable records
-  `git_refs.feature_branch`. This creates a pending `ReleasePackage` and, when
-  feature branches are present, requires project Git config and creates a
-  `release` promotion (consolidate feature branches → release branch) followed by
-  a `canonical_push` promotion (release branch → canonical branch, finalized by
-  `effect:team:mark-release-published`). Pure artifact releases do not require
+  to the project and be accepted. Deliverables may already carry
+  `git_refs.feature_branch`, may carry `git_refs.review_branch` or
+  `git_refs.agent_branch` for automatic prerequisite feature promotion, or may be
+  non-Git artifact deliverables with `artifact_refs`. This creates a pending
+  `ReleasePackage`; if prerequisite feature promotions are needed, they are
+  enqueued first and the release continues after they succeed. Once feature
+  branches are available, project Git config is required and the runtime creates
+  a `release` promotion (consolidate feature branches → release branch) followed
+  by a `canonical_push` promotion (release branch → canonical branch, finalized
+  by `effect:team:mark-release-published`). Pure artifact releases do not require
   project Git config and do not create release or canonical branches.
 
 Four add-on-owned effect providers complete these flows:

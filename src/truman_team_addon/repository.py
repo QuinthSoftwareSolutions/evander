@@ -112,6 +112,7 @@ _MANAGER_FALLBACK_PENDING_REVIEW_STATES = frozenset(
         TeamRecordState.BLOCKED,
     }
 )
+_ACTIVE_DELIVERABLE_WORK_STATES = _MANAGER_FALLBACK_PENDING_REVIEW_STATES
 
 
 def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:
@@ -3379,15 +3380,7 @@ class TeamStateRepository:
             return self.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
-            terminal_task_states = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
-            teams_with_open_tasks: set[str] = set()
-            for task in state_model.tasks.values():
-                if task.state in terminal_task_states:
-                    continue
-                owner = state_model.agents.get(task.owner_agent_id)
-                if owner is None or owner.team_id is None:
-                    continue
-                teams_with_open_tasks.add(owner.team_id)
+            teams_with_open_work = _team_ids_with_open_work(state_model)
             teams_with_lease = set()
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
@@ -3564,7 +3557,7 @@ class TeamStateRepository:
                 if (
                     team.archived
                     or team.id in blocked_teams
-                    or team.id not in teams_with_open_tasks
+                    or team.id not in teams_with_open_work
                 ):
                     continue
                 if normalized_team_id is not None and team.id != normalized_team_id:
@@ -4808,6 +4801,7 @@ class TeamStateRepository:
             "deliverable_id": None,
             "release_package_id": None,
             "created_deliverable_ids": [],
+            "updated_deliverable_ids": [],
             "created_inbox_item_ids": [],
             "events": [],
             "git_promotion_event_ids": [],
@@ -4847,6 +4841,91 @@ class TeamStateRepository:
             result["deliverable_id"] = promotion.deliverable_id
             result["release_package_id"] = promotion.release_package_id
             result["success"] = True
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        return state, result
+
+    def repair_feature_promotion_deliverables(
+        self,
+        *,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Move safe synthetic feature deliverables back onto accepted sources."""
+
+        result: dict[str, Any] = {
+            "success": False,
+            "applied": False,
+            "repaired_promotion_ids": [],
+            "removed_deliverable_ids": [],
+            "updated_deliverable_ids": [],
+            "skipped_promotion_ids": [],
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            changed_project_ids: set[str] = set()
+            for promotion in sorted(
+                state_model.git_promotions.values(),
+                key=lambda item: (item.created_at, item.id),
+            ):
+                if (
+                    promotion.promotion_kind != "feature"
+                    or promotion.state != "succeeded"
+                    or promotion.deliverable_id is None
+                ):
+                    continue
+                synthetic = state_model.deliverables.get(promotion.deliverable_id)
+                if synthetic is None:
+                    result["skipped_promotion_ids"].append(promotion.id)
+                    continue
+                if not _is_safe_synthetic_feature_deliverable(
+                    state_model,
+                    deliverable=synthetic,
+                    promotion=promotion,
+                ):
+                    result["skipped_promotion_ids"].append(promotion.id)
+                    continue
+                matching_deliverables = _accepted_source_deliverables_for_feature_promotion(
+                    state_model,
+                    promotion,
+                    exclude_deliverable_ids={synthetic.id},
+                )
+                if not matching_deliverables:
+                    result["skipped_promotion_ids"].append(promotion.id)
+                    continue
+                repair_result: dict[str, Any] = {"updated_deliverable_ids": []}
+                commit_sha = promotion.commit_sha or synthetic.git_refs.commit_sha
+                if not _attach_feature_promotion_to_accepted_deliverables(
+                    state_model,
+                    promotion=promotion,
+                    commit_sha=commit_sha,
+                    result=repair_result,
+                    deliverables=matching_deliverables,
+                ):
+                    result["skipped_promotion_ids"].append(promotion.id)
+                    continue
+                task = state_model.tasks.get(synthetic.task_id)
+                if task is not None:
+                    task.deliverable_ids = [
+                        item_id
+                        for item_id in task.deliverable_ids
+                        if item_id != synthetic.id
+                    ]
+                    task.updated_at = utc_now()
+                state_model.deliverables.pop(synthetic.id, None)
+                result["repaired_promotion_ids"].append(promotion.id)
+                result["removed_deliverable_ids"].append(synthetic.id)
+                for deliverable_id in repair_result["updated_deliverable_ids"]:
+                    result["updated_deliverable_ids"] = _append_unique(
+                        result["updated_deliverable_ids"],
+                        deliverable_id,
+                    )
+                changed_project_ids.add(promotion.project_id)
+            for project_id in changed_project_ids:
+                _recalculate_project_status(state_model, project_id)
+            result["success"] = True
+            result["applied"] = bool(result["repaired_promotion_ids"])
             return state_model
 
         state = self.update(_mutate, expected_revision=expected_revision)
@@ -5273,6 +5352,44 @@ def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> lis
     return payloads
 
 
+def _is_active_deliverable_work(deliverable: Deliverable) -> bool:
+    return (
+        deliverable.state in _ACTIVE_DELIVERABLE_WORK_STATES
+        and deliverable.superseded_by_deliverable_id is None
+    )
+
+
+def _task_has_active_deliverable_work(state: TeamState, task_id: str) -> bool:
+    return any(
+        deliverable.task_id == task_id and _is_active_deliverable_work(deliverable)
+        for deliverable in state.deliverables.values()
+    )
+
+
+def _team_ids_with_open_work(state: TeamState) -> set[str]:
+    team_ids: set[str] = set()
+    for task in state.tasks.values():
+        if task.state not in _NON_TERMINAL_TASK_STATES:
+            continue
+        owner = state.agents.get(task.owner_agent_id)
+        if owner is not None and owner.team_id is not None:
+            team_ids.add(owner.team_id)
+    for deliverable in state.deliverables.values():
+        if not _is_active_deliverable_work(deliverable):
+            continue
+        task = state.tasks.get(deliverable.task_id)
+        if task is None:
+            continue
+        project = state.projects.get(task.project_id)
+        if project is not None:
+            team_ids.add(project.team_id)
+            continue
+        owner = state.agents.get(task.owner_agent_id)
+        if owner is not None and owner.team_id is not None:
+            team_ids.add(owner.team_id)
+    return team_ids
+
+
 def _manager_fallback_summary_payload(
     state: TeamState,
     *,
@@ -5298,7 +5415,11 @@ def _manager_fallback_summary_payload(
         (
             task
             for task in state.tasks.values()
-            if task.project_id in project_ids and task.state in _NON_TERMINAL_TASK_STATES
+            if task.project_id in project_ids
+            and (
+                task.state in _NON_TERMINAL_TASK_STATES
+                or _task_has_active_deliverable_work(state, task.id)
+            )
         ),
         key=lambda item: (item.priority, item.created_at, item.id),
     )
@@ -5582,7 +5703,7 @@ def _manager_fallback_deliverable_row(
         ),
         "review_state_counts": _manager_fallback_review_state_counts(reviews),
     }
-    if pending_reviews:
+    if pending_reviews or _is_active_deliverable_work(deliverable):
         row["artifact_refs"] = list(deliverable.artifact_refs)
         row["git_refs"] = _manager_fallback_git_refs_row(deliverable)
     return row
@@ -7170,10 +7291,10 @@ def _git_release_sequence_error(action: Mapping[str, Any]) -> str | None:
     ):
         return (
             "cannot combine git_feature_updates and git_release_requests in one "
-            "Team action; feature promotions are asynchronous. Submit "
-            "git_feature_updates first, wait for promotion results to attach "
-            "deliverable git_refs.feature_branch, then submit git_release_requests "
-            "in a later wake."
+            "Team action; submit git_release_requests alone when the intent is to "
+            "release accepted deliverables. The release request will enqueue "
+            "prerequisite feature promotions from accepted deliverable review or "
+            "agent branches before continuing."
         )
     return None
 
@@ -7183,9 +7304,9 @@ def _correction_hints(error: str) -> list[str]:
     hints: list[str] = []
     if "cannot combine git_feature_updates and git_release_requests" in normalized:
         hints.append(
-            "Split Git release work into two Team actions: submit git_feature_updates "
-            "first, then wait for git_refs.feature_branch before submitting "
-            "git_release_requests."
+            "Submit git_release_requests alone when the intent is a release; it can "
+            "auto-enqueue prerequisite feature promotions for accepted deliverables "
+            "with review or agent branches."
         )
     if "must not start with 'refs/'" in normalized:
         hints.append(
@@ -7208,11 +7329,14 @@ def _correction_hints(error: str) -> list[str]:
             "When revising a rejected deliverable, set supersedes_deliverable_id to "
             "the rejected deliverable id from the review_rejected inbox payload."
         )
-    if "has neither a feature branch nor artifact refs" in normalized:
+    if (
+        "has neither a feature branch nor artifact refs" in normalized
+        or "has neither a feature branch, review branch, agent branch" in normalized
+    ):
         hints.append(
-            "Feature-promote Git deliverables before release: publish a review branch if "
-            "needed, then use git_feature_updates with source_review_branches and retry "
-            "git_release_requests only after git_refs.feature_branch is present."
+            "Release requests can auto-promote accepted Git deliverables only when "
+            "they have git_refs.review_branch or git_refs.agent_branch; otherwise "
+            "publish a review branch or provide artifact refs first."
         )
     if "assignment_id must be a non-empty string" in normalized:
         hints.append(
@@ -9178,6 +9302,7 @@ def _build_release_package(
         return None
     artifact_refs: list[str] = []
     feature_branches: list[str] = []
+    feature_sources_by_task: dict[str, list[str]] = {}
     valid = True
     for deliverable_id in deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
@@ -9203,14 +9328,29 @@ def _build_release_package(
         feature = deliverable.git_refs.feature_branch
         if feature:
             feature_branches = _append_unique(feature_branches, feature)
-        elif not deliverable.artifact_refs:
-            result["errors"].append(
-                f"deliverable {deliverable_id} has neither a feature branch nor artifact refs; "
-                "Git release requests require feature-promoted deliverables. Publish a review "
-                "branch first if needed, then use git_feature_updates with source_review_branches "
-                "so the deliverable has git_refs.feature_branch before retrying git_release_requests"
-            )
-            valid = False
+        else:
+            try:
+                source_branch = _feature_promotion_source_branch_for_release(deliverable)
+            except ValueError as exc:
+                result["errors"].append(
+                    f"deliverable {deliverable_id} has invalid Git refs for release: {exc}"
+                )
+                valid = False
+                continue
+            if source_branch is not None:
+                feature_sources_by_task[task.id] = _append_unique(
+                    feature_sources_by_task.get(task.id, []),
+                    source_branch,
+                )
+            elif not deliverable.artifact_refs:
+                result["errors"].append(
+                    f"deliverable {deliverable_id} has neither a feature branch, "
+                    "review branch, agent branch, nor artifact refs; Git release "
+                    "requests can auto-promote accepted deliverables from "
+                    "git_refs.review_branch or git_refs.agent_branch, or release "
+                    "artifact-only deliverables with artifact refs"
+                )
+                valid = False
         for artifact_ref in deliverable.artifact_refs:
             artifact_refs = _append_unique(artifact_refs, artifact_ref)
     if not valid:
@@ -9222,13 +9362,15 @@ def _build_release_package(
     target_release_branch: str | None = None
     target_canonical_branch: str | None = None
     git = None
-    if feature_branches:
+    needs_git_release = bool(feature_branches or feature_sources_by_task)
+    effective_team_id = team_id or project.team_id
+    if needs_git_release:
         git = _project_git_or_error(project, result)
         if git is None:
             return None
         target_release_branch = validate_branch_name(
             _optional_text(request.get("release_branch"))
-            or release_branch(team_id, release_id)
+            or release_branch(effective_team_id, release_id)
         )
         target_canonical_branch = validate_branch_name(
             _optional_text(request.get("canonical_branch"))
@@ -9236,24 +9378,21 @@ def _build_release_package(
         )
     promotion_ids: list[str] = []
     now = utc_now()
-    # Internal feature branches are consolidated into a release branch, which is then
-    # pushed to the canonical remote after consolidation succeeds. Only create git
-    # promotions when there is at least one feature branch to consolidate; pure
-    # artifact deliverables need no push.
-    if feature_branches:
+    if feature_sources_by_task:
         assert git is not None
-        assert target_release_branch is not None
-        release_promotion_id = f"promotion-{uuid4().hex}"
-        state.git_promotions[release_promotion_id] = GitPromotionRecord(
-            id=release_promotion_id,
-            project_id=project.id,
-            release_package_id=release_id,
-            actor_agent_id=actor_agent_id,
-            source_branch=feature_branches[0],
-            target_branch=target_release_branch,
-            promotion_kind="release",
-        )
-        promotion_ids.append(release_promotion_id)
+        for task_id, source_branches in feature_sources_by_task.items():
+            feature_promotion_id = f"promotion-{uuid4().hex}"
+            state.git_promotions[feature_promotion_id] = GitPromotionRecord(
+                id=feature_promotion_id,
+                project_id=project.id,
+                release_package_id=release_id,
+                task_id=task_id,
+                actor_agent_id=actor_agent_id,
+                source_branch=source_branches[0],
+                target_branch=feature_branch(effective_team_id, task_id, actor_agent_id),
+                promotion_kind="feature",
+            )
+            promotion_ids.append(feature_promotion_id)
     state.release_packages[release_id] = ReleasePackage(
         id=release_id,
         project_id=project.id,
@@ -9267,24 +9406,303 @@ def _build_release_package(
         created_at=now,
         updated_at=now,
     )
-    if feature_branches:
-        _emit_git_promotion_event(
-            result,
-            promotion_id=promotion_ids[0],
-            payload={
-                "promotion_id": promotion_ids[0],
-                "promotion_kind": "release",
-                "project_id": project.id,
-                "release_package_id": release_id,
-                "host_repo_path": git.host_repo_path,
-                "base_branch": git.base_branch,
-                "source_branches": list(feature_branches),
-                "target_branch": target_release_branch,
-            },
-        )
+    if feature_sources_by_task:
+        assert git is not None
+        for promotion_id in promotion_ids:
+            promotion = state.git_promotions[promotion_id]
+            assert promotion.task_id is not None
+            _emit_git_promotion_event(
+                result,
+                promotion_id=promotion_id,
+                payload={
+                    "promotion_id": promotion_id,
+                    "promotion_kind": "feature",
+                    "project_id": project.id,
+                    "release_package_id": release_id,
+                    "host_repo_path": git.host_repo_path,
+                    "base_branch": git.base_branch,
+                    "source_branches": list(feature_sources_by_task[promotion.task_id]),
+                    "target_branch": promotion.target_branch,
+                    "task_id": promotion.task_id,
+                },
+            )
         result["git_promotion_event_ids"].extend(promotion_ids)
+    elif feature_branches:
+        _queue_release_promotion_if_ready(
+            state,
+            release=state.release_packages[release_id],
+            actor_agent_id=actor_agent_id,
+            result=result,
+        )
     projects_to_recalc.add(project_id)
     return release_id
+
+
+def _feature_promotion_source_branch_for_release(deliverable: Deliverable) -> str | None:
+    refs = deliverable.git_refs
+    source_branch = refs.review_branch or refs.agent_branch
+    if source_branch is None:
+        return None
+    return validate_branch_name(source_branch)
+
+
+def _release_feature_branches_from_deliverables(
+    state: TeamState,
+    release: ReleasePackage,
+) -> list[str]:
+    feature_branches = list(release.feature_branches)
+    for deliverable_id in release.deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            continue
+        feature_branch_value = deliverable.git_refs.feature_branch
+        if feature_branch_value:
+            feature_branches = _append_unique(feature_branches, feature_branch_value)
+    return feature_branches
+
+
+def _release_feature_prerequisites_ready(
+    state: TeamState,
+    release: ReleasePackage,
+) -> bool:
+    for promotion_id in release.git_promotion_record_ids:
+        promotion = state.git_promotions.get(promotion_id)
+        if promotion is None or promotion.promotion_kind != "feature":
+            continue
+        if promotion.state != "succeeded":
+            return False
+    return True
+
+
+def _queue_release_promotion_if_ready(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    actor_agent_id: str,
+    result: dict[str, Any],
+) -> None:
+    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.BLOCKED}:
+        return
+    if not _release_feature_prerequisites_ready(state, release):
+        return
+    existing = next(
+        (
+            state.git_promotions[promotion_id]
+            for promotion_id in release.git_promotion_record_ids
+            if promotion_id in state.git_promotions
+            and state.git_promotions[promotion_id].promotion_kind == "release"
+        ),
+        None,
+    )
+    if existing is not None:
+        return
+    project = state.projects.get(release.project_id)
+    git = project.git if project is not None else None
+    feature_branches = _release_feature_branches_from_deliverables(state, release)
+    release.feature_branches = feature_branches
+    release.updated_at = utc_now()
+    if not feature_branches:
+        return
+    if project is None or git is None:
+        release.state = TeamRecordState.BLOCKED
+        release.error = (
+            f"project {release.project_id} has no git configuration for release promotion"
+        )
+        result["error"] = release.error
+        return
+    target_release_branch = release.release_branch or release_branch(
+        project.team_id,
+        release.id,
+    )
+    release_promotion = GitPromotionRecord(
+        id=f"promotion-{uuid4().hex}",
+        project_id=project.id,
+        release_package_id=release.id,
+        actor_agent_id=actor_agent_id,
+        source_branch=feature_branches[0],
+        target_branch=target_release_branch,
+        promotion_kind="release",
+    )
+    state.git_promotions[release_promotion.id] = release_promotion
+    release.release_branch = target_release_branch
+    release.canonical_branch = release.canonical_branch or canonical_release_branch(
+        project,
+        release.id,
+    )
+    release.git_promotion_record_ids = _append_unique(
+        release.git_promotion_record_ids,
+        release_promotion.id,
+    )
+    _emit_git_promotion_event(
+        result,
+        promotion_id=release_promotion.id,
+        payload={
+            "promotion_id": release_promotion.id,
+            "promotion_kind": "release",
+            "project_id": project.id,
+            "release_package_id": release.id,
+            "host_repo_path": git.host_repo_path,
+            "base_branch": git.base_branch,
+            "source_branches": list(feature_branches),
+            "target_branch": target_release_branch,
+        },
+    )
+    result["git_promotion_event_ids"].append(release_promotion.id)
+
+
+def _branch_aliases(branch: str | None) -> set[str]:
+    value = _optional_text(branch)
+    if value is None:
+        return set()
+    aliases = {value}
+    prefixes = ("refs/heads/", "refs/remotes/", "origin/", "local-evander/")
+    changed = True
+    while changed:
+        changed = False
+        for alias in list(aliases):
+            for prefix in prefixes:
+                if alias.startswith(prefix):
+                    stripped = alias[len(prefix) :]
+                    if stripped and stripped not in aliases:
+                        aliases.add(stripped)
+                        changed = True
+    return aliases
+
+
+def _promotion_source_branch_aliases(promotion: GitPromotionRecord) -> set[str]:
+    aliases = _branch_aliases(promotion.source_branch)
+    for key in ("source_branches", "merged_branches"):
+        value = promotion.outputs.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str):
+                aliases.update(_branch_aliases(item))
+    return aliases
+
+
+def _deliverable_git_branch_aliases(deliverable: Deliverable) -> set[str]:
+    refs = deliverable.git_refs
+    aliases: set[str] = set()
+    aliases.update(_branch_aliases(refs.agent_branch))
+    aliases.update(_branch_aliases(refs.review_branch))
+    aliases.update(_branch_aliases(refs.feature_branch))
+    aliases.update(_branch_aliases(refs.release_branch))
+    return aliases
+
+
+def _deliverable_has_git_source_refs(deliverable: Deliverable) -> bool:
+    refs = deliverable.git_refs
+    return any(
+        (
+            refs.agent_branch,
+            refs.review_branch,
+            refs.feature_branch,
+            refs.release_branch,
+            refs.commit_sha,
+            refs.promotion_record_ids,
+        )
+    )
+
+
+def _accepted_source_deliverables_for_feature_promotion(
+    state: TeamState,
+    promotion: GitPromotionRecord,
+    *,
+    exclude_deliverable_ids: set[str] | None = None,
+) -> list[Deliverable]:
+    if promotion.task_id is None:
+        return []
+    task = state.tasks.get(promotion.task_id)
+    if task is None:
+        return []
+    excluded = set(exclude_deliverable_ids or set())
+    candidates = [
+        deliverable
+        for deliverable in (
+            state.deliverables[item_id]
+            for item_id in task.deliverable_ids
+            if item_id in state.deliverables
+        )
+        if deliverable.id not in excluded
+        and deliverable.state == TeamRecordState.ACCEPTED
+        and deliverable.superseded_by_deliverable_id is None
+        and _deliverable_has_git_source_refs(deliverable)
+    ]
+    source_aliases = _promotion_source_branch_aliases(promotion)
+    matching = [
+        deliverable
+        for deliverable in candidates
+        if source_aliases and source_aliases & _deliverable_git_branch_aliases(deliverable)
+    ]
+    if matching:
+        return matching
+    if len(candidates) == 1:
+        return candidates
+    return []
+
+
+def _attach_feature_promotion_to_accepted_deliverables(
+    state: TeamState,
+    *,
+    promotion: GitPromotionRecord,
+    commit_sha: str | None,
+    result: dict[str, Any],
+    deliverables: list[Deliverable] | None = None,
+) -> bool:
+    matching_deliverables = deliverables or _accepted_source_deliverables_for_feature_promotion(
+        state,
+        promotion,
+    )
+    if not matching_deliverables:
+        return False
+    now = utc_now()
+    for deliverable in matching_deliverables:
+        refs = deliverable.git_refs
+        refs.feature_branch = promotion.target_branch
+        if commit_sha is not None:
+            refs.commit_sha = commit_sha
+        refs.promotion_record_ids = _append_unique(refs.promotion_record_ids, promotion.id)
+        task = state.tasks.get(deliverable.task_id)
+        if task is not None:
+            task.updated_at = now
+        result["updated_deliverable_ids"] = _append_unique(
+            result.setdefault("updated_deliverable_ids", []),
+            deliverable.id,
+        )
+    promotion.deliverable_id = matching_deliverables[0].id
+    return True
+
+
+def _is_safe_synthetic_feature_deliverable(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    promotion: GitPromotionRecord,
+) -> bool:
+    refs = deliverable.git_refs
+    extra_promotion_ids = [
+        promotion_id
+        for promotion_id in refs.promotion_record_ids
+        if promotion_id != promotion.id
+    ]
+    return (
+        deliverable.state == TeamRecordState.PENDING
+        and deliverable.summary.startswith("Consolidated feature branch ")
+        and not deliverable.artifact_refs
+        and not deliverable.review_request_ids
+        and deliverable.supersedes_deliverable_id is None
+        and deliverable.superseded_by_deliverable_id is None
+        and refs.agent_branch is None
+        and refs.review_branch is None
+        and refs.feature_branch == promotion.target_branch
+        and refs.release_branch is None
+        and not extra_promotion_ids
+        and all(
+            deliverable.id not in release.deliverable_ids
+            for release in state.release_packages.values()
+        )
+    )
 
 
 def _attach_promotion_success(
@@ -9315,7 +9733,17 @@ def _attach_promotion_success(
         if commit_sha is not None:
             refs.commit_sha = commit_sha
         refs.promotion_record_ids = _append_unique(refs.promotion_record_ids, promotion.id)
-    elif kind == "feature" and promotion.task_id is not None and promotion.task_id in state.tasks:
+    elif (
+        kind == "feature"
+        and promotion.task_id is not None
+        and promotion.task_id in state.tasks
+        and not _attach_feature_promotion_to_accepted_deliverables(
+            state,
+            promotion=promotion,
+            commit_sha=commit_sha,
+            result=result,
+        )
+    ):
         # A feature consolidation has no deliverable yet; capture the consolidated
         # branch on a new deliverable so later release requests can find it.
         task = state.tasks[promotion.task_id]
@@ -9354,6 +9782,13 @@ def _attach_promotion_success(
                 state,
                 release=release,
                 release_promotion=promotion,
+                result=result,
+            )
+        elif kind == "feature":
+            _queue_release_promotion_if_ready(
+                state,
+                release=release,
+                actor_agent_id=promotion.actor_agent_id,
                 result=result,
             )
         elif kind == "canonical_push":

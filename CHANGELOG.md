@@ -8,6 +8,21 @@
 - Exposed the new Team case effects in the add-on workflow editor catalog with
   output schemas and focused runtime/catalog coverage.
 
+## 2026-06-24 - Team Add-on Release Flow Recovery
+
+- Attached successful feature promotions back to matching accepted Git
+  deliverables instead of creating extra pending synthetic deliverables when the
+  source review branch can be identified.
+- Added a safe repair path for existing synthetic feature-promotion deliverables
+  and made manager fallback wake on active deliverables even when their tasks are
+  already terminal.
+- Clarified Team Chat wake prompts and docs so explicit operator requests may
+  include state-changing Team action fields alongside `chat_replies`.
+- Let `git_release_requests[]` enqueue prerequisite feature promotions for
+  accepted review/agent branches and automatically continue the release package
+  after those promotions succeed, removing the old manual feature-then-release
+  agent workflow.
+
 ## 2026-06-24 - Team Add-on Git Release Sequencing
 
 - Rejected Team actions that combine non-empty `git_feature_updates[]` and
