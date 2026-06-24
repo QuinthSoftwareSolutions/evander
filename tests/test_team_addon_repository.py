@@ -5874,6 +5874,59 @@ def test_record_git_feature_promotion_result_attaches_to_accepted_source_deliver
     assert refs.promotion_record_ids == [promotion_id]
 
 
+def test_record_git_feature_promotion_result_requires_source_branch_match(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    def _set_review_branch(state):
+        state.deliverables["deliverable"].git_refs.review_branch = (
+            "team/team/reviews/deliverable"
+        )
+        return state
+
+    repo.update(_set_review_branch)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_feature_updates": [
+                {
+                    "task_id": "task",
+                    "source_review_branches": [
+                        "team/team/reviews/unrelated"
+                    ],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    promotion_id = result["git_promotion_event_ids"][0]
+
+    state, promotion_result = repo.record_git_promotion_result(
+        promotion_id=promotion_id,
+        success=True,
+        outputs={"merged_branches": ["team/team/reviews/unrelated"]},
+        commit_sha="feedface",
+    )
+
+    assert promotion_result["updated_deliverable_ids"] == []
+    assert len(promotion_result["created_deliverable_ids"]) == 1
+    synthetic_id = promotion_result["created_deliverable_ids"][0]
+    assert state.git_promotions[promotion_id].deliverable_id == synthetic_id
+    refs = state.deliverables["deliverable"].git_refs
+    assert refs.review_branch == "team/team/reviews/deliverable"
+    assert refs.feature_branch is None
+    assert refs.commit_sha is None
+    assert refs.promotion_record_ids == []
+
+
 def test_repair_feature_promotion_deliverables_removes_safe_synthetic_pending(
     tmp_path: Path,
 ) -> None:

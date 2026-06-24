@@ -2515,6 +2515,39 @@ def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
     assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
 
 
+def test_manager_fallback_blocks_self_review_for_terminal_task_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    def _mark_task_terminal(state: TeamState) -> TeamState:
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        return state
+
+    repo.update(_mark_task_terminal)
+    dispatch_id = _set_manager_fallback_runtime(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": dispatch_id,
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
+
+
 def test_manager_fallback_allows_self_review_when_reviewer_busy_elsewhere(
     tmp_path: Path,
 ) -> None:

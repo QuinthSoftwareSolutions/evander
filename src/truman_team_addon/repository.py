@@ -5432,6 +5432,17 @@ def _team_ids_with_open_work(state: TeamState) -> set[str]:
     return team_ids
 
 
+def _manager_fallback_task_visible_for_work(
+    state: TeamState,
+    task: AgentTask,
+    project_ids: set[str],
+) -> bool:
+    return task.project_id in project_ids and (
+        task.state in _NON_TERMINAL_TASK_STATES
+        or _task_has_active_deliverable_work(state, task.id)
+    )
+
+
 def _manager_fallback_summary_payload(
     state: TeamState,
     *,
@@ -5457,11 +5468,7 @@ def _manager_fallback_summary_payload(
         (
             task
             for task in state.tasks.values()
-            if task.project_id in project_ids
-            and (
-                task.state in _NON_TERMINAL_TASK_STATES
-                or _task_has_active_deliverable_work(state, task.id)
-            )
+            if _manager_fallback_task_visible_for_work(state, task, project_ids)
         ),
         key=lambda item: (item.priority, item.created_at, item.id),
     )
@@ -6129,8 +6136,7 @@ def _manager_fallback_review_decision_guard_error(
         (
             item
             for item in state.tasks.values()
-            if item.project_id in project_ids
-            and item.state in _NON_TERMINAL_TASK_STATES
+            if _manager_fallback_task_visible_for_work(state, item, project_ids)
         ),
         key=lambda item: (item.priority, item.created_at, item.id),
     )
@@ -9679,8 +9685,6 @@ def _accepted_source_deliverables_for_feature_promotion(
     ]
     if matching:
         return matching
-    if len(candidates) == 1:
-        return candidates
     return []
 
 
