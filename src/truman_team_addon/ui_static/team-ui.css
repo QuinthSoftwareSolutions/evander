@@ -3224,6 +3224,50 @@ form {
   width: auto;
 }
 
+.criteria-editor {
+  display: grid;
+  gap: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--panel-alt);
+}
+
+.criteria-editor legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.criteria-editor-rows {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.criteria-editor-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(12rem, 1.4fr) minmax(8rem, 0.8fr) auto auto;
+  gap: 0.55rem;
+  align-items: end;
+  min-width: 0;
+}
+
+.criteria-editor-row label {
+  min-width: 0;
+}
+
+.criteria-editor-required {
+  min-height: 2.25rem;
+  margin-bottom: 0.05rem;
+}
+
+.criteria-editor-add,
+.criteria-editor-remove {
+  width: fit-content;
+}
+
 .archived-toggle {
   position: relative;
   min-height: 2.2rem;
@@ -3497,6 +3541,7 @@ label textarea {
   .people-layout,
   .team-record-grid,
   .team-inline-create-fields,
+  .criteria-editor-row,
   .governance-create-form,
   .project-columns,
   .delivery-buckets,

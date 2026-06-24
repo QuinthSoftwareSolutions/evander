@@ -1337,6 +1337,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'name="lead_session_id"' not in ui.text
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
+    assert 'data-review-profile-criteria-editor' in ui.text
+    assert 'name="criterion_label"' in ui.text
     assert 'data-team-view="governance"' in ui.text
     assert "data-governance-create-toggle" in ui.text
     assert 'id="governance-create-panel"' in ui.text

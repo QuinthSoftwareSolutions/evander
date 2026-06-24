@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Review Profile Criteria Editor
+
+- Replaced the Team Add-on review-profile criteria textarea with structured
+  criteria rows for label, description, optional key, and required status.
+- Reused the structured criteria editor in review-profile edit dialogs while
+  preserving the existing Admin API criteria payload shape.
+
 ## 2026-06-24 - Team Add-on Manager Fallback Wake Serialization
 
 - Serialized pending manager inbox items in fallback wake leases, preventing
