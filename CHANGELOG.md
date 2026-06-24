@@ -5,6 +5,9 @@
 - Added Team state resource tokens and opt-in unchanged-target rebasing for
   operator UI writes so unrelated agent revision bumps no longer force common
   Team Add-on form saves to fail.
+- Included agent project assignments and context-clearing settings in agent
+  retry tokens, and rejected stale generated-id creates instead of duplicating
+  records with suffixed ids.
 - Preserved Team UI form drafts across conflict reloads and added a retry-save
   action after revision conflicts so operators can resubmit without re-entering
   form data.

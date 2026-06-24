@@ -56,6 +56,7 @@ from .models import (
     TeamState,
     agent_project_assignment_payloads,
     agent_project_ids,
+    project_assignments_for_agent,
     effective_role_permissions,
     team_state_payload,
 )
@@ -1993,10 +1994,42 @@ def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None
 def _team_resource_tokens(state: TeamState) -> dict[str, dict[str, str]]:
     return {
         collection: {
-            item_id: _team_resource_token(item)
+            item_id: _team_resource_token(
+                _team_resource_value_for_token(state, collection, item_id, item)
+            )
             for item_id, item in _team_state_collection(state, collection).items()
         }
         for collection in TEAM_RESOURCE_TOKEN_COLLECTIONS
+    }
+
+
+def _team_resource_value_for_token(
+    state: TeamState,
+    collection: str,
+    item_id: str,
+    item: Any,
+) -> Any:
+    if collection != "agents":
+        return item
+    runtime = state.agent_runtimes.get(item_id)
+    return {
+        "agent": item.model_dump(mode="json") if hasattr(item, "model_dump") else item,
+        "project_assignments": [
+            assignment.model_dump(mode="json")
+            for assignment in project_assignments_for_agent(state, item_id)
+        ],
+        "runtime": (
+            {
+                "context_clearing_policy": getattr(
+                    runtime.context_clearing_policy,
+                    "value",
+                    runtime.context_clearing_policy,
+                ),
+                "auto_context_clearing_enabled": runtime.auto_context_clearing_enabled,
+            }
+            if runtime is not None
+            else None
+        ),
     }
 
 
@@ -2024,7 +2057,9 @@ def _team_resource_token_for(
     item = _team_state_collection(state, collection).get(item_id)
     if item is None:
         return None
-    return _team_resource_token(item)
+    return _team_resource_token(
+        _team_resource_value_for_token(state, collection, item_id, item)
+    )
 
 
 def _team_state_collection(state: TeamState, collection: str) -> Mapping[str, Any]:
@@ -2051,7 +2086,10 @@ def _can_rebase_ui_mutation(
             return False
         return _team_resource_token_for(current, target_collection, target_id) == base_token
     if create_collection:
-        return not create_id or create_id not in _team_state_collection(current, create_collection)
+        return bool(create_id) and create_id not in _team_state_collection(
+            current,
+            create_collection,
+        )
     return False
 
 

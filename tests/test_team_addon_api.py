@@ -3518,6 +3518,56 @@ def test_team_addon_admin_api_exposes_resource_tokens(tmp_path: Path) -> None:
     assert state["teams"]["team"]["resource_token"] == token
 
 
+def _seed_rebase_backend_agent(client: TestClient) -> dict:
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert team.status_code == 201
+    project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": team.json()["revision"],
+        },
+    )
+    assert project.status_code == 201
+    role = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__backend",
+            "team_id": "team",
+            "name": "Backend",
+            "expected_revision": project.json()["revision"],
+        },
+    )
+    assert role.status_code == 201
+    agent = client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role_id": "team__backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": role.json()["revision"],
+        },
+    )
+    assert agent.status_code == 201
+    return agent.json()
+
+
 def test_team_addon_admin_api_rebases_stale_create_when_target_is_new(
     tmp_path: Path,
 ) -> None:
@@ -3561,6 +3611,48 @@ def test_team_addon_admin_api_rebases_stale_create_when_target_is_new(
     payload = response.json()
     assert payload["rebased_from_revision"] == stale_revision
     assert payload["projects"]["project"]["name"] == "Project"
+
+
+def test_team_addon_admin_api_rejects_stale_no_id_create(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    bump = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__reviewer",
+            "team_id": "team",
+            "name": "Reviewer",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert bump.status_code == 201
+
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == bump.json()["revision"]
 
 
 def test_team_addon_admin_api_rebases_stale_patch_when_target_token_matches(
@@ -3632,6 +3724,80 @@ def test_team_addon_admin_api_rejects_stale_patch_when_target_changed(
         "/api/addons/team-addon/teams/team",
         json={
             "operator_communication_target_id": "ops",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.json()["revision"]
+
+
+def test_team_addon_admin_api_rejects_stale_agent_patch_when_assignment_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    state = _seed_rebase_backend_agent(client)
+    stale_revision = state["revision"]
+    base_token = state["resource_tokens"]["agents"]["backend"]
+    other_project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project-2",
+            "team_id": "team",
+            "name": "Project 2",
+            "lead_agent_id": "lead-2",
+            "lead_session_id": "session-lead-2",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert other_project.status_code == 201
+    changed = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "project_id": "project-2",
+            "expected_revision": other_project.json()["revision"],
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["resource_tokens"]["agents"]["backend"] != base_token
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "display_name": "Backend 2",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.json()["revision"]
+
+
+def test_team_addon_admin_api_rejects_stale_agent_patch_when_runtime_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    state = _seed_rebase_backend_agent(client)
+    stale_revision = state["revision"]
+    base_token = state["resource_tokens"]["agents"]["backend"]
+    changed = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "context_clearing_policy": "idle",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["resource_tokens"]["agents"]["backend"] != base_token
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "display_name": "Backend 2",
             "expected_revision": stale_revision,
             "conflict_policy": "target_unchanged",
             "base_resource_token": base_token,
