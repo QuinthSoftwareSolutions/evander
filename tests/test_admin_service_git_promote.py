@@ -117,11 +117,14 @@ def test_admin_service_promote_agent_branch_accepts_target_branch(
         bare_repo_name="sample",
         agent_branch="agents/session-1/release",
         target_branch="team/team/releases/release-1",
+        expected_commit_sha="708b1b89",
     )
 
     assert captured == [
         [
             str(service.project_dir / "scripts" / "promote_agent_branch.sh"),
+            "--expected-commit-sha",
+            "708b1b89",
             "/trusted/repo",
             "sample",
             "agents/session-1/release",

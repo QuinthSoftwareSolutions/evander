@@ -14313,6 +14313,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         agent_branch: str,
         review_branch: str | None = None,
         target_branch: str | None = None,
+        expected_commit_sha: str | None = None,
         remote_name: str | None = None,
     ) -> dict[str, Any]:
         return self.issue_git_admin.promote_agent_branch(
@@ -14322,6 +14323,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             agent_branch=agent_branch,
             review_branch=review_branch,
             target_branch=target_branch,
+            expected_commit_sha=expected_commit_sha,
             remote_name=remote_name,
         )
 

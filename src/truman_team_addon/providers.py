@@ -79,11 +79,11 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 18
+ACTION_CONTRACT_SCHEMA_VERSION = 19
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 9
+TEAM_AGENT_GUIDANCE_VERSION = 10
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
@@ -3327,9 +3327,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "git_feature_updates only when you need a feature branch without "
         "requesting a release. If release_packages shows an existing blocked "
         "package, do not submit another git_release_requests item with that id; "
-        "assign the conflict to the owning coder when needed, have the resolved "
-        "commit pushed to an agents/... ref, then submit git_release_recoveries "
-        "for the existing package.\n"
+        "follow the package's next_action_hint. Only submit git_release_recoveries "
+        "when that hint identifies a failed release promotion; include the "
+        "resolved commit_sha pushed to an agents/... ref.\n"
         "- If a deliverable should be reviewed by another agent, create a "
         "review_requests item for that reviewer; do not mark the task accepted "
         "yourself unless the task is actually yours.\n"
@@ -3500,8 +3500,9 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "only when you need a feature branch without requesting a release. "
         "git_release_requests creates new release packages only; when "
         "release_packages already contains a blocked package, follow its "
-        "next_action_hint and submit git_release_recoveries after the resolved "
-        "commit is available under an agents/... ref.\n\n"
+        "next_action_hint. Only submit git_release_recoveries when that hint "
+        "identifies a failed release promotion, after the resolved commit is "
+        "available under an agents/... ref; include the resolved commit_sha.\n\n"
     )
     manager_fallback_section = (
         "Manager fallback dispatch:\n"
@@ -4810,7 +4811,8 @@ def _persistent_action_schema() -> dict[str, Any]:
                     "non-empty git_feature_updates and git_release_requests in one action. "
                     "Do not use git_release_requests to retry an existing blocked package; "
                     "inspect release_packages[id].next_action_hint, resolve the existing "
-                    "release_branch/error, then submit git_release_recoveries. "
+                    "release_branch/error, and submit git_release_recoveries only when "
+                    "the hint identifies a failed release promotion. "
                     "The repository derives source branches from deliverable git_refs; do not "
                     "provide source_branch, target_branch, or commit_sha here."
                 ),
@@ -4840,18 +4842,21 @@ def _persistent_action_schema() -> dict[str, Any]:
                 "description": (
                     "Resume an existing blocked release package after the merge "
                     "conflict has been resolved and pushed to an agents/... ref. "
-                    "Use this for blocked packages only; do not create another "
-                    "git_release_requests item for the same release id."
+                    "commit_sha is required so retries publish a fresh recovery "
+                    "event and the target branch is not updated from a moved ref. "
+                    "Use this only when release_packages[id].next_action_hint "
+                    "identifies a failed release promotion; do not create "
+                    "another git_release_requests item for the same release id."
                 ),
                 "default": [],
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["release_package_id", "agent_branch"],
+                    "required": ["release_package_id", "agent_branch", "commit_sha"],
                     "properties": {
                         "release_package_id": {"type": "string", "minLength": 1},
                         "agent_branch": {"type": "string", "minLength": 1},
-                        "commit_sha": text_or_null,
+                        "commit_sha": {"type": "string", "minLength": 1},
                         "summary": text_or_null,
                     },
                 },

@@ -19,6 +19,9 @@ Arguments:
 Options:
   --remote-name <name>  Remote name to use in the trusted clone.
                         Default: agent-dropbox-auto
+  --expected-commit-sha <sha>
+                        Refuse to update the target branch unless the fetched
+                        agent branch resolves to this commit.
   -h, --help            Show this help text.
 
 Configuration:
@@ -32,6 +35,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 REMOTE_NAME="agent-dropbox-auto"
+EXPECTED_COMMIT_SHA=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +50,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       REMOTE_NAME="$2"
+      shift 2
+      ;;
+    --expected-commit-sha)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --expected-commit-sha" >&2
+        exit 1
+      fi
+      EXPECTED_COMMIT_SHA="$2"
       shift 2
       ;;
     --*)
@@ -138,6 +150,11 @@ fi
 
 if ! FETCHED_COMMIT="$(git -C "${HOST_REPO_PATH}" rev-parse --verify "${PROMOTION_REF}^{commit}")"; then
   echo "Failed to resolve fetched commit for ${AGENT_BRANCH}" >&2
+  exit 1
+fi
+
+if [[ -n "${EXPECTED_COMMIT_SHA}" && "${FETCHED_COMMIT}" != "${EXPECTED_COMMIT_SHA}" ]]; then
+  echo "Fetched commit ${FETCHED_COMMIT} for ${AGENT_BRANCH} does not match expected ${EXPECTED_COMMIT_SHA}" >&2
   exit 1
 fi
 

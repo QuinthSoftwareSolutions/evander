@@ -7496,9 +7496,11 @@ def _correction_hints(error: str) -> list[str]:
             hints.append(
                 "git_release_requests creates new release packages only. For an "
                 "existing or blocked package, inspect release_packages[id], resolve "
-                "its release_branch/error, then submit git_release_recoveries after "
-                "the resolved commit is pushed to an agents/... ref; do not reuse "
-                "the same id in another git_release_requests item."
+                "its release_branch/error, and follow its next_action_hint. Only "
+                "submit git_release_recoveries when the hint identifies a failed "
+                "release promotion and the resolved commit has been pushed to an "
+                "agents/... ref; do not reuse the same id in another "
+                "git_release_requests item."
             )
         if "review request" in normalized:
             hints.append(
@@ -9566,7 +9568,7 @@ def _apply_git_release_recovery(
         )
         return None
     target_branch = validate_branch_name(target_branch)
-    expected_commit_sha = _optional_text(request.get("commit_sha"))
+    expected_commit_sha = _required_text(request.get("commit_sha"), "commit_sha")
     payload: dict[str, Any] = {
         "release_package_id": release.id,
         "promotion_id": failed_promotion.id,
@@ -9578,10 +9580,9 @@ def _apply_git_release_recovery(
         "canonical_branch": release.canonical_branch
         or canonical_release_branch(project, release.id),
         "base_branch": git.base_branch,
+        "expected_commit_sha": expected_commit_sha,
     }
     payload.update(_bare_repo_fields(git))
-    if expected_commit_sha is not None:
-        payload["expected_commit_sha"] = expected_commit_sha
     summary = _optional_text(request.get("summary"))
     if summary is not None:
         payload["summary"] = summary
@@ -9770,8 +9771,10 @@ def _duplicate_release_package_error(release: ReleasePackage) -> str:
         parts.append(f"error {release.error}")
     parts.append(
         "do not submit git_release_requests for this id again; resolve the existing "
-        "release package and submit git_release_recoveries after the resolved commit "
-        "is pushed to an agents/... ref, or choose a new id only for a separate release"
+        "release package and follow its next_action_hint. Submit git_release_recoveries "
+        "only when the hint identifies a failed release promotion and the resolved "
+        "commit is pushed to an agents/... ref, or choose a new id only for a "
+        "separate release"
     )
     return "; ".join(parts)
 

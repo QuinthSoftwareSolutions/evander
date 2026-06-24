@@ -42,6 +42,9 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             agent_branch=agent_branch,
             review_branch=self._normalize_optional_string(payload.get("review_branch")),
             target_branch=self._normalize_optional_string(payload.get("target_branch")),
+            expected_commit_sha=self._normalize_optional_string(
+                payload.get("expected_commit_sha")
+            ),
             remote_name=self._normalize_optional_string(payload.get("remote_name")),
         )
         output = self._coerce_result(result)

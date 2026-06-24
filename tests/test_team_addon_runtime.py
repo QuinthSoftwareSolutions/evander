@@ -930,6 +930,8 @@ def test_duplicate_release_package_feedback_points_to_existing_package(
     assert any(
         "existing or blocked package" in hint
         and "release_branch/error" in hint
+        and "next_action_hint" in hint
+        and "failed release promotion" in hint
         and "do not reuse the same id" in hint
         for hint in feedback["correction_hints"]
     )
@@ -1029,6 +1031,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "git_refs.review_branch or git_refs.agent_branch" in guidance
     assert "Do not combine non-empty git_feature_updates" in guidance
     assert "git_release_recoveries" in guidance
+    assert "failed release promotion" in guidance
+    assert "resolved commit_sha" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
     assert "response_requested is false" in guidance
@@ -1086,9 +1090,15 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "existing blocked package" in release_request_property["description"]
     recovery_property = schema["properties"]["git_release_recoveries"]
     assert "Resume an existing blocked release package" in recovery_property["description"]
+    assert "commit_sha is required" in recovery_property["description"]
+    assert "failed release promotion" in recovery_property["description"]
     recovery_schema = recovery_property["items"]
     assert recovery_schema["additionalProperties"] is False
-    assert recovery_schema["required"] == ["release_package_id", "agent_branch"]
+    assert recovery_schema["required"] == [
+        "release_package_id",
+        "agent_branch",
+        "commit_sha",
+    ]
     assert set(recovery_schema["properties"]) == {
         "release_package_id",
         "agent_branch",
@@ -1229,6 +1239,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         assert field_name in prompt
     assert "git_release_requests creates new release packages only" in prompt
     assert "next_action_hint" in prompt
+    assert "Only submit git_release_recoveries" in prompt
     assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
         "seeded": True,
         "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,

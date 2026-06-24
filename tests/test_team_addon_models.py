@@ -966,8 +966,12 @@ def test_blocked_release_hint_uses_failed_feature_promotion_target() -> None:
 
     hint = payload["release_packages"]["release"]["next_action_hint"]
     assert "Failed feature promotion feature-promotion" in hint
-    assert "Resolve and commit on promotion target branch team/team/features/task-ui" in hint
-    assert "git_release_recoveries" in hint
+    assert (
+        "Resolve and commit on failed promotion target branch "
+        "team/team/features/task-ui"
+    ) in hint
+    assert "do not submit git_release_recoveries" in hint
+    assert "git_release_recoveries only applies to failed release promotions" in hint
     assert "Continue from release branch" not in hint
 
 

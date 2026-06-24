@@ -1060,6 +1060,7 @@ class IssueGitAdminService:
         agent_branch: str,
         review_branch: str | None = None,
         target_branch: str | None = None,
+        expected_commit_sha: str | None = None,
         remote_name: str | None = None,
     ) -> dict[str, Any]:
         if not bare_repo_path and not bare_repo_name:
@@ -1072,6 +1073,8 @@ class IssueGitAdminService:
         cmd = [str(script_path)]
         if remote_name:
             cmd.extend(["--remote-name", remote_name])
+        if expected_commit_sha:
+            cmd.extend(["--expected-commit-sha", expected_commit_sha])
         cmd.append(host_repo_path)
         cmd.append(bare_repo_path or bare_repo_name or "")
         cmd.append(agent_branch)

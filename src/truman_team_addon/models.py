@@ -2962,9 +2962,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     failed_promotion = _release_blocking_promotion(state, release)
     parts = [
         f"Resolve existing release package {release.id}; do not create another "
-        "git_release_requests item with this id. Assign semantic conflicts to "
-        "the owning coder, have the resolved commit pushed to an agents/... ref, "
-        "then submit git_release_recoveries for this package."
+        "git_release_requests item with this id."
     ]
     if failed_promotion is not None:
         parts.append(
@@ -2972,18 +2970,38 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             f"{failed_promotion.id}: {failed_promotion.source_branch} -> "
             f"{failed_promotion.target_branch}."
         )
-        parts.append(
-            f"Resolve and commit on promotion target branch "
-            f"{failed_promotion.target_branch}."
-        )
+        if failed_promotion.promotion_kind == "release":
+            parts.append(
+                "Assign semantic conflicts to the owning coder, have the resolved "
+                "commit pushed to an agents/... ref, then submit "
+                "git_release_recoveries for this package with the resolved commit_sha."
+            )
+            parts.append(
+                f"Resolve and commit on promotion target branch "
+                f"{failed_promotion.target_branch}."
+            )
+        else:
+            parts.append(
+                f"This blocker is a failed {failed_promotion.promotion_kind} "
+                "promotion, not a release promotion; do not submit "
+                "git_release_recoveries. Resolve and commit on failed promotion "
+                f"target branch {failed_promotion.target_branch}, or escalate "
+                "for operator/orchestrator retry."
+            )
     if release.error:
         parts.append(f"Current blocker: {release.error}")
     if release.error and "merge conflict" in release.error.casefold():
-        parts.append(
-            "Resolve the merge conflict on the failed promotion target branch, "
-            "push the resolved commit to an agents/... ref, then recover the "
-            "existing release package with git_release_recoveries."
-        )
+        if failed_promotion is not None and failed_promotion.promotion_kind == "release":
+            parts.append(
+                "Resolve the merge conflict on the failed promotion target branch, "
+                "push the resolved commit to an agents/... ref, then recover the "
+                "existing release package with git_release_recoveries."
+            )
+        else:
+            parts.append(
+                "Resolve the merge conflict on the failed promotion target branch; "
+                "git_release_recoveries only applies to failed release promotions."
+            )
     if failed_promotion is None:
         parts.append(
             "Inspect the package's git_promotion_record_ids and current Git state "

@@ -13,6 +13,12 @@
 - Scoped release package recovery hints into normal agent wake prompts and made
   blocked-release guidance point at the failed promotion target branch instead
   of assuming the release branch is always the recovery branch.
+- Required `git_release_recoveries[]` to include the resolved `commit_sha`,
+  included that SHA in recovery idempotency, and validated it before the trusted
+  release target branch is updated.
+- Stopped advertising release recovery for blocked packages caused by failed
+  feature or canonical promotions; those hints now point at the failed promotion
+  target and reserve `git_release_recoveries[]` for failed release promotions.
 
 ## 2026-06-24 - Team Add-on Release Prefix Normalization
 

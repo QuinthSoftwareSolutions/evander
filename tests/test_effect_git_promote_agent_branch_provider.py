@@ -76,6 +76,7 @@ def test_git_promote_agent_branch_provider_calls_admin_service_with_normalized_a
             "agent_branch": "agents/session-1/topic",
             "review_branch": "review/session-1/topic",
             "target_branch": None,
+            "expected_commit_sha": None,
             "remote_name": "agent-dropbox-auto",
         }
     ]
@@ -125,6 +126,7 @@ def test_git_promote_agent_branch_provider_passes_target_branch_and_checks_commi
             "agent_branch": "agents/session-1/release",
             "review_branch": None,
             "target_branch": "team/team/releases/release-1",
+            "expected_commit_sha": "708b1b89",
             "remote_name": None,
         }
     ]

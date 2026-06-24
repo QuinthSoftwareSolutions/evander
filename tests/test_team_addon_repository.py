@@ -6248,6 +6248,11 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
     event = result["events"][0]
     assert event["event_type"] == GIT_RELEASE_RECOVERY_EVENT_TYPE
     assert event["correlation_key"] == "rel-1"
+    assert event["idempotency_key"] == (
+        "team-addon:team.git.release_recovery_requested:"
+        "rel-1:agents/lead/release-resolved:"
+        "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932"
+    )
     assert event["payload"] == {
         "release_package_id": "rel-1",
         "promotion_id": release_promotion_id,
@@ -6309,6 +6314,54 @@ def test_apply_agent_action_git_release_recovery_requires_agent_branch(
     assert result["success"] is False
     assert result["release_recovery_event_ids"] == []
     assert "agent_branch must be under agents/" in result["errors"][0]
+
+
+def test_apply_agent_action_git_release_recovery_requires_commit_sha(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    release_promotion_id = state.release_packages["rel-1"].git_promotion_record_ids[0]
+    repo.record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=False,
+        error="merge conflict",
+    )
+
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_recoveries": [
+                {
+                    "release_package_id": "rel-1",
+                    "agent_branch": "agents/lead/release-resolved",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["release_recovery_event_ids"] == []
+    assert "commit_sha must be a non-empty string" in result["errors"][0]
 
 
 def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
