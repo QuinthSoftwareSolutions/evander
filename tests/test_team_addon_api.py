@@ -1456,7 +1456,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
-    assert 'fetch(`${API_BASE}/costs`' in script.text
+    assert 'teamFetch(`${API_BASE}/costs`' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
     assert "Blocked: estimated cost cap reached" in script.text
@@ -1493,6 +1493,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-agent-call-conversation-id" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
     assert "new EventSource" in script.text
+    assert 'document.addEventListener("visibilitychange"' in script.text
+    assert 'activeTeamView === "chat"' in script.text
+    assert "teamRequestTimeoutMs" in script.text
     assert "ensureChatStream" in script.text
     assert "/stream" in script.text
     assert "revision: state.revision,\n    conversations" in script.text

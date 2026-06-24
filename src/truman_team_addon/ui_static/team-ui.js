@@ -154,6 +154,7 @@ const timelinePageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
 const chatBottomStickinessPx = 96;
+const teamRequestTimeoutMs = 60000;
 let pendingChatScroll = null;
 const chatOlderMessageLoads = new Set();
 
@@ -405,9 +406,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   bindTimelineFilters();
   bindTimelinePagination();
-  window.addEventListener("beforeunload", () => {
-    closeChatStream();
-  });
+  bindPageLifecycle();
   decorateFieldTooltips(document);
   void loadState();
 });
@@ -538,18 +537,48 @@ function storeTeamView(view) {
   }
 }
 
+function bindPageLifecycle() {
+  window.addEventListener("beforeunload", () => {
+    closeChatStream();
+  });
+  window.addEventListener("pagehide", () => {
+    closeChatStream();
+  });
+  window.addEventListener("pageshow", () => {
+    syncChatStreamForActiveView({ refresh: true });
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      closeChatStream();
+      return;
+    }
+    syncChatStreamForActiveView({ refresh: true });
+  });
+}
+
 function setTeamView(view) {
   const nextView = normalizedTeamView(view);
   if (nextView === "people" && activeTeamView !== "people") {
     clearSelectedTeamRecord();
   }
   const enteringChat = activeTeamView !== "chat" && nextView === "chat";
+  const leavingChat = activeTeamView === "chat" && nextView !== "chat";
   activeTeamView = nextView;
   storeTeamView(activeTeamView);
   if (enteringChat && selectedChatConversationId) {
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   render();
+  if (leavingChat) {
+    closeChatStream();
+  }
+  if (enteringChat) {
+    if (selectedChatConversationId) {
+      syncChatStreamForActiveView({ refresh: true });
+    } else {
+      void loadConversations({ preserveSelection: true });
+    }
+  }
 }
 
 function updateTeamViewTabs() {
@@ -1349,10 +1378,10 @@ async function loadState({ preserveForms = false } = {}) {
   timelineLoading = true;
   try {
     const [stateResponse, templatesResponse] = await Promise.all([
-      fetch(`${API_BASE}/state`, {
+      teamFetch(`${API_BASE}/state`, {
         headers: { Accept: "application/json" },
       }),
-      fetch(`${API_BASE}/templates`, {
+      teamFetch(`${API_BASE}/templates`, {
         headers: { Accept: "application/json" },
       }),
     ]);
@@ -1383,7 +1412,7 @@ async function loadState({ preserveForms = false } = {}) {
 async function loadCosts() {
   const requestId = ++costsRequestId;
   try {
-    const response = await fetch(`${API_BASE}/costs`, {
+    const response = await teamFetch(`${API_BASE}/costs`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1520,7 +1549,7 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
   chatState = { ...chatState, loading: true, error: null };
   renderChat();
   try {
-    const response = await fetch(chatApiUrl("/conversations"), {
+    const response = await teamFetch(chatApiUrl("/conversations"), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1536,8 +1565,12 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
     selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
     renderChat();
     if (selectedChatConversationId) {
-      ensureChatStream(selectedChatConversationId);
-      void loadConversationDetail(selectedChatConversationId, requestId);
+      if (chatStreamShouldBeOpen()) {
+        ensureChatStream(selectedChatConversationId);
+        void loadConversationDetail(selectedChatConversationId, requestId);
+      } else {
+        closeChatStream();
+      }
     } else {
       closeChatStream();
     }
@@ -1560,7 +1593,7 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     return;
   }
   try {
-    const response = await fetch(chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}`), {
+    const response = await teamFetch(chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}`), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1606,7 +1639,7 @@ async function loadOlderChatMessages(conversationId) {
       before: beforeMessageId,
       limit: String(chatMessagePageSize),
     });
-    const response = await fetch(
+    const response = await teamFetch(
       chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}/messages`, query),
       { headers: { Accept: "application/json" } },
     );
@@ -1659,9 +1692,31 @@ function replaceChatConversation(conversation) {
   chatState = { ...chatState, conversations: nextConversations };
 }
 
+function chatStreamShouldBeOpen() {
+  return activeTeamView === "chat" && document.visibilityState !== "hidden";
+}
+
+function syncChatStreamForActiveView({ refresh = false } = {}) {
+  if (!chatStreamShouldBeOpen()) {
+    closeChatStream();
+    return;
+  }
+  if (!selectedChatConversationId) {
+    return;
+  }
+  ensureChatStream(selectedChatConversationId);
+  if (refresh) {
+    void loadConversationDetail(selectedChatConversationId);
+  }
+}
+
 function ensureChatStream(conversationId) {
   const normalizedConversationId = text(conversationId);
   if (!normalizedConversationId || typeof EventSource === "undefined") {
+    return;
+  }
+  if (!chatStreamShouldBeOpen()) {
+    closeChatStream();
     return;
   }
   if (chatStream && chatStreamConversationId === normalizedConversationId) {
@@ -1741,7 +1796,7 @@ async function createOrFocusChat(agentId) {
   }
   setStatus("Opening chat.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/conversations`, {
+    const response = await teamFetch(`${API_BASE}/conversations`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -1792,7 +1847,7 @@ async function submitChatMessage(form) {
   setStatus("Sending chat message.", "loading");
   try {
     const conversationId = text(conversation.id);
-    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
+    const response = await teamFetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -7495,7 +7550,7 @@ async function loadTimeline() {
   setTimelineStatus("Loading derived timeline.", "loading");
 
   try {
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
       {
         headers: { Accept: "application/json" },
@@ -8374,6 +8429,45 @@ function fillSelect(select, options) {
   delete select.dataset.currentValue;
 }
 
+function teamFetch(input, init = {}, { timeoutMs = teamRequestTimeoutMs } = {}) {
+  const timeout = Number(timeoutMs);
+  if (!Number.isFinite(timeout) || timeout <= 0 || typeof AbortController === "undefined") {
+    return window.fetch(input, init);
+  }
+
+  const controller = new AbortController();
+  const upstreamSignal = init?.signal || null;
+  let timedOut = false;
+  const abortFromUpstream = () => {
+    controller.abort(upstreamSignal?.reason);
+  };
+
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      controller.abort(upstreamSignal.reason);
+    } else {
+      upstreamSignal.addEventListener("abort", abortFromUpstream, { once: true });
+    }
+  }
+
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeout);
+
+  return window.fetch(input, { ...init, signal: controller.signal })
+    .catch((error) => {
+      if (timedOut && error?.name === "AbortError") {
+        throw new Error(`Request timed out after ${Math.round(timeout / 1000)}s.`);
+      }
+      throw error;
+    })
+    .finally(() => {
+      window.clearTimeout(timer);
+      upstreamSignal?.removeEventListener?.("abort", abortFromUpstream);
+    });
+}
+
 function fillSelectsIn(root) {
   const options = buildSelectOptionSets();
   root.querySelectorAll("select[data-options]").forEach((select) => {
@@ -8469,7 +8563,7 @@ async function importGitRepoForForm(form, button) {
   button.disabled = true;
   setStatus("Importing Git repo.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/projects/git/import`, {
+    const response = await teamFetch(`${API_BASE}/projects/git/import`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -8534,7 +8628,7 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
   setFormBusy(form, true);
   setStatus("Saving.", "loading");
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
       method,
       headers: {
         Accept: "application/json",
@@ -8777,7 +8871,7 @@ async function generateAvatarPreview(button) {
   setFormBusy(form, true);
   setStatus("Generating avatar preview.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/avatar/previews`, {
+    const response = await teamFetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/avatar/previews`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -8853,7 +8947,7 @@ async function submitAvatarFormData(form, endpoint, body) {
   setFormBusy(form, true);
   setStatus("Saving avatar.", "loading");
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
       method: "POST",
       headers: { Accept: "application/json" },
       body,
@@ -8908,7 +9002,7 @@ async function requestContextRotation(button, agentId) {
   setStatus("Requesting context clearing.", "loading");
   try {
     const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/context-rotation`;
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}${endpoint}`,
       {
         method: "POST",
@@ -9002,7 +9096,7 @@ async function startAgentVoiceCall(button, agentId) {
       return;
     }
     call.startupPhase = "session";
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/voice-sessions`,
       {
         method: "POST",
@@ -9114,7 +9208,7 @@ async function connectBrowserRealtimeVoice(call) {
   });
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
-  const response = await fetch(call.callsUrl, {
+  const response = await teamFetch(call.callsUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${call.clientSecret}`,
@@ -9144,7 +9238,7 @@ async function recordAgentVoiceEvent(voiceSessionId, payload) {
   if (!normalizedVoiceSessionId) {
     return null;
   }
-  const response = await fetch(
+  const response = await teamFetch(
     `${API_BASE}/voice-sessions/${encodeURIComponent(normalizedVoiceSessionId)}/events`,
     {
       method: "POST",
@@ -9294,7 +9388,7 @@ async function endAgentVoiceSessionOnServer(call, status, errorMessage) {
     return null;
   }
   const transcript = agentVoiceTranscriptExcerpt(call, { limit: 60 });
-  const response = await fetch(endpoint, {
+  const response = await teamFetch(endpoint, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -9485,7 +9579,7 @@ function parseRealtimeFunctionArguments(value) {
 }
 
 async function createAgentVoiceQuery(call, { question, reason, functionCallId }) {
-  const response = await fetch(
+  const response = await teamFetch(
     `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/queries`,
     {
       method: "POST",
@@ -9515,7 +9609,7 @@ async function waitForAgentVoiceQuery(voiceSessionId, queryId) {
   const startedAt = Date.now();
   const timeoutMs = 90000;
   while (Date.now() - startedAt < timeoutMs) {
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}`,
       { headers: { Accept: "application/json" } },
     );
@@ -9528,7 +9622,7 @@ async function waitForAgentVoiceQuery(voiceSessionId, queryId) {
     }
     await delay(1200);
   }
-  const timeoutResponse = await fetch(
+  const timeoutResponse = await teamFetch(
     `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}/timeout`,
     {
       method: "POST",
@@ -9585,7 +9679,7 @@ async function requestAgentStandDown(button, agentId) {
   setStatus("Standing down agent subtree.", "loading");
   try {
     const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`;
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}${endpoint}`,
       {
         method: "POST",
@@ -9637,7 +9731,7 @@ async function revokeAgentStandDown(button, agentId) {
   setStatus("Revoking stand-down.", "loading");
   try {
     const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`;
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}${endpoint}`,
       {
         method: "POST",
@@ -9686,7 +9780,7 @@ async function dismissActionRecordAttention(button, actionRecordId) {
   setStatus("Dismissing failed action.", "loading");
   try {
     const endpoint = `/action-records/${encodeURIComponent(actionRecordId)}/dismiss`;
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}${endpoint}`,
       {
         method: "POST",
@@ -9737,7 +9831,7 @@ async function markGovernanceAgendaHandled(button, agendaItemId) {
   setStatus("Marking governance agenda item handled.", "loading");
   try {
     const endpoint = `/governance-agenda/${encodeURIComponent(agendaItemId)}/handle`;
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}${endpoint}`,
       {
         method: "POST",

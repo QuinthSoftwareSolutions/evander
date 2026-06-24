@@ -2361,6 +2361,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+function currentPageVisible(): boolean {
+  return typeof globalThis.document === "undefined" || globalThis.document.visibilityState !== "hidden";
+}
+
 function workflowCatalogPath(directoryPath: string): string {
   const params = new URLSearchParams();
   const trimmedDirectoryPath = directoryPath.trim();
@@ -3971,6 +3975,7 @@ export default function App() {
   const [workflowGeneratorWarnings, setWorkflowGeneratorWarnings] = useState<string[]>([]);
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
+  const [pageVisible, setPageVisible] = useState(currentPageVisible);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
@@ -4374,6 +4379,20 @@ export default function App() {
   }, [hasUnsavedWorkflowChanges]);
 
   useEffect(() => {
+    if (typeof globalThis.document === "undefined") return;
+    const updateVisibility = () => setPageVisible(currentPageVisible());
+    const markHidden = () => setPageVisible(false);
+    globalThis.document.addEventListener("visibilitychange", updateVisibility);
+    window.addEventListener("pageshow", updateVisibility);
+    window.addEventListener("pagehide", markHidden);
+    return () => {
+      globalThis.document.removeEventListener("visibilitychange", updateVisibility);
+      window.removeEventListener("pageshow", updateVisibility);
+      window.removeEventListener("pagehide", markHidden);
+    };
+  }, []);
+
+  useEffect(() => {
     setRunSearchScope((current) => {
       if (current && runSearchScopeOptions.some((option) => option.value === current)) return current;
       return runSearchScopeOptions[0]?.value ?? "";
@@ -4771,7 +4790,7 @@ export default function App() {
   }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
 
   useEffect(() => {
-    if (workflowRunReadLocked) {
+    if (workflowRunReadLocked || !pageVisible) {
       for (const timeout of runtimePulseTimeoutsRef.current.values()) {
         clearTimeout(timeout);
       }
@@ -4801,7 +4820,7 @@ export default function App() {
       }
       runtimePulseTimeoutsRef.current.clear();
     };
-  }, [workflowRunReadLocked]);
+  }, [workflowRunReadLocked, pageVisible]);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
     const normalizedEventId = eventId.trim();

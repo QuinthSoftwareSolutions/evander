@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Task Ownership Handoff
+
+- Allowed superior Team agents to set `owner_agent_id` in `task_updates[]` to
+  claim or reassign non-terminal tasks currently owned by subordinate agents,
+  while preserving owner-only task state/title/priority/description edits.
+- Bumped the Team action contract and agent guidance versions so persistent
+  agents receive the new task handoff schema and instructions.
+
+## 2026-06-24 - Admin Stream Connection Hygiene
+
+- Closed Team Add-on chat, workflow-run, and Admin chat EventSource streams while
+  their browser tab is hidden, and reopened them with a fresh snapshot when the
+  tab becomes visible.
+- Routed Team Add-on UI requests through a timeout wrapper so queued or stalled
+  async operations report an error and release busy UI state instead of hanging
+  indefinitely.
+
 ## 2026-06-24 - Team Add-on Inline Git Import
 
 - Added the Git repo import action to team-scoped inline project creation so all
