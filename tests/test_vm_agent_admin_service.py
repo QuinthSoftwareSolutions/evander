@@ -986,6 +986,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "labels": {"team": "infra"},
                 "model": "gpt-5",
                 "vm_user": "service",
+                "ttl_seconds": None,
                 "ttl_hours": 48,
                 "allowed_tools": ["tool-a"],
                 "tool_argument_policies": None,

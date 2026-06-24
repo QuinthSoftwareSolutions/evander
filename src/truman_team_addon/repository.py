@@ -87,6 +87,7 @@ EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
+MISSING_ACTION_RECOVERY_MARKER = "missing action artifact recovery prompt dispatched"
 
 _NON_TERMINAL_TASK_STATES = frozenset(
     {
@@ -1477,6 +1478,148 @@ class TeamStateRepository:
             raise RuntimeError("conversation message dispatch was not started")
         return state, state.conversation_messages[resolved_message_id]
 
+    def queue_chat_message_dispatch(
+        self,
+        *,
+        message_id: str,
+        dispatch_id: str,
+        reason: str | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage]:
+        normalized_message_id = _required_text(message_id, "message_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_reason = _optional_text(reason)
+        resolved_message_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal resolved_message_id
+            message = _require_present(
+                state.conversation_messages,
+                normalized_message_id,
+                "conversation message",
+            )
+            conversation = _require_present(
+                state.conversations,
+                message.conversation_id,
+                "conversation",
+            )
+            agent = _require_present(state.agents, conversation.agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            if message.sender != "operator":
+                raise ValueError(f"message {message.id} is not an operator message")
+            now = utc_now()
+            metadata = dict(message.metadata)
+            metadata["queued_at"] = now.isoformat()
+            if normalized_reason is not None:
+                metadata["queued_reason"] = normalized_reason
+            message.status = "queued"
+            message.dispatch_id = normalized_dispatch_id
+            message.error = None
+            message.metadata = metadata
+            message.updated_at = now
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=f"Queued: {_chat_preview(message.body)}",
+            )
+            resolved_message_id = message.id
+            return state
+
+        state = self.update(_mutate)
+        if resolved_message_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch was not queued")
+        return state, state.conversation_messages[resolved_message_id]
+
+    def claim_pending_chat_message_dispatches(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 10,
+        lease_seconds: int = 172800,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+        blocked_team_ids: set[str] | None = None,
+    ) -> tuple[TeamState, list[dict[str, Any]]]:
+        effective_now = _ensure_utc(now or utc_now())
+        normalized_limit = max(0, int(limit))
+        normalized_team_id = _optional_text(team_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_agent_id = _optional_text(agent_id)
+        blocked_teams = set(blocked_team_ids or set())
+        claims: list[dict[str, Any]] = []
+        if normalized_limit == 0:
+            return self.read(), claims
+
+        def _mutate(state: TeamState) -> TeamState:
+            messages = sorted(
+                state.conversation_messages.values(),
+                key=lambda item: (item.created_at, item.id),
+            )
+            for message in messages:
+                if normalized_limit and len(claims) >= normalized_limit:
+                    break
+                if (
+                    message.sender != "operator"
+                    or message.message_type != "text"
+                    or message.status != "queued"
+                ):
+                    continue
+                conversation = state.conversations.get(message.conversation_id)
+                if conversation is None:
+                    continue
+                agent = state.agents.get(conversation.agent_id)
+                if agent is None or agent.status == AgentStatus.ARCHIVED:
+                    continue
+                if normalized_team_id is not None and agent.team_id != normalized_team_id:
+                    continue
+                if agent.team_id in blocked_teams:
+                    continue
+                if normalized_project_id is not None and not agent_has_project_assignment(
+                    state,
+                    agent.id,
+                    normalized_project_id,
+                ):
+                    continue
+                if normalized_agent_id is not None and agent.id != normalized_agent_id:
+                    continue
+                runtime = state.agent_runtimes.setdefault(
+                    agent.id,
+                    AgentRuntime(agent_id=agent.id),
+                )
+                if (
+                    runtime.wake_leased_until is not None
+                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                ):
+                    continue
+                dispatch_id = message.dispatch_id or f"team-chat:{message.id}"
+                runtime.active_dispatch_id = dispatch_id
+                runtime.wake_leased_until = effective_now + timedelta(
+                    seconds=max(1, int(lease_seconds))
+                )
+                runtime.wake_reason = "team_chat"
+                runtime.last_wake_at = effective_now
+                runtime.next_wake_at = None
+                runtime.updated_at = effective_now
+                message.status = "running"
+                message.dispatch_id = dispatch_id
+                message.error = None
+                message.updated_at = effective_now
+                conversation.updated_at = effective_now
+                claims.append(
+                    {
+                        "agent_id": agent.id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation.id,
+                        "message_id": message.id,
+                        "dispatch_id": dispatch_id,
+                    }
+                )
+            return state
+
+        state = self.update(_mutate)
+        return state, claims
+
     def mark_chat_message_dispatch_failed(
         self,
         *,
@@ -2056,15 +2199,25 @@ class TeamStateRepository:
         summary: str,
         artifact_refs: list[str] | None = None,
         state: TeamRecordState = TeamRecordState.PENDING,
+        supersedes_deliverable_id: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_deliverable_id = _optional_text(deliverable_id)
         normalized_task_id = _required_text(task_id, "task_id")
         normalized_producer_agent_id = _required_text(producer_agent_id, "producer_agent_id")
         normalized_summary = _required_text(summary, "summary")
+        normalized_supersedes_deliverable_id = _optional_text(
+            supersedes_deliverable_id
+        )
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
+            superseded_deliverable = _superseded_deliverable_for_rework(
+                state_model,
+                task=task,
+                producer_agent_id=normalized_producer_agent_id,
+                supersedes_deliverable_id=normalized_supersedes_deliverable_id,
+            )
             effective_deliverable_id = normalized_deliverable_id or _generated_id(
                 prefix="deliverable",
                 labels=[normalized_task_id, normalized_summary],
@@ -2078,8 +2231,11 @@ class TeamStateRepository:
                 summary=normalized_summary,
                 artifact_refs=artifact_refs or [],
                 state=state,
+                supersedes_deliverable_id=normalized_supersedes_deliverable_id,
             )
             state_model.deliverables[deliverable.id] = deliverable
+            if superseded_deliverable is not None:
+                superseded_deliverable.superseded_by_deliverable_id = deliverable.id
             task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
             task.updated_at = utc_now()
             return state_model
@@ -2991,8 +3147,20 @@ class TeamStateRepository:
         low_priority_threshold = max(0, int(low_priority_wake_after_cycles))
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
+        if normalized_limit == 0:
+            return self.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
+            terminal_task_states = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+            teams_with_open_tasks: set[str] = set()
+            for task in state_model.tasks.values():
+                if task.state in terminal_task_states:
+                    continue
+                owner = state_model.agents.get(task.owner_agent_id)
+                if owner is None or owner.team_id is None:
+                    continue
+                teams_with_open_tasks.add(owner.team_id)
+            teams_with_lease = set()
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
@@ -3019,26 +3187,32 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                wake_inbox = _wakeable_inbox_items(pending_inbox)
                 immediate_inbox = [
                     item
-                    for item in pending_inbox
+                    for item in wake_inbox
                     if item.priority != TeamInboxPriority.LOW
                 ]
                 low_priority_inbox = [
-                    item for item in pending_inbox if item.priority == TeamInboxPriority.LOW
+                    item for item in wake_inbox if item.priority == TeamInboxPriority.LOW
                 ]
                 action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
+                wakeable_tasks = [
+                    task
+                    for task in active_tasks
+                    if _task_can_wake_owner_for_work(state_model, task)
+                ]
                 task_work_ready = any(
                     state_model.dependency_status(task.id) == "satisfied"
-                    for task in active_tasks
+                    for task in wakeable_tasks
                 ) or any(
                     state_model.subtask_counts(task.id)["open"] > 0
-                    for task in active_tasks
+                    for task in wakeable_tasks
                 )
                 wake_eligible = (
                     rotation_pending
-                    or bool(pending_inbox)
+                    or bool(wake_inbox)
                     or bool(action_feedback)
                     or task_work_ready
                 )
@@ -3068,18 +3242,18 @@ class TeamStateRepository:
                 elif not low_priority_inbox:
                     _clear_low_priority_batch(runtime)
                 if (
-                    not pending_inbox
+                    not wake_inbox
                     and not rotation_pending
                     and not action_feedback
                     and not due_by_time
                 ):
                     continue
-                if pending_inbox and not immediate_wake_ready and not low_priority_wake_ready:
+                if wake_inbox and not immediate_wake_ready and not low_priority_wake_ready:
                     continue
                 if (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
-                    and not pending_inbox
+                    and not wake_inbox
                     and not rotation_pending
                     and not action_feedback
                 ):
@@ -3130,6 +3304,120 @@ class TeamStateRepository:
                         "operator_chat_participants": _operator_chat_participant_payloads(state_model),
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
+                        "subordinates": _subordinate_agent_payloads(state_model, agent),
+                    }
+                )
+                if agent.team_id is not None:
+                    teams_with_lease.add(agent.team_id)
+
+            if normalized_limit and len(leases) >= normalized_limit:
+                return state_model
+
+            for team in sorted(state_model.teams.values(), key=lambda item: item.id):
+                if normalized_limit and len(leases) >= normalized_limit:
+                    break
+                if (
+                    team.archived
+                    or team.id in blocked_teams
+                    or team.id not in teams_with_open_tasks
+                ):
+                    continue
+                if normalized_team_id is not None and team.id != normalized_team_id:
+                    continue
+                if team.id in teams_with_lease:
+                    continue
+                manager = state_model.agents.get(team.manager_agent_id)
+                if (
+                    manager is None
+                    or manager.status != AgentStatus.ACTIVE
+                    or (manager.id is None)
+                ):
+                    continue
+                if normalized_project_id is not None and not agent_has_project_assignment(
+                    state_model,
+                    manager.id,
+                    normalized_project_id,
+                ):
+                    continue
+                if (
+                    normalized_agent_id is not None
+                    and manager.id != normalized_agent_id
+                ):
+                    continue
+                if (
+                    manager.id in state_model.agent_runtimes
+                    and state_model.agent_runtimes[manager.id].wake_leased_until
+                    and _ensure_utc(state_model.agent_runtimes[manager.id].wake_leased_until)
+                    > effective_now
+                ):
+                    continue
+                if _active_stand_downs_for_agent(state_model, manager.id):
+                    continue
+                manager_runtime = state_model.agent_runtimes.setdefault(
+                    manager.id,
+                    AgentRuntime(agent_id=manager.id),
+                )
+                due_by_time = (
+                    manager_runtime.next_wake_at is None
+                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
+                )
+                if not due_by_time:
+                    continue
+                dispatch_id = f"team-dispatch-{uuid4().hex}"
+                manager_runtime.active_dispatch_id = dispatch_id
+                manager_runtime.wake_reason = "manager_fallback"
+                manager_runtime.last_wake_at = effective_now
+                manager_runtime.wake_leased_until = effective_now + timedelta(
+                    seconds=lease_seconds
+                )
+                manager_runtime.next_wake_at = effective_now + timedelta(
+                    seconds=wake_interval_seconds
+                )
+                manager_runtime.updated_at = effective_now
+                if (
+                    manager_runtime.context_clearing_policy
+                    == AgentContextClearingPolicy.EVERY_WAKE
+                    and not manager_runtime.context_rotation_pending
+                ):
+                    _mark_context_rotation_pending(
+                        state_model,
+                        agent=manager,
+                        runtime=manager_runtime,
+                        reason="every_wake",
+                        requested_by=None,
+                        requested_at=effective_now,
+                        request_note=None,
+                    )
+                _clear_low_priority_batch(manager_runtime)
+                teams_with_lease.add(team.id)
+                leases.append(
+                    {
+                        "agent": _agent_payload(state_model, manager),
+                        "runtime": manager_runtime.model_dump(mode="json"),
+                        "dispatch_id": dispatch_id,
+                        "reason": "manager_fallback",
+                        "tasks": [
+                            task_payload_with_derived(state_model, task)
+                            for task in _active_tasks_for_agent(
+                                state_model,
+                                manager.id,
+                            )
+                        ],
+                        "inbox": [
+                            item.model_dump(mode="json")
+                            for item in _pending_inbox_for_agent(
+                                state_model,
+                                manager.id,
+                            )
+                        ],
+                        "recent_action_feedback": _latest_action_feedback_for_agent(
+                            state_model,
+                            manager.id,
+                        ),
+                        "operator_chat_participants": _operator_chat_participant_payloads(state_model),
+                        "superior_agent_id": manager.reports_to_agent_id,
+                        "subordinate_agent_ids": list(manager.subordinate_agent_ids),
+                        "subordinates": _subordinate_agent_payloads(state_model, manager),
                     }
                 )
             return state_model
@@ -3822,6 +4110,22 @@ class TeamStateRepository:
                     git_refs = _deliverable_git_refs_from_payload(
                         deliverable_payload.get("git_refs")
                     )
+                    supersedes_deliverable_id = _optional_text(
+                        deliverable_payload.get("supersedes_deliverable_id")
+                    )
+                    if (
+                        supersedes_deliverable_id is not None
+                        and deliverable_id == supersedes_deliverable_id
+                    ):
+                        raise ValueError(
+                            "deliverable id cannot match supersedes_deliverable_id"
+                        )
+                    superseded_deliverable = _superseded_deliverable_for_rework(
+                        state_model,
+                        task=task,
+                        producer_agent_id=agent.id,
+                        supersedes_deliverable_id=supersedes_deliverable_id,
+                    )
                     deliverable = Deliverable(
                         id=deliverable_id,
                         task_id=task_id,
@@ -3830,8 +4134,13 @@ class TeamStateRepository:
                         artifact_refs=artifact_refs,
                         git_refs=git_refs,
                         state=TeamRecordState.PENDING,
+                        supersedes_deliverable_id=supersedes_deliverable_id,
                     )
                     state_model.deliverables[deliverable.id] = deliverable
+                    if superseded_deliverable is not None:
+                        superseded_deliverable.superseded_by_deliverable_id = (
+                            deliverable.id
+                        )
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                     now = utc_now()
                     _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
@@ -4071,6 +4380,75 @@ class TeamStateRepository:
             _ephemeral_assignment_event_payload(state, assignment_id)
             for assignment_id in result["created_ephemeral_assignment_ids"]
         ]
+        return state, result
+
+    def record_missing_action_recovery_prompted(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        action_artifact_path: str,
+        error: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_path = _required_text(action_artifact_path, "action_artifact_path")
+        result: dict[str, Any] = {
+            "recorded": False,
+            "already_prompted": False,
+            "agent_id": None,
+            "action_record_id": None,
+            "error": None,
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            agent = _agent_for_session(state_model, session_id=normalized_session_id)
+            result["agent_id"] = agent.id
+            runtime = state_model.agent_runtimes.setdefault(
+                agent.id,
+                AgentRuntime(agent_id=agent.id),
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                expected = runtime.active_dispatch_id or "none"
+                result["error"] = (
+                    "cannot recover missing Team action artifact because dispatch_id "
+                    f"{normalized_dispatch_id} does not match active lease {expected}"
+                )
+                return state_model
+            for record in state_model.action_records.values():
+                if (
+                    record.agent_id == agent.id
+                    and record.dispatch_id == normalized_dispatch_id
+                    and record.error is not None
+                    and MISSING_ACTION_RECOVERY_MARKER in record.error
+                ):
+                    result["already_prompted"] = True
+                    result["action_record_id"] = record.id
+                    return state_model
+            action_id = f"action-{uuid4().hex}"
+            recovery_error = (
+                f"{MISSING_ACTION_RECOVERY_MARKER}: {normalized_path}; "
+                f"original error: {error}"
+            )
+            state_model.action_records[action_id] = AgentActionRecord(
+                id=action_id,
+                agent_id=agent.id,
+                dispatch_id=normalized_dispatch_id,
+                action={
+                    "agent_id": agent.id,
+                    "dispatch_id": normalized_dispatch_id,
+                },
+                success=False,
+                error=recovery_error,
+            )
+            runtime.updated_at = utc_now()
+            result["recorded"] = True
+            result["action_record_id"] = action_id
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
         return state, result
 
     def record_git_promotion_result(
@@ -4459,12 +4837,23 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
     effective_permissions = effective_role_permissions(state, agent)
     payload["role_name"] = role.name if role is not None else None
+    payload["role_description"] = role.description if role is not None else ""
     payload["role_permissions"] = [permission.value for permission in effective_permissions]
     payload["effective_role_permissions"] = [permission.value for permission in effective_permissions]
     payload["project_assignments"] = agent_project_assignment_payloads(state, agent.id)
     payload["project_ids"] = agent_project_ids(state, agent.id)
     payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
     return payload
+
+
+def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for subordinate_id in agent.subordinate_agent_ids:
+        subordinate = state.agents.get(subordinate_id)
+        if subordinate is None:
+            continue
+        payloads.append(_agent_payload(state, subordinate))
+    return payloads
 
 
 def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:
@@ -4984,6 +5373,29 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     ]
     tasks.sort(key=lambda item: (item.priority, item.created_at, item.id))
     return tasks
+
+
+def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
+    return [item for item in items if item.response_requested]
+
+
+def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
+    return not _task_waits_on_active_deliverable_review(state, task)
+
+
+def _task_waits_on_active_deliverable_review(state: TeamState, task: AgentTask) -> bool:
+    if task.state != TeamTaskState.WAITING_FOR_REVIEW:
+        return False
+    review_states = {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+        TeamRecordState.ACCEPTED,
+    }
+    return any(
+        deliverable.state in review_states
+        for deliverable in _active_task_deliverables(state, task)
+    )
 
 
 def _active_stand_downs_for_agent(
@@ -5532,6 +5944,16 @@ def _correction_hints(error: str) -> list[str]:
         hints.append(
             "For Git-only deliverables, omit artifact_paths; otherwise list staged "
             "paths under /artifacts."
+        )
+    if "artifact file not found" in normalized or MISSING_ACTION_RECOVERY_MARKER in normalized:
+        hints.append(
+            "Before finishing any Team wake, write /artifacts/team-action.json. "
+            "Use the seeded team-finish helper to fill agent_id and dispatch_id."
+        )
+    if "supersedes_deliverable_id" in normalized:
+        hints.append(
+            "When revising a rejected deliverable, set supersedes_deliverable_id to "
+            "the rejected deliverable id from the review_rejected inbox payload."
         )
     if "has neither a feature branch nor artifact refs" in normalized:
         hints.append(
@@ -6606,6 +7028,7 @@ def _apply_review_decision(
         decision_state=decision_state,
         findings=_string_list(decision.get("findings"), "findings"),
         projects_to_recalc=projects_to_recalc,
+        result=result,
     )
     return review.id
 
@@ -6679,6 +7102,7 @@ def _cascade_review_decision(
     decision_state: TeamRecordState,
     findings: list[str],
     projects_to_recalc: set[str],
+    result: dict[str, Any] | None = None,
 ) -> None:
     """Apply a review decision and cascade it to the deliverable, task, and project.
 
@@ -6699,11 +7123,7 @@ def _cascade_review_decision(
         )
         if all_accepted:
             deliverable.state = TeamRecordState.ACCEPTED
-            task_deliverables = [
-                state.deliverables[deliverable_id]
-                for deliverable_id in task.deliverable_ids
-                if deliverable_id in state.deliverables
-            ]
+            task_deliverables = _active_task_deliverables(state, task)
             if task_deliverables and all(
                 item.state == TeamRecordState.ACCEPTED for item in task_deliverables
             ):
@@ -6711,8 +7131,35 @@ def _cascade_review_decision(
                 task.updated_at = now
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
-        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
         task.updated_at = now
+        inbox_id = f"inbox-{uuid4().hex}"
+        state.inbox[inbox_id] = AgentInboxItem(
+            id=inbox_id,
+            recipient_agent_id=deliverable.producer_agent_id,
+            sender_agent_id=review.reviewer_agent_id,
+            task_id=task.id,
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=True,
+            priority=TeamInboxPriority.NORMAL,
+            payload={
+                "kind": "review_rejected",
+                "review_request_id": review.id,
+                "deliverable_id": deliverable.id,
+                "supersedes_deliverable_id": deliverable.id,
+                "task_id": task.id,
+                "summary": "Review rejected; revise and resubmit.",
+                "findings": list(findings),
+                "artifact_refs": list(deliverable.artifact_refs),
+            },
+        )
+        if result is not None:
+            result["created_inbox_item_ids"].append(inbox_id)
+        _mark_agent_work_due(
+            state,
+            agent_id=deliverable.producer_agent_id,
+            now=now,
+        )
     else:  # blocked
         deliverable.state = TeamRecordState.BLOCKED
         _set_task_state(task, TeamTaskState.BLOCKED, now=now)
@@ -6787,6 +7234,55 @@ def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
     )
+
+
+def _superseded_deliverable_for_rework(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    producer_agent_id: str,
+    supersedes_deliverable_id: str | None,
+) -> Deliverable | None:
+    if supersedes_deliverable_id is None:
+        return None
+    deliverable = state.deliverables.get(supersedes_deliverable_id)
+    if deliverable is None:
+        raise ValueError(
+            f"supersedes_deliverable_id references missing deliverable "
+            f"{supersedes_deliverable_id}"
+        )
+    if deliverable.task_id != task.id:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} belongs to task "
+            f"{deliverable.task_id}, not {task.id}"
+        )
+    if deliverable.producer_agent_id != producer_agent_id:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} was produced by "
+            f"{deliverable.producer_agent_id}, not {producer_agent_id}"
+        )
+    if deliverable.state != TeamRecordState.REJECTED:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} is not rejected"
+        )
+    if deliverable.superseded_by_deliverable_id is not None:
+        raise ValueError(
+            f"supersedes_deliverable_id {deliverable.id} is already superseded by "
+            f"{deliverable.superseded_by_deliverable_id}"
+        )
+    return deliverable
+
+
+def _active_task_deliverables(
+    state: TeamState,
+    task: AgentTask,
+) -> list[Deliverable]:
+    return [
+        deliverable
+        for deliverable_id in task.deliverable_ids
+        if (deliverable := state.deliverables.get(deliverable_id)) is not None
+        and deliverable.superseded_by_deliverable_id is None
+    ]
 
 
 def _emit_git_promotion_event(
@@ -7489,11 +7985,18 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         if (task := state.tasks.get(deliverable.task_id)) is not None
         and task.project_id == project_id
     ]
-    deliverable_ids = {deliverable.id for deliverable in project_deliverables}
+    active_project_deliverables = [
+        deliverable
+        for deliverable in project_deliverables
+        if deliverable.superseded_by_deliverable_id is None
+    ]
+    active_deliverable_ids = {
+        deliverable.id for deliverable in active_project_deliverables
+    }
     project_reviews = [
         review
         for review in state.review_requests.values()
-        if review.deliverable_id in deliverable_ids
+        if review.deliverable_id in active_deliverable_ids
     ]
     project_releases = [
         release
@@ -7507,7 +8010,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         or any(goal.state == TeamRecordState.BLOCKED for goal in project.goals)
         or any(
             deliverable.state == TeamRecordState.BLOCKED
-            for deliverable in project_deliverables
+            for deliverable in active_project_deliverables
         )
         or any(review.state == TeamRecordState.BLOCKED for review in project_reviews)
         or any(release.state == TeamRecordState.BLOCKED for release in project_releases)
@@ -7517,7 +8020,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         and not any(task.state in _NON_TERMINAL_TASK_STATES for task in project_tasks)
         and not any(
             deliverable.state in pending_or_blocked
-            for deliverable in project_deliverables
+            for deliverable in active_project_deliverables
         )
         and not any(review.state in pending_or_blocked for review in project_reviews)
         and not any(release.state in pending_or_blocked for release in project_releases)

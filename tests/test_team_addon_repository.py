@@ -305,6 +305,103 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
     assert state.agent_runtimes["backend"].wake_leased_until is None
 
 
+def test_repository_queues_chat_dispatch_until_active_dispatch_released(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _mark_backend_busy(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="team-dispatch-active",
+            wake_leased_until=now + timedelta(minutes=10),
+        )
+        return state
+
+    repo.update(_mark_backend_busy)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you check this after the current wake?",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+
+    state, message = repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    assert message.status == "queued"
+    assert message.dispatch_id == dispatch_id
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-dispatch-active"
+
+    _state, claims = repo.claim_pending_chat_message_dispatches(now=now)
+    assert claims == []
+
+    def _release_backend(state):
+        state.agent_runtimes["backend"].wake_leased_until = None
+        return state
+
+    repo.update(_release_backend)
+    state, claims = repo.claim_pending_chat_message_dispatches(
+        now=now + timedelta(minutes=1),
+    )
+
+    assert claims == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "conversation_id": conversation.id,
+            "message_id": message.id,
+            "dispatch_id": dispatch_id,
+        }
+    ]
+    assert state.conversation_messages[message.id].status == "running"
+    assert state.agent_runtimes["backend"].active_dispatch_id == dispatch_id
+    assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
+def test_repository_claim_pending_chat_message_dispatches_honors_limit_zero(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer when available.",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+        reason="agent backend already has active Team dispatch team-dispatch-active",
+    )
+
+    state, claims = repo.claim_pending_chat_message_dispatches(now=now, limit=0)
+
+    assert claims == []
+    assert state.conversation_messages[message.id].status == "queued"
+    assert state.conversation_messages[message.id].dispatch_id == dispatch_id
+    runtime = state.agent_runtimes.get("backend")
+    assert runtime is None or runtime.active_dispatch_id is None
+    assert runtime is None or runtime.wake_leased_until is None
+
+
 def test_repository_fails_active_team_chat_message_when_reply_item_is_invalid(
     tmp_path: Path,
 ) -> None:
@@ -582,6 +679,10 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_tasks)")
         }
+        deliverable_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_deliverables)")
+        }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
@@ -597,6 +698,8 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
     assert "state_entered_at" in task_columns
+    assert "supersedes_deliverable_id" in deliverable_columns
+    assert "superseded_by_deliverable_id" in deliverable_columns
     assert metadata["sqlite_schema_version"] == str(SQLITE_SCHEMA_VERSION)
 
 
@@ -3238,6 +3341,198 @@ def test_every_wake_context_policy_does_not_wake_idle_agent(tmp_path: Path) -> N
     assert runtime.context_rotation_reason is None
 
 
+def test_waiting_review_deliverable_does_not_reschedule_producer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=base_time + timedelta(minutes=20),
+    )
+
+    assert leases == []
+
+
+def test_response_requested_inbox_can_wake_waiting_review_producer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+
+    def _add_follow_up(state):
+        state.inbox["follow-up"] = AgentInboxItem(
+            id="follow-up",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=True,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_follow_up)
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "inbox"
+    assert [item["id"] for item in leases[0]["inbox"]] == ["follow-up"]
+
+
+def test_no_reply_inbox_does_not_wake_waiting_review_producer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+
+    def _add_no_reply_feedback(state):
+        state.inbox["no-reply"] = AgentInboxItem(
+            id="no-reply",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=False,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_add_no_reply_feedback)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        low_priority_wake_after_cycles=1,
+    )
+
+    assert leases == []
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.low_priority_batch_started_at is None
+    assert runtime.low_priority_batch_cycle_count == 0
+
+
+def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="stalled-task")
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "stalled-task",
+                    "summary": "Blocked slice for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["stalled-task"].state == TeamTaskState.WAITING_FOR_REVIEW
+    assert any(
+        item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+        and item.task_id == "stalled-task"
+        for item in state.inbox.values()
+    )
+
+    def _clear_deliverable_notices(state):
+        state.inbox = {
+            item_id: item
+            for item_id, item in state.inbox.items()
+            if not (
+                item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
+                and item.task_id == "stalled-task"
+            )
+        }
+        return state
+
+    def _throttle_manager(state):
+        runtime = state.agent_runtimes.get("manager", AgentRuntime(agent_id="manager"))
+        runtime.no_progress_count = 10
+        state.agent_runtimes["manager"] = runtime
+        return state
+
+    def _add_manager_non_wakeable_inbox(state):
+        state.inbox["manager-note"] = AgentInboxItem(
+            id="manager-note",
+            recipient_agent_id="manager",
+            sender_agent_id="lead",
+            task_id="stalled-task",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            priority=TeamInboxPriority.LOW,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_clear_deliverable_notices)
+    repo.update(_throttle_manager)
+    repo.update(_add_manager_non_wakeable_inbox)
+
+    state, leases = repo.lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    assert leases[0]["reason"] == "manager_fallback"
+    assert state.agent_runtimes["manager"].wake_reason == "manager_fallback"
+    assert leases[0]["tasks"] == []
+    assert leases[0]["inbox"][0]["id"] == "manager-note"
+    assert leases[0]["inbox"][0]["response_requested"] is False
+    json.dumps(leases[0])
+
+
 def test_every_wake_context_policy_preserves_low_priority_batching(
     tmp_path: Path,
 ) -> None:
@@ -4149,10 +4444,19 @@ def test_apply_agent_action_multi_deliverable_holds_back_task(tmp_path: Path) ->
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
 
 
-def test_apply_agent_action_review_rejected_blocks_task(tmp_path: Path) -> None:
+def test_apply_agent_action_review_rejected_returns_task_to_implementer(
+    tmp_path: Path,
+) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
     repo.apply_agent_action(
         action={
             "agent_id": "lead",
@@ -4181,10 +4485,205 @@ def test_apply_agent_action_review_rejected_blocks_task(tmp_path: Path) -> None:
     )
 
     assert result["success"] is True
+    assert result["decided_review_request_ids"] == ["review-1"]
+    assert len(result["created_inbox_item_ids"]) == 1
     assert state.review_requests["review-1"].state == TeamRecordState.REJECTED
+    assert state.review_requests["review-1"].findings == ["Needs rework."]
     assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
-    assert state.tasks["task"].state == TeamTaskState.BLOCKED
-    assert state.projects["project"].status == ProjectStatus.BLOCKED
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+    rework_item = state.inbox[result["created_inbox_item_ids"][0]]
+    assert rework_item.recipient_agent_id == "backend"
+    assert rework_item.sender_agent_id == "worker"
+    assert rework_item.task_id == "task"
+    assert rework_item.item_type == TeamInboxItemType.STATUS_REQUEST
+    assert rework_item.response_requested is True
+    assert rework_item.payload["kind"] == "review_rejected"
+    assert rework_item.payload["review_request_id"] == "review-1"
+    assert rework_item.payload["deliverable_id"] == "deliverable"
+    assert rework_item.payload["supersedes_deliverable_id"] == "deliverable"
+    assert rework_item.payload["findings"] == ["Needs rework."]
+
+    _state, leases = repo.lease_due_governance_managers(
+        now=state.tasks["task"].state_entered_at + timedelta(minutes=1),
+    )
+
+    assert leases == []
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-v2",
+                    "task_id": "task",
+                    "summary": "Reworked deliverable.",
+                    "supersedes_deliverable_id": rework_item.payload[
+                        "supersedes_deliverable_id"
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["created_deliverable_ids"] == ["deliverable-v2"]
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
+        "deliverable-v2"
+    )
+    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == (
+        "deliverable"
+    )
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable-v2",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review the revision.",
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-2", "state": "accepted"}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
+def test_apply_agent_action_rework_requires_deliverable_supersession(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review.",
+                }
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-1", "state": "rejected"}
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-v2",
+                    "task_id": "task",
+                    "summary": "Reworked deliverable without lineage.",
+                }
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable-v2",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review the revision.",
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-2", "state": "accepted"}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id is None
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_apply_agent_action_rework_rejects_self_superseding_deliverable_id(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Review.",
+                }
+            ],
+        },
+    )
+    repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-1", "state": "rejected"}
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Invalid self-superseding rework.",
+                    "supersedes_deliverable_id": "deliverable",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_deliverable_ids"] == []
+    assert result["errors"] == [
+        "deliverables[0]: deliverable id cannot match supersedes_deliverable_id"
+    ]
+    assert state.deliverables["deliverable"].state == TeamRecordState.REJECTED
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id is None
 
 
 def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:

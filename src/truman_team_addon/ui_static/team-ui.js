@@ -132,6 +132,7 @@ const runtimeFilterChoices = [
   ["ephemeral_work", "Ephemeral work"],
 ];
 const blockedWorkKinds = new Set([
+  "expired_agent_session",
   "blocked_task",
   "waiting_dependency_task",
   "pending_inbox_item",
@@ -313,7 +314,10 @@ const fieldTooltips = {
   "create-role-form:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
 
   "create-review-profile-form:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
-  "create-review-profile-form:criteria": "Criteria rows in id | label | description | required format.",
+  "create-review-profile-form:criterion_label": "Reviewer-facing criterion name.",
+  "create-review-profile-form:criterion_description": "Optional notes that clarify what the reviewer should check.",
+  "create-review-profile-form:criterion_id": "Optional stable key. Leave blank to generate one from the label.",
+  "create-review-profile-form:criterion_required": "Required criteria should be satisfied or explicitly failed in review decisions.",
 
   "record-deliverable-form:task_id": "Task this deliverable completes or advances.",
   "record-deliverable-form:producer_agent_id": "Agent that produced the deliverable.",
@@ -364,7 +368,10 @@ const fieldTooltips = {
   "edit:role:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
   "edit:role:archived": "Archived roles stay in state but should not be assigned to new agents.",
   "edit:review-profile:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
-  "edit:review-profile:criteria": "Replace criteria using id | label | description | required rows.",
+  "edit:review-profile:criterion_label": "Reviewer-facing criterion name.",
+  "edit:review-profile:criterion_description": "Optional notes that clarify what the reviewer should check.",
+  "edit:review-profile:criterion_id": "Optional stable key. Leave blank to generate one from the label.",
+  "edit:review-profile:criterion_required": "Required criteria should be satisfied or explicitly failed in review decisions.",
   "edit:review-profile:archived": "Archived profiles stay in state but cannot be selected for new review requests.",
 
   host_repo_path: "Host-local working repository path. The canonical remote URL alone is not enough; the host needs a local repository path.",
@@ -759,6 +766,22 @@ function bindForms() {
       return;
     }
     void importGitRepoForForm(form, button);
+  });
+
+  document.addEventListener("click", (event) => {
+    const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
+    if (addButton) {
+      event.preventDefault();
+      addReviewProfileCriterionRow(addButton.closest("[data-review-profile-criteria-editor]"));
+      return;
+    }
+
+    const removeButton = event.target?.closest?.("[data-review-profile-criterion-remove]");
+    if (!removeButton) {
+      return;
+    }
+    event.preventDefault();
+    removeReviewProfileCriterionRow(removeButton);
   });
 
   document.addEventListener("change", (event) => {
@@ -1762,7 +1785,9 @@ async function submitChatMessage(form) {
         activeComposer.value = "";
       }
     }
-    if (payload.dispatch?.success === false) {
+    if (payload.dispatch?.queued) {
+      setStatus(payload.dispatch.message || "Chat message queued until the agent finishes current work.", "warning");
+    } else if (payload.dispatch?.success === false) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
       setStatus("", "");
@@ -2413,6 +2438,8 @@ function renderRuntimeAgentRow(agent) {
   }
   const status = runtimeAgentStatus(agent);
   const refs = runtimeReferenceParts(agent);
+  const sessionStatus = normalizeAgentSessionHealth(agent);
+  const sessionSummary = runtimeAgentSessionSummary(agent);
   const wakeReason = runtimeText(agent.wake_reason);
   const lastWake = runtimeText(agent.last_wake_at);
   const nextWake = runtimeText(agent.next_wake_at);
@@ -2428,11 +2455,12 @@ function renderRuntimeAgentRow(agent) {
         <strong>${escapeHtml(agent.id)}</strong>
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+          ${sessionStatus.isExpired ? `<span class="state-pill critical">session expired</span>` : ""}
           ${renderAgentStandDownControls(agent.id, agent)}
           <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
+      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
       <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
@@ -2450,6 +2478,8 @@ function renderRuntimeAgentRow(agent) {
 function renderCompactRuntimeAgentRow(agent) {
   const status = runtimeAgentStatus(agent);
   const refs = runtimeReferenceParts(agent);
+  const sessionStatus = normalizeAgentSessionHealth(agent);
+  const sessionSummary = runtimeAgentSessionSummary(agent);
   const wakeReason = runtimeText(agent.wake_reason);
   const lastWake = runtimeText(agent.last_wake_at);
   const nextWake = runtimeText(agent.next_wake_at);
@@ -2460,6 +2490,7 @@ function renderCompactRuntimeAgentRow(agent) {
   const lastRotated = runtimeText(agent.last_context_rotated_at);
   const handoffSummary = text(agent.last_handoff_summary);
   const flags = [
+    sessionStatus.isExpired ? "session expired" : "",
     agent.wake_due ? "wake due" : "",
     agent.lease_active ? "lease active" : "",
     agent.active_dispatch_id ? `dispatch ${agent.active_dispatch_id}` : "",
@@ -2471,7 +2502,7 @@ function renderCompactRuntimeAgentRow(agent) {
         <summary class="runtime-summary compact-record-summary">
           <span class="compact-record-main">
             <strong>${escapeHtml(agent.id)}</strong>
-            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</span>
+            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</span>
           </span>
           <span class="runtime-summary-meta">
             <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
@@ -2500,6 +2531,9 @@ function renderCompactRuntimeAgentRow(agent) {
 }
 
 function runtimeAgentStatus(agent) {
+  if (Boolean(agent.session_is_expired)) {
+    return "critical";
+  }
   if (isDueOrLeasedAgent(agent)) {
     return "warning";
   }
@@ -2507,7 +2541,17 @@ function runtimeAgentStatus(agent) {
 }
 
 function isDueOrLeasedAgent(agent) {
-  return Boolean(agent.wake_due || agent.lease_active || agent.active_dispatch_id);
+  return Boolean(
+    agent.session_is_expired ||
+      agent.wake_due ||
+      agent.lease_active ||
+      agent.active_dispatch_id,
+  );
+}
+
+function runtimeAgentSessionSummary(agent) {
+  const health = normalizeAgentSessionHealth(agent);
+  return sessionHealthRuntimeLine(health, agent.session_id) || text(agent.session_id);
 }
 
 function runtimeReferenceParts(row) {
@@ -3068,6 +3112,8 @@ function orgAgentNodeData(agentData) {
     .filter(Boolean)
     .join(" ");
   const indicatorItems = agentData.inboxIndicatorItems || {};
+  const statusRequestItems = indicatorItems.status_request || [];
+  const progressReportItems = indicatorItems.progress_report || [];
   return {
     kind: "agent",
     agentId: agentData.id,
@@ -3083,17 +3129,35 @@ function orgAgentNodeData(agentData) {
         itemType: "status_request",
         direction: "down",
         label: "Status requests",
-        count: (indicatorItems.status_request || []).length,
+        count: statusRequestItems.length,
+        items: statusRequestItems.map(orgInboxIndicatorItemData),
       },
       {
         itemType: "progress_report",
         direction: "up",
         label: "Progress reports",
-        count: (indicatorItems.progress_report || []).length,
+        count: progressReportItems.length,
+        items: progressReportItems.map(orgInboxIndicatorItemData),
       },
     ],
     work,
     detailLines: hierarchyDetailLines(agentData, { focused: true }),
+  };
+}
+
+function orgInboxIndicatorItemData(item) {
+  const metaParts = [];
+  if (item.task_id) {
+    metaParts.push(`task ${item.task_id}`);
+  }
+  if (item.sender_agent_id) {
+    metaParts.push(`from ${item.sender_agent_id}`);
+  }
+  metaParts.push(inboxPriorityLabel(item));
+  metaParts.push(inboxReplyIntentLabel(item));
+  return {
+    detail: inboxItemDetail(item) || item.id,
+    meta: metaParts.join(" - "),
   };
 }
 
@@ -3220,6 +3284,7 @@ function renderHierarchyNode(node, options = {}) {
       ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child, options)).join("")}</ol>`
       : "";
     const focused = Boolean(options.focused);
+    const descriptionId = `team-${focused ? "org" : "hierarchy"}-agent-${domIdPart(node.agentData.id || node.agentData.label)}-description`;
     const cardClasses = [
       "hierarchy-node-card",
       focused ? "org-focus-node-card" : "",
@@ -3233,16 +3298,22 @@ function renderHierarchyNode(node, options = {}) {
       : "";
     return `
       <li class="hierarchy-branch">
-        <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
+        <article class="${cardClasses}" tabindex="0" aria-describedby="${escapeAttr(descriptionId)}" ${actionAttrs}>
           <div class="hierarchy-node-summary">
-            ${renderAgentAvatar(node.agentData)}
+            <span class="hierarchy-node-avatar-wrap">
+              ${renderAgentAvatar(node.agentData)}
+              <span class="hierarchy-node-avatar-card" aria-hidden="true">
+                <strong class="hierarchy-node-avatar-name">${escapeHtml(node.agentData.label)}</strong>
+                ${
+                  node.agentData.label !== node.agentData.id
+                    ? `<span class="hierarchy-node-avatar-id">${escapeHtml(node.agentData.id)}</span>`
+                    : ""
+                }
+                <span class="hierarchy-node-avatar-role">${escapeHtml(node.agentData.role)}</span>
+              </span>
+            </span>
             <div class="hierarchy-node-title">
               <strong>${escapeHtml(node.agentData.label)}</strong>
-              ${
-                node.agentData.label !== node.agentData.id
-                  ? `<span class="hierarchy-node-id">${escapeHtml(node.agentData.id)}</span>`
-                  : ""
-              }
             </div>
             <div class="hierarchy-node-subtitle">
               <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>
@@ -3251,6 +3322,7 @@ function renderHierarchyNode(node, options = {}) {
               ${renderAgentInboxHeaderIndicators(node.agentData)}
             </div>
           </div>
+          <span id="${escapeAttr(descriptionId)}" class="visually-hidden">Agent ID ${escapeHtml(node.agentData.id)}. Role ${escapeHtml(node.agentData.role)}.</span>
           ${focused ? renderOrgNodeWorkSummary(node.agentData) : ""}
           <div class="hierarchy-node-details${focused ? " org-node-hover-panel" : ""}">${renderHierarchyDetails(node.agentData, { focused })}</div>
         </article>
@@ -3397,9 +3469,9 @@ function renderTeamRecordGroup(team, scopedRecords) {
   const teamLabel = isNoTeamRecord(team) ? noTeamRecordName : teamId;
   const teamTitle = isNoTeamRecord(team) ? noTeamRecordName : text(team.name || teamId);
   const isNoTeam = isNoTeamRecord(team);
-  const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
-  const activeKind = normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
+  const activeKind = isNoTeam ? "agent" : normalizedTeamRecordKind(teamRecordGroupTabs[teamId] || "agent");
   teamRecordGroupTabs[teamId] = activeKind;
+  const teamRecords = teamRecordsForTeam(teamId, scopedRecords);
   const expanded = expandedTeamRecordGroupIds.has(teamId);
   const selected = selectedTeamRecordKind === "team" && text(selectedTeamRecordId) === text(teamId);
   const counts = [
@@ -3481,7 +3553,8 @@ function renderTeamRecordSection(kind, teamRecords) {
   const page = clampPage(teamRecordGroupPages[pageKey] || 1, totalPages);
   teamRecordGroupPages[pageKey] = page;
   const pageRecords = records.slice((page - 1) * teamRecordPageSize, page * teamRecordPageSize);
-  const canCreate = config.createLabel && !isNoTeamRecord({ id: teamRecords.teamId });
+  const isNoTeam = isNoTeamRecord({ id: teamRecords.teamId });
+  const canCreate = config.createLabel && (!isNoTeam || normalizedTeamRecordKind(kind) === "agent");
   const createOpen = canCreate && isTeamInlineCreateFormOpen(teamRecords.teamId, kind);
   return `
     <section class="team-record-section" aria-label="${escapeAttr(config.title)}">
@@ -3523,7 +3596,7 @@ function teamRecordSectionConfig(kind) {
 function renderTeamInlineCreateForm(teamId, kind) {
   const normalizedTeamId = text(teamId);
   const normalizedKind = normalizedTeamRecordKind(kind);
-  if (!normalizedTeamId || isNoTeamRecord({ id: normalizedTeamId }) || !isTeamInlineCreateFormOpen(normalizedTeamId, normalizedKind)) {
+  if (!normalizedTeamId || !isTeamInlineCreateFormOpen(normalizedTeamId, normalizedKind)) {
     return "";
   }
   if (normalizedKind === "project") {
@@ -3601,6 +3674,8 @@ function renderTeamInlineRoleForm(teamId) {
 
 function renderTeamInlineAgentForm(teamId) {
   const formId = teamInlineCreateDomId(teamId, "agent");
+  const normalizedTeamId = text(teamId);
+  const visibleTeamId = isNoTeamRecord({ id: normalizedTeamId }) ? "" : normalizedTeamId;
   return `
     <form
       id="${escapeAttr(formId)}"
@@ -3612,7 +3687,7 @@ function renderTeamInlineAgentForm(teamId) {
       data-team-record-group-id="${escapeAttr(teamId)}"
       data-team-record-kind="agent"
     >
-      <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
+      <input type="hidden" name="team_id" value="${escapeAttr(visibleTeamId)}" />
       <div class="team-inline-create-fields">
         <label>
           Existing agent defaults
@@ -3694,8 +3769,11 @@ function teamRoleOptions(teamId) {
 
 function teamAgentOptions(teamId) {
   const normalizedTeamId = text(teamId);
+  const agentFilter = isNoTeamRecord({ id: normalizedTeamId })
+    ? (agent) => isVisibleAgent(agent) && !text(agent.team_id)
+    : (agent) => isVisibleAgent(agent) && text(agent.team_id) === normalizedTeamId;
   return values(state.agents)
-    .filter((agent) => isVisibleAgent(agent) && text(agent.team_id) === normalizedTeamId)
+    .filter(agentFilter)
     .sort(comparePeopleAgents)
     .map((agent) => [agent.id, `${agentLabel(agent)} (${agent.id})`]);
 }
@@ -3735,7 +3813,7 @@ function isTeamInlineCreateFormOpen(teamId, kind) {
 function toggleTeamInlineCreateForm(teamId, kind) {
   const normalizedTeamId = text(teamId);
   const normalizedKind = normalizedTeamRecordKind(kind);
-  if (!normalizedTeamId || isNoTeamRecord({ id: normalizedTeamId })) {
+  if (!normalizedTeamId) {
     return;
   }
   const key = teamInlineCreateKey(normalizedTeamId, normalizedKind);
@@ -4695,6 +4773,7 @@ function chatStatusLabel(status) {
   const labels = {
     created: "Created",
     dispatching: "Dispatching",
+    queued: "Queued",
     running: "Sent",
     replied: "Replied",
     failed: "Failed",
@@ -4748,6 +4827,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
         </div>
         <div class="agent-detail-badges">
           <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+          ${renderAgentSessionPill(details)}
           ${renderAgentAwakePill(details)}
           ${renderAgentInboxHeaderIndicators(details)}
         </div>
@@ -4893,11 +4973,12 @@ function renderAgentDetailField(label, value) {
 }
 
 function agentRuntimeDetailRows(details) {
+  const sessionLine = sessionHealthRuntimeLine(details.sessionHealth, details.sessionId);
   const runtime = details.runtime || {};
   if (!runtime.present) {
-    return ["No runtime snapshot"];
+    return [sessionLine, "No runtime snapshot"].filter(Boolean);
   }
-  const rows = [runtime.summary || runtime.status || "Runtime idle"];
+  const rows = [sessionLine, runtime.summary || runtime.status || "Runtime idle"].filter(Boolean);
   if (runtime.lastHandoffSummary) {
     rows.push(`Last handoff ${runtime.lastHandoffSummary}`);
   }
@@ -5069,6 +5150,7 @@ function agentCardData(agent) {
     inboxCount: inboxItems.length,
     inboxIndicatorItems,
     runtime,
+    sessionHealth: agentSessionHealth(agent.id),
     effectiveStandDowns: standDowns,
     standDownActive: Boolean(agent?.stand_down_active) || standDowns.length > 0,
     ephemeralCapacity: ephemeralCapacity(agent),
@@ -5212,7 +5294,72 @@ function runtimeOperationForAgent(agentId) {
   }) || null;
 }
 
+function agentSessionHealth(agentId) {
+  const normalizedAgentId = text(agentId);
+  const health = (state.runtime_operations?.session_health || []).find((row) => {
+    return text(row?.agent_id || row?.id) === normalizedAgentId;
+  });
+  if (health) {
+    return normalizeAgentSessionHealth(health);
+  }
+  const runtimeRow = runtimeOperationForAgent(normalizedAgentId);
+  if (runtimeRow && runtimeRow.session_is_expired !== undefined) {
+    return normalizeAgentSessionHealth(runtimeRow);
+  }
+  return {
+    available: false,
+    present: null,
+    isExpired: false,
+    expiresAt: "",
+    status: "",
+  };
+}
+
+function normalizeAgentSessionHealth(row) {
+  const status = text(row?.status || row?.session_status);
+  return {
+    available: true,
+    present: row?.session_present === undefined ? null : Boolean(row.session_present),
+    isExpired: Boolean(row?.is_expired || row?.session_is_expired || status === "expired"),
+    expiresAt: text(row?.expires_at || row?.session_expires_at),
+    status,
+  };
+}
+
+function sessionHealthRuntimeLine(health, sessionId) {
+  if (!health?.available) {
+    return "";
+  }
+  const sessionLabel = text(sessionId) || "session";
+  if (health.isExpired) {
+    return `Session ${sessionLabel} expired${health.expiresAt ? ` at ${health.expiresAt}` : ""}`;
+  }
+  if (health.present === false) {
+    return `Session ${sessionLabel} not found in the session store`;
+  }
+  if (health.expiresAt) {
+    return `Session ${sessionLabel} expires ${health.expiresAt}`;
+  }
+  return "";
+}
+
+function renderAgentSessionPill(agentData) {
+  const health = agentData.sessionHealth || {};
+  if (!health.available || !health.isExpired) {
+    return "";
+  }
+  const detail = sessionHealthRuntimeLine(health, agentData.sessionId) || "Session expired";
+  return `<span class="state-pill critical" title="${escapeAttr(detail)}">session expired</span>`;
+}
+
 function agentAwakeState(agentData) {
+  if (agentData.sessionHealth?.isExpired) {
+    return {
+      kind: "expired",
+      label: "Expired",
+      detail: sessionHealthRuntimeLine(agentData.sessionHealth, agentData.sessionId) || "session expired",
+    };
+  }
   const runtimeRow = runtimeOperationForAgent(agentData.id);
   const activeDispatchId = text(runtimeRow?.active_dispatch_id || agentData.runtime?.activeDispatchId);
   if (activeDispatchId) {
@@ -5456,7 +5603,10 @@ function hierarchyDetailLines(agentData, { focused = false } = {}) {
     lines.push(`Agent ${agentData.id}`);
   }
   if (agentData.sessionId) {
-    lines.push(`Session ${agentData.sessionId}`);
+    lines.push(
+      sessionHealthRuntimeLine(agentData.sessionHealth, agentData.sessionId) ||
+        `Session ${agentData.sessionId}`,
+    );
   }
   if (agentData.projectIds.length) {
     lines.push(`Projects ${agentData.projectLabel || agentData.projectIds.join(", ")}`);
@@ -6518,6 +6668,131 @@ function renderProfileCriteria(criteria) {
         .join("")}
     </ul>
   `;
+}
+
+function renderReviewProfileCriteriaEditor(criteria = []) {
+  const rows = criteria.length ? criteria : [{}];
+  return `
+    <fieldset class="criteria-editor" data-review-profile-criteria-editor>
+      <legend>Criteria</legend>
+      <div class="criteria-editor-rows" data-review-profile-criteria-rows>
+        ${rows.map((criterion) => renderReviewProfileCriterionRow(criterion)).join("")}
+      </div>
+      <button class="record-action criteria-editor-add" type="button" data-review-profile-criterion-add>Add criterion</button>
+    </fieldset>
+  `;
+}
+
+function renderReviewProfileCriterionRow(criterion = {}) {
+  const required = criterion.required !== false;
+  return `
+    <div class="criteria-editor-row" data-review-profile-criterion-row>
+      <label>Label <input name="criterion_label" value="${escapeAttr(criterion.label || "")}" placeholder="Authorization" /></label>
+      <label>Description <input name="criterion_description" value="${escapeAttr(criterion.description || "")}" placeholder="What reviewers should check" /></label>
+      <label>Key <input name="criterion_id" value="${escapeAttr(criterion.id || "")}" placeholder="Auto from label" /></label>
+      <label class="checkbox-label criteria-editor-required"><input name="criterion_required" type="checkbox"${required ? " checked" : ""} /> Required</label>
+      <button class="record-action criteria-editor-remove" type="button" data-review-profile-criterion-remove>Remove</button>
+    </div>
+  `;
+}
+
+function addReviewProfileCriterionRow(editor) {
+  const rows = editor?.querySelector?.("[data-review-profile-criteria-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderReviewProfileCriterionRow({});
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  row.querySelector('input[name="criterion_label"]')?.focus();
+}
+
+function removeReviewProfileCriterionRow(button) {
+  const editor = button.closest("[data-review-profile-criteria-editor]");
+  const row = button.closest("[data-review-profile-criterion-row]");
+  const rows = editor?.querySelector?.("[data-review-profile-criteria-rows]");
+  if (!row || !rows) {
+    return;
+  }
+  row.remove();
+  if (!rows.querySelector("[data-review-profile-criterion-row]")) {
+    addReviewProfileCriterionRow(editor);
+  }
+}
+
+function reviewProfileCriteriaFromForm(form) {
+  const rows = Array.from(form.querySelectorAll("[data-review-profile-criterion-row]"));
+  const usedIds = new Set();
+  return rows
+    .map((row, index) => reviewProfileCriterionFromRow(row, index, usedIds))
+    .filter(Boolean);
+}
+
+function reviewProfileCriteriaDraftFromForm(form) {
+  const rows = Array.from(form.querySelectorAll("[data-review-profile-criterion-row]"));
+  if (!rows.length) {
+    return null;
+  }
+  return rows.map((row) => ({
+    id: text(row.querySelector('[name="criterion_id"]')?.value),
+    label: text(row.querySelector('[name="criterion_label"]')?.value),
+    description: text(row.querySelector('[name="criterion_description"]')?.value),
+    required: row.querySelector('[name="criterion_required"]')?.checked !== false,
+  }));
+}
+
+function restoreReviewProfileCriteriaDraft(form, criteria) {
+  const rows = form.querySelector("[data-review-profile-criteria-rows]");
+  if (!rows || !Array.isArray(criteria)) {
+    return;
+  }
+  rows.innerHTML = (criteria.length ? criteria : [{}])
+    .map((criterion) => renderReviewProfileCriterionRow(criterion))
+    .join("");
+  decorateFieldTooltips(rows);
+}
+
+function reviewProfileCriterionFromRow(row, index, usedIds) {
+  const label = text(row.querySelector('[name="criterion_label"]')?.value);
+  const description = text(row.querySelector('[name="criterion_description"]')?.value);
+  const explicitId = text(row.querySelector('[name="criterion_id"]')?.value);
+  if (!label && !description && !explicitId) {
+    return null;
+  }
+  const baseId = explicitId || criterionIdFromText(label || description || `criterion ${index + 1}`);
+  const id = uniqueCriterionId(baseId, usedIds);
+  usedIds.add(id);
+  return {
+    id,
+    label: label || id,
+    description,
+    required: row.querySelector('[name="criterion_required"]')?.checked !== false,
+  };
+}
+
+function criterionIdFromText(value) {
+  const slug = text(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "criterion";
+}
+
+function uniqueCriterionId(baseId, usedIds) {
+  const normalized = text(baseId) || "criterion";
+  if (!usedIds.has(normalized)) {
+    return normalized;
+  }
+  let suffix = 2;
+  while (usedIds.has(`${normalized}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${normalized}-${suffix}`;
 }
 
 function renderReleases() {
@@ -9056,8 +9331,10 @@ function payloadForForm(form, data = formData(form)) {
     return payload;
   }
   if (formId === "register-agent-form") {
+    const requestedTeamId = text(data.team_id);
+    const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
     const payload = {
-      team_id: text(data.team_id) || null,
+      team_id: normalizedTeamId,
       project_id: text(data.project_id) || null,
       role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
@@ -9095,7 +9372,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
-      criteria: parseCriteria(data.criteria),
+      criteria: reviewProfileCriteriaFromForm(form),
     };
     const projectId = text(data.project_id);
     if (projectId) {
@@ -9382,10 +9659,7 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
       ${multiSelectField("Applicable roles", "applicable_role_ids", "roles", record.applicable_role_ids || [], { size: 4 })}
-      ${textareaField("Criteria", "criteria", criteriaToText(record.criteria || []), {
-        rows: 4,
-        placeholder: "id | label | description | required",
-      })}
+      ${renderReviewProfileCriteriaEditor(record.criteria || [])}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -9476,8 +9750,10 @@ function editPayloadForForm(type, form) {
     const selectedProjectId = text(data.project_id);
     const currentRecord = recordForEdit("agent", text(form.dataset.editId));
     const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
+    const requestedTeamId = text(data.team_id);
+    const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
     const payload = {
-      team_id: text(data.team_id) || null,
+      team_id: normalizedTeamId,
       role_id: text(data.role_id) || null,
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id) || null,
@@ -9521,7 +9797,7 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
-      criteria: parseCriteria(data.criteria),
+      criteria: reviewProfileCriteriaFromForm(form),
       archived: Boolean(form.elements.archived?.checked),
     };
   }
@@ -9621,6 +9897,10 @@ function captureFormDrafts() {
       form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
         values[field.name] = field.checked ? "true" : "false";
       });
+      const criteriaDraft = reviewProfileCriteriaDraftFromForm(form);
+      if (criteriaDraft) {
+        values.__review_profile_criteria = criteriaDraft;
+      }
       drafts[formId] = values;
     }
   });
@@ -9633,7 +9913,11 @@ function restoreFormDrafts(drafts) {
     if (!form) {
       return;
     }
+    restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
     Object.entries(values).forEach(([name, value]) => {
+      if (name === "__review_profile_criteria" || name.startsWith("criterion_")) {
+        return;
+      }
       const field = form.elements[name];
       if (!field) {
         return;
@@ -9835,6 +10119,10 @@ function text(value) {
   return String(value ?? "").trim();
 }
 
+function domIdPart(value) {
+  return text(value).replace(/[^A-Za-z0-9_-]+/g, "-") || "item";
+}
+
 function agentLabel(agent) {
   return text(agent?.display_name) || text(agent?.name) || text(agent?.label) || text(agent?.id);
 }
@@ -9973,37 +10261,6 @@ function goalsToText(goals) {
   return (goals || [])
     .map((goal) => [goal.id, goal.description, goal.state || "pending"].join(" | "))
     .join("\n");
-}
-
-function criteriaToText(criteria) {
-  return (criteria || [])
-    .map((criterion) =>
-      [
-        criterion.id,
-        criterion.label || criterion.id,
-        criterion.description || "",
-        criterion.required === false ? "false" : "true",
-      ].join(" | "),
-    )
-    .join("\n");
-}
-
-function parseCriteria(value) {
-  return text(value)
-    .split(/\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [id, label, description = "", required = "true"] = line
-        .split("|")
-        .map((part) => part.trim());
-      return {
-        id,
-        label: label || id,
-        description,
-        required: !["false", "no", "0", "optional"].includes(required.toLowerCase()),
-      };
-    });
 }
 
 function parseCriterionResults(value) {

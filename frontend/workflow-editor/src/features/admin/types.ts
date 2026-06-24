@@ -164,6 +164,7 @@ export type AgentCreateRequest = {
   session_id?: string | null;
   directory_path?: string | null;
   model?: string | null;
+  ttl_seconds?: number | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
   web_search_enabled?: boolean;

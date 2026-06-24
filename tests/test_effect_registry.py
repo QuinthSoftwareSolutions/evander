@@ -3500,11 +3500,13 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         ],
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
+    sync_calls: list[dict[str, object]] = []
     admin_service = SimpleNamespace(
         runtime=SimpleNamespace(
             session_repository=session_repository,
             provider_config=_ContainerResolverStub(config),
-        )
+        ),
+        sync_added_discord_session_cursors=lambda **kwargs: sync_calls.append(kwargs),
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
@@ -3614,6 +3616,12 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.web_search_enabled is True
     assert manifest.metadata["workflow"] == {"state": "active"}
     assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
+    assert sync_calls == [
+        {
+            "previous_session": None,
+            "updated_session": manifest,
+        }
+    ]
     assert create["execution_backend"] == "container_worker_vm"
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"

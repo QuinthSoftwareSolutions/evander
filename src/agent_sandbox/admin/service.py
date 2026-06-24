@@ -5862,7 +5862,16 @@ def _default_session_ttl(policy: EffectivePolicyConfig) -> timedelta:
     return timedelta(seconds=policy.default_session_ttl_seconds)
 
 
-def _resolve_session_ttl(policy: EffectivePolicyConfig, ttl_hours: int | None) -> timedelta:
+def _resolve_session_ttl(
+    policy: EffectivePolicyConfig,
+    ttl_hours: int | None,
+    *,
+    ttl_seconds: int | None = None,
+) -> timedelta:
+    if ttl_seconds is not None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be a positive integer")
+        return timedelta(seconds=ttl_seconds)
     if ttl_hours is not None:
         return timedelta(hours=ttl_hours)
     return _default_session_ttl(policy)
@@ -6806,6 +6815,7 @@ def _build_issue_session_manifest(
     issue_number: str | None,
     directory_path: str,
     ttl_hours: int | None,
+    ttl_seconds: int | None = None,
     extra_allowed_tools: list[str | ToolName] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
@@ -6922,7 +6932,8 @@ def _build_issue_session_manifest(
             else communication_file_require_approval_for_send
         ),
         web_search_enabled=web_search_enabled,
-        expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
+        expires_at=_utc_now()
+        + _resolve_session_ttl(policy, ttl_hours, ttl_seconds=ttl_seconds),
         metadata=metadata,
     )
 
@@ -7391,6 +7402,55 @@ def _resolve_session_approval_notification_target_ids(
         directory_path=session.directory_path,
         target_ids=target_ids,
     )
+
+
+def _sync_added_discord_session_cursors(
+    runtime: Any,
+    *,
+    previous_session: SessionManifest | None,
+    updated_session: SessionManifest,
+) -> dict[str, str]:
+    previous_channels = (
+        _wake_eligible_discord_channel_ids(runtime, previous_session)
+        if previous_session is not None
+        else set()
+    )
+    updated_channels = _wake_eligible_discord_channel_ids(runtime, updated_session)
+    added_channels = sorted(updated_channels - previous_channels)
+    if not added_channels:
+        return {}
+
+    discord_inbox_service = getattr(runtime, "discord_inbox_service", None)
+    fast_forward = getattr(discord_inbox_service, "fast_forward_session_cursors_to_latest", None)
+    if not callable(fast_forward):
+        return {}
+    return dict(
+        fast_forward(
+            session_id=updated_session.session_id,
+            channel_ids=added_channels,
+        )
+    )
+
+
+def _wake_eligible_discord_channel_ids(
+    runtime: Any,
+    session: SessionManifest,
+) -> set[str]:
+    allowed_tools = {tool_name_value(tool) for tool in session.allowed_tools}
+    if tool_name_value(ToolName.DISCORD_GET_COMMANDS) not in allowed_tools:
+        return set()
+
+    policy_config = getattr(runtime, "policy_config", None)
+    resolve = getattr(policy_config, "resolved_discord_channel_ids_for_session", None)
+    if callable(resolve):
+        channel_ids = resolve(session, capability="read")
+    else:
+        channel_ids = session.discord_channel_allowlist
+    return {
+        str(channel_id or "").strip()
+        for channel_id in channel_ids
+        if str(channel_id or "").strip()
+    }
 
 
 def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
@@ -12010,6 +12070,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         self.agent_create_operations.update_all(_mark)
 
+    def sync_added_discord_session_cursors(
+        self,
+        *,
+        previous_session: SessionManifest | None,
+        updated_session: SessionManifest,
+    ) -> dict[str, str]:
+        return _sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=previous_session,
+            updated_session=updated_session,
+        )
+
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(
             self._agent_optional_string(payload, "backend")
@@ -12062,6 +12134,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 labels=_normalize_session_labels(payload.get("labels")),
                 model=self._agent_optional_string(payload, "model"),
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
+                ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
                 **(
@@ -12216,6 +12289,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             issue_number=None,
             directory_path=directory_path,
             ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
+            ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
             extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
             **(
                 {"tool_argument_policies": payload["tool_argument_policies"]}
@@ -12318,6 +12392,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ],
         )
         session_repository.upsert_session(manifest)
+        _sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=None,
+            updated_session=manifest,
+        )
         session = session_repository.get_session(session_id)
         return {
             "success": True,
@@ -12727,6 +12806,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         updated = session.model_copy(update=update)
         self.runtime.session_repository.upsert_session(updated)
+        _sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=session,
+            updated_session=updated,
+        )
         return {
             "success": True,
             "agent_id": agent_id,
@@ -22563,6 +22647,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         model: str | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
+        ttl_seconds: int | None = None,
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
         tool_argument_policies: dict[str, list[Any]] | None = None,
@@ -22632,6 +22717,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             labels=labels,
             model=model,
             vm_user=vm_user,
+            ttl_seconds=ttl_seconds,
             ttl_hours=ttl_hours,
             allowed_tools=allowed_tools,
             tool_argument_policies=tool_argument_policies,

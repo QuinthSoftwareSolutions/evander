@@ -551,10 +551,12 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   inbox item. Returned in `created_operator_chat_message_ids`.
 - `deliverables[]` — record finished work for an owned task. Shape:
   `{"id"?, "task_id", "summary", "artifact_paths"?, "artifact_refs"?,
-  "artifact_space_ref"?, "git_refs"?}`. `artifact_paths` are relative paths
-  under the session `/artifacts` folder; when present, the Team runtime publishes
-  only those files or directories into the control-plane artifact store, records
-  the latest version under
+  "artifact_space_ref"?, "git_refs"?, "supersedes_deliverable_id"?}`.
+  When responding to a `review_rejected` inbox item, set
+  `supersedes_deliverable_id` to the rejected deliverable id from the inbox
+  payload. `artifact_paths` are relative paths under the session `/artifacts`
+  folder; when present, the Team runtime publishes only those files or
+  directories into the control-plane artifact store, records the latest version under
   `/teams/<team_id>/projects/<project_id>/deliverables/<deliverable_id>`, and
   appends the resulting `artifact-space:` ref to `artifact_refs`. Failed artifact
   publication rejects that deliverable item without creating a ref-less

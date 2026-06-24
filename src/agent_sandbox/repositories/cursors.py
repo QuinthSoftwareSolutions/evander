@@ -47,6 +47,10 @@ class DiscordInboxCursorRepository(Protocol):
         self, session_id: str, channel_id: str, cursor: str | None
     ) -> str | None: ...
 
+    def fast_forward_session_cursors_to_latest(
+        self, session_id: str, channel_ids: Sequence[str]
+    ) -> dict[str, str]: ...
+
     def read_raw(self) -> dict[str, Any]: ...
 
 

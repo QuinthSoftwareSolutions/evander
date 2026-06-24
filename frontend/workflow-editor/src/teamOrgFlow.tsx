@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useId, useMemo, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   Background,
@@ -21,6 +21,10 @@ type InboxIndicator = {
   direction: "down" | "up";
   label: string;
   count: number;
+  items?: Array<{
+    detail: string;
+    meta: string;
+  }>;
 };
 
 type BaseNodeData = {
@@ -122,8 +126,27 @@ function TeamOrgFlowApp({ payload }: { payload: OrgFlowPayload | null }) {
 
 function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
   const reactFlow = useReactFlow<OrgNode, Edge>();
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const nodes = useMemo(() => payload.nodes, [payload]);
   const edges = useMemo(() => payload.edges, [payload]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const handleWheel = (event: WheelEvent) => {
+      const popover = inboxPopoverForWheelEvent(canvas, event);
+      if (!popover) {
+        return;
+      }
+      scrollInboxPopoverFromWheel(event, popover);
+    };
+    canvas.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", handleWheel, { capture: true });
+    };
+  }, []);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -133,7 +156,7 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
   }, [payload.fitKey, reactFlow]);
 
   return (
-    <div className="team-org-flow-canvas" data-team-org-flow-canvas>
+    <div ref={canvasRef} className="team-org-flow-canvas" data-team-org-flow-canvas>
       <ReactFlow<OrgNode, Edge>
         nodes={nodes}
         edges={edges}
@@ -192,6 +215,7 @@ function TeamOrgNode({ data }: NodeProps<OrgNode>) {
 }
 
 function AgentNode({ data }: { data: AgentNodeData }) {
+  const descriptionId = useId();
   const openAgent = () => {
     window.dispatchEvent(
       new CustomEvent("team-org-flow:edit-agent", {
@@ -205,6 +229,7 @@ function AgentNode({ data }: { data: AgentNodeData }) {
       tabIndex={0}
       role="button"
       aria-label={`Edit ${data.label}`}
+      aria-describedby={descriptionId}
       onClick={openAgent}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") {
@@ -216,9 +241,13 @@ function AgentNode({ data }: { data: AgentNodeData }) {
     >
       <div className="hierarchy-node-summary">
         <div className="hierarchy-node-title">
-          <Avatar avatar={data.avatar} />
+          <AvatarHoverCard
+            avatar={data.avatar}
+            label={data.label}
+            role={data.role}
+            idLabel={data.idLabel}
+          />
           <strong>{data.label}</strong>
-          {data.idLabel ? <span className="hierarchy-node-id">{data.idLabel}</span> : null}
         </div>
         <div className="hierarchy-node-subtitle">
           <span className="hierarchy-node-role">{data.role}</span>
@@ -227,6 +256,9 @@ function AgentNode({ data }: { data: AgentNodeData }) {
           <InboxIndicators indicators={data.inboxIndicators} />
         </div>
       </div>
+      <span id={descriptionId} className="visually-hidden">
+        Agent ID {data.agentId}. Role {data.role}.
+      </span>
       <div className="org-node-work">
         <div className="org-node-work-line org-node-work-line--now">
           <span>Now</span>
@@ -346,6 +378,29 @@ function Avatar({
   );
 }
 
+function AvatarHoverCard({
+  avatar,
+  label,
+  role,
+  idLabel,
+}: {
+  avatar: { src: string; alt: string; initials: string };
+  label: string;
+  role: string;
+  idLabel: string | null;
+}) {
+  return (
+    <span className="hierarchy-node-avatar-wrap">
+      <Avatar avatar={avatar} />
+      <span className="hierarchy-node-avatar-card" aria-hidden="true">
+        <strong className="hierarchy-node-avatar-name">{label}</strong>
+        {idLabel ? <span className="hierarchy-node-avatar-id">{idLabel}</span> : null}
+        <span className="hierarchy-node-avatar-role">{role}</span>
+      </span>
+    </span>
+  );
+}
+
 function AwakePill({ awake }: { awake: AgentNodeData["awake"] }) {
   return (
     <span className={`awake-indicator awake-indicator--${awake.kind}`} title={awake.detail}>
@@ -359,21 +414,90 @@ function InboxIndicators({ indicators }: { indicators: InboxIndicator[] }) {
   return (
     <span className="agent-inbox-indicators" aria-label="Pending inbox summary">
       {indicators.map((indicator) => (
-        <span
-          className={[
-            "agent-inbox-indicator",
-            `agent-inbox-indicator--${indicator.itemType}`,
-            indicator.count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty",
-          ].join(" ")}
-          aria-label={`${indicator.label}: ${indicator.count}`}
-          key={indicator.itemType}
-        >
-          <InboxIcon direction={indicator.direction} />
-          <strong>{indicator.count}</strong>
-        </span>
+        <InboxIndicatorBadge indicator={indicator} key={indicator.itemType} />
       ))}
     </span>
   );
+}
+
+function InboxIndicatorBadge({ indicator }: { indicator: InboxIndicator }) {
+  const popoverId = useId();
+  const popoverRef = useRef<HTMLSpanElement | null>(null);
+  const items = indicator.items || [];
+  const hasItems = items.length > 0;
+  useEffect(() => {
+    const popover = popoverRef.current;
+    if (!popover) {
+      return;
+    }
+    const handleWheel = (event: WheelEvent) => {
+      scrollInboxPopoverFromWheel(event, popover);
+    };
+    popover.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      popover.removeEventListener("wheel", handleWheel);
+    };
+  }, [hasItems]);
+  return (
+    <span
+      className={[
+        "agent-inbox-indicator",
+        `agent-inbox-indicator--${indicator.itemType}`,
+        indicator.count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty",
+      ].join(" ")}
+      aria-label={`${indicator.label}: ${indicator.count}`}
+      aria-describedby={hasItems ? popoverId : undefined}
+      tabIndex={hasItems ? 0 : undefined}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <InboxIcon direction={indicator.direction} />
+      <strong>{indicator.count}</strong>
+      {hasItems ? (
+        <span
+          ref={popoverRef}
+          className="agent-inbox-popover nowheel"
+          role="tooltip"
+          id={popoverId}
+          aria-label={indicator.label}
+        >
+          {items.map((item, index) => (
+            <span className="agent-inbox-bubble" key={`${item.detail}-${item.meta}-${index}`}>
+              <strong>{item.detail}</strong>
+              {item.meta ? <small>{item.meta}</small> : null}
+            </span>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function inboxPopoverForWheelEvent(canvas: HTMLElement, event: WheelEvent) {
+  for (const popover of Array.from(canvas.querySelectorAll<HTMLElement>(".agent-inbox-popover"))) {
+    const rect = popover.getBoundingClientRect();
+    if (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    ) {
+      return popover;
+    }
+  }
+
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  const popover = target?.closest(".agent-inbox-popover");
+  return popover instanceof HTMLElement && canvas.contains(popover) ? popover : null;
+}
+
+function scrollInboxPopoverFromWheel(event: WheelEvent, popover: HTMLElement) {
+  popover.scrollTop += event.deltaY;
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
 }
 
 function InboxIcon({ direction }: { direction: InboxIndicator["direction"] }) {

@@ -444,6 +444,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ],
         )
         session_repository.upsert_session(manifest)
+        _sync_added_discord_session_cursors_from_context(
+            context,
+            previous_session=existing_session,
+            updated_session=manifest,
+        )
         return {
             "success": True,
             "message": f"Prepared container worker session {session_id} with agent bootstrap files",
@@ -483,6 +488,18 @@ def _existing_session_metadata(existing_session: Any | None) -> dict[str, Any]:
     if not isinstance(metadata, Mapping):
         return {}
     return dict(metadata)
+
+
+def _sync_added_discord_session_cursors_from_context(
+    context: Any,
+    *,
+    previous_session: Any | None,
+    updated_session: Any,
+) -> None:
+    admin_service = getattr(context, "admin_service", None)
+    sync = getattr(admin_service, "sync_added_discord_session_cursors", None)
+    if callable(sync):
+        sync(previous_session=previous_session, updated_session=updated_session)
 
 
 def _deep_merge_metadata(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:

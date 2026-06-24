@@ -11749,6 +11749,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "labels": {"team": "a"},
         "model": "gpt-5.2-codex",
         "vm_user": "agent",
+        "ttl_seconds": None,
         "ttl_hours": 12,
         "allowed_tools": ["run_script"],
         "allowed_script_names": ["demo"],

@@ -1301,17 +1301,79 @@ button.runtime-filter-button.active {
 }
 
 .hierarchy-node-title strong,
-.hierarchy-node-role,
-.hierarchy-node-id {
+.hierarchy-node-role {
   overflow-wrap: anywhere;
 }
 
-.hierarchy-node-id {
-  color: var(--muted);
-  font-size: 0.72rem;
+.hierarchy-node-avatar-wrap {
+  position: relative;
+  display: inline-grid;
+}
+
+.hierarchy-node-avatar-wrap > .agent-avatar,
+.hierarchy-node-avatar-wrap > .agent-avatar-fallback {
+  cursor: default;
+}
+
+.hierarchy-node-avatar-card {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  top: calc(100% + 0.35rem);
+  width: max-content;
+  min-width: 11rem;
+  max-width: min(17rem, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 12px 28px var(--shadow);
+  color: var(--text);
+  font-size: 0.76rem;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(0) translateY(-2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.hierarchy-node-avatar-wrap:hover .hierarchy-node-avatar-card,
+.hierarchy-node-avatar-wrap:focus-within .hierarchy-node-avatar-card,
+.hierarchy-node-card:is(:focus, :focus-visible, :focus-within) .hierarchy-node-avatar-card {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0) translateY(0);
+}
+
+.hierarchy-node-avatar-wrap:hover .hierarchy-node-avatar-card {
+  transition-delay: 1s, 1s;
+}
+
+.hierarchy-node-card:is(:focus, :focus-visible, :focus-within) .hierarchy-node-avatar-card,
+.hierarchy-node-avatar-wrap .hierarchy-node-avatar-card {
+  transition-delay: 0s, 0s;
+}
+
+.hierarchy-node-avatar-name {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
   font-weight: 700;
-  flex: 0 1 auto;
-  text-align: right;
+}
+
+.hierarchy-node-avatar-id {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.72rem;
+}
+
+.hierarchy-node-avatar-role {
+  overflow-wrap: anywhere;
+  color: var(--muted);
 }
 
 .hierarchy-node-subtitle {
@@ -1512,6 +1574,10 @@ button.org-focus-team-tab strong {
   box-shadow: inset 4px 0 0 rgba(95, 110, 112, 0.58);
 }
 
+.org-focus-node-card--expired::after {
+  box-shadow: inset 4px 0 0 rgba(163, 61, 61, 0.78);
+}
+
 .awake-indicator {
   display: inline-flex;
   align-items: center;
@@ -1550,6 +1616,11 @@ button.org-focus-team-tab strong {
 .awake-indicator--unknown {
   background: var(--panel-alt);
   color: var(--muted);
+}
+
+.awake-indicator--expired {
+  background: rgba(163, 61, 61, 0.12);
+  color: var(--red);
 }
 
 .agent-inbox-indicators {
@@ -1630,6 +1701,7 @@ button.org-focus-team-tab strong {
   max-height: 18rem;
   gap: 0.35rem;
   overflow: auto;
+  pointer-events: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.4rem;
@@ -3163,6 +3235,50 @@ form {
   width: auto;
 }
 
+.criteria-editor {
+  display: grid;
+  gap: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--panel-alt);
+}
+
+.criteria-editor legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.criteria-editor-rows {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.criteria-editor-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(12rem, 1.4fr) minmax(8rem, 0.8fr) auto auto;
+  gap: 0.55rem;
+  align-items: end;
+  min-width: 0;
+}
+
+.criteria-editor-row label {
+  min-width: 0;
+}
+
+.criteria-editor-required {
+  min-height: 2.25rem;
+  margin-bottom: 0.05rem;
+}
+
+.criteria-editor-add,
+.criteria-editor-remove {
+  width: fit-content;
+}
+
 .archived-toggle {
   position: relative;
   min-height: 2.2rem;
@@ -3436,6 +3552,7 @@ label textarea {
   .people-layout,
   .team-record-grid,
   .team-inline-create-fields,
+  .criteria-editor-row,
   .governance-create-form,
   .project-columns,
   .delivery-buckets,
