@@ -168,6 +168,21 @@ textarea {
   color: var(--amber);
 }
 
+.status-message .status-action {
+  min-height: 1.65rem;
+  margin-left: 0.45rem;
+  border-color: currentColor;
+  padding: 0.2rem 0.5rem;
+  background: transparent;
+  color: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.status-message .status-action:hover {
+  background: rgba(154, 107, 19, 0.12);
+}
+
 .team-view-tabs {
   display: inline-flex;
   align-items: center;

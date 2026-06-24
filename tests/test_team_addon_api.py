@@ -3498,6 +3498,150 @@ def test_team_addon_admin_api_patch_team_rejects_stale_revision(tmp_path: Path) 
     assert response.json()["current_revision"] == 1
 
 
+def test_team_addon_admin_api_exposes_resource_tokens(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+
+    state = client.get("/api/addons/team-addon/state").json()
+
+    token = state["resource_tokens"]["teams"]["team"]
+    assert token.startswith("sha256:")
+    assert state["teams"]["team"]["resource_token"] == token
+
+
+def test_team_addon_admin_api_rebases_stale_create_when_target_is_new(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    bump = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__reviewer",
+            "team_id": "team",
+            "name": "Reviewer",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert bump.status_code == 201
+
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["rebased_from_revision"] == stale_revision
+    assert payload["projects"]["project"]["name"] == "Project"
+
+
+def test_team_addon_admin_api_rebases_stale_patch_when_target_token_matches(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    base_token = team["resource_tokens"]["teams"]["team"]
+    bump = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__reviewer",
+            "team_id": "team",
+            "name": "Reviewer",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert bump.status_code == 201
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "operator_communication_target_id": "ops",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rebased_from_revision"] == stale_revision
+    assert payload["teams"]["team"]["operator_communication_target_id"] == "ops"
+
+
+def test_team_addon_admin_api_rejects_stale_patch_when_target_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    base_token = team["resource_tokens"]["teams"]["team"]
+    changed = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={"name": "Changed", "expected_revision": stale_revision},
+    )
+    assert changed.status_code == 200
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "operator_communication_target_id": "ops",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.json()["revision"]
+
+
 def test_team_addon_admin_api_requires_expected_revision(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

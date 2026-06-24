@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Revision Conflict Recovery
+
+- Added Team state resource tokens and opt-in unchanged-target rebasing for
+  operator UI writes so unrelated agent revision bumps no longer force common
+  Team Add-on form saves to fail.
+- Preserved Team UI form drafts across conflict reloads and added a retry-save
+  action after revision conflicts so operators can resubmit without re-entering
+  form data.
+
 ## 2026-06-24 - Team Add-on Fallback Review Routing Fixes
 
 - Preserved compact artifact and Git evidence for pending-review deliverables

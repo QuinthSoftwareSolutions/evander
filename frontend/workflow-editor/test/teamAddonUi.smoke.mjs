@@ -2815,7 +2815,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
 });
 
 test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
-  const { port } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
+  const { port, requests } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
 
   await openDetails(page, "Create team");
@@ -2828,6 +2828,16 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   assert.equal(await teamForm.locator('[name="name"]').inputValue(), "Team");
   assert.equal(await teamForm.locator('[name="manager_session_id"]').inputValue(), "session-manager");
   await page.locator(".hierarchy-team h3", { hasText: "Existing" }).waitFor({ state: "visible" });
+
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await waitForRevision(page, 2);
+  await page.locator(".hierarchy-team h3", { hasText: "Team" }).waitFor({ state: "visible" });
+  const createRequests = requests.filter((request) => request.pathname === "/api/addons/team-addon/teams");
+  assert.equal(createRequests.length, 2);
+  assert.equal(createRequests[1].payload.name, "Team");
+  assert.equal(createRequests[1].payload.manager_session_id, "session-manager");
+  assert.equal(createRequests[1].payload.expected_revision, 1);
+  assert.equal(createRequests[1].payload.conflict_policy, "target_unchanged");
 });
 
 test("team add-on Governance tab creates governance groups from the top-level button", async (t) => {

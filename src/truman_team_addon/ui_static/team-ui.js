@@ -125,6 +125,8 @@ let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
 let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
+const formDraftRegistry = new Map();
+let pendingConflictRetry = null;
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -438,6 +440,7 @@ function emptyState() {
       agents: [],
       attention: [],
     },
+    resource_tokens: {},
     available_role_permissions: [],
   };
 }
@@ -719,6 +722,9 @@ function syncGovernanceCreateGroupPanel() {
 }
 
 function bindForms() {
+  document.addEventListener("input", rememberFormDraftFromEvent);
+  document.addEventListener("change", rememberFormDraftFromEvent);
+
   document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -8441,8 +8447,10 @@ function setGitImportStatus(element, message) {
 }
 
 async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true } = {}) {
+  rememberFormDraft(form);
   const drafts = captureFormDrafts();
-  const body = { ...payload, expected_revision: state.revision };
+  const body = mutationBodyWithConflictMetadata(endpoint, method, payload);
+  const retryDraftKey = formDraftKey(form);
   setFormBusy(form, true);
   setStatus("Saving.", "loading");
   try {
@@ -8455,33 +8463,213 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
       body: JSON.stringify(body),
     });
 
-      if (response.status === 409) {
-        const conflict = await response.json().catch(() => ({}));
-        await loadState();
-        restoreFormDrafts(drafts);
-        const current = conflict.current_revision ?? state.revision;
-        setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
-        return false;
-      }
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      showRevisionConflictRecoveryStatus({
+        form,
+        draftKey: retryDraftKey,
+        endpoint,
+        method,
+        payload,
+        options: { resetOnSuccess },
+        currentRevision: current,
+      });
+      return false;
+    }
 
     if (!response.ok) {
       throw new Error(await responseText(response));
     }
 
-    state = normalizeState(await response.json());
+    const result = await response.json();
+    const rebasedFromRevision = result.rebased_from_revision;
+    state = normalizeState(result);
     if (resetOnSuccess) {
+      clearFormDraft(form);
       form.reset();
     }
-      render();
-      void loadTimeline();
+    render();
+    void loadTimeline();
+    if (rebasedFromRevision !== undefined && rebasedFromRevision !== null) {
+      setStatus(
+        `Saved revision ${state.revision} after reloading from revision ${rebasedFromRevision}.`,
+        "ok",
+      );
+    } else {
       setStatus(`Saved revision ${state.revision}.`, "ok");
-      return true;
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Save failed.", "error");
-      return false;
-    } finally {
-      setFormBusy(form, false);
     }
+    return true;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Save failed.", "error");
+    return false;
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+function mutationBodyWithConflictMetadata(endpoint, method, payload) {
+  const body = { ...payload, expected_revision: state.revision };
+  const context = mutationResourceContext(endpoint, method, payload);
+  if (!context) {
+    return body;
+  }
+  if (context.kind === "create") {
+    body.conflict_policy = "target_unchanged";
+    return body;
+  }
+  const token = resourceToken(context.collection, context.id);
+  if (token) {
+    body.conflict_policy = "target_unchanged";
+    body.base_resource_token = token;
+  }
+  return body;
+}
+
+function mutationResourceContext(endpoint, method, payload = {}) {
+  const normalizedMethod = text(method).toUpperCase();
+  const path = text(endpoint).split("?")[0];
+  const directTargets = [
+    [/^\/teams\/([^/]+)$/, "teams"],
+    [/^\/governance-groups\/([^/]+)$/, "governance_groups"],
+    [/^\/governance-agenda\/([^/]+)\/handle$/, "governance_agenda"],
+    [/^\/projects\/([^/]+)$/, "projects"],
+    [/^\/roles\/([^/]+)$/, "roles"],
+    [/^\/agents\/([^/]+)$/, "agents"],
+    [/^\/agents\/([^/]+)\/context-rotation$/, "agents"],
+    [/^\/agents\/([^/]+)\/stand-down$/, "agents"],
+    [/^\/agents\/([^/]+)\/stand-down\/revoke$/, "agents"],
+    [/^\/agents\/([^/]+)\/avatar(?:\/accept-preview)?$/, "agents"],
+    [/^\/tasks\/([^/]+)$/, "tasks"],
+    [/^\/review-requests\/([^/]+)\/decision$/, "review_requests"],
+    [/^\/action-records\/([^/]+)\/dismiss$/, "action_records"],
+    [/^\/review-profiles\/([^/]+)$/, "review_profiles"],
+  ];
+  for (const [pattern, collection] of directTargets) {
+    const match = path.match(pattern);
+    if (match) {
+      return { kind: "target", collection, id: decodeURIComponent(match[1]) };
+    }
+  }
+  if (normalizedMethod !== "POST") {
+    return null;
+  }
+  const createCollections = {
+    "/teams": ["teams", payload.id || payload.team_id],
+    "/governance-groups": ["governance_groups", payload.id || payload.governance_group_id],
+    "/governance-agenda": ["governance_agenda", payload.id || payload.agenda_item_id],
+    "/projects": ["projects", payload.id || payload.project_id],
+    "/roles": ["roles", payload.id || payload.role_id],
+    "/agents": ["agents", payload.id || payload.agent_id],
+    "/tasks": ["tasks", payload.id || payload.task_id],
+    "/deliverables": ["deliverables", payload.id || payload.deliverable_id],
+    "/review-requests": ["review_requests", payload.id || payload.review_request_id],
+    "/review-profiles": ["review_profiles", payload.id || payload.review_profile_id],
+  };
+  const create = createCollections[path];
+  if (!create) {
+    return null;
+  }
+  return { kind: "create", collection: create[0], id: text(create[1]) };
+}
+
+function resourceToken(collection, id) {
+  const normalizedCollection = text(collection);
+  const normalizedId = text(id);
+  if (!normalizedCollection || !normalizedId) {
+    return "";
+  }
+  return text(
+    state.resource_tokens?.[normalizedCollection]?.[normalizedId]
+      || state[normalizedCollection]?.[normalizedId]?.resource_token,
+  );
+}
+
+function resourceExists(collection, id) {
+  const normalizedCollection = text(collection);
+  const normalizedId = text(id);
+  return Boolean(normalizedCollection && normalizedId && state[normalizedCollection]?.[normalizedId]);
+}
+
+function showRevisionConflictRecoveryStatus({
+  form,
+  draftKey,
+  endpoint,
+  method,
+  payload,
+  options,
+  currentRevision,
+}) {
+  const context = mutationResourceContext(endpoint, method, payload);
+  pendingConflictRetry = {
+    draftKey,
+    endpoint,
+    method,
+    options,
+    mode: retryModeForForm(form),
+    editType: text(form?.dataset?.editType),
+    editId: text(form?.dataset?.editId),
+  };
+  if (context?.kind === "target" && !resourceExists(context.collection, context.id)) {
+    pendingConflictRetry = null;
+    setStatus(
+      `Revision conflict. Draft preserved, but the target record is no longer available at revision ${currentRevision}.`,
+      "warning",
+    );
+    return;
+  }
+  setStatus(
+    `Revision conflict. Draft preserved and revision ${currentRevision} loaded; review and retry save.`,
+    "warning",
+    { label: "Retry save", onClick: () => void retryPendingConflictSave() },
+  );
+}
+
+function retryModeForForm(form) {
+  if (form === elements.editForm || text(form?.dataset?.editType)) {
+    return "edit";
+  }
+  const formId = formIdentifier(form);
+  if (formId === "update-task-form") {
+    return "task-update";
+  }
+  if (formId === "decide-review-form" || form?.hasAttribute?.("data-review-decision-form")) {
+    return "review-decision";
+  }
+  return "create";
+}
+
+async function retryPendingConflictSave() {
+  const retry = pendingConflictRetry;
+  if (!retry) {
+    setStatus("No preserved save is available to retry.", "error");
+    return;
+  }
+  let form = findFormByDraftKey(retry.draftKey);
+  if (!form && retry.mode === "edit" && retry.editType && retry.editId) {
+    openEditDialog(retry.editType, retry.editId);
+    form = findFormByDraftKey(retry.draftKey) || elements.editForm;
+    const draft = formDraftRegistry.get(retry.draftKey);
+    if (draft) {
+      restoreFormDrafts({ [retry.draftKey]: draft });
+    }
+  }
+  if (!form) {
+    setStatus("The preserved draft form is no longer open.", "error");
+    return;
+  }
+  pendingConflictRetry = null;
+  if (retry.mode === "edit") {
+    await submitEditForm(form);
+  } else if (retry.mode === "task-update") {
+    await submitTaskUpdate(form);
+  } else if (retry.mode === "review-decision") {
+    await submitReviewDecision(form);
+  } else {
+    await submitCreateForm(form);
+  }
 }
 
 async function uploadAgentAvatar(button) {
@@ -8639,18 +8827,18 @@ async function requestContextRotation(button, agentId) {
   button.disabled = true;
   setStatus("Requesting context clearing.", "loading");
   try {
+    const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/context-rotation`;
     const response = await fetch(
-      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/context-rotation`,
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason: "manual operator request",
-        }),
+        })),
       },
     );
 
@@ -9316,18 +9504,18 @@ async function requestAgentStandDown(button, agentId) {
   button.disabled = true;
   setStatus("Standing down agent subtree.", "loading");
   try {
+    const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`;
     const response = await fetch(
-      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`,
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason,
-        }),
+        })),
       },
     );
 
@@ -9368,17 +9556,16 @@ async function revokeAgentStandDown(button, agentId) {
   button.disabled = true;
   setStatus("Revoking stand-down.", "loading");
   try {
+    const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`;
     const response = await fetch(
-      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`,
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
-        }),
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {})),
       },
     );
 
@@ -9418,18 +9605,18 @@ async function dismissActionRecordAttention(button, actionRecordId) {
   button.disabled = true;
   setStatus("Dismissing failed action.", "loading");
   try {
+    const endpoint = `/action-records/${encodeURIComponent(actionRecordId)}/dismiss`;
     const response = await fetch(
-      `${API_BASE}/action-records/${encodeURIComponent(actionRecordId)}/dismiss`,
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           dismissed_by: "operator",
-        }),
+        })),
       },
     );
 
@@ -9469,17 +9656,16 @@ async function markGovernanceAgendaHandled(button, agendaItemId) {
   button.disabled = true;
   setStatus("Marking governance agenda item handled.", "loading");
   try {
+    const endpoint = `/governance-agenda/${encodeURIComponent(agendaItemId)}/handle`;
     const response = await fetch(
-      `${API_BASE}/governance-agenda/${encodeURIComponent(agendaItemId)}/handle`,
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
-        }),
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {})),
       },
     );
 
@@ -9843,6 +10029,7 @@ async function submitEditForm(form) {
     resetOnSuccess: false,
   });
   if (saved) {
+    clearFormDraft(form);
     closeEditDialog();
   }
 }
@@ -10207,23 +10394,86 @@ function formSemanticIdentifier(form) {
   return form?.dataset?.formId || formIdentifier(form);
 }
 
+function formDraftKey(form) {
+  if (!form || !shouldTrackFormDraft(form)) {
+    return "";
+  }
+  const formId = formIdentifier(form);
+  const semanticId = formSemanticIdentifier(form);
+  const parts = [formId || semanticId || "form"];
+  if (semanticId && semanticId !== formId) {
+    parts.push(`semantic:${semanticId}`);
+  }
+  const editType = text(form.dataset.editType);
+  const editId = text(form.dataset.editId);
+  if (editType || editId) {
+    parts.push(`edit:${editType || "record"}:${editId || "new"}`);
+  }
+  const groupId = text(form.dataset.teamRecordGroupId);
+  const groupKind = text(form.dataset.teamRecordKind);
+  if (groupId || groupKind) {
+    parts.push(`group:${groupKind || "record"}:${groupId || "all"}`);
+  }
+  const reviewRequestId = text(form.dataset.reviewRequestId);
+  if (reviewRequestId) {
+    parts.push(`review:${reviewRequestId}`);
+  }
+  return parts.join("|");
+}
+
+function shouldTrackFormDraft(form) {
+  return Boolean(form && formIdentifier(form) && !form.matches("[data-chat-message-form]"));
+}
+
+function rememberFormDraftFromEvent(event) {
+  const form = event.target?.closest?.("form");
+  if (form) {
+    rememberFormDraft(form);
+  }
+}
+
+function rememberFormDraft(form) {
+  const key = formDraftKey(form);
+  if (!key) {
+    return null;
+  }
+  const values = formValuesForDraft(form);
+  formDraftRegistry.set(key, values);
+  return [key, values];
+}
+
+function clearFormDraft(form) {
+  const key = formDraftKey(form);
+  if (key) {
+    formDraftRegistry.delete(key);
+  }
+}
+
+function formValuesForDraft(form) {
+  const values = formData(form);
+  form.querySelectorAll('input[type="file"][name]').forEach((field) => {
+    delete values[field.name];
+  });
+  form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
+    values[field.name] = field.checked ? "true" : "false";
+  });
+  const criteriaDraft = reviewProfileCriteriaDraftFromForm(form);
+  if (criteriaDraft) {
+    values.__review_profile_criteria = criteriaDraft;
+  }
+  return values;
+}
+
+function findFormByDraftKey(key) {
+  return Array.from(document.querySelectorAll("form")).find((form) => formDraftKey(form) === key) || null;
+}
+
 function captureFormDrafts() {
-  const drafts = {};
+  const drafts = Object.fromEntries(formDraftRegistry.entries());
   document.querySelectorAll("form").forEach((form) => {
-    const formId = formIdentifier(form);
-    if (formId) {
-      const values = formData(form);
-      form.querySelectorAll('input[type="file"][name]').forEach((field) => {
-        delete values[field.name];
-      });
-      form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
-        values[field.name] = field.checked ? "true" : "false";
-      });
-      const criteriaDraft = reviewProfileCriteriaDraftFromForm(form);
-      if (criteriaDraft) {
-        values.__review_profile_criteria = criteriaDraft;
-      }
-      drafts[formId] = values;
+    const remembered = rememberFormDraft(form);
+    if (remembered) {
+      drafts[remembered[0]] = remembered[1];
     }
   });
   return drafts;
@@ -10231,7 +10481,7 @@ function captureFormDrafts() {
 
 function restoreFormDrafts(drafts) {
   Object.entries(drafts || {}).forEach(([formId, values]) => {
-    const form = document.getElementById(formId);
+    const form = findFormByDraftKey(formId) || document.getElementById(formId);
     if (!form) {
       return;
     }
@@ -10253,9 +10503,22 @@ function restoreFormDrafts(drafts) {
       }
       if (field instanceof HTMLSelectElement && field.multiple) {
         const selected = new Set(Array.isArray(value) ? value.map(text) : splitList(value));
+        const available = new Set(Array.from(field.options).map((option) => option.value));
+        const missing = Array.from(selected).filter((item) => item && !available.has(item));
         Array.from(field.options).forEach((option) => {
           option.selected = selected.has(option.value);
         });
+        markUnavailableDraftSelections(field, missing);
+        return;
+      }
+      if (field instanceof HTMLSelectElement) {
+        const normalizedValue = text(value);
+        const available = new Set(Array.from(field.options).map((option) => option.value));
+        field.value = normalizedValue;
+        markUnavailableDraftSelections(
+          field,
+          normalizedValue && !available.has(normalizedValue) ? [normalizedValue] : [],
+        );
         return;
       }
       field.value = value;
@@ -10265,6 +10528,7 @@ function restoreFormDrafts(drafts) {
       leadSelect.dataset.currentValue = text(values.lead_agent_id);
       refreshProjectLeadSelect(form);
     }
+    rememberFormDraft(form);
   });
   const updateTaskForm = document.querySelector("#update-task-form");
   if (updateTaskForm) {
@@ -10273,17 +10537,37 @@ function restoreFormDrafts(drafts) {
   renderTemplatePreview();
 }
 
+function markUnavailableDraftSelections(field, missingValues) {
+  const missing = missingValues.filter(Boolean);
+  if (!missing.length) {
+    delete field.dataset.unavailableDraftValues;
+    field.removeAttribute("title");
+    return;
+  }
+  field.dataset.unavailableDraftValues = missing.join(",");
+  field.title = `Draft kept unavailable selection: ${missing.join(", ")}`;
+}
+
 function setFormBusy(form, busy) {
   form.querySelectorAll("button, input, select, textarea").forEach((field) => {
     field.disabled = busy;
   });
 }
 
-function setStatus(message, level) {
+function setStatus(message, level, action = null) {
   const normalizedMessage = text(message);
   elements.statusMessage.hidden = !normalizedMessage;
-  elements.statusMessage.textContent = normalizedMessage;
   elements.statusMessage.className = `status-message ${level || ""}`.trim();
+  elements.statusMessage.textContent = normalizedMessage;
+  if (normalizedMessage && action?.label && typeof action.onClick === "function") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "status-action";
+    button.textContent = action.label;
+    button.addEventListener("click", action.onClick);
+    elements.statusMessage.append(" ");
+    elements.statusMessage.appendChild(button);
+  }
 }
 
 function setTimelineStatus(message, level) {
