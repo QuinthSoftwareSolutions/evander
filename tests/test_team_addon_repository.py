@@ -1014,6 +1014,92 @@ def test_task_state_entered_at_changes_only_on_state_transition(
     )
 
 
+def test_repository_creates_persists_and_updates_cases(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_or_reprioritize_task(
+        task_id="case-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=5,
+        title="Investigate ticket",
+        description="Reproduce the reported problem.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+    state = repo.create_case(
+        case_id="case-1",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        description="External support ticket.",
+        status="triage",
+        priority="high",
+        owner_agent_id="lead",
+        source="github",
+        source_ref="issue-42",
+        tags=["support", "bug"],
+        task_ids=["case-task"],
+        expected_revision=repo.read().revision,
+    )
+
+    case = state.cases["case-1"]
+    assert case.tags == ["support", "bug"]
+    assert case.task_ids == ["case-task"]
+    assert state.tasks["case-task"].case_id == "case-1"
+
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.cases["case-1"].source_ref == "issue-42"
+    assert reread.tasks["case-task"].case_id == "case-1"
+
+    state = repo.update_case(
+        case_id="case-1",
+        status="closed",
+        owner_agent_id=None,
+        set_owner_agent_id=True,
+        task_ids=[],
+        expected_revision=state.revision,
+    )
+
+    assert state.cases["case-1"].status == "closed"
+    assert state.cases["case-1"].owner_agent_id is None
+    assert state.cases["case-1"].closed_at is not None
+    assert state.cases["case-1"].task_ids == []
+    assert state.tasks["case-task"].case_id is None
+
+
+def test_repository_rejects_cross_project_case_task_link(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_project(
+        project_id="other",
+        team_id="team",
+        name="Other",
+        lead_agent_id="lead",
+        lead_session_id=None,
+        expected_revision=repo.read().revision,
+    )
+    repo.create_case(
+        case_id="case-1",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="cannot be linked to case case-1"):
+        repo.create_or_reprioritize_task(
+            task_id="other-task",
+            owner_agent_id="backend",
+            project_id="other",
+            priority=5,
+            title="Wrong project",
+            description="Should not link to a project-scoped case.",
+            created_by_agent_id="lead",
+            case_id="case-1",
+            expected_revision=repo.read().revision,
+        )
+
+
 def test_repository_prefers_sqlite_when_legacy_json_also_exists(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
     repo.create_team(

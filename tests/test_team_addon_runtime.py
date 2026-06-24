@@ -46,6 +46,7 @@ from truman_team_addon.models import (
     ReleasePackage,
     ReviewRequest,
     Team,
+    TeamCase,
     TeamConversation,
     TeamConversationMessage,
     TeamInboxItemState,
@@ -750,11 +751,21 @@ def test_parent_owner_with_open_child_remains_leaseable_while_waiting(
 
 def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+    repo.create_case(
+        case_id="case",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        task_ids=["task"],
+        expected_revision=repo.read().revision,
+    )
 
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
 
     backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
     task_payload = backend_lease["tasks"][0]
+    assert backend_lease["cases"][0]["id"] == "case"
+    assert task_payload["case_id"] == "case"
     assert task_payload["dependency_status"] == "satisfied"
     assert task_payload["child_task_ids"] == []
     assert task_payload["blocked_by_task_ids"] == []
@@ -953,11 +964,15 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "no-op replies" in guidance
     assert "priority low, normal, or high" in guidance
     assert "Do not start tasks" in guidance
+    assert "case_updates" in guidance
     assert "creating child tasks via task_creations with parent_task_id" in guidance
     schema = json.loads(str(copied_files[0]["content"]))
+    assert "case_updates" in schema["properties"]
+    assert "task_ids" in schema["properties"]["case_updates"]["items"]["properties"]
     assert schema["properties"]["task_updates"]["items"]["required"] == ["task_id"]
     assert "owner_agent_id" in schema["properties"]["task_updates"]["items"]["properties"]
     assert "task_id" in schema["properties"]["task_creations"]["items"]["properties"]
+    assert "case_id" in schema["properties"]["task_creations"]["items"]["properties"]
     artifact_paths_schema = schema["properties"]["deliverables"]["items"]["properties"][
         "artifact_paths"
     ]
@@ -1042,6 +1057,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     ]
     example = json.loads(str(copied_files[1]["content"]))
     assert example["schema_version"] == ACTION_CONTRACT_SCHEMA_VERSION
+    assert example["case_updates"] == []
     assert example["chat_replies"][0]["body"]
     assert example["operator_chat_messages"][0]["recipient_operator_user_id"]
     assert example["status_requests"][0]["response_requested"] is True
@@ -1098,6 +1114,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "Action surface guide:" not in prompt
     for field_name in (
         "task_creations",
+        "case_updates",
         "status_requests",
         "operator_chat_messages",
         "operator_escalations",
@@ -4826,6 +4843,26 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         voice="cedar",
         speaking_style="agent-visible state should not include this",
     )
+    state.cases["alpha-case"] = TeamCase(
+        id="alpha-case",
+        team_id="alpha-team",
+        project_id="alpha-project",
+        title="Alpha case",
+        owner_agent_id="alpha-dev",
+        source="github",
+        source_ref="issue-1",
+        task_ids=["alpha-task"],
+    )
+    state.tasks["alpha-task"].case_id = "alpha-case"
+    state.cases["beta-case"] = TeamCase(
+        id="beta-case",
+        team_id="beta-team",
+        project_id="beta-project",
+        title="Beta case",
+        owner_agent_id="beta-dev",
+        task_ids=["beta-task"],
+    )
+    state.tasks["beta-task"].case_id = "beta-case"
     repo.store.write_object(state.model_dump(mode="json"))
     session_lookup = SimpleNamespace(
         read_all_sessions=lambda: {
@@ -4860,7 +4897,9 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["agents"]) == {"alpha-lead", "alpha-dev", "alpha-reviewer"}
     assert "voice_profile" not in project_state["agents"]["alpha-dev"]
     assert set(project_state["agent_runtimes"]) == {"alpha-dev"}
+    assert set(project_state["cases"]) == {"alpha-case"}
     assert set(project_state["tasks"]) == {"alpha-task", "alpha-helper"}
+    assert project_state["tasks"]["alpha-task"]["case_id"] == "alpha-case"
     # Parent/dependency stay intact when both tasks are within scope.
     assert project_state["tasks"]["alpha-task"]["parent_task_id"] == "alpha-helper"
     assert project_state["tasks"]["alpha-task"]["dependency_task_ids"] == ["alpha-helper"]
@@ -4964,10 +5003,12 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["agents"]) == {"alpha-dev"}
     assert "voice_profile" not in agent_state["agents"]["alpha-dev"]
     assert set(agent_state["agent_runtimes"]) == {"alpha-dev"}
+    assert set(agent_state["cases"]) == {"alpha-case"}
     assert set(agent_state["tasks"]) == {"alpha-task"}
     # alpha-helper is out of this agent's scope, so its edges are filtered out,
     # but dependency_status still reflects global truth (alpha-helper is pending).
     scoped_task = agent_state["tasks"]["alpha-task"]
+    assert scoped_task["case_id"] == "alpha-case"
     assert scoped_task["parent_task_id"] is None
     assert scoped_task["dependency_task_ids"] == []
     assert scoped_task["blocked_by_task_ids"] == []

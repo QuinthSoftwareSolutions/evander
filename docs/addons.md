@@ -259,6 +259,42 @@ rather than an exact role name. The built-in `auto-dev-squad` template grants
 `accounting-department` template grants the bookkeeping permissions to its
 preparation and review roles.
 
+### Case And Ticket Tracking
+
+The Team Add-on has a first-class case domain for intake and lifecycle tracking.
+The internal object is always named `case`. External systems such as GitHub,
+Jira, Zendesk, email, or support tools are represented only as optional
+`source` and `source_ref` fields on the case. The initial implementation does
+not synchronize external ticket systems; operators and agents may preserve the
+external reference so a later integration can reconcile against it.
+
+Cases are containers for intake context, ownership, status, priority, tags, and
+linked execution tasks. Tasks remain the unit of work assigned to agents. A task
+may set `case_id`, and a case may list `task_ids`; the repository validates that
+the link is bidirectional, same-team, and same-project when the case has a
+project scope.
+
+Case status values are `open`, `triage`, `in_progress`, `waiting`, `resolved`,
+and `closed`. Case priority values use the existing Team inbox priority set:
+`low`, `normal`, and `high`.
+
+The Admin API exposes:
+
+- `POST /api/addons/team-addon/cases`
+- `PATCH /api/addons/team-addon/cases/{case_id}`
+- `case_id` on `POST /api/addons/team-addon/tasks`
+- `case_id` on `PATCH /api/addons/team-addon/tasks/{task_id}`; send `null` to
+  clear the link
+
+The Teams UI includes a dedicated `Cases` tab, a workspace cases panel, a
+`Create case` setup form, case selectors on task create/update forms, and case
+edit support in the generic record editor.
+
+Agent wake leases and the Team state query include visible open cases. The
+persistent action contract exposes `case_updates[]` for agents to create or
+update intake/lifecycle records, while `task_creations[]` may include `case_id`
+to attach new work to an existing case.
+
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
 Team state revision. Workflow effects and agent-action application may omit

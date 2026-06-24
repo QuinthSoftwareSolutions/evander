@@ -77,11 +77,11 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 14
+ACTION_CONTRACT_SCHEMA_VERSION = 15
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 4
+TEAM_AGENT_GUIDANCE_VERSION = 5
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
@@ -1584,6 +1584,7 @@ def _missing_action_recovery_prompt(
         "agent_id": agent_id,
         "dispatch_id": dispatch_id,
         "task_updates": [],
+        "case_updates": [],
         "status_reports": [],
         "questions": [],
         "deliverables": [],
@@ -2171,6 +2172,7 @@ class TeamStateQueryProvider(QueryProviderBase):
             "teams": filtered["teams"],
             "projects": filtered["projects"],
             "agents": filtered["agents"],
+            "cases": filtered["cases"],
             "tasks": filtered["tasks"],
         }
 
@@ -2880,6 +2882,7 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Use the provided Team context and update only your own assigned tasks. "
         "Questions and progress reports must go to your direct superior; "
         "agents without a direct superior use operator_escalations. Use "
+        "case_updates for intake/lifecycle case tracking, and "
         "task_creations only according to the task creation mandate in your wake "
         "prompt. Use "
         "status_requests only for direct subordinates. Use "
@@ -2899,6 +2902,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "to claim a subordinate's non-terminal task or reassign it to another "
         "subordinate in the same project. Do not accept or reject someone else's "
         "task with task_updates.\n"
+        "- Use case_updates to create or update cases. Cases track intake, source "
+        "references, priority, owner, and lifecycle; tasks remain the execution "
+        "steps and can be linked to a case with task_ids or task_creations[].case_id.\n"
         "- Use review_requests to ask a specific same-team agent to review a "
         "deliverable. Include instructions when the reviewer needs a focused "
         "check.\n"
@@ -3024,6 +3030,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "subordinate_agent_ids": lease["subordinate_agent_ids"],
         "subordinates": lease.get("subordinates") or [],
         "session_health": lease.get("session_health") or [],
+        "cases": lease.get("cases") or [],
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
         "recent_action_feedback": lease.get("recent_action_feedback") or [],
@@ -3104,6 +3111,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
+        "case_updates": [],
         "task_updates": [],
         "task_creations": [],
         "status_requests": [],
@@ -3592,6 +3600,7 @@ def _team_finish_helper_content(
         "agent_id": agent_id,
         "dispatch_id": dispatch_id,
         "task_updates": [],
+        "case_updates": [],
         "task_creations": [],
         "status_requests": [],
         "questions": [],
@@ -4059,6 +4068,35 @@ def _persistent_action_schema() -> dict[str, Any]:
                     },
                 },
             },
+            "case_updates": {
+                "type": "array",
+                "description": (
+                    "Create or update Team cases. Use cases for intake and lifecycle "
+                    "tracking; use tasks for execution work. Existing cases are updated "
+                    "when case_id/id points at a known case; otherwise a new case is created."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "case_id": {"type": "string", "minLength": 1},
+                        "id": {"type": "string", "minLength": 1},
+                        "team_id": {"type": "string", "minLength": 1},
+                        "project_id": text_or_null,
+                        "title": {"type": "string", "minLength": 1},
+                        "description": {"type": "string"},
+                        "status": {"enum": ["open", "triage", "in_progress", "waiting", "resolved", "closed"]},
+                        "priority": {"enum": ["low", "normal", "high"]},
+                        "owner_agent_id": text_or_null,
+                        "source": text_or_null,
+                        "source_ref": text_or_null,
+                        "tags": string_array,
+                        "metadata": {"type": "object"},
+                        "task_ids": string_array,
+                    },
+                },
+            },
             "task_creations": {
                 "type": "array",
                 "description": (
@@ -4077,6 +4115,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "id": {"type": "string", "minLength": 1},
                         "owner_agent_id": {"type": "string", "minLength": 1},
                         "project_id": {"type": "string", "minLength": 1},
+                        "case_id": text_or_null,
                         "priority": {"type": "integer", "minimum": 0},
                         "title": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
@@ -4381,6 +4420,7 @@ def _persistent_action_example() -> dict[str, Any]:
         "agent_id": "replace-with-current-agent-id",
         "dispatch_id": "replace-with-current-dispatch-id",
         "task_updates": [],
+        "case_updates": [],
         "task_creations": [
             {
                 "task_id": "optional-stable-task-id",
@@ -5018,6 +5058,24 @@ def _filtered_team_state_payload(
         and value.get("owner_agent_id") in visible_agent_ids
     }
     visible_task_ids = set(filtered["tasks"])
+    filtered["cases"] = {
+        key: {
+            **value,
+            "task_ids": _filter_ids(value.get("task_ids"), visible_task_ids),
+        }
+        for key, value in filtered.get("cases", {}).items()
+        if value.get("team_id") in visible_team_ids
+        and (
+            value.get("project_id") is None
+            or value.get("project_id") in visible_project_ids
+        )
+        and (
+            agent_id is None
+            or value.get("owner_agent_id") in visible_agent_ids
+            or any(task_id in visible_task_ids for task_id in _string_items(value.get("task_ids")))
+        )
+    }
+    visible_case_ids = set(filtered["cases"])
     filtered["deliverables"] = {
         key: value
         for key, value in filtered.get("deliverables", {}).items()
@@ -5072,6 +5130,7 @@ def _filtered_team_state_payload(
         key: {
             **value,
             "deliverable_ids": _filter_ids(value.get("deliverable_ids"), visible_deliverable_ids),
+            "case_id": value.get("case_id") if value.get("case_id") in visible_case_ids else None,
             # Keep the graph self-consistent within the scoped view: drop edges that
             # point at tasks the caller cannot see. dependency_status and
             # subtask_counts are intentionally left as computed from the full state

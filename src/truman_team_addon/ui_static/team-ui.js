@@ -9,6 +9,14 @@ const taskStates = [
   "accepted",
   "rejected",
 ];
+const caseStatuses = [
+  "open",
+  "triage",
+  "in_progress",
+  "waiting",
+  "resolved",
+  "closed",
+];
 const taskBoardLanes = [
   { id: "planned", label: "Planned", states: ["pending"] },
   { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
@@ -80,6 +88,7 @@ const teamViewIds = new Set([
   "delivery",
   "projects",
   "task-board",
+  "cases",
   "people",
   "chat",
   "governance",
@@ -277,6 +286,18 @@ const fieldTooltips = {
   "create-project-form:lead_agent_id": "Existing same-team agent that will lead this project. The team manager may also be selected.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
+  "create-case-form:team_id": "Team that owns this case.",
+  "create-case-form:project_id": "Optional project scope. Linked tasks must belong to this project when it is set.",
+  "create-case-form:owner_agent_id": "Optional same-team agent responsible for triage or lifecycle follow-up.",
+  "create-case-form:status": "Current case lifecycle state. Blank creates an open case.",
+  "create-case-form:priority": "Case triage priority used in wake context ordering.",
+  "create-case-form:title": "Short case title shown in case lists and agent wake context.",
+  "create-case-form:description": "Intake details, ticket summary, or lifecycle context.",
+  "create-case-form:source": "Optional external system name such as github, jira, or zendesk.",
+  "create-case-form:source_ref": "Optional external ticket, issue, or conversation id.",
+  "create-case-form:tags": "Optional tags, one per line or comma-separated.",
+  "create-case-form:task_ids": "Optional linked task IDs, one per line or comma-separated.",
+
   "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions for the new agent.",
   "register-agent-form:team_id": "Team this persistent agent belongs to.",
   "register-agent-form:project_id": "Project this agent works in. Project agents must belong to the selected team.",
@@ -292,6 +313,7 @@ const fieldTooltips = {
 
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
   "create-task-form:project_id": "Project that owns this task and constrains parent and dependency links.",
+  "create-task-form:case_id": "Optional intake case this execution task belongs to.",
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
@@ -302,6 +324,7 @@ const fieldTooltips = {
 
   "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
   "update-task-form:state": "New task state. Leave blank to keep the current state.",
+  "update-task-form:case_id": "Case link to set or clear for this task.",
   "update-task-form:priority": "New priority. Lower numbers sort earlier.",
   "update-task-form:title": "New title. Leave blank to keep the current title.",
   "update-task-form:description": "New description. Leave blank to keep the current description.",
@@ -358,7 +381,18 @@ const fieldTooltips = {
   "edit:agent:reports_to_agent_id": "Supervisor in the same team. The backend rejects reporting cycles.",
   "edit:agent:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at once.",
   "edit:agent:status": "Active agents can receive work; paused or archived agents remain in state for audit context.",
+  "edit:case:project_id": "Optional project scope. Existing linked tasks that no longer match are unlinked.",
+  "edit:case:owner_agent_id": "Optional same-team owner responsible for triage or lifecycle follow-up.",
+  "edit:case:status": "Case lifecycle state.",
+  "edit:case:priority": "Case triage priority used in wake context ordering.",
+  "edit:case:title": "Rename the case without changing its immutable ID.",
+  "edit:case:description": "Update case intake or ticket context.",
+  "edit:case:source": "External system name such as github, jira, or zendesk. Clear to remove.",
+  "edit:case:source_ref": "External ticket, issue, or conversation id. Clear to remove.",
+  "edit:case:tags": "Replacement tags, one per line or comma-separated.",
+  "edit:case:task_ids": "Replacement linked task IDs, one per line or comma-separated.",
   "edit:task:state": "Task state to save.",
+  "edit:task:case_id": "Case link to set or clear for this task.",
   "edit:task:priority": "Lower numbers sort earlier in each agent's task queue.",
   "edit:task:title": "Rename the task without changing its immutable ID.",
   "edit:task:description": "Update the instructions for the owning agent.",
@@ -425,6 +459,7 @@ function emptyState() {
     roles: {},
     agents: {},
     agent_runtimes: {},
+    cases: {},
     tasks: {},
     deliverables: {},
     review_requests: {},
@@ -1920,6 +1955,7 @@ function render() {
   renderProjects();
   renderProjectFocus();
   renderTaskBoard();
+  renderCases();
   renderReviewProfiles();
   renderReleases();
   renderTemplateSetup();
@@ -2008,6 +2044,7 @@ function renderSummary() {
   const visibleAgents = values(state.agents).filter(isVisibleAgent);
   const visibleGovernanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup);
   const tasks = values(state.tasks);
+  const cases = values(state.cases);
   const deliverables = values(state.deliverables);
   const reviews = values(state.review_requests);
   const reviewProfiles = values(state.review_profiles);
@@ -2019,6 +2056,7 @@ function renderSummary() {
     ["Governance groups", visibleGovernanceGroups.length],
     ["Projects", visibleProjects.length],
     ["Agents", visibleAgents.length],
+    ["Open cases", cases.filter((item) => item.status !== "closed").length],
     ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
     ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
     ["Review profiles", visibleReviewProfiles.length],
@@ -2395,6 +2433,12 @@ function isVisibleRole(role) {
 
 function isVisibleReviewProfile(profile) {
   return showArchived || !isArchivedReviewProfile(profile);
+}
+
+function isVisibleCase(item) {
+  const team = item?.team_id ? state.teams[item.team_id] : null;
+  const project = item?.project_id ? state.projects[item.project_id] : null;
+  return (!team || isVisibleTeam(team)) && (!project || isVisibleProject(project));
 }
 
 function isVisibleRuntimeRow(row) {
@@ -6251,6 +6295,154 @@ function renderProjectFocusAgents(agents) {
   `;
 }
 
+function renderCases() {
+  const allCases = values(state.cases).sort(compareCases);
+  const visibleCases = allCases.filter(isVisibleCase);
+  if (!allCases.length) {
+    renderIntoActiveTargets("[data-cases-view]", `<p class="empty-state">No cases registered.</p>`);
+    return;
+  }
+  if (!visibleCases.length) {
+    renderIntoActiveTargets("[data-cases-view]", `<p class="empty-state">No visible cases.</p>`);
+    return;
+  }
+  const grouped = groupCasesByTeam(visibleCases);
+  renderIntoActiveTargets(
+    "[data-cases-view]",
+    grouped.map(renderCaseTeamGroup).join(""),
+  );
+}
+
+function groupCasesByTeam(items) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const teamId = text(item.team_id) || "";
+    if (!groups.has(teamId)) {
+      groups.set(teamId, []);
+    }
+    groups.get(teamId).push(item);
+  });
+  return [...groups.entries()]
+    .map(([teamId, cases]) => ({ teamId, team: state.teams[teamId] || null, cases }))
+    .sort((left, right) => {
+      const leftLabel = left.team?.name || left.teamId;
+      const rightLabel = right.team?.name || right.teamId;
+      return leftLabel.localeCompare(rightLabel) || left.teamId.localeCompare(right.teamId);
+    });
+}
+
+function renderCaseTeamGroup(group) {
+  const openCount = group.cases.filter((item) => text(item.status) !== "closed").length;
+  return `
+    <article class="project-block">
+      <div class="project-header">
+        <div>
+          <strong>${escapeHtml(group.team?.name || group.teamId || "Unknown team")}</strong>
+          <div class="meta-line">${escapeHtml(group.teamId || "team missing")} - ${openCount} open case${openCount === 1 ? "" : "s"}</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        ${group.cases.map(renderCaseItem).join("")}
+      </ul>
+    </article>
+  `;
+}
+
+function renderCaseItem(item) {
+  const project = item.project_id ? state.projects[item.project_id] : null;
+  const owner = item.owner_agent_id ? state.agents[item.owner_agent_id] : null;
+  const metaParts = [
+    item.id,
+    item.priority ? `${humanizeToken(item.priority)} priority` : "",
+    project ? project.name : item.project_id ? `project ${item.project_id}` : "Team-wide",
+    owner ? `owner ${agentLabel(owner)}` : item.owner_agent_id ? `owner ${item.owner_agent_id}` : "No owner",
+  ].filter(Boolean);
+  const source = [item.source, item.source_ref].filter(Boolean).join(" ");
+  return `
+    <li class="task-item">
+      <div class="task-line">
+        <strong>${escapeHtml(item.title)}</strong>
+        <div class="record-actions">
+          <span class="state-pill ${escapeHtml(item.status || "open")}">${escapeHtml(humanizeToken(item.status || "open"))}</span>
+          ${editButton("case", item.id)}
+        </div>
+      </div>
+      <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
+      ${source ? `<div class="meta-line">Source ${escapeHtml(source)}</div>` : ""}
+      ${renderCaseTags(item)}
+      ${renderCaseTaskLinks(item)}
+      ${item.description ? `<div class="meta-line">${escapeHtml(item.description)}</div>` : ""}
+    </li>
+  `;
+}
+
+function renderCaseTags(item) {
+  const tags = uniqueTextList(item.tags);
+  if (!tags.length) {
+    return "";
+  }
+  return `
+    <ul class="inline-list">
+      ${tags.map((tag) => `<li><span class="state-pill neutral">${escapeHtml(tag)}</span></li>`).join("")}
+    </ul>
+  `;
+}
+
+function renderCaseTaskLinks(item) {
+  const taskIds = uniqueTextList(item.task_ids);
+  if (!taskIds.length) {
+    return "";
+  }
+  const labels = taskIds.map((taskId) => {
+    const task = state.tasks[taskId];
+    return task ? `${task.title} (${task.id}, ${humanizeToken(task.state)})` : taskId;
+  });
+  return `<div class="meta-line">Tasks ${escapeHtml(labels.join(" - "))}</div>`;
+}
+
+function caseLabel(item) {
+  const team = item?.team_id ? state.teams[item.team_id] : null;
+  const project = item?.project_id ? state.projects[item.project_id] : null;
+  const parts = [
+    item?.title || item?.id,
+    item?.id,
+    item?.status ? humanizeToken(item.status) : "",
+    team?.name || item?.team_id,
+    project?.name || item?.project_id,
+  ].filter(Boolean);
+  return parts.join(" - ");
+}
+
+function compareCases(left, right) {
+  return (
+    caseStatusRank(left.status) - caseStatusRank(right.status) ||
+    prioritySortValue(left.priority) - prioritySortValue(right.priority) ||
+    String(right.updated_at || "").localeCompare(String(left.updated_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function caseStatusRank(status) {
+  const order = {
+    triage: 0,
+    open: 1,
+    in_progress: 2,
+    waiting: 3,
+    resolved: 4,
+    closed: 5,
+  };
+  return order[text(status)] ?? 99;
+}
+
+function prioritySortValue(priority) {
+  const order = {
+    high: 0,
+    normal: 1,
+    low: 2,
+  };
+  return order[text(priority)] ?? 1;
+}
+
 function renderProjectReviewProfileCreateForm(project) {
   return `
     <form
@@ -6717,6 +6909,10 @@ function renderTasks(tasks, { compact = false } = {}) {
 
 function renderTaskGraph(task) {
   const lines = [];
+  if (task.case_id) {
+    const item = state.cases[task.case_id];
+    lines.push(`case ${item ? item.title : task.case_id}`);
+  }
   if (task.parent_task_id) {
     lines.push(`parent ${task.parent_task_id}`);
   }
@@ -8339,6 +8535,7 @@ function buildSelectOptionSets() {
     .map((agent) => [agent.id, text(agent.display_name) || text(agent.id)])
     .sort((left, right) => text(left[1]).localeCompare(text(right[1])) || text(left[0]).localeCompare(text(right[0])));
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
+  const cases = values(state.cases).filter(isVisibleCase).sort(compareCases).map((item) => [item.id, caseLabel(item)]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
     .sort(byId)
@@ -8358,6 +8555,7 @@ function buildSelectOptionSets() {
     "project-review-roles": projectReviewRoleOptionsForProject(selectedProjectFocusId),
     agents,
     "agents-by-display-name": agentsByDisplayName,
+    cases,
     tasks,
     deliverables,
     "review-profiles": reviewProfiles,
@@ -8366,6 +8564,7 @@ function buildSelectOptionSets() {
     "governance-groups": governanceGroups,
     "governance-agenda-types": governanceAgendaTypes.map((item) => [item, humanizeToken(item)]),
     "inbox-priorities": inboxPriorities.map((item) => [item, humanizeToken(item)]),
+    "case-statuses": caseStatuses.map((item) => [item, humanizeToken(item)]),
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
@@ -8552,8 +8751,10 @@ async function submitTaskUpdate(form) {
   const priority = text(data.priority);
   const title = text(data.title);
   const description = text(data.description);
+  const caseId = text(data.case_id);
   const parentTaskId = text(data.parent_task_id);
   if (stateValue) payload.state = stateValue;
+  payload.case_id = caseId || null;
   if (priority) payload.priority = Number(priority);
   if (title) payload.title = title;
   if (description) payload.description = description;
@@ -8743,6 +8944,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     [/^\/agents\/([^/]+)\/stand-down$/, "agents"],
     [/^\/agents\/([^/]+)\/stand-down\/revoke$/, "agents"],
     [/^\/agents\/([^/]+)\/avatar(?:\/accept-preview)?$/, "agents"],
+    [/^\/cases\/([^/]+)$/, "cases"],
     [/^\/tasks\/([^/]+)$/, "tasks"],
     [/^\/review-requests\/([^/]+)\/decision$/, "review_requests"],
     [/^\/action-records\/([^/]+)\/dismiss$/, "action_records"],
@@ -8764,6 +8966,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     "/projects": ["projects", payload.id || payload.project_id],
     "/roles": ["roles", payload.id || payload.role_id],
     "/agents": ["agents", payload.id || payload.agent_id],
+    "/cases": ["cases", payload.id || payload.case_id],
     "/tasks": ["tasks", payload.id || payload.task_id],
     "/deliverables": ["deliverables", payload.id || payload.deliverable_id],
     "/review-requests": ["review_requests", payload.id || payload.review_request_id],
@@ -10040,6 +10243,34 @@ function payloadForForm(form, data = formData(form)) {
     }
     return payload;
   }
+  if (formId === "create-case-form") {
+    const payload = {
+      team_id: text(data.team_id),
+      title: text(data.title),
+      description: text(data.description),
+      status: text(data.status) || "open",
+      priority: text(data.priority) || "normal",
+      tags: splitList(data.tags),
+      task_ids: splitList(data.task_ids),
+    };
+    const projectId = text(data.project_id);
+    if (projectId) {
+      payload.project_id = projectId;
+    }
+    const ownerAgentId = text(data.owner_agent_id);
+    if (ownerAgentId) {
+      payload.owner_agent_id = ownerAgentId;
+    }
+    const source = text(data.source);
+    if (source) {
+      payload.source = source;
+    }
+    const sourceRef = text(data.source_ref);
+    if (sourceRef) {
+      payload.source_ref = sourceRef;
+    }
+    return payload;
+  }
   if (formId === "register-agent-form") {
     const requestedTeamId = text(data.team_id);
     const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
@@ -10066,6 +10297,10 @@ function payloadForForm(form, data = formData(form)) {
       description: text(data.description),
       created_by_agent_id: text(data.created_by_agent_id),
     };
+    const caseId = text(data.case_id);
+    if (caseId) {
+      payload.case_id = caseId;
+    }
     if (text(data.state)) {
       payload.state = text(data.state);
     }
@@ -10242,6 +10477,7 @@ function recordForEdit(type, id) {
   if (type === "project") return state.projects[id] || null;
   if (type === "role") return state.roles[id] || null;
   if (type === "agent") return state.agents[id] || null;
+  if (type === "case") return state.cases[id] || null;
   if (type === "task") return state.tasks[id] || null;
   if (type === "review-profile") return state.review_profiles[id] || null;
   return null;
@@ -10253,6 +10489,7 @@ function editEndpoint(type, id) {
   if (type === "project") return `/projects/${encodeURIComponent(id)}`;
   if (type === "role") return `/roles/${encodeURIComponent(id)}`;
   if (type === "agent") return `/agents/${encodeURIComponent(id)}`;
+  if (type === "case") return `/cases/${encodeURIComponent(id)}`;
   if (type === "task") return `/tasks/${encodeURIComponent(id)}`;
   if (type === "review-profile") return `/review-profiles/${encodeURIComponent(id)}`;
   throw new Error(`Unknown edit type ${type}`);
@@ -10265,6 +10502,7 @@ function editDialogTitle(type, record) {
     project: "project",
     role: "role",
     agent: "agent",
+    case: "case",
     task: "task",
     "review-profile": "review profile",
   };
@@ -10349,12 +10587,29 @@ function renderEditFields(type, record) {
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
+  if (type === "case") {
+    return `
+      ${readonlyField("Case ID", record.id)}
+      ${readonlyField("Team", record.team_id)}
+      ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
+      ${selectField("Owner", "owner_agent_id", "agents", record.owner_agent_id || "", { placeholder: "No owner" })}
+      ${selectField("Status", "status", "case-statuses", record.status || "open", { required: true })}
+      ${selectField("Priority", "priority", "inbox-priorities", record.priority || "normal", { required: true })}
+      ${textField("Title", "title", record.title, { required: true })}
+      ${textareaField("Description", "description", record.description || "", { rows: 3 })}
+      ${textField("Source", "source", record.source || "")}
+      ${textField("Source ref", "source_ref", record.source_ref || "")}
+      ${textareaField("Tags", "tags", (record.tags || []).join("\n"), { rows: 2 })}
+      ${textareaField("Linked tasks", "task_ids", (record.task_ids || []).join("\n"), { rows: 2 })}
+    `;
+  }
   if (type === "task") {
     return `
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
       ${readonlyField("Owner", record.owner_agent_id)}
       ${selectField("State", "state", "task-states", record.state || "pending", { required: true })}
+      ${selectField("Case", "case_id", "cases", record.case_id || "", { placeholder: "No case" })}
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
@@ -10492,9 +10747,24 @@ function editPayloadForForm(type, form) {
       archived: Boolean(form.elements.archived?.checked),
     };
   }
+  if (type === "case") {
+    return {
+      project_id: text(data.project_id) || null,
+      owner_agent_id: text(data.owner_agent_id) || null,
+      status: text(data.status),
+      priority: text(data.priority) || "normal",
+      title: text(data.title),
+      description: text(data.description),
+      source: text(data.source) || null,
+      source_ref: text(data.source_ref) || null,
+      tags: splitList(data.tags),
+      task_ids: splitList(data.task_ids),
+    };
+  }
   if (type === "task") {
     return {
       state: text(data.state),
+      case_id: text(data.case_id) || null,
       priority: numberOrZero(data.priority),
       title: text(data.title),
       description: text(data.description),
@@ -10560,6 +10830,9 @@ function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
   }
   if (!keepEditedValues || !form.elements.state.value) {
     form.elements.state.value = task.state || "";
+  }
+  if (!keepEditedValues || !form.elements.case_id.value) {
+    form.elements.case_id.value = task.case_id || "";
   }
   if (!keepEditedValues || !form.elements.priority.value) {
     form.elements.priority.value = String(task.priority ?? "");

@@ -126,6 +126,17 @@
           Task board
         </button>
         <button
+          id="team-view-cases-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-cases-page"
+          data-team-view="cases"
+        >
+          Cases
+        </button>
+        <button
           id="team-view-people-tab"
           class="team-view-tab"
           type="button"
@@ -304,6 +315,11 @@
           <section class="content-panel" aria-labelledby="projects-heading">
             <h2 id="projects-heading">Projects</h2>
             <div id="projects-view" class="projects-view" data-projects-view></div>
+          </section>
+
+          <section class="content-panel" aria-labelledby="cases-heading">
+            <h2 id="cases-heading">Cases</h2>
+            <div id="cases-view" class="cases-view" data-cases-view></div>
           </section>
 
           <section class="content-panel" aria-labelledby="review-profiles-heading">
@@ -540,10 +556,29 @@
             </details>
 
             <details>
+              <summary>Create case</summary>
+              <form id="create-case-form" data-endpoint="/cases" data-method="POST">
+                <label>Team <select name="team_id" required data-options="teams"></select></label>
+                <label>Project <select name="project_id" data-options="projects" data-placeholder="Team-wide"></select></label>
+                <label>Owner <select name="owner_agent_id" data-options="agents" data-placeholder="No owner"></select></label>
+                <label>Status <select name="status" data-options="case-statuses"></select></label>
+                <label>Priority <select name="priority" data-options="inbox-priorities"></select></label>
+                <label>Title <input name="title" required /></label>
+                <label>Description <textarea name="description" rows="3"></textarea></label>
+                <label>Source <input name="source" placeholder="github, jira, zendesk" /></label>
+                <label>Source ref <input name="source_ref" placeholder="External ticket or issue id" /></label>
+                <label>Tags <textarea name="tags" rows="2"></textarea></label>
+                <label>Linked tasks <textarea name="task_ids" rows="2"></textarea></label>
+                <button type="submit">Create case</button>
+              </form>
+            </details>
+
+            <details>
               <summary>Create task</summary>
               <form id="create-task-form" data-endpoint="/tasks" data-method="POST">
                 <label>Owner <select name="owner_agent_id" required data-options="agents"></select></label>
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
+                <label>Case <select name="case_id" data-options="cases" data-placeholder="No case"></select></label>
                 <label>Priority <input name="priority" type="number" min="0" value="10" required /></label>
                 <label>Title <input name="title" required /></label>
                 <label>Description <textarea name="description" rows="3" required></textarea></label>
@@ -560,6 +595,7 @@
               <form id="update-task-form">
                 <label>Task <select name="task_id" required data-options="tasks"></select></label>
                 <label>State <select name="state" data-options="task-states"></select></label>
+                <label>Case <select name="case_id" data-options="cases" data-placeholder="No case"></select></label>
                 <label>Priority <input name="priority" type="number" min="0" /></label>
                 <label>Title <input name="title" /></label>
                 <label>Description <textarea name="description" rows="3"></textarea></label>
@@ -879,6 +915,25 @@
             </div>
           </div>
           <div id="task-board-view" class="task-board-view" data-task-board-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-cases-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-cases-tab"
+        data-team-view-panel="cases"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-cases-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Cases</p>
+              <h2 id="focused-cases-heading">Intake &amp; Tickets</h2>
+            </div>
+          </div>
+          <div class="cases-view" data-cases-view></div>
         </section>
       </main>
 

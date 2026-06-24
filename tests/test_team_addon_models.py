@@ -46,7 +46,6 @@ from truman_team_addon.models import (
     TeamTaskState,
     runtime_operations_payload,
     agent_project_ids,
-    effective_role_permissions,
     project_lead_agent_id,
     team_state_payload,
 )
@@ -681,6 +680,50 @@ def test_old_shape_task_without_graph_fields_validates() -> None:
 
     assert validated.tasks["task"].parent_task_id is None
     assert validated.tasks["task"].dependency_task_ids == []
+
+
+def test_case_linked_task_validates_bidirectional_link() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["cases"] = {
+        "case": {
+            "id": "case",
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Customer ticket",
+            "description": "Track the reported issue.",
+            "status": "triage",
+            "priority": "high",
+            "owner_agent_id": "lead",
+            "source": "github",
+            "source_ref": "issue-42",
+            "tags": ["customer", "bug"],
+            "task_ids": ["task"],
+        }
+    }
+    state["tasks"]["task"]["case_id"] = "case"
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.cases["case"].task_ids == ["task"]
+    assert validated.tasks["task"].case_id == "case"
+
+
+def test_case_link_rejects_missing_task_backlink() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["cases"] = {
+        "case": {
+            "id": "case",
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Customer ticket",
+            "task_ids": ["task"],
+        }
+    }
+
+    with pytest.raises(
+        ValidationError, match="case case task task does not point back"
+    ):
+        TeamState.model_validate(state)
 
 
 def test_task_graph_rejects_missing_parent() -> None:

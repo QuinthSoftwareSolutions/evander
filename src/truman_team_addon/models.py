@@ -54,6 +54,15 @@ class TeamRecordState(str, Enum):
     BLOCKED = "blocked"
 
 
+class TeamCaseStatus(str, Enum):
+    OPEN = "open"
+    TRIAGE = "triage"
+    IN_PROGRESS = "in_progress"
+    WAITING = "waiting"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+
 class EphemeralAssignmentState(str, Enum):
     REQUESTED = "requested"
     SPAWN_PENDING = "spawn_pending"
@@ -642,10 +651,65 @@ class AgentRuntime(TeamModel):
         return self
 
 
+class TeamCase(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    title: str
+    description: str = ""
+    status: TeamCaseStatus = TeamCaseStatus.OPEN
+    priority: TeamInboxPriority = TeamInboxPriority.NORMAL
+    owner_agent_id: str | None = None
+    source: str | None = None
+    source_ref: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    task_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    closed_at: datetime | None = None
+
+    @field_validator("id", "team_id", "title", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "project_id",
+        "owner_agent_id",
+        "source",
+        "source_ref",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _description_text(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("tags", "task_ids", mode="before")
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
 class AgentTask(TeamModel):
     id: str
     owner_agent_id: str
     project_id: str
+    case_id: str | None = None
     priority: int = Field(ge=0)
     state: TeamTaskState = TeamTaskState.PENDING
     state_entered_at: datetime = Field(default_factory=utc_now)
@@ -679,7 +743,13 @@ class AgentTask(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("created_by_agent_id", "created_by_actor", "parent_task_id", mode="before")
+    @field_validator(
+        "case_id",
+        "created_by_agent_id",
+        "created_by_actor",
+        "parent_task_id",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -1185,6 +1255,7 @@ class TeamState(TeamModel):
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
     project_assignments: dict[str, AgentProjectAssignment] = Field(default_factory=dict)
     agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
+    cases: dict[str, TeamCase] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
@@ -1344,6 +1415,7 @@ class TeamState(TeamModel):
         self._validate_agents(errors)
         self._validate_project_assignments(errors)
         self._validate_agent_runtimes(errors)
+        self._validate_cases(errors)
         self._validate_tasks(errors)
         self._validate_task_graph(errors)
         self._validate_deliverables(errors)
@@ -1377,6 +1449,7 @@ class TeamState(TeamModel):
             "agents",
             "project_assignments",
             "agent_runtimes",
+            "cases",
             "tasks",
             "deliverables",
             "review_requests",
@@ -1677,6 +1750,50 @@ class TeamState(TeamModel):
             current = self.agents.get(current_id)
             current_id = current.reports_to_agent_id if current is not None else None
 
+    def _validate_cases(self, errors: list[str]) -> None:
+        for case in self.cases.values():
+            team = self.teams.get(case.team_id)
+            if team is None:
+                errors.append(f"case {case.id} references missing team {case.team_id}")
+            if case.project_id is not None:
+                project = self.projects.get(case.project_id)
+                if project is None:
+                    errors.append(
+                        f"case {case.id} references missing project {case.project_id}"
+                    )
+                elif project.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} project {project.id} belongs to team "
+                        f"{project.team_id}"
+                    )
+            if case.owner_agent_id is not None:
+                owner = self.agents.get(case.owner_agent_id)
+                if owner is None:
+                    errors.append(
+                        f"case {case.id} references missing owner {case.owner_agent_id}"
+                    )
+                elif owner.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} owner {owner.id} belongs to team {owner.team_id}"
+                    )
+            for task_id in case.task_ids:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    errors.append(f"case {case.id} references missing task {task_id}")
+                    continue
+                if task.case_id != case.id:
+                    errors.append(f"case {case.id} task {task_id} does not point back")
+                project = self.projects.get(task.project_id)
+                if project is not None and project.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} task {task.id} belongs to team {project.team_id}"
+                    )
+                if case.project_id is not None and task.project_id != case.project_id:
+                    errors.append(
+                        f"case {case.id} task {task.id} belongs to project "
+                        f"{task.project_id}"
+                    )
+
     def _validate_tasks(self, errors: list[str]) -> None:
         terminal_task_states = {
             TeamTaskState.FINISHED,
@@ -1697,6 +1814,23 @@ class TeamState(TeamModel):
                 and owner.team_id != project.team_id
             ):
                 errors.append(f"task {task.id} owner {owner.id} is outside project team")
+            if task.case_id is not None:
+                case = self.cases.get(task.case_id)
+                if case is None:
+                    errors.append(f"task {task.id} references missing case {task.case_id}")
+                elif project is not None:
+                    if case.team_id != project.team_id:
+                        errors.append(
+                            f"task {task.id} case {case.id} belongs to team "
+                            f"{case.team_id}"
+                        )
+                    if case.project_id is not None and case.project_id != task.project_id:
+                        errors.append(
+                            f"task {task.id} case {case.id} belongs to project "
+                            f"{case.project_id}"
+                        )
+                    if task.id not in case.task_ids:
+                        errors.append(f"task {task.id} case {case.id} does not link back")
             if (
                 task.created_by_agent_id is not None
                 and task.created_by_agent_id not in self.agents

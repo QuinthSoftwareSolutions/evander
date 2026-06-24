@@ -50,6 +50,7 @@ from .models import (
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
+    TeamCaseStatus,
     TeamRecordState,
     TeamInboxPriority,
     TeamTaskState,
@@ -79,6 +80,7 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "projects",
     "roles",
     "agents",
+    "cases",
     "tasks",
     "deliverables",
     "review_requests",
@@ -1406,6 +1408,76 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
+    async def create_case(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        case_id = _optional(payload, "id") or _optional(payload, "case_id")
+        raw_status = _optional(payload, "status")
+        raw_priority = _optional(payload, "priority")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_case(
+                case_id=case_id,
+                team_id=_required(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                title=_required(payload, "title"),
+                description=_optional(payload, "description") or "",
+                status=TeamCaseStatus(raw_status) if raw_status else TeamCaseStatus.OPEN,
+                priority=(
+                    TeamInboxPriority(raw_priority)
+                    if raw_priority
+                    else TeamInboxPriority.NORMAL
+                ),
+                owner_agent_id=_optional(payload, "owner_agent_id"),
+                source=_optional(payload, "source"),
+                source_ref=_optional(payload, "source_ref"),
+                tags=_optional_string_list(payload, "tags") or [],
+                metadata=_optional_object(payload, "metadata") or {},
+                task_ids=_optional_string_list(payload, "task_ids") or [],
+                expected_revision=expected_revision,
+            ),
+            create_collection="cases",
+            create_id=case_id,
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
+
+    async def patch_case(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        case_id = request.path_params["case_id"]
+        raw_status = _optional(payload, "status")
+        raw_priority = _optional(payload, "priority")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_case(
+                case_id=case_id,
+                title=_optional(payload, "title"),
+                description=_optional_present_text(payload, "description"),
+                project_id=_optional_present_text(payload, "project_id"),
+                set_project_id="project_id" in payload,
+                status=TeamCaseStatus(raw_status) if raw_status else None,
+                priority=TeamInboxPriority(raw_priority) if raw_priority else None,
+                owner_agent_id=_optional_present_text(payload, "owner_agent_id"),
+                set_owner_agent_id="owner_agent_id" in payload,
+                source=_optional_present_text(payload, "source"),
+                set_source="source" in payload,
+                source_ref=_optional_present_text(payload, "source_ref"),
+                set_source_ref="source_ref" in payload,
+                tags=_optional_string_list(payload, "tags"),
+                metadata=(
+                    _optional_object(payload, "metadata") if "metadata" in payload else None
+                ),
+                task_ids=_optional_string_list(payload, "task_ids"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="cases",
+            target_id=case_id,
+        )
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
@@ -1417,6 +1489,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 task_id=task_id,
                 owner_agent_id=_required(payload, "owner_agent_id"),
                 project_id=_required(payload, "project_id"),
+                case_id=_optional(payload, "case_id"),
+                set_case_id="case_id" in payload,
                 priority=_required_int(payload, "priority"),
                 title=_required(payload, "title"),
                 description=_required(payload, "description"),
@@ -1454,6 +1528,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 state=TeamTaskState(raw_state) if raw_state else None,
                 title=_optional(payload, "title"),
                 description=_optional(payload, "description"),
+                case_id=_optional_present_text(payload, "case_id"),
+                set_case_id="case_id" in payload,
                 parent_task_id=_optional(payload, "parent_task_id"),
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
@@ -1860,6 +1936,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             _with_errors(revoke_agent_stand_down),
             methods=["POST"],
         ),
+        Route("/cases", _with_errors(create_case), methods=["POST"]),
+        Route("/cases/{case_id}", _with_errors(patch_case), methods=["PATCH"]),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),
         Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
         Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
@@ -3137,6 +3215,15 @@ def _optional_list(payload: Mapping[str, Any], field_name: str) -> list[Any]:
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be a list")
     return value
+
+
+def _optional_object(payload: Mapping[str, Any], field_name: str) -> dict[str, Any] | None:
+    if field_name not in payload or payload.get(field_name) is None:
+        return None
+    value = payload[field_name]
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return dict(value)
 
 
 def _optional_string_list(payload: Mapping[str, Any], field_name: str) -> list[str] | None:

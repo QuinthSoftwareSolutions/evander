@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 16
+SQLITE_SCHEMA_VERSION = 17
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -167,6 +167,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_tasks",
+                    column_name="case_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_deliverables",
                     column_name="supersedes_deliverable_id",
                     definition="TEXT",
@@ -271,6 +277,7 @@ class TeamStateSqliteStore:
             "agents": {},
             "project_assignments": {},
             "agent_runtimes": {},
+            "cases": {},
             "tasks": {},
             "deliverables": {},
             "review_requests": {},
@@ -294,6 +301,7 @@ class TeamStateSqliteStore:
         self._read_project_assignments(connection, payload)
         self._read_stand_downs(connection, payload)
         self._read_agent_runtimes(connection, payload)
+        self._read_cases(connection, payload)
         self._read_tasks(connection, payload)
         self._read_deliverables(connection, payload)
         self._read_review_profiles(connection, payload)
@@ -320,6 +328,7 @@ class TeamStateSqliteStore:
         self._write_project_assignments(connection, payload["project_assignments"])
         self._write_stand_downs(connection, payload["stand_downs"])
         self._write_agent_runtimes(connection, payload["agent_runtimes"])
+        self._write_cases(connection, payload["cases"])
         self._write_tasks(connection, payload["tasks"])
         self._write_deliverables(connection, payload["deliverables"])
         self._write_review_profiles(connection, payload["review_profiles"])
@@ -941,6 +950,60 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_cases(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute("SELECT * FROM team_cases ORDER BY id"):
+            payload["cases"][row["id"]] = {
+                "id": row["id"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "title": row["title"],
+                "description": row["description"],
+                "status": row["status"],
+                "priority": row["priority"],
+                "owner_agent_id": row["owner_agent_id"],
+                "source": row["source"],
+                "source_ref": row["source_ref"],
+                "tags": _json_loads(row["tags_json"]),
+                "metadata": _json_loads(row["metadata_json"]),
+                "task_ids": _json_loads(row["task_ids_json"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "closed_at": row["closed_at"],
+            }
+
+    @staticmethod
+    def _write_cases(connection: sqlite3.Connection, cases: dict[str, Any]) -> None:
+        for case in cases.values():
+            connection.execute(
+                """
+                INSERT INTO team_cases(
+                    id, team_id, project_id, title, description, status, priority,
+                    owner_agent_id, source, source_ref, tags_json, metadata_json,
+                    task_ids_json, created_at, updated_at, closed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case["id"],
+                    case["team_id"],
+                    case.get("project_id"),
+                    case["title"],
+                    case.get("description", ""),
+                    case.get("status", "open"),
+                    case.get("priority", "normal"),
+                    case.get("owner_agent_id"),
+                    case.get("source"),
+                    case.get("source_ref"),
+                    _json_dumps(case.get("tags", [])),
+                    _json_dumps(case.get("metadata", {})),
+                    _json_dumps(case.get("task_ids", [])),
+                    case["created_at"],
+                    case["updated_at"],
+                    case.get("closed_at"),
+                ),
+            )
+
+    @staticmethod
     def _read_tasks(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         dependencies = _grouped_values(
             connection,
@@ -955,6 +1018,7 @@ class TeamStateSqliteStore:
                 "id": row["id"],
                 "owner_agent_id": row["owner_agent_id"],
                 "project_id": row["project_id"],
+                "case_id": row["case_id"],
                 "priority": row["priority"],
                 "state": row["state"],
                 "state_entered_at": row["state_entered_at"] or row["updated_at"] or row["created_at"],
@@ -975,16 +1039,17 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_tasks(
-                    id, owner_agent_id, project_id, priority, state, title, description,
+                    id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
                     task["owner_agent_id"],
                     task["project_id"],
+                    task.get("case_id"),
                     int(task["priority"]),
                     task.get("state", "pending"),
                     task["title"],
@@ -2089,6 +2154,7 @@ _STATE_TABLES = (
     "team_review_requests",
     "team_review_profiles",
     "team_deliverables",
+    "team_cases",
     "team_tasks",
     "team_agent_stand_downs",
     "team_agent_runtimes",
@@ -2310,10 +2376,37 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake
     ON team_agent_runtimes(wake_leased_until, next_wake_at, active_dispatch_id);
 
+CREATE TABLE IF NOT EXISTS team_cases (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    owner_agent_id TEXT,
+    source TEXT,
+    source_ref TEXT,
+    tags_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    task_ids_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_team_cases_team_status
+    ON team_cases(team_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_project_status
+    ON team_cases(project_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_owner_status
+    ON team_cases(owner_agent_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_source ON team_cases(source, source_ref, id);
+
 CREATE TABLE IF NOT EXISTS team_tasks (
     id TEXT PRIMARY KEY,
     owner_agent_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
+    case_id TEXT,
     priority INTEGER NOT NULL,
     state TEXT NOT NULL,
     state_entered_at TEXT NOT NULL,

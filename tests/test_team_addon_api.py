@@ -1390,6 +1390,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'data-form-id="create-project-form"' in ui.text
     assert "data-projects-focus-list" in ui.text
     assert "data-projects-focus-detail" in ui.text
+    assert 'data-team-view="cases"' in ui.text
+    assert 'id="team-cases-page"' in ui.text
+    assert 'id="create-case-form"' in ui.text
+    assert 'data-options="case-statuses"' in ui.text
+    assert 'name="case_id"' in ui.text
     assert 'data-team-view="governance"' in ui.text
     assert "data-governance-create-toggle" in ui.text
     assert 'id="governance-create-panel"' in ui.text
@@ -1428,6 +1433,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "renderTemplateRoleFields" in script.text
     assert "const roles = {};" in script.text
     assert "dependency_task_ids" in script.text
+    assert "caseStatuses" in script.text
+    assert "renderCases" in script.text
+    assert "case_id" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
     assert "renderReviewDeliveryWorkspace" in script.text
@@ -2058,6 +2066,105 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
         "lead",
         "manager",
     }
+
+
+def test_team_addon_admin_api_case_flow(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": 1,
+        },
+    )
+    assert response.status_code == 201
+    _post_backend_role(client, expected_revision=2)
+    response = client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": 3,
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/api/addons/team-addon/cases",
+        json={
+            "id": "case",
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Customer ticket",
+            "description": "External support ticket.",
+            "status": "triage",
+            "priority": "high",
+            "owner_agent_id": "lead",
+            "source": "github",
+            "source_ref": "issue-42",
+            "tags": ["support", "bug"],
+            "expected_revision": 4,
+        },
+    )
+    assert response.status_code == 201
+    state = response.json()
+    assert state["cases"]["case"]["status"] == "triage"
+    assert state["cases"]["case"]["source_ref"] == "issue-42"
+
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "case_id": "case",
+            "priority": 10,
+            "title": "Investigate ticket",
+            "description": "Reproduce and fix the issue.",
+            "created_by_agent_id": "lead",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 201
+    state = response.json()
+    assert state["tasks"]["task"]["case_id"] == "case"
+    assert state["cases"]["case"]["task_ids"] == ["task"]
+
+    response = client.patch(
+        "/api/addons/team-addon/cases/case",
+        json={
+            "status": "in_progress",
+            "source_ref": None,
+            "task_ids": [],
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 200
+    state = response.json()
+    assert state["cases"]["case"]["status"] == "in_progress"
+    assert state["cases"]["case"]["source_ref"] is None
+    assert state["cases"]["case"]["task_ids"] == []
+    assert state["tasks"]["task"]["case_id"] is None
 
 
 def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path: Path) -> None:

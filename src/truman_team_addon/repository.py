@@ -59,6 +59,8 @@ from .models import (
     ReviewRequest,
     RolePermission,
     Team,
+    TeamCase,
+    TeamCaseStatus,
     TeamConversation,
     TeamConversationMessage,
     TeamInboxItemState,
@@ -126,6 +128,7 @@ class _TaskCreationPlan:
     task_id: str
     owner_id: str
     project_id: str
+    case_id: str | None
     task_state: TeamTaskState
     parent_task_id: str | None
     dependency_task_ids: list[str]
@@ -1956,12 +1959,186 @@ class TeamStateRepository:
 
         return self.update(_mutate)
 
+    def create_case(
+        self,
+        *,
+        case_id: str | None,
+        team_id: str,
+        title: str,
+        description: str = "",
+        project_id: str | None = None,
+        status: TeamCaseStatus | str = TeamCaseStatus.OPEN,
+        priority: TeamInboxPriority | str = TeamInboxPriority.NORMAL,
+        owner_agent_id: str | None = None,
+        source: str | None = None,
+        source_ref: str | None = None,
+        tags: list[str] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        task_ids: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_case_id = _optional_text(case_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_project_id = _optional_text(project_id)
+        normalized_title = _required_text(title, "title")
+        normalized_description = _optional_text(description) or ""
+        normalized_status = (
+            status if isinstance(status, TeamCaseStatus) else TeamCaseStatus(str(status))
+        )
+        normalized_priority = (
+            priority if isinstance(priority, TeamInboxPriority) else TeamInboxPriority(str(priority))
+        )
+        normalized_owner_agent_id = _optional_text(owner_agent_id)
+        normalized_source = _optional_text(source)
+        normalized_source_ref = _optional_text(source_ref)
+        normalized_tags = _unique_text_list(tags or [], "tags")
+        normalized_metadata = _mapping(metadata or {}, "metadata")
+        normalized_task_ids = _unique_text_list(task_ids or [], "task_ids")
+
+        def _mutate(state: TeamState) -> TeamState:
+            _validate_case_scope(
+                state,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                owner_agent_id=normalized_owner_agent_id,
+            )
+            effective_case_id = normalized_case_id or _generated_id(
+                prefix="case",
+                labels=[normalized_project_id or normalized_team_id, normalized_title],
+                existing_ids=state.cases,
+            )
+            _require_absent(state.cases, effective_case_id, "case")
+            now = utc_now()
+            case = TeamCase(
+                id=effective_case_id,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                title=normalized_title,
+                description=normalized_description,
+                status=normalized_status,
+                priority=normalized_priority,
+                owner_agent_id=normalized_owner_agent_id,
+                source=normalized_source,
+                source_ref=normalized_source_ref,
+                tags=normalized_tags,
+                metadata=dict(normalized_metadata),
+                task_ids=[],
+                created_at=now,
+                updated_at=now,
+                closed_at=now if normalized_status == TeamCaseStatus.CLOSED else None,
+            )
+            state.cases[case.id] = case
+            for task_id in normalized_task_ids:
+                _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_case(
+        self,
+        *,
+        case_id: str,
+        title: str | None = None,
+        description: str | None = None,
+        project_id: str | None = None,
+        set_project_id: bool = False,
+        status: TeamCaseStatus | str | None = None,
+        priority: TeamInboxPriority | str | None = None,
+        owner_agent_id: str | None = None,
+        set_owner_agent_id: bool = False,
+        source: str | None = None,
+        set_source: bool = False,
+        source_ref: str | None = None,
+        set_source_ref: bool = False,
+        tags: list[str] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        task_ids: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_case_id = _required_text(case_id, "case_id")
+        normalized_title = _optional_text(title)
+        normalized_description = _optional_text(description) if description is not None else None
+        normalized_project_id = _optional_text(project_id)
+        normalized_status = (
+            status
+            if status is None or isinstance(status, TeamCaseStatus)
+            else TeamCaseStatus(str(status))
+        )
+        normalized_priority = (
+            priority
+            if priority is None or isinstance(priority, TeamInboxPriority)
+            else TeamInboxPriority(str(priority))
+        )
+        normalized_owner_agent_id = _optional_text(owner_agent_id)
+        normalized_source = _optional_text(source)
+        normalized_source_ref = _optional_text(source_ref)
+        normalized_tags = None if tags is None else _unique_text_list(tags, "tags")
+        normalized_metadata = None if metadata is None else _mapping(metadata, "metadata")
+        normalized_task_ids = None if task_ids is None else _unique_text_list(task_ids, "task_ids")
+
+        def _mutate(state: TeamState) -> TeamState:
+            case = _require_present(state.cases, normalized_case_id, "case")
+            next_project_id = case.project_id
+            next_owner_agent_id = case.owner_agent_id
+            if set_project_id or project_id is not None:
+                next_project_id = normalized_project_id
+            if set_owner_agent_id or owner_agent_id is not None:
+                next_owner_agent_id = normalized_owner_agent_id
+            _validate_case_scope(
+                state,
+                team_id=case.team_id,
+                project_id=next_project_id,
+                owner_agent_id=next_owner_agent_id,
+            )
+            now = utc_now()
+            if normalized_title is not None:
+                case.title = normalized_title
+            if normalized_description is not None:
+                case.description = normalized_description
+            if set_project_id or project_id is not None:
+                case.project_id = next_project_id
+            if normalized_status is not None:
+                previous_status = case.status
+                case.status = normalized_status
+                if case.status == TeamCaseStatus.CLOSED and previous_status != TeamCaseStatus.CLOSED:
+                    case.closed_at = now
+                elif case.status != TeamCaseStatus.CLOSED:
+                    case.closed_at = None
+            if normalized_priority is not None:
+                case.priority = normalized_priority
+            if set_owner_agent_id or owner_agent_id is not None:
+                case.owner_agent_id = next_owner_agent_id
+            if set_source or source is not None:
+                case.source = normalized_source
+            if set_source_ref or source_ref is not None:
+                case.source_ref = normalized_source_ref
+            if normalized_tags is not None:
+                case.tags = normalized_tags
+            if normalized_metadata is not None:
+                case.metadata = dict(normalized_metadata)
+            if normalized_task_ids is not None:
+                for task_id in list(case.task_ids):
+                    if task_id not in normalized_task_ids:
+                        _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
+                for task_id in normalized_task_ids:
+                    _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
+            else:
+                for task_id in list(case.task_ids):
+                    task = state.tasks.get(task_id)
+                    if task is not None and not _case_can_link_task(state, case=case, task=task):
+                        _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
+            case.updated_at = now
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def create_or_reprioritize_task(
         self,
         *,
         task_id: str | None,
         owner_agent_id: str,
         project_id: str,
+        case_id: str | None = None,
         priority: int,
         title: str,
         description: str,
@@ -1970,10 +2147,12 @@ class TeamStateRepository:
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
+        set_case_id: bool = False,
         dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_task_id = _optional_text(task_id)
+        normalized_case_id = _optional_text(case_id)
         normalized_title = _required_text(title, "title")
         normalized_description = _required_text(description, "description")
         normalized_owner_agent_id = _required_text(owner_agent_id, "owner_agent_id")
@@ -1988,6 +2167,16 @@ class TeamStateRepository:
                 task.description = normalized_description
                 if set_parent_task_id or parent_task_id is not None:
                     task.parent_task_id = parent_task_id
+                if set_case_id or case_id is not None:
+                    old_case_id = task.case_id
+                    task.case_id = normalized_case_id
+                    _sync_case_task_link(
+                        state_model,
+                        task=task,
+                        old_case_id=old_case_id,
+                        new_case_id=normalized_case_id,
+                        now=now,
+                    )
                 if dependency_task_ids is not None:
                     task.dependency_task_ids = dependency_task_ids
                 task.updated_at = now
@@ -2014,6 +2203,7 @@ class TeamStateRepository:
                 id=effective_task_id,
                 owner_agent_id=normalized_owner_agent_id,
                 project_id=normalized_project_id,
+                case_id=normalized_case_id,
                 priority=priority,
                 state=state,
                 state_entered_at=now,
@@ -2026,6 +2216,13 @@ class TeamStateRepository:
                 created_at=now,
                 updated_at=now,
             )
+            if normalized_case_id is not None:
+                _link_task_to_case(
+                    state_model,
+                    task_id=effective_task_id,
+                    case_id=normalized_case_id,
+                    now=now,
+                )
             if state in _NON_TERMINAL_TASK_STATES:
                 _mark_agent_work_due(state_model, agent_id=normalized_owner_agent_id, now=now)
             else:
@@ -2046,11 +2243,15 @@ class TeamStateRepository:
         state: TeamTaskState | None = None,
         title: str | None = None,
         description: str | None = None,
+        case_id: str | None = None,
+        set_case_id: bool = False,
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
         dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        normalized_case_id = _optional_text(case_id)
+
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, task_id, "task")
             now = utc_now()
@@ -2062,6 +2263,16 @@ class TeamStateRepository:
                 task.title = title
             if description is not None:
                 task.description = description
+            if set_case_id or case_id is not None:
+                old_case_id = task.case_id
+                task.case_id = normalized_case_id
+                _sync_case_task_link(
+                    state_model,
+                    task=task,
+                    old_case_id=old_case_id,
+                    new_case_id=normalized_case_id,
+                    now=now,
+                )
             if set_parent_task_id:
                 task.parent_task_id = parent_task_id
             if dependency_task_ids is not None:
@@ -3328,6 +3539,7 @@ class TeamStateRepository:
                             task_payload_with_derived(state_model, task)
                             for task in active_tasks
                         ],
+                        "cases": _case_payloads_for_agent(state_model, agent.id),
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "recent_action_feedback": action_feedback,
                         "operator_chat_participants": _operator_chat_participant_payloads(state_model),
@@ -3432,6 +3644,7 @@ class TeamStateRepository:
                                 manager.id,
                             )
                         ],
+                        "cases": _case_payloads_for_team(state_model, team.id),
                         "inbox": [
                             item.model_dump(mode="json")
                             for item in _pending_inbox_for_agent(
@@ -3696,6 +3909,8 @@ class TeamStateRepository:
             "errors": [],
             "created_inbox_item_ids": [],
             "created_deliverable_ids": [],
+            "created_case_ids": [],
+            "updated_case_ids": [],
             "created_task_ids": [],
             "created_status_request_ids": [],
             "created_review_request_ids": [],
@@ -3815,6 +4030,24 @@ class TeamStateRepository:
                     _append_action_item_error(result, "stand_down_revocations", index, exc)
                     continue
                 result["revoked_stand_down_ids"].extend(revoked_ids)
+                _mark_progress()
+
+            for index, case_update in enumerate(
+                _list_of_mappings(normalized_action.get("case_updates"), "case_updates")
+            ):
+                try:
+                    case_id, created = _apply_case_update(
+                        state_model,
+                        actor=agent,
+                        update=case_update,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "case_updates", index, exc)
+                    continue
+                if created:
+                    result["created_case_ids"].append(case_id)
+                else:
+                    result["updated_case_ids"].append(case_id)
                 _mark_progress()
 
             for index, update in enumerate(
@@ -4683,6 +4916,89 @@ def _require_present(collection: dict[str, Any], key: str, label: str) -> Any:
 def _require_absent(collection: dict[str, Any], key: str, label: str) -> None:
     if key in collection:
         raise ValueError(f"{label} {key} already exists")
+
+
+def _validate_case_scope(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str | None,
+    owner_agent_id: str | None,
+) -> None:
+    _require_present(state.teams, team_id, "team")
+    if project_id is not None:
+        project = _require_present(state.projects, project_id, "project")
+        if project.team_id != team_id:
+            raise ValueError(f"project {project_id} does not belong to team {team_id}")
+    if owner_agent_id is not None:
+        owner = _require_present(state.agents, owner_agent_id, "case owner")
+        if owner.team_id != team_id:
+            raise ValueError(f"case owner {owner_agent_id} does not belong to team {team_id}")
+
+
+def _case_can_link_task(state: TeamState, *, case: TeamCase, task: AgentTask) -> bool:
+    project = state.projects.get(task.project_id)
+    if project is None:
+        return False
+    if project.team_id != case.team_id:
+        return False
+    if case.project_id is not None and task.project_id != case.project_id:
+        return False
+    return True
+
+
+def _link_task_to_case(
+    state: TeamState,
+    *,
+    task_id: str,
+    case_id: str,
+    now: datetime,
+) -> None:
+    case = _require_present(state.cases, case_id, "case")
+    task = _require_present(state.tasks, task_id, "task")
+    if not _case_can_link_task(state, case=case, task=task):
+        raise ValueError(f"task {task_id} cannot be linked to case {case_id}")
+    if task.case_id is not None and task.case_id != case_id:
+        _unlink_task_from_case(state, task_id=task_id, case_id=task.case_id, now=now)
+    task.case_id = case_id
+    task.updated_at = now
+    case.task_ids = _append_unique(case.task_ids, task_id)
+    case.updated_at = now
+
+
+def _unlink_task_from_case(
+    state: TeamState,
+    *,
+    task_id: str,
+    case_id: str,
+    now: datetime,
+) -> None:
+    case = state.cases.get(case_id)
+    if case is not None and task_id in case.task_ids:
+        case.task_ids = [item for item in case.task_ids if item != task_id]
+        case.updated_at = now
+    task = state.tasks.get(task_id)
+    if task is not None and task.case_id == case_id:
+        task.case_id = None
+        task.updated_at = now
+
+
+def _sync_case_task_link(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    old_case_id: str | None,
+    new_case_id: str | None,
+    now: datetime,
+) -> None:
+    if old_case_id == new_case_id:
+        if new_case_id is not None:
+            _link_task_to_case(state, task_id=task.id, case_id=new_case_id, now=now)
+        return
+    if old_case_id is not None:
+        _unlink_task_from_case(state, task_id=task.id, case_id=old_case_id, now=now)
+    if new_case_id is not None:
+        _link_task_to_case(state, task_id=task.id, case_id=new_case_id, now=now)
 
 
 def _append_unique(values: list[str], value: str) -> list[str]:
@@ -6244,6 +6560,31 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     return tasks
 
 
+def _case_payloads_for_agent(state: TeamState, agent_id: str) -> list[dict[str, Any]]:
+    active_task_ids = {task.id for task in _active_tasks_for_agent(state, agent_id)}
+    cases = [
+        case
+        for case in state.cases.values()
+        if case.status != TeamCaseStatus.CLOSED
+        and (
+            case.owner_agent_id == agent_id
+            or any(task_id in active_task_ids for task_id in case.task_ids)
+        )
+    ]
+    cases.sort(key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id))
+    return [case.model_dump(mode="json") for case in cases]
+
+
+def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, Any]]:
+    cases = [
+        case
+        for case in state.cases.values()
+        if case.team_id == team_id and case.status != TeamCaseStatus.CLOSED
+    ]
+    cases.sort(key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id))
+    return [case.model_dump(mode="json") for case in cases]
+
+
 def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
     return [item for item in items if item.response_requested]
 
@@ -7140,6 +7481,141 @@ def _agent_has_role_permission_for_project(
     return permission in effective_role_permissions(state, actor, project_id=project_id)
 
 
+def _apply_case_update(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    update: Mapping[str, Any],
+) -> tuple[str, bool]:
+    raw_case_id = _optional_text(update.get("case_id")) or _optional_text(update.get("id"))
+    now = utc_now()
+    if raw_case_id is not None and raw_case_id in state.cases:
+        case = state.cases[raw_case_id]
+        error = _case_edit_error(state, actor=actor, case=case)
+        if error is not None:
+            raise ValueError(error)
+        next_project_id = case.project_id
+        next_owner_agent_id = case.owner_agent_id
+        if "project_id" in update:
+            next_project_id = _optional_text(update.get("project_id"))
+        if "owner_agent_id" in update:
+            next_owner_agent_id = _optional_text(update.get("owner_agent_id"))
+        _validate_case_scope(
+            state,
+            team_id=case.team_id,
+            project_id=next_project_id,
+            owner_agent_id=next_owner_agent_id,
+        )
+        if "title" in update:
+            case.title = _required_text(update.get("title"), "title")
+        if "description" in update:
+            case.description = _optional_text(update.get("description")) or ""
+        if "project_id" in update:
+            case.project_id = next_project_id
+        if "status" in update:
+            previous_status = case.status
+            case.status = TeamCaseStatus(_required_text(update.get("status"), "status"))
+            if case.status == TeamCaseStatus.CLOSED and previous_status != TeamCaseStatus.CLOSED:
+                case.closed_at = now
+            elif case.status != TeamCaseStatus.CLOSED:
+                case.closed_at = None
+        if "priority" in update:
+            case.priority = TeamInboxPriority(_required_text(update.get("priority"), "priority"))
+        if "owner_agent_id" in update:
+            case.owner_agent_id = next_owner_agent_id
+        if "source" in update:
+            case.source = _optional_text(update.get("source"))
+        if "source_ref" in update:
+            case.source_ref = _optional_text(update.get("source_ref"))
+        if "tags" in update:
+            case.tags = _unique_text_list(update.get("tags"), "tags")
+        if "metadata" in update:
+            case.metadata = _mapping(update.get("metadata") or {}, "metadata")
+        if "task_ids" in update:
+            task_ids = _unique_text_list(update.get("task_ids"), "task_ids")
+            for task_id in list(case.task_ids):
+                if task_id not in task_ids:
+                    _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
+            for task_id in task_ids:
+                _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
+        else:
+            for task_id in list(case.task_ids):
+                task = state.tasks.get(task_id)
+                if task is not None and not _case_can_link_task(state, case=case, task=task):
+                    _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
+        case.updated_at = now
+        return case.id, False
+
+    team_id = _optional_text(update.get("team_id")) or actor.team_id
+    if team_id is None:
+        raise ValueError("case team_id is required for teamless agents")
+    if actor.team_id != team_id:
+        raise ValueError(f"agent {actor.id} cannot create a case for team {team_id}")
+    project_id = _optional_text(update.get("project_id"))
+    if project_id is not None and not (
+        _is_team_manager(state, actor) or agent_has_project_assignment(state, actor.id, project_id)
+    ):
+        raise ValueError(f"agent {actor.id} cannot create a case for project {project_id}")
+    owner_agent_id = _optional_text(update.get("owner_agent_id"))
+    _validate_case_scope(
+        state,
+        team_id=team_id,
+        project_id=project_id,
+        owner_agent_id=owner_agent_id,
+    )
+    title = _required_text(update.get("title"), "title")
+    case_id = raw_case_id or _generated_id(
+        prefix="case",
+        labels=[project_id or team_id, title],
+        existing_ids=state.cases,
+    )
+    _require_absent(state.cases, case_id, "case")
+    status = TeamCaseStatus(_optional_text(update.get("status")) or TeamCaseStatus.OPEN.value)
+    case = TeamCase(
+        id=case_id,
+        team_id=team_id,
+        project_id=project_id,
+        title=title,
+        description=_optional_text(update.get("description")) or "",
+        status=status,
+        priority=TeamInboxPriority(
+            _optional_text(update.get("priority")) or TeamInboxPriority.NORMAL.value
+        ),
+        owner_agent_id=owner_agent_id,
+        source=_optional_text(update.get("source")),
+        source_ref=_optional_text(update.get("source_ref")),
+        tags=_unique_text_list(update.get("tags") or [], "tags"),
+        metadata=_mapping(update.get("metadata") or {}, "metadata"),
+        task_ids=[],
+        created_at=now,
+        updated_at=now,
+        closed_at=now if status == TeamCaseStatus.CLOSED else None,
+    )
+    state.cases[case.id] = case
+    for task_id in _unique_text_list(update.get("task_ids") or [], "task_ids"):
+        _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
+    return case.id, True
+
+
+def _case_edit_error(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    case: TeamCase,
+) -> str | None:
+    if actor.team_id != case.team_id:
+        return f"agent {actor.id} cannot update case {case.id}"
+    if case.owner_agent_id == actor.id:
+        return None
+    if _is_team_manager(state, actor):
+        return None
+    if case.project_id is not None and _is_project_lead_for(state, actor.id, case.project_id):
+        return None
+    if case.owner_agent_id is not None and _supervises(state, actor.id, case.owner_agent_id):
+        return None
+    return f"agent {actor.id} cannot update case {case.id}"
+
+
 def _task_creation_mandate_error(
     state: TeamState,
     *,
@@ -7278,6 +7754,18 @@ def _plan_task_creation(
         result["errors"].append(f"task {task_id} already exists")
         return None
     parent_task_id = _optional_text(creation.get("parent_task_id"))
+    case_id = _optional_text(creation.get("case_id"))
+    if case_id is not None:
+        case = state.cases.get(case_id)
+        if case is None:
+            result["errors"].append(f"task creation references missing case {case_id}")
+            return None
+        if case.team_id != project.team_id:
+            result["errors"].append(f"case {case_id} belongs to another team")
+            return None
+        if case.project_id is not None and case.project_id != project_id:
+            result["errors"].append(f"case {case_id} belongs to project {case.project_id}")
+            return None
     dependency_task_ids = _string_list(
         creation.get("dependency_task_ids"), "dependency_task_ids"
     )
@@ -7295,6 +7783,7 @@ def _plan_task_creation(
         task_id=task_id,
         owner_id=owner_id,
         project_id=project_id,
+        case_id=case_id,
         task_state=task_state,
         parent_task_id=parent_task_id,
         dependency_task_ids=dependency_task_ids,
@@ -7315,6 +7804,7 @@ def _apply_task_creation_plan(
         id=plan.task_id,
         owner_agent_id=plan.owner_id,
         project_id=plan.project_id,
+        case_id=plan.case_id,
         priority=plan.priority,
         state=plan.task_state,
         title=plan.title,
@@ -7325,6 +7815,8 @@ def _apply_task_creation_plan(
         created_at=now,
         updated_at=now,
     )
+    if plan.case_id is not None:
+        _link_task_to_case(state, task_id=plan.task_id, case_id=plan.case_id, now=now)
     if plan.task_state in _NON_TERMINAL_TASK_STATES:
         _mark_agent_work_due(state, agent_id=plan.owner_id, now=now)
     return plan.task_id

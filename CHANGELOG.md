@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Case Domain
+
+- Added first-class Team cases for intake and ticket lifecycle tracking, with
+  optional external `source`/`source_ref`, owner, project scope, status,
+  priority, tags, and linked task ids.
+- Exposed case create/update API routes, `task.case_id`, wake/query context,
+  agent `case_updates[]`, and Team UI case views/forms/editing.
+- Bumped the Team action contract and agent guidance versions for the new case
+  action surface.
+
 ## 2026-06-24 - Team Add-on Setup Panel Defaults
 
 - Collapsed the Setup from template and Create team forms by default, and moved
