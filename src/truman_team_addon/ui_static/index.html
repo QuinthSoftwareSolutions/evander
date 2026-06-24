@@ -397,12 +397,12 @@
         <aside id="setup-forms-panel" class="forms-panel" aria-labelledby="forms-heading" data-setup-forms-panel>
           <h2 id="forms-heading">Setup</h2>
           <div class="form-stack">
-            <details open class="template-setup">
+            <details class="template-setup">
               <summary>Setup from template</summary>
               <div class="template-setup-body">
-                <div id="template-preview" class="template-preview" aria-live="polite"></div>
                 <form id="setup-template-form" data-template-endpoint="/templates/{template_id}/materialize" data-method="POST">
                   <label>Template <select id="template-select" name="template_id" required></select></label>
+                  <div id="template-preview" class="template-preview" aria-live="polite"></div>
                   <p class="subheading">Team</p>
                   <label>Team name <input name="team_name" required /></label>
                   <label>Operator communication target id <input name="operator_communication_target_id" /></label>
@@ -431,7 +431,7 @@
               </div>
             </details>
 
-            <details open>
+            <details>
               <summary>Create team</summary>
               <form id="create-team-form" data-endpoint="/teams" data-method="POST">
                 <label>Name <input name="name" required /></label>

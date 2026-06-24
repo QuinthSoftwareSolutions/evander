@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Setup Panel Defaults
+
+- Collapsed the Setup from template and Create team forms by default, and moved
+  the template selector above the setup preview content.
+
 ## 2026-06-24 - Team Add-on Governance Agenda Defaults
 
 - Hid handled Governance agenda items by default behind a Governance-tab toggle,
