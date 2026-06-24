@@ -590,6 +590,24 @@ def test_canonical_release_branch_honors_project_prefix() -> None:
     assert canonical_release_branch(custom_project, "release-1") == "ship/release-1"
 
 
+def test_canonical_release_branch_prefix_normalizes_trailing_slash() -> None:
+    project = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        git=ProjectGitConfig(
+            host_repo_path="/srv/repo",
+            bare_repo_name="repo.git",
+            canonical_release_branch_prefix="release",
+        ),
+    )
+
+    assert project.git is not None
+    assert project.git.canonical_release_branch_prefix == "release/"
+    assert canonical_release_branch(project, "release-1") == "release/release-1"
+
+
 def test_git_promotion_and_release_round_trip_through_team_state() -> None:
     state = _valid_state()
     state.deliverables["deliverable"].git_refs.feature_branch = (

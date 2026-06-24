@@ -16,7 +16,10 @@ from pydantic import (
 )
 
 from agent_sandbox.models import utc_now
-from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
+from truman_team_addon.git_naming import (
+    DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
+    normalize_canonical_release_branch_prefix,
+)
 
 SCHEMA_VERSION = 2
 AGENT_OPERATOR_ONLY_FIELDS = {"avatar", "voice_profile"}
@@ -450,12 +453,17 @@ class ProjectGitConfig(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("base_branch", "canonical_release_branch_prefix", mode="before")
+    @field_validator("base_branch", mode="before")
     @classmethod
     def _required_with_default(cls, value: object, info) -> str:
         if value is None or (isinstance(value, str) and not value.strip()):
             return cls.model_fields[info.field_name].default
         return _required_text(value, info.field_name)
+
+    @field_validator("canonical_release_branch_prefix", mode="before")
+    @classmethod
+    def _canonical_release_branch_prefix(cls, value: object) -> str:
+        return normalize_canonical_release_branch_prefix(value)
 
     @field_validator(
         "bare_repo_name",

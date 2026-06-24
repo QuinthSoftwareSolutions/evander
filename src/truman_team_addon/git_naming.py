@@ -18,6 +18,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX = "releases/<project-id>/"
 
 
+def normalize_canonical_release_branch_prefix(value: object) -> str:
+    """Normalize a canonical release branch prefix to one trailing slash."""
+
+    text = str(value or "").strip() or DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
+    normalized = f"{text.rstrip('/')}/"
+    validate_branch_name(f"{normalized}release")
+    return normalized
+
+
 def validate_branch_name(value: object) -> str:
     """Return ``value`` if it is a plain Git branch name, else raise ``ValueError``.
 

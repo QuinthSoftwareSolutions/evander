@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Release Prefix Normalization
+
+- Normalized Team project canonical release branch prefixes to one trailing
+  slash so `release` and `release/` both publish under `release/<id>`.
+
 ## 2026-06-24 - Team Add-on Case Workflow Effects
 
 - Added `effect:team:create-case` and `effect:team:update-case` workflow nodes
