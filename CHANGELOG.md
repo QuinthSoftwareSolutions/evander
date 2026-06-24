@@ -8,6 +8,12 @@
 - Bumped the Team agent guidance version so existing persistent agents receive
   the corrected review-artifact routing instruction on their next wake.
 
+## 2026-06-24 - Team Add-on Setup Tab Deprecation
+
+- Removed the Team Add-on `Setup` top-level tab and made old stored `setup`
+  view preferences fall back to the `Teams` tab while keeping the temporary
+  Workspace setup rail available for flows that still need contextual homes.
+
 ## 2026-06-24 - Team Add-on Agent Edit Filtering
 
 - Scoped agent edit Project, Role, and Reports-to dropdowns to the currently

@@ -61,10 +61,10 @@
       <nav class="team-view-tabs" role="tablist" aria-label="Team Add-on views">
         <button
           id="team-view-workspace-tab"
-          class="team-view-tab active"
+          class="team-view-tab"
           type="button"
           role="tab"
-          aria-selected="true"
+          aria-selected="false"
           aria-controls="team-workspace-page"
           data-team-view="workspace"
         >
@@ -138,10 +138,10 @@
         </button>
         <button
           id="team-view-people-tab"
-          class="team-view-tab"
+          class="team-view-tab active"
           type="button"
           role="tab"
-          aria-selected="false"
+          aria-selected="true"
           aria-controls="team-people-page"
           data-team-view="people"
         >
@@ -181,17 +181,6 @@
           Planning
         </button>
         <button
-          id="team-view-setup-tab"
-          class="team-view-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          aria-controls="team-setup-page"
-          data-team-view="setup"
-        >
-          Setup
-        </button>
-        <button
           id="team-view-timeline-tab"
           class="team-view-tab"
           type="button"
@@ -221,6 +210,7 @@
         role="tabpanel"
         aria-labelledby="team-view-workspace-tab"
         data-team-view-panel="workspace"
+        hidden
       >
         <section class="team-main">
           <section class="summary-panel" aria-labelledby="summary-heading">
@@ -762,7 +752,6 @@
         role="tabpanel"
         aria-labelledby="team-view-people-tab"
         data-team-view-panel="people"
-        hidden
       >
         <div class="people-layout">
           <section class="people-agents-panel" aria-labelledby="focused-teams-heading">
@@ -997,17 +986,6 @@
           </div>
           <div class="projects-view" data-projects-view></div>
         </section>
-      </main>
-
-      <main
-        id="team-setup-page"
-        class="focused-team-page setup-page"
-        role="tabpanel"
-        aria-labelledby="team-view-setup-tab"
-        data-team-view-panel="setup"
-        hidden
-      >
-        <div id="focused-setup-mount" class="setup-form-mount"></div>
       </main>
 
       <main

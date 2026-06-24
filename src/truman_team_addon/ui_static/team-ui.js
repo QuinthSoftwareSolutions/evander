@@ -77,7 +77,7 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
-const defaultTeamView = "workspace";
+const defaultTeamView = "people";
 const teamViewStorageKey = "team-addon:active-view";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
@@ -93,7 +93,6 @@ const teamViewIds = new Set([
   "chat",
   "governance",
   "planning",
-  "setup",
   "timeline",
   "org",
 ]);
@@ -208,9 +207,6 @@ const elements = {
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
   chatOperatorView: document.querySelector("#chat-operator-view"),
-  setupFormsPanel: document.querySelector("#setup-forms-panel"),
-  workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
-  focusedSetupMount: document.querySelector("#focused-setup-mount"),
   teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
   teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
   governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
@@ -550,7 +546,7 @@ const timelineTypeOrder = [
 function bindTopLevelTabs() {
   elements.teamViewButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      setTeamView(button.dataset.teamView || "workspace");
+      setTeamView(button.dataset.teamView || defaultTeamView);
     });
   });
   updateTeamViewTabs();
@@ -562,7 +558,12 @@ function normalizedTeamView(view) {
 
 function readStoredTeamView() {
   try {
-    return normalizedTeamView(window.localStorage.getItem(teamViewStorageKey));
+    const storedView = window.localStorage.getItem(teamViewStorageKey);
+    const normalizedView = normalizedTeamView(storedView);
+    if (storedView && storedView !== normalizedView) {
+      window.localStorage.setItem(teamViewStorageKey, normalizedView);
+    }
+    return normalizedView;
   } catch {
     return defaultTeamView;
   }
@@ -622,13 +623,13 @@ function setTeamView(view) {
 
 function updateTeamViewTabs() {
   elements.teamViewButtons.forEach((button) => {
-    const active = (button.dataset.teamView || "workspace") === activeTeamView;
+    const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
     button.tabIndex = active ? 0 : -1;
   });
   elements.teamViewPanels.forEach((panel) => {
-    const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
+    const active = (panel.dataset.teamViewPanel || defaultTeamView) === activeTeamView;
     panel.hidden = !active;
   });
   syncTeamViewActions();
@@ -714,20 +715,6 @@ function clampInboxPopoverToViewport(indicator, popover) {
   const offsetValue = `${Math.round(offsetX)}px`;
   indicator.style.setProperty("--agent-inbox-popover-offset-x", offsetValue);
   popover.style.setProperty("--agent-inbox-popover-offset-x", offsetValue);
-}
-
-function placeSetupFormsPanel() {
-  const panel = elements.setupFormsPanel;
-  if (!panel) {
-    return;
-  }
-  if (activeTeamView === "setup" && elements.focusedSetupMount) {
-    elements.focusedSetupMount.appendChild(panel);
-    return;
-  }
-  if (elements.workspaceSetupAnchor && elements.workspaceSetupAnchor.parentNode) {
-    elements.workspaceSetupAnchor.after(panel);
-  }
 }
 
 function openTeamsCreateTeamPanel() {
@@ -1965,7 +1952,6 @@ function render() {
   updateArchivedVisibilityToggle();
   updateGovernanceAgendaVisibilityToggle();
   updateTeamViewTabs();
-  placeSetupFormsPanel();
   renderSummary();
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
@@ -1987,7 +1973,6 @@ function render() {
   renderTimeline();
   decorateFieldTooltips(document);
   updateTeamViewTabs();
-  placeSetupFormsPanel();
   syncTeamsCreateTeamPanel();
   syncGovernanceCreateGroupPanel();
 }

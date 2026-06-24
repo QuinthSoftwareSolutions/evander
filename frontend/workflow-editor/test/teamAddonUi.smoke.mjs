@@ -31,6 +31,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /Handoff summary/);
   assert.match(script, /data-team-view/);
   assert.match(script, /team-addon:active-view/);
+  assert.doesNotMatch(markup, /data-team-view="setup"/);
+  assert.doesNotMatch(markup, /team-setup-page/);
   assert.match(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
@@ -1953,7 +1955,13 @@ async function waitForCondition(predicate, message, { timeoutMs = 2000, interval
   throw new Error(message);
 }
 
+async function openWorkspace(page) {
+  await page.getByRole("tab", { name: "Workspace" }).click();
+  await page.locator("#team-workspace-page").waitFor({ state: "visible" });
+}
+
 async function openDetails(page, name) {
+  await openWorkspace(page);
   const details = page
     .locator("details", { has: page.locator("summary", { hasText: name }) })
     .first();
@@ -1998,6 +2006,23 @@ test("team add-on remembers the selected top-level view across refresh", async (
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
 });
 
+test("team add-on normalizes deprecated Setup view storage to Teams", async (t) => {
+  const { port } = await createTeamAddonServer(t);
+  const page = await openBrowserPage(t, port);
+
+  await page.evaluate((storageKey) => window.localStorage.setItem(storageKey, "setup"), teamViewStorageKey);
+  await page.reload({ waitUntil: "domcontentloaded" });
+
+  await page.locator('#team-view-people-tab[aria-selected="true"]').waitFor({ state: "visible" });
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
+  assert.equal(await page.getByRole("tab", { name: "Setup" }).count(), 0);
+  assert.equal(
+    await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), teamViewStorageKey),
+    "people",
+  );
+});
+
 test("team add-on Teams tab creates teams from the top-level action", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
@@ -2006,7 +2031,7 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
 
-  await page.locator("#team-people-page").getByRole("button", { name: "Create team" }).click();
+  await page.locator("#team-tab-create-team-action").click();
   const teamForm = page.locator("#create-team-from-teams-form");
   await teamForm.waitFor({ state: "visible" });
   await page.waitForFunction(() =>
@@ -2143,6 +2168,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   const deliverableId =
     "deliverable-task-project-team-team-project-build-backend-backend-task-is-ready";
 
+  await openWorkspace(page);
   await page
     .locator("#hierarchy-view")
     .getByText("No teams registered.")
@@ -2279,6 +2305,8 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
   const generatedTeamId = "team-auto-dev-squad";
   const generatedProjectId = "project-team-auto-dev-squad-reviewed-auto-dev-delivery";
 
+  await openWorkspace(page);
+  await openDetails(page, "Setup from template");
   await page.locator("#hierarchy-view").getByText("No teams registered.").waitFor({
     state: "visible",
   });
@@ -2397,6 +2425,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 8);
+  await openWorkspace(page);
 
   assert.equal(await page.locator(".hierarchy-team").count(), 1);
   assert.equal(await page.locator(".hierarchy-children").count(), 3);
@@ -2762,6 +2791,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 8);
+  await openWorkspace(page);
   await page.locator("#hierarchy-view").getByText("No active team.").waitFor({
     state: "visible",
   });
@@ -2812,6 +2842,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 3);
+  await openWorkspace(page);
 
   await page.getByText("Missing manager ghost-manager").waitFor({ state: "visible" });
   await page.getByText("Cycle detected at alpha").waitFor({ state: "visible" });
@@ -4379,12 +4410,12 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Teams",
     "Governance",
     "Planning",
-    "Setup",
     "Timeline",
     "Org chart",
   ]) {
     await page.getByRole("tab", { name: tabName }).waitFor({ state: "visible" });
   }
+  assert.equal(await page.getByRole("tab", { name: "Setup" }).count(), 0);
 
   await page.getByRole("tab", { name: "Overview" }).click();
   await page.locator("#team-overview-page").waitFor({ state: "visible" });
@@ -4648,10 +4679,6 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
 
-  await page.getByRole("tab", { name: "Setup" }).click();
-  await page.locator("#team-setup-page #setup-template-form").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 0);
-
   await page.getByRole("tab", { name: "Timeline" }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
@@ -4698,8 +4725,9 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Workspace" }).click();
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
-  await page.locator("#team-workspace-page #setup-template-form").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-setup-page #setup-template-form").count(), 0);
+  await page.locator("#team-workspace-page .template-setup summary", { hasText: "Setup from template" }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 1);
+  assert.equal(await page.locator("#team-setup-page").count(), 0);
   await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
 });
 
@@ -4772,6 +4800,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
+  await openWorkspace(page);
   await page
     .getByLabel("Workspace", { exact: true })
     .getByText("Derived from the current TeamState snapshot, not a persisted audit log.")
