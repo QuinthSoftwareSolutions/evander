@@ -5,6 +5,9 @@
 - Preserved compact artifact and Git evidence for pending-review deliverables
   in manager fallback summaries, and excluded paused, leased, or stood-down
   reviewers from fallback routing-gap recommendations.
+- Made fallback reviewer eligibility explicit through review profiles, added a
+  guardrail against manager self-review when an idle profile-eligible reviewer
+  can take the review, and improved duplicate review-id recovery hints.
 
 ## 2026-06-24 - Team Add-on Manager Fallback Summary
 

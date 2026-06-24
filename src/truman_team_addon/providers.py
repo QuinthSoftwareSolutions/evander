@@ -68,11 +68,11 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 12
+ACTION_CONTRACT_SCHEMA_VERSION = 13
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 2
+TEAM_AGENT_GUIDANCE_VERSION = 3
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
@@ -2606,6 +2606,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Use review_decisions only for review requests assigned to you. "
         "Accepting a review is the action that cascades to deliverable/task "
         "acceptance once all attached reviews are accepted.\n"
+        "- During manager fallback, routing_gaps take priority. If a gap says an "
+        "idle profile-eligible reviewer has review work, create a fresh "
+        "review_requests item for that reviewer instead of accepting the review "
+        "yourself. Use override_routing_gap_reason only when intentionally "
+        "bypassing that guardrail.\n"
         "- Before git_release_requests for Git work, make sure every deliverable "
         "is accepted and already has git_refs.feature_branch. Raw agent or review "
         "branches are not release sources; use git_review_promotions and "
@@ -2757,9 +2762,15 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "arrays are empty.\n"
         "- Start from manager_fallback_summary.routing_gaps when present; those "
         "rows identify likely assignment or review-routing fixes.\n"
-        "- If a pending review is assigned to you, handle it with review_decisions. "
-        "If the review should go to another reviewer, create a fresh review_requests "
-        "item with a new id for the intended reviewer.\n"
+        "- For reviewer_without_assigned_review_work gaps, create a fresh "
+        "review_requests item for the listed reviewer. Omit id unless you are "
+        "choosing a new unique id; never reuse the existing review request id.\n"
+        "- If a pending review is assigned to you for a deliverable with a routing "
+        "gap, route it to the listed reviewer instead of deciding it yourself. "
+        "Only use review_decisions with override_routing_gap_reason when you are "
+        "intentionally accepting responsibility for bypassing that reviewer.\n"
+        "- If a pending review is assigned to you and no routing gap applies, "
+        "handle it with review_decisions.\n"
         "- Do not return a no-op merely because your own tasks and inbox arrays are "
         "empty; use the team context to route, review, report, or escalate the stall.\n\n"
         if lease.get("reason") == "manager_fallback"
@@ -3915,7 +3926,10 @@ def _persistent_action_schema() -> dict[str, Any]:
                 "description": (
                     "Decide review requests assigned to this agent. Accepted "
                     "review decisions cascade to deliverable/task acceptance only "
-                    "after every review attached to the deliverable is accepted."
+                    "after every review attached to the deliverable is accepted. "
+                    "During manager fallback, use override_routing_gap_reason only "
+                    "when intentionally deciding a review despite an idle "
+                    "profile-eligible reviewer routing gap."
                 ),
                 "default": [],
                 "items": {
@@ -3927,6 +3941,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "state": {"enum": ["accepted", "rejected", "blocked"]},
                         "findings": string_array,
                         "criteria": {"type": "array"},
+                        "override_routing_gap_reason": text_or_null,
                     },
                 },
             },
@@ -4106,6 +4121,7 @@ def _persistent_action_example() -> dict[str, Any]:
                 "review_request_id": "review-request-assigned-to-this-agent",
                 "state": "accepted",
                 "findings": [],
+                "override_routing_gap_reason": None,
             }
         ],
         "goal_updates": [],

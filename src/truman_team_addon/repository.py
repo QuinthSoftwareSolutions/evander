@@ -3757,6 +3757,10 @@ class TeamStateRepository:
             progress = False
             context_rotation_activity = False
             projects_to_recalc: set[str] = set()
+            enforce_manager_fallback_review_routing = (
+                runtime.wake_reason == "manager_fallback"
+                and _is_team_manager(state_model, agent)
+            )
 
             def _mark_progress(*, context_activity: bool = True) -> None:
                 nonlocal progress, context_rotation_activity
@@ -4214,6 +4218,9 @@ class TeamStateRepository:
                         decision=decision,
                         result=result,
                         projects_to_recalc=projects_to_recalc,
+                        enforce_manager_fallback_routing_guard=(
+                            enforce_manager_fallback_review_routing
+                        ),
                     )
                 except ValueError as exc:
                     _append_action_item_error(result, "review_decisions", index, exc)
@@ -5003,6 +5010,7 @@ def _manager_fallback_summary_payload(
     routing_gaps = _manager_fallback_routing_gaps(
         state,
         reviewer_candidates=reviewer_candidates,
+        review_profiles=review_profiles,
         visible_tasks=visible_tasks,
         visible_deliverables=visible_deliverables,
         visible_reviews=visible_reviews,
@@ -5359,17 +5367,14 @@ def _manager_fallback_reviewer_candidates(
             now=now,
         ):
             continue
-        role = state.roles.get(agent.role_id) if agent.role_id is not None else None
-        if (
-            agent.role_id in applicable_role_ids
-            or _manager_fallback_role_is_reviewer(role)
-        ):
-            candidate_project_ids = _manager_fallback_candidate_project_ids(
+        if agent.role_id in applicable_role_ids:
+            eligible_project_ids = _manager_fallback_reviewer_eligible_project_ids(
                 state,
                 agent=agent,
                 project_ids=project_ids,
+                review_profiles=review_profiles,
             )
-            if candidate_project_ids:
+            if eligible_project_ids:
                 candidates.append(agent)
     return candidates
 
@@ -5392,11 +5397,33 @@ def _manager_fallback_reviewer_is_wakeable_for_routing(
     )
 
 
-def _manager_fallback_role_is_reviewer(role: TeamRole | None) -> bool:
-    if role is None:
-        return False
-    haystack = " ".join((role.id, role.name, role.description)).casefold()
-    return "review" in haystack
+def _manager_fallback_reviewer_eligible_project_ids(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    project_ids: set[str],
+    review_profiles: list[ReviewProfile],
+) -> set[str]:
+    if agent.role_id is None:
+        return set()
+    profile_project_ids: set[str] = set()
+    for profile in review_profiles:
+        if agent.role_id not in profile.applicable_role_ids:
+            continue
+        if profile.project_id is None:
+            profile_project_ids.update(project_ids)
+        elif profile.project_id in project_ids:
+            profile_project_ids.add(profile.project_id)
+    if not profile_project_ids:
+        return set()
+    return (
+        _manager_fallback_candidate_project_ids(
+            state,
+            agent=agent,
+            project_ids=project_ids,
+        )
+        & profile_project_ids
+    )
 
 
 def _manager_fallback_candidate_project_ids(
@@ -5416,6 +5443,7 @@ def _manager_fallback_routing_gaps(
     state: TeamState,
     *,
     reviewer_candidates: list[PersistentAgent],
+    review_profiles: list[ReviewProfile],
     visible_tasks: list[AgentTask],
     visible_deliverables: list[Deliverable],
     visible_reviews: list[ReviewRequest],
@@ -5438,11 +5466,13 @@ def _manager_fallback_routing_gaps(
     if not review_work:
         return []
     gaps: list[dict[str, Any]] = []
+    visible_project_ids = {task.project_id for task in visible_tasks}
     for reviewer in reviewer_candidates:
-        reviewer_project_ids = _manager_fallback_candidate_project_ids(
+        reviewer_project_ids = _manager_fallback_reviewer_eligible_project_ids(
             state,
             agent=reviewer,
-            project_ids={task.project_id for task in visible_tasks},
+            project_ids=visible_project_ids,
+            review_profiles=review_profiles,
         )
         if not reviewer_project_ids:
             continue
@@ -5519,6 +5549,95 @@ def _manager_fallback_routing_gaps(
             }
         )
     return gaps
+
+
+def _manager_fallback_review_decision_guard_error(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    review: ReviewRequest,
+) -> str | None:
+    deliverable = state.deliverables.get(review.deliverable_id)
+    if deliverable is None:
+        return None
+    task = state.tasks.get(deliverable.task_id)
+    if task is None:
+        return None
+    team_id = actor.team_id
+    if team_id is None:
+        return None
+    now = utc_now()
+    project_ids = {task.project_id}
+    team_agents = sorted(
+        (
+            agent
+            for agent in state.agents.values()
+            if agent.team_id == team_id and agent.status != AgentStatus.ARCHIVED
+        ),
+        key=lambda item: item.id,
+    )
+    team_agent_ids = {agent.id for agent in team_agents}
+    review_profiles = sorted(
+        (
+            profile
+            for profile in state.review_profiles.values()
+            if profile.team_id == team_id
+            and not profile.archived
+            and (profile.project_id is None or profile.project_id in project_ids)
+        ),
+        key=lambda item: item.id,
+    )
+    reviewer_candidates = _manager_fallback_reviewer_candidates(
+        state,
+        team_agents=team_agents,
+        project_ids=project_ids,
+        review_profiles=review_profiles,
+        now=now,
+    )
+    visible_reviews = [
+        item
+        for item in state.review_requests.values()
+        if item.deliverable_id == deliverable.id
+    ]
+    visible_pending_inbox = sorted(
+        (
+            item
+            for item in state.inbox.values()
+            if item.recipient_agent_id in team_agent_ids
+            and (item.sender_agent_id is None or item.sender_agent_id in team_agent_ids)
+            and (item.task_id is None or item.task_id == task.id)
+            and item.state == TeamInboxItemState.PENDING
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+    routing_gaps = _manager_fallback_routing_gaps(
+        state,
+        reviewer_candidates=reviewer_candidates,
+        review_profiles=review_profiles,
+        visible_tasks=[task],
+        visible_deliverables=[deliverable],
+        visible_reviews=visible_reviews,
+        visible_pending_inbox=visible_pending_inbox,
+    )
+    relevant_gaps = [
+        gap
+        for gap in routing_gaps
+        if gap.get("kind") == "reviewer_without_assigned_review_work"
+        and gap.get("agent_id") != actor.id
+        and deliverable.id in (gap.get("deliverable_ids") or [])
+    ]
+    if not relevant_gaps:
+        return None
+    gap = relevant_gaps[0]
+    reviewer_id = str(gap.get("agent_id") or "")
+    reviewer_name = _optional_text(gap.get("agent_display_name")) or reviewer_id
+    return (
+        f"manager fallback review decision for {review.id} should route deliverable "
+        f"{deliverable.id} to idle profile-eligible reviewer {reviewer_name} "
+        f"({reviewer_id}) instead of deciding it; create a fresh review_requests "
+        "item for that reviewer, or include override_routing_gap_reason to accept "
+        "as manager"
+    )
 
 
 def _manager_fallback_deliverable_needs_review(
@@ -6646,6 +6765,11 @@ def _correction_hints(error: str) -> list[str]:
             "deliverable_id shape for persistent deliverables."
         )
     if "already exists" in normalized:
+        if "review request" in normalized:
+            hints.append(
+                "For review handoff, do not reuse the existing review request id; "
+                "omit id or choose a new id for the intended reviewer."
+            )
         hints.append(
             "Do not recreate existing ids; reference existing records or choose a new id."
         )
@@ -7723,6 +7847,7 @@ def _apply_review_decision(
     decision: dict[str, Any],
     result: dict[str, Any],
     projects_to_recalc: set[str],
+    enforce_manager_fallback_routing_guard: bool = False,
 ) -> str | None:
     review_request_id = _required_text(
         decision.get("review_request_id"), "review_request_id"
@@ -7738,6 +7863,18 @@ def _apply_review_decision(
             f"agent {actor.id} is not the assigned reviewer for {review_request_id}"
         )
         return None
+    if (
+        enforce_manager_fallback_routing_guard
+        and _optional_text(decision.get("override_routing_gap_reason")) is None
+    ):
+        guard_error = _manager_fallback_review_decision_guard_error(
+            state,
+            actor=actor,
+            review=review,
+        )
+        if guard_error is not None:
+            result["errors"].append(guard_error)
+            return None
     raw_state = _required_text(decision.get("state"), "state")
     try:
         decision_state = TeamRecordState(raw_state)

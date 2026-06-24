@@ -49,6 +49,7 @@ from truman_team_addon.models import (
     TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamRecordState,
     TeamRole,
     TeamState,
     TeamTaskState,
@@ -430,7 +431,11 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
     return repo
 
 
-def _add_luke_reviewer(repo: TeamStateRepository) -> None:
+def _add_luke_reviewer(
+    repo: TeamStateRepository,
+    *,
+    with_review_profile: bool = True,
+) -> None:
     repo.create_role(
         role_id="project__reviewer",
         team_id="team",
@@ -449,6 +454,66 @@ def _add_luke_reviewer(repo: TeamStateRepository) -> None:
         reports_to_agent_id="lead",
         expected_revision=repo.read().revision,
     )
+    if with_review_profile:
+        repo.create_review_profile(
+            profile_id="project-review-profile",
+            team_id="team",
+            project_id="project",
+            name="Project review",
+            description="Default review checks for project deliverables.",
+            applicable_role_ids=["project__reviewer"],
+            expected_revision=repo.read().revision,
+        )
+
+
+def _seed_manager_review_stall(
+    repo: TeamStateRepository,
+    *,
+    deliverable_id: str = "deliverable-stalled",
+    review_id: str = "review-manager",
+) -> None:
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": deliverable_id,
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": review_id,
+                    "deliverable_id": deliverable_id,
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+
+
+def _lease_manager_fallback(
+    repo: TeamStateRepository,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    _state, leases = repo.lease_due_agents(now=now or datetime(2026, 1, 1, tzinfo=UTC))
+    return next(lease for lease in leases if lease["agent"]["id"] == "manager")
 
 
 def _add_task(
@@ -812,6 +877,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "Action surface guide:" in guidance
     assert "Do not accept or reject someone else's task with task_updates" in guidance
     assert "Use review_decisions only for review requests assigned to you" in guidance
+    assert "idle profile-eligible reviewer" in guidance
+    assert "override_routing_gap_reason" in guidance
     assert "Raw agent or review branches are not release sources" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
@@ -845,6 +912,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "rejected",
         "blocked",
     ]
+    assert (
+        "override_routing_gap_reason"
+        in schema["properties"]["review_decisions"]["items"]["properties"]
+    )
     review_promotion_shapes = schema["properties"]["git_review_promotions"]["items"]["oneOf"]
     assert review_promotion_shapes[0]["required"] == ["assignment_id"]
     assert review_promotion_shapes[1]["required"] == ["deliverable_id"]
@@ -915,6 +986,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert example["stand_down_revocations"] == []
     assert example["review_requests"][0]["instructions"]
     assert example["review_decisions"][0]["state"] == "accepted"
+    assert example["review_decisions"][0]["override_routing_gap_reason"] is None
     assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
     assert "commit_sha" in example["git_review_promotions"][0]
     helper = str(copied_files[2]["content"])
@@ -1417,6 +1489,9 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         "Do not return a no-op merely because your own tasks and inbox arrays are empty"
         in prompt
     )
+    assert "reviewer_without_assigned_review_work gaps" in prompt
+    assert "never reuse the existing review request id" in prompt
+    assert "override_routing_gap_reason" in prompt
     assert "manager_fallback_context" not in context
     assert "runtime_operations" not in fallback_summary
     assert "action_records" not in fallback_summary
@@ -1535,6 +1610,155 @@ def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
         item["agent_id"] == "luke"
         for item in fallback_summary["routing_gaps"]
     )
+
+
+def test_manager_fallback_requires_review_profile_for_reviewer_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo, with_review_profile=False)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    context = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nTeam action contract",
+            1,
+        )[0]
+    )
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "luke" not in fallback_summary["reviewer_candidate_agent_ids"]
+    assert not any(
+        item["agent_id"] == "luke"
+        for item in fallback_summary["routing_gaps"]
+    )
+
+
+def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
+
+
+def test_manager_fallback_allows_self_review_with_override_reason(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                    "override_routing_gap_reason": "Urgent manager review required.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
+
+
+def test_manager_fallback_creates_fresh_review_for_idle_profile_reviewer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "luke",
+                    "instructions": "Review the stalled backend slice.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert len(result["created_review_request_ids"]) == 1
+    review_id = result["created_review_request_ids"][0]
+    reread = repo.read()
+    assert reread.review_requests[review_id].reviewer_agent_id == "luke"
+    assert any(
+        item.recipient_agent_id == "luke"
+        and item.payload.get("review_request_id") == review_id
+        for item in reread.inbox.values()
+    )
+
+
+def test_review_handoff_duplicate_id_feedback_suggests_fresh_review_id(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert "review request review-manager already exists" in result["errors"][0]
+
+    next_lease = _lease_manager_fallback(
+        repo,
+        now=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+    )
+    prompt = _build_prompt(next_lease, action_artifact_path="team-action.json")
+
+    assert "Most recent Team action feedback (one-shot)" in prompt
+    assert "For review handoff, do not reuse the existing review request id" in prompt
+    assert "omit id or choose a new id for the intended reviewer" in prompt
 
 
 def test_manager_fallback_prompt_caps_large_history(
