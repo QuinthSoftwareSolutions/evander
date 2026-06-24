@@ -1978,6 +1978,42 @@ class TeamStateRepository:
         task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        state, _case_id = self.create_case_with_id(
+            case_id=case_id,
+            team_id=team_id,
+            title=title,
+            description=description,
+            project_id=project_id,
+            status=status,
+            priority=priority,
+            owner_agent_id=owner_agent_id,
+            source=source,
+            source_ref=source_ref,
+            tags=tags,
+            metadata=metadata,
+            task_ids=task_ids,
+            expected_revision=expected_revision,
+        )
+        return state
+
+    def create_case_with_id(
+        self,
+        *,
+        case_id: str | None,
+        team_id: str,
+        title: str,
+        description: str = "",
+        project_id: str | None = None,
+        status: TeamCaseStatus | str = TeamCaseStatus.OPEN,
+        priority: TeamInboxPriority | str = TeamInboxPriority.NORMAL,
+        owner_agent_id: str | None = None,
+        source: str | None = None,
+        source_ref: str | None = None,
+        tags: list[str] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        task_ids: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, str]:
         normalized_case_id = _optional_text(case_id)
         normalized_team_id = _required_text(team_id, "team_id")
         normalized_project_id = _optional_text(project_id)
@@ -1995,8 +2031,10 @@ class TeamStateRepository:
         normalized_tags = _unique_text_list(tags or [], "tags")
         normalized_metadata = _mapping(metadata or {}, "metadata")
         normalized_task_ids = _unique_text_list(task_ids or [], "task_ids")
+        created_case_id: str | None = None
 
         def _mutate(state: TeamState) -> TeamState:
+            nonlocal created_case_id
             _validate_case_scope(
                 state,
                 team_id=normalized_team_id,
@@ -2031,9 +2069,13 @@ class TeamStateRepository:
             state.cases[case.id] = case
             for task_id in normalized_task_ids:
                 _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
+            created_case_id = case.id
             return state
 
-        return self.update(_mutate, expected_revision=expected_revision)
+        state = self.update(_mutate, expected_revision=expected_revision)
+        if created_case_id is None:
+            raise RuntimeError("case was not created")
+        return state, created_case_id
 
     def update_case(
         self,

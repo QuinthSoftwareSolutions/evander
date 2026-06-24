@@ -1950,9 +1950,8 @@ class TeamCreateCaseEffectProvider(EffectProviderBase):
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
         case_id = _optional_text(payload.get("case_id"))
-        before_case_ids = set(repo.read().cases)
         try:
-            state = repo.create_case(
+            state, effective_case_id = repo.create_case_with_id(
                 case_id=case_id,
                 team_id=_required_text(payload.get("team_id"), "team_id"),
                 title=_required_text(payload.get("title"), "title"),
@@ -1986,7 +1985,6 @@ class TeamCreateCaseEffectProvider(EffectProviderBase):
                 project_id=_optional_text(payload.get("project_id")),
                 error=str(exc),
             )
-        effective_case_id = case_id or _single_created_id(before_case_ids, set(state.cases))
         return _case_effect_success_result(state, case_id=effective_case_id)
 
 
@@ -5332,13 +5330,6 @@ def _payload_field_configured(
     resolved_fields: set[str],
 ) -> bool:
     return field_name in definition_fields or field_name in resolved_fields
-
-
-def _single_created_id(before_ids: set[str], after_ids: set[str]) -> str | None:
-    created_ids = after_ids - before_ids
-    if len(created_ids) == 1:
-        return next(iter(created_ids))
-    return None
 
 
 def _case_effect_success_result(

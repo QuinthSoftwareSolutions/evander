@@ -4360,6 +4360,54 @@ def test_create_case_effect_links_existing_tasks(tmp_path: Path) -> None:
     assert reread.tasks["task"].case_id == "case"
 
 
+def test_create_case_effect_returns_generated_id_when_other_case_is_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_team(tmp_path)
+
+    class RacingCaseRepository(TeamStateRepository):
+        injected = False
+
+        def create_case_with_id(self, **kwargs) -> tuple[TeamState, str]:
+            if not self.__class__.injected:
+                self.__class__.injected = True
+                super().create_case(
+                    case_id="external-case",
+                    team_id="team",
+                    title="External intake",
+                )
+            return super().create_case_with_id(**kwargs)
+
+    monkeypatch.setattr(
+        "truman_team_addon.providers.TeamStateRepository",
+        RacingCaseRepository,
+    )
+    provider = TeamCreateCaseEffectProvider()
+    provider.initialize(
+        TeamCreateCaseEffectDefinition(
+            id="create-case",
+            display_name="Create case",
+            type="effect:team:create-case",
+            team_id="team",
+            title="Generated intake",
+            source="email",
+            source_ref="message-42",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case_id"]
+    assert result["case_id"] != "external-case"
+    assert result["case"]["title"] == "Generated intake"
+    reread = TeamStateRepository(tmp_path).read()
+    assert "external-case" in reread.cases
+    assert result["case_id"] in reread.cases
+
+
 def test_update_case_effect_clears_optional_fields_and_task_links(
     tmp_path: Path,
 ) -> None:

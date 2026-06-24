@@ -7,6 +7,9 @@
   cases without routing through a persistent agent action.
 - Exposed the new Team case effects in the add-on workflow editor catalog with
   output schemas and focused runtime/catalog coverage.
+- Returned generated `effect:team:create-case` ids from inside the repository
+  mutation so concurrent case creation cannot make a committed workflow-created
+  case look like a failed create.
 
 ## 2026-06-24 - Team Add-on Release Flow Recovery
 
