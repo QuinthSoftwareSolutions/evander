@@ -3466,12 +3466,19 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="stalled-task")
-    repo.record_deliverable(
-        deliverable_id="deliverable-stalled",
-        task_id="stalled-task",
-        producer_agent_id="backend",
-        summary="Blocked slice for review.",
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "stalled-task",
+                    "summary": "Blocked slice for review.",
+                }
+            ],
+        },
     )
+    assert result["success"] is True
 
     def _clear_deliverable_notices(state):
         state.inbox = {
