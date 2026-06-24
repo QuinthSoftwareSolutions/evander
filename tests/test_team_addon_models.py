@@ -282,8 +282,9 @@ def _state_with_runtime_operations() -> TeamState:
         project_id="project",
         deliverable_ids=["deliverable"],
         artifact_refs=["published/release.tar.gz"],
+        release_branch="team/team/releases/release",
         state=TeamRecordState.BLOCKED,
-        error="release blocked",
+        error="merge conflict while merging feature into team/team/releases/release",
     )
     state.git_promotions["promotion-1"] = GitPromotionRecord(
         id="promotion-1",
@@ -921,6 +922,18 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
     )
 
 
+def test_team_state_payload_includes_blocked_release_next_action_hint() -> None:
+    state = _state_with_runtime_operations()
+
+    payload = team_state_payload(state)
+
+    release = payload["release_packages"]["release"]
+    assert release["next_action"] == "resolve_blocked_release"
+    assert "do not create another git_release_requests" in release["next_action_hint"]
+    assert "team/team/releases/release" in release["next_action_hint"]
+    assert "Resolve the merge conflict" in release["next_action_hint"]
+
+
 def test_team_state_payload_can_exclude_operator_only_agent_fields() -> None:
     state = _valid_state()
     state.agents["ui"].avatar = None
@@ -985,6 +998,13 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_git_promotion"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["state"] == "blocked"
+    assert rows["blocked_release_package"]["next_action"] == "resolve_blocked_release"
+    assert "do not create another git_release_requests" in rows[
+        "blocked_release_package"
+    ]["next_action_hint"]
+    assert "team/team/releases/release" in rows["blocked_release_package"][
+        "next_action_hint"
+    ]
     assert rows["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
     assert rows["failed_ephemeral_assignment"]["state"] == "failed"
     assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"

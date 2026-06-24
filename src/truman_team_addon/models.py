@@ -2923,6 +2923,10 @@ def team_state_payload(
         task_id: task_payload_with_derived(state, task)
         for task_id, task in state.tasks.items()
     }
+    payload["release_packages"] = {
+        release_id: release_package_payload_with_derived(release)
+        for release_id, release in state.release_packages.items()
+    }
     payload["runtime_operations"] = runtime_operations_payload(
         state,
         now=now,
@@ -2938,6 +2942,34 @@ def team_state_payload(
         if isinstance(agent_payload, dict):
             agent_payload["activity_summary"] = summary
     return payload
+
+
+def release_package_payload_with_derived(release: ReleasePackage) -> dict[str, Any]:
+    payload = release.model_dump(mode="json")
+    next_action_hint = _release_next_action_hint(release)
+    if next_action_hint is not None:
+        payload["next_action"] = "resolve_blocked_release"
+        payload["next_action_hint"] = next_action_hint
+    return payload
+
+
+def _release_next_action_hint(release: ReleasePackage) -> str | None:
+    if release.state != TeamRecordState.BLOCKED and not release.error:
+        return None
+    parts = [
+        f"Resolve existing release package {release.id}; do not create another "
+        "git_release_requests item with this id."
+    ]
+    if release.release_branch:
+        parts.append(f"Continue from release branch {release.release_branch}.")
+    if release.error:
+        parts.append(f"Current blocker: {release.error}")
+    if release.error and "merge conflict" in release.error.casefold():
+        parts.append(
+            "Resolve the merge conflict, commit on the existing release branch, "
+            "then retry or finalize the existing release package."
+        )
+    return " ".join(parts)
 
 
 def _agent_payload_with_role(
@@ -3519,6 +3551,7 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     for release in sorted(state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)):
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
+        next_action_hint = _release_next_action_hint(release)
         rows.append(
             _runtime_row(
                 id=release.id,
@@ -3532,6 +3565,8 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
                 deliverable_ids=list(release.deliverable_ids),
                 artifact_refs=list(release.artifact_refs),
                 error=release.error,
+                next_action="resolve_blocked_release" if next_action_hint else None,
+                next_action_hint=next_action_hint,
             )
         )
     return rows

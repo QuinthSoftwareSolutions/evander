@@ -2519,6 +2519,9 @@ function renderRuntimeAttentionRow(row) {
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
   const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
+  const nextActionLine = row.next_action_hint
+    ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
+    : "";
   const actions =
     row.kind === "failed_action_record" && row.action_record_id
       ? `
@@ -2544,6 +2547,7 @@ function renderRuntimeAttentionRow(row) {
           ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
           : ""
       }
+      ${nextActionLine}
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
       ${actions}
     </li>
@@ -2554,6 +2558,9 @@ function renderCompactRuntimeAttentionRow(row) {
   const refs = runtimeReferenceParts(row);
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
+  const nextActionLine = row.next_action_hint
+    ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
+    : "";
   const action =
     row.kind === "failed_action_record" && row.action_record_id
       ? `
@@ -2592,6 +2599,7 @@ function renderCompactRuntimeAttentionRow(row) {
               ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
               : ""
           }
+          ${nextActionLine}
           ${refs ? `<div class="meta-line">${refs}</div>` : ""}
           ${action}
         </div>

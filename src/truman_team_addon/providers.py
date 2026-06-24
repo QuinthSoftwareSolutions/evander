@@ -3319,12 +3319,16 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "yourself. Use override_routing_gap_reason only when intentionally "
         "bypassing that guardrail.\n"
         "- For Git release work, use git_release_requests once every deliverable "
-        "is accepted. The release request can enqueue prerequisite feature "
-        "promotions from accepted deliverable git_refs.review_branch or "
-        "git_refs.agent_branch before continuing to the release branch. Do not "
-        "combine non-empty git_feature_updates and git_release_requests in the "
-        "same action; use git_feature_updates only when you need a feature branch "
-        "without requesting a release.\n"
+        "is accepted and no release package already exists for that release id. "
+        "The release request can enqueue prerequisite feature promotions from "
+        "accepted deliverable git_refs.review_branch or git_refs.agent_branch "
+        "before continuing to the release branch. Do not combine non-empty "
+        "git_feature_updates and git_release_requests in the same action; use "
+        "git_feature_updates only when you need a feature branch without "
+        "requesting a release. If release_packages shows an existing blocked "
+        "package, do not submit another git_release_requests item with that id; "
+        "resolve the package's release_branch/error and then retry or finalize "
+        "the existing package.\n"
         "- If a deliverable should be reviewed by another agent, create a "
         "review_requests item for that reviewer; do not mark the task accepted "
         "yourself unless the task is actually yours.\n"
@@ -3490,7 +3494,10 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "git_refs.agent_branch, then continue the release after those promotions "
         "succeed. Do not combine non-empty git_feature_updates and "
         "git_release_requests in one Team action; use explicit git_feature_updates "
-        "only when you need a feature branch without requesting a release.\n\n"
+        "only when you need a feature branch without requesting a release. "
+        "git_release_requests creates new release packages only; when "
+        "release_packages already contains a blocked package, follow its "
+        "next_action_hint instead of reusing the same release id.\n\n"
     )
     manager_fallback_section = (
         "Manager fallback dispatch:\n"
@@ -4790,11 +4797,14 @@ def _persistent_action_schema() -> dict[str, Any]:
             "git_release_requests": {
                 "type": "array",
                 "description": (
-                    "Create a release package from accepted deliverables. Git deliverables "
+                    "Create a new release package from accepted deliverables. Git deliverables "
                     "may already have git_refs.feature_branch, or may have accepted "
                     "git_refs.review_branch/git_refs.agent_branch that the release request "
                     "will auto-promote to a feature branch before continuing. Do not combine "
                     "non-empty git_feature_updates and git_release_requests in one action. "
+                    "Do not use git_release_requests to retry an existing blocked package; "
+                    "inspect release_packages[id].next_action_hint and resolve the existing "
+                    "release_branch/error instead. "
                     "The repository derives source branches from deliverable git_refs; do not "
                     "provide source_branch, target_branch, or commit_sha here."
                 ),
@@ -4802,9 +4812,10 @@ def _persistent_action_schema() -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "description": (
-                        "Create a release package from accepted deliverables. Git deliverables "
+                        "Create a new release package from accepted deliverables. Git deliverables "
                         "may have git_refs.feature_branch already, or accepted review/agent "
-                        "branches that should be auto-promoted as release prerequisites."
+                        "branches that should be auto-promoted as release prerequisites. "
+                        "Do not reuse the id of an existing blocked release package."
                     ),
                     "additionalProperties": False,
                     "required": ["project_id", "deliverable_ids"],

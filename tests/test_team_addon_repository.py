@@ -6137,6 +6137,62 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert state.projects["project"].status == ProjectStatus.ACTIVE
 
 
+def test_duplicate_git_release_request_points_to_existing_package(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _block_release(current):
+        current.release_packages["rel-1"].state = TeamRecordState.BLOCKED
+        current.release_packages["rel-1"].error = (
+            "merge conflict while merging feature into team/team/releases/rel-1"
+        )
+        return current
+
+    repo.update(_block_release)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
+    error = result["errors"][0]
+    assert "release package rel-1 already exists" in error
+    assert "state blocked" in error
+    assert "release_branch team/team/releases/rel-1" in error
+    assert "do not submit git_release_requests for this id again" in error
+
+
 def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     tmp_path: Path,
 ) -> None:

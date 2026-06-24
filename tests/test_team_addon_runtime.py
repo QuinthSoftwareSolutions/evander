@@ -902,6 +902,37 @@ def test_combined_git_release_feedback_points_to_two_step_sequence(
     assert any("git_release_requests alone" in hint for hint in feedback["correction_hints"])
 
 
+def test_duplicate_release_package_feedback_points_to_existing_package(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _add_action_record(
+        repo,
+        action_id="action-duplicate-release",
+        dispatch_id="dispatch-duplicate-release",
+        created_at=base_time,
+        success=False,
+        error=(
+            "release package rel-1 already exists; state blocked; "
+            "release_branch team/team/releases/rel-1"
+        ),
+        action={"git_release_requests": [{"id": "rel-1", "project_id": "project"}]},
+    )
+
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=1))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    feedback = backend_lease["recent_action_feedback"][0]
+    assert feedback["action_fields"] == ["git_release_requests"]
+    assert any(
+        "existing or blocked package" in hint
+        and "release_branch/error" in hint
+        and "do not reuse the same id" in hint
+        for hint in feedback["correction_hints"]
+    )
+
+
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     repo.set_agent_avatar(
@@ -1048,7 +1079,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     release_request_property = schema["properties"]["git_release_requests"]
     assert "git_refs.feature_branch" in release_request_property["description"]
     assert "auto-promote" in release_request_property["description"]
+    assert "Create a new release package" in release_request_property["description"]
+    assert "existing blocked package" in release_request_property["description"]
     release_request_schema = schema["properties"]["git_release_requests"]["items"]
+    assert "Do not reuse the id" in release_request_schema["description"]
     assert release_request_schema["additionalProperties"] is False
     assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
     assert set(release_request_schema["properties"]) == {
@@ -1177,6 +1211,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "subtask_counts",
     ):
         assert field_name in prompt
+    assert "git_release_requests creates new release packages only" in prompt
+    assert "next_action_hint" in prompt
     assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
         "seeded": True,
         "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,

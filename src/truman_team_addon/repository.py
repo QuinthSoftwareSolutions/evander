@@ -7392,6 +7392,13 @@ def _correction_hints(error: str) -> list[str]:
             "deliverable_id shape for persistent deliverables."
         )
     if "already exists" in normalized:
+        if "release package" in normalized:
+            hints.append(
+                "git_release_requests creates new release packages only. For an "
+                "existing or blocked package, inspect release_packages[id], resolve "
+                "its release_branch/error, then retry or finalize that package; do "
+                "not reuse the same id in another git_release_requests item."
+            )
         if "review request" in normalized:
             hints.append(
                 "For review handoff, do not reuse the existing review request id; "
@@ -9405,7 +9412,9 @@ def _build_release_package(
         return None
     release_id = _optional_text(request.get("id")) or f"release-{uuid4().hex}"
     if release_id in state.release_packages:
-        result["errors"].append(f"release package {release_id} already exists")
+        result["errors"].append(
+            _duplicate_release_package_error(state.release_packages[release_id])
+        )
         return None
     target_release_branch: str | None = None
     target_canonical_branch: str | None = None
@@ -9484,6 +9493,25 @@ def _build_release_package(
         )
     projects_to_recalc.add(project_id)
     return release_id
+
+
+def _duplicate_release_package_error(release: ReleasePackage) -> str:
+    parts = [
+        f"release package {release.id} already exists",
+        f"state {release.state.value}",
+    ]
+    if release.release_branch:
+        parts.append(f"release_branch {release.release_branch}")
+    if release.canonical_branch:
+        parts.append(f"canonical_branch {release.canonical_branch}")
+    if release.error:
+        parts.append(f"error {release.error}")
+    parts.append(
+        "do not submit git_release_requests for this id again; resolve or finalize "
+        "the existing release package instead, or choose a new id only for a "
+        "separate release"
+    )
+    return "; ".join(parts)
 
 
 def _feature_promotion_source_branch_for_release(deliverable: Deliverable) -> str | None:

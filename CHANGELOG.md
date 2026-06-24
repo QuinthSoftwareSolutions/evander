@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Blocked Release Guidance
+
+- Added explicit next-action hints to blocked release packages and runtime
+  attention rows so agents and operators resolve the existing release branch
+  instead of creating duplicate release requests.
+- Improved duplicate release-package action feedback with the existing package
+  state, branch, blocker, and correction guidance.
+- Clarified Team agent release prompts and schemas that `git_release_requests[]`
+  creates new packages only and blocked packages should follow their
+  `next_action_hint`.
+
 ## 2026-06-24 - Team Add-on Release Prefix Normalization
 
 - Normalized Team project canonical release branch prefixes to one trailing
