@@ -3197,6 +3197,8 @@ class TeamStateRepository:
                     runtime.wake_leased_until is not None
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
+                    if agent.team_id is not None:
+                        teams_with_lease.add(agent.team_id)
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)

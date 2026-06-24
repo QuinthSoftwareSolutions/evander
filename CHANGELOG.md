@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-24 - Team Add-on Manager Fallback Active Lease Guard
+
+- Suppressed manager fallback wakes while another active team member still has
+  an unexpired wake lease, avoiding oversight prompts for work already in
+  progress.
+
 ## 2026-06-24 - Team Add-on Revision Conflict Recovery
 
 - Added Team state resource tokens and opt-in unchanged-target rebasing for

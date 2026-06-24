@@ -647,6 +647,33 @@ def test_repository_leases_due_agents_and_applies_action(tmp_path: Path) -> None
     assert next(iter(state.inbox.values())).recipient_agent_id == "lead"
 
 
+def test_manager_fallback_not_leased_while_team_member_is_awake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _mark_backend_awake(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="team-dispatch-backend",
+            wake_reason="scheduled",
+            wake_leased_until=now + timedelta(minutes=15),
+            next_wake_at=now + timedelta(minutes=15),
+        )
+        return state
+
+    repo.update(_mark_backend_awake)
+
+    state, leases = repo.lease_due_agents(now=now)
+
+    assert leases == []
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-dispatch-backend"
+    manager_runtime = state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+    assert manager_runtime is None or manager_runtime.wake_reason is None
+
+
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     # A pending dependency owned by another agent keeps "task" waiting.
@@ -1546,7 +1573,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     assert len(prompt.encode("utf-8")) < 32_000
 
 
-@pytest.mark.parametrize("blocker", ["paused", "stand_down", "leased"])
+@pytest.mark.parametrize("blocker", ["paused", "stand_down"])
 def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
     tmp_path: Path,
     blocker: str,
@@ -1592,23 +1619,13 @@ def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
             status=AgentStatus.PAUSED,
             expected_revision=repo.read().revision,
         )
-    elif blocker == "stand_down":
+    else:
         repo.stand_down_agent(
             agent_id="luke",
             reason="Reviewer temporarily unavailable.",
             set_by="operator:test",
             expected_revision=repo.read().revision,
         )
-    else:
-        def _lease_luke(state: TeamState) -> TeamState:
-            state.agent_runtimes["luke"] = AgentRuntime(
-                agent_id="luke",
-                active_dispatch_id="team-dispatch-luke",
-                wake_leased_until=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
-            )
-            return state
-
-        repo.update(_lease_luke)
 
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
     lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
@@ -1626,6 +1643,28 @@ def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
         item["agent_id"] == "luke"
         for item in fallback_summary["routing_gaps"]
     )
+
+
+def test_manager_fallback_not_leased_while_reviewer_is_awake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    def _lease_luke(state: TeamState) -> TeamState:
+        state.agent_runtimes["luke"] = AgentRuntime(
+            agent_id="luke",
+            active_dispatch_id="team-dispatch-luke",
+            wake_leased_until=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_lease_luke)
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert not any(lease["agent"]["id"] == "manager" for lease in leases)
 
 
 def test_manager_fallback_requires_review_profile_for_reviewer_candidate(
