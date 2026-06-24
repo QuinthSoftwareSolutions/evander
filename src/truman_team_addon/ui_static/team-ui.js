@@ -314,7 +314,10 @@ const fieldTooltips = {
   "create-role-form:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
 
   "create-review-profile-form:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
-  "create-review-profile-form:criteria": "Criteria rows in id | label | description | required format.",
+  "create-review-profile-form:criterion_label": "Reviewer-facing criterion name.",
+  "create-review-profile-form:criterion_description": "Optional notes that clarify what the reviewer should check.",
+  "create-review-profile-form:criterion_id": "Optional stable key. Leave blank to generate one from the label.",
+  "create-review-profile-form:criterion_required": "Required criteria should be satisfied or explicitly failed in review decisions.",
 
   "record-deliverable-form:task_id": "Task this deliverable completes or advances.",
   "record-deliverable-form:producer_agent_id": "Agent that produced the deliverable.",
@@ -365,7 +368,10 @@ const fieldTooltips = {
   "edit:role:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
   "edit:role:archived": "Archived roles stay in state but should not be assigned to new agents.",
   "edit:review-profile:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
-  "edit:review-profile:criteria": "Replace criteria using id | label | description | required rows.",
+  "edit:review-profile:criterion_label": "Reviewer-facing criterion name.",
+  "edit:review-profile:criterion_description": "Optional notes that clarify what the reviewer should check.",
+  "edit:review-profile:criterion_id": "Optional stable key. Leave blank to generate one from the label.",
+  "edit:review-profile:criterion_required": "Required criteria should be satisfied or explicitly failed in review decisions.",
   "edit:review-profile:archived": "Archived profiles stay in state but cannot be selected for new review requests.",
 
   host_repo_path: "Host-local working repository path. The canonical remote URL alone is not enough; the host needs a local repository path.",
@@ -760,6 +766,22 @@ function bindForms() {
       return;
     }
     void importGitRepoForForm(form, button);
+  });
+
+  document.addEventListener("click", (event) => {
+    const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
+    if (addButton) {
+      event.preventDefault();
+      addReviewProfileCriterionRow(addButton.closest("[data-review-profile-criteria-editor]"));
+      return;
+    }
+
+    const removeButton = event.target?.closest?.("[data-review-profile-criterion-remove]");
+    if (!removeButton) {
+      return;
+    }
+    event.preventDefault();
+    removeReviewProfileCriterionRow(removeButton);
   });
 
   document.addEventListener("change", (event) => {
@@ -3115,6 +3137,8 @@ function orgAgentNodeData(agentData) {
     .filter(Boolean)
     .join(" ");
   const indicatorItems = agentData.inboxIndicatorItems || {};
+  const statusRequestItems = indicatorItems.status_request || [];
+  const progressReportItems = indicatorItems.progress_report || [];
   return {
     kind: "agent",
     agentId: agentData.id,
@@ -3130,17 +3154,35 @@ function orgAgentNodeData(agentData) {
         itemType: "status_request",
         direction: "down",
         label: "Status requests",
-        count: (indicatorItems.status_request || []).length,
+        count: statusRequestItems.length,
+        items: statusRequestItems.map(orgInboxIndicatorItemData),
       },
       {
         itemType: "progress_report",
         direction: "up",
         label: "Progress reports",
-        count: (indicatorItems.progress_report || []).length,
+        count: progressReportItems.length,
+        items: progressReportItems.map(orgInboxIndicatorItemData),
       },
     ],
     work,
     detailLines: hierarchyDetailLines(agentData, { focused: true }),
+  };
+}
+
+function orgInboxIndicatorItemData(item) {
+  const metaParts = [];
+  if (item.task_id) {
+    metaParts.push(`task ${item.task_id}`);
+  }
+  if (item.sender_agent_id) {
+    metaParts.push(`from ${item.sender_agent_id}`);
+  }
+  metaParts.push(inboxPriorityLabel(item));
+  metaParts.push(inboxReplyIntentLabel(item));
+  return {
+    detail: inboxItemDetail(item) || item.id,
+    meta: metaParts.join(" - "),
   };
 }
 
@@ -6655,6 +6697,131 @@ function renderProfileCriteria(criteria) {
   `;
 }
 
+function renderReviewProfileCriteriaEditor(criteria = []) {
+  const rows = criteria.length ? criteria : [{}];
+  return `
+    <fieldset class="criteria-editor" data-review-profile-criteria-editor>
+      <legend>Criteria</legend>
+      <div class="criteria-editor-rows" data-review-profile-criteria-rows>
+        ${rows.map((criterion) => renderReviewProfileCriterionRow(criterion)).join("")}
+      </div>
+      <button class="record-action criteria-editor-add" type="button" data-review-profile-criterion-add>Add criterion</button>
+    </fieldset>
+  `;
+}
+
+function renderReviewProfileCriterionRow(criterion = {}) {
+  const required = criterion.required !== false;
+  return `
+    <div class="criteria-editor-row" data-review-profile-criterion-row>
+      <label>Label <input name="criterion_label" value="${escapeAttr(criterion.label || "")}" placeholder="Authorization" /></label>
+      <label>Description <input name="criterion_description" value="${escapeAttr(criterion.description || "")}" placeholder="What reviewers should check" /></label>
+      <label>Key <input name="criterion_id" value="${escapeAttr(criterion.id || "")}" placeholder="Auto from label" /></label>
+      <label class="checkbox-label criteria-editor-required"><input name="criterion_required" type="checkbox"${required ? " checked" : ""} /> Required</label>
+      <button class="record-action criteria-editor-remove" type="button" data-review-profile-criterion-remove>Remove</button>
+    </div>
+  `;
+}
+
+function addReviewProfileCriterionRow(editor) {
+  const rows = editor?.querySelector?.("[data-review-profile-criteria-rows]");
+  if (!rows) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderReviewProfileCriterionRow({});
+  const row = wrapper.firstElementChild;
+  if (!row) {
+    return;
+  }
+  rows.appendChild(row);
+  decorateFieldTooltips(row);
+  row.querySelector('input[name="criterion_label"]')?.focus();
+}
+
+function removeReviewProfileCriterionRow(button) {
+  const editor = button.closest("[data-review-profile-criteria-editor]");
+  const row = button.closest("[data-review-profile-criterion-row]");
+  const rows = editor?.querySelector?.("[data-review-profile-criteria-rows]");
+  if (!row || !rows) {
+    return;
+  }
+  row.remove();
+  if (!rows.querySelector("[data-review-profile-criterion-row]")) {
+    addReviewProfileCriterionRow(editor);
+  }
+}
+
+function reviewProfileCriteriaFromForm(form) {
+  const rows = Array.from(form.querySelectorAll("[data-review-profile-criterion-row]"));
+  const usedIds = new Set();
+  return rows
+    .map((row, index) => reviewProfileCriterionFromRow(row, index, usedIds))
+    .filter(Boolean);
+}
+
+function reviewProfileCriteriaDraftFromForm(form) {
+  const rows = Array.from(form.querySelectorAll("[data-review-profile-criterion-row]"));
+  if (!rows.length) {
+    return null;
+  }
+  return rows.map((row) => ({
+    id: text(row.querySelector('[name="criterion_id"]')?.value),
+    label: text(row.querySelector('[name="criterion_label"]')?.value),
+    description: text(row.querySelector('[name="criterion_description"]')?.value),
+    required: row.querySelector('[name="criterion_required"]')?.checked !== false,
+  }));
+}
+
+function restoreReviewProfileCriteriaDraft(form, criteria) {
+  const rows = form.querySelector("[data-review-profile-criteria-rows]");
+  if (!rows || !Array.isArray(criteria)) {
+    return;
+  }
+  rows.innerHTML = (criteria.length ? criteria : [{}])
+    .map((criterion) => renderReviewProfileCriterionRow(criterion))
+    .join("");
+  decorateFieldTooltips(rows);
+}
+
+function reviewProfileCriterionFromRow(row, index, usedIds) {
+  const label = text(row.querySelector('[name="criterion_label"]')?.value);
+  const description = text(row.querySelector('[name="criterion_description"]')?.value);
+  const explicitId = text(row.querySelector('[name="criterion_id"]')?.value);
+  if (!label && !description && !explicitId) {
+    return null;
+  }
+  const baseId = explicitId || criterionIdFromText(label || description || `criterion ${index + 1}`);
+  const id = uniqueCriterionId(baseId, usedIds);
+  usedIds.add(id);
+  return {
+    id,
+    label: label || id,
+    description,
+    required: row.querySelector('[name="criterion_required"]')?.checked !== false,
+  };
+}
+
+function criterionIdFromText(value) {
+  const slug = text(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "criterion";
+}
+
+function uniqueCriterionId(baseId, usedIds) {
+  const normalized = text(baseId) || "criterion";
+  if (!usedIds.has(normalized)) {
+    return normalized;
+  }
+  let suffix = 2;
+  while (usedIds.has(`${normalized}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${normalized}-${suffix}`;
+}
+
 function renderReleases() {
   if (!document.querySelector("[data-releases-view]")) {
     return;
@@ -9232,7 +9399,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
-      criteria: parseCriteria(data.criteria),
+      criteria: reviewProfileCriteriaFromForm(form),
     };
     const projectId = text(data.project_id);
     if (projectId) {
@@ -9519,10 +9686,7 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
       ${multiSelectField("Applicable roles", "applicable_role_ids", "roles", record.applicable_role_ids || [], { size: 4 })}
-      ${textareaField("Criteria", "criteria", criteriaToText(record.criteria || []), {
-        rows: 4,
-        placeholder: "id | label | description | required",
-      })}
+      ${renderReviewProfileCriteriaEditor(record.criteria || [])}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -9660,7 +9824,7 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       description: text(data.description),
       applicable_role_ids: splitList(data.applicable_role_ids),
-      criteria: parseCriteria(data.criteria),
+      criteria: reviewProfileCriteriaFromForm(form),
       archived: Boolean(form.elements.archived?.checked),
     };
   }
@@ -9760,6 +9924,10 @@ function captureFormDrafts() {
       form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
         values[field.name] = field.checked ? "true" : "false";
       });
+      const criteriaDraft = reviewProfileCriteriaDraftFromForm(form);
+      if (criteriaDraft) {
+        values.__review_profile_criteria = criteriaDraft;
+      }
       drafts[formId] = values;
     }
   });
@@ -9772,7 +9940,11 @@ function restoreFormDrafts(drafts) {
     if (!form) {
       return;
     }
+    restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
     Object.entries(values).forEach(([name, value]) => {
+      if (name === "__review_profile_criteria" || name.startsWith("criterion_")) {
+        return;
+      }
       const field = form.elements[name];
       if (!field) {
         return;
@@ -10116,37 +10288,6 @@ function goalsToText(goals) {
   return (goals || [])
     .map((goal) => [goal.id, goal.description, goal.state || "pending"].join(" | "))
     .join("\n");
-}
-
-function criteriaToText(criteria) {
-  return (criteria || [])
-    .map((criterion) =>
-      [
-        criterion.id,
-        criterion.label || criterion.id,
-        criterion.description || "",
-        criterion.required === false ? "false" : "true",
-      ].join(" | "),
-    )
-    .join("\n");
-}
-
-function parseCriteria(value) {
-  return text(value)
-    .split(/\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [id, label, description = "", required = "true"] = line
-        .split("|")
-        .map((part) => part.trim());
-      return {
-        id,
-        label: label || id,
-        description,
-        required: !["false", "no", "0", "optional"].includes(required.toLowerCase()),
-      };
-    });
 }
 
 function parseCriterionResults(value) {

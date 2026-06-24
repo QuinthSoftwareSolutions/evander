@@ -48,15 +48,19 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-team-inline-create-toggle/);
   assert.match(script, /data-team-inline-create-form/);
   assert.match(script, /data-git-import-button/);
+  assert.match(script, /data-review-profile-criterion-add/);
+  assert.match(script, /reviewProfileCriteriaFromForm/);
   assert.match(script, /rolePermissionTooltips/);
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.team-inline-create-form/);
+  assert.match(stylesheet, /\.criteria-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
+  assert.match(markup, /data-review-profile-criteria-editor/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
   assert.match(script, /data-chat-scroll-conversation-id/);
@@ -75,9 +79,16 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(script, /aria-describedby/);
   assert.match(script, /Agent ID \$\{escapeHtml\(node\.agentData\.id\)\}\. Role/);
+  assert.match(script, /orgInboxIndicatorItemData/);
+  assert.match(script, /items: statusRequestItems\.map\(orgInboxIndicatorItemData\)/);
   assert.match(orgFlowScript, /team-org-flow:edit-agent/);
   assert.match(orgFlowScript, /aria-describedby/);
   assert.match(orgFlowScript, /"Agent ID "/);
+  assert.match(orgFlowScript, /agent-inbox-popover/);
+  assert.match(orgFlowScript, /nowheel/);
+  assert.match(orgFlowScript, /addEventListener\("wheel"/);
+  assert.match(orgFlowScript, /stopPropagation\(\)/);
+  assert.match(stylesheet, /\.agent-inbox-popover\s*{[\s\S]*pointer-events:\s*auto;/);
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
@@ -2064,6 +2075,58 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
     repo_source: "/srv/repos/imported-project",
     bare_repo_name: "team-import.git",
   });
+});
+
+test("team add-on UI creates review profile criteria with structured rows", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openDetails(page, "Create review profile");
+  const profileForm = page.locator("#create-review-profile-form");
+  await profileForm.locator('[name="team_id"]').selectOption("team");
+  await profileForm.locator('[name="project_id"]').selectOption("project");
+  await profileForm.locator('[name="name"]').fill("Security review");
+  await profileForm.locator('[name="description"]').fill("Checklist for security-sensitive work.");
+  await profileForm.locator('[name="applicable_role_ids"]').selectOption(["project__backend"]);
+
+  const firstCriterion = profileForm.locator("[data-review-profile-criterion-row]").first();
+  await firstCriterion.locator('[name="criterion_label"]').fill("Authorization");
+  await firstCriterion.locator('[name="criterion_description"]').fill("Scopes are enforced");
+  await profileForm.getByRole("button", { name: "Add criterion" }).click();
+  const secondCriterion = profileForm.locator("[data-review-profile-criterion-row]").nth(1);
+  await secondCriterion.locator('[name="criterion_label"]').fill("Logging");
+  await secondCriterion.locator('[name="criterion_id"]').fill("audit-logs");
+  await secondCriterion.locator('[name="criterion_description"]').fill("No secrets in logs");
+  await secondCriterion.locator('[name="criterion_required"]').evaluate((field) => {
+    field.checked = false;
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  await profileForm.getByRole("button", { name: "Create profile" }).click();
+  await page.getByText("Saved revision 9.").waitFor({ state: "visible" });
+
+  const profileRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/review-profiles"
+  );
+  assert.ok(profileRequest);
+  assert.equal(profileRequest.payload.expected_revision, 8);
+  assert.deepEqual(profileRequest.payload.criteria, [
+    {
+      id: "authorization",
+      label: "Authorization",
+      description: "Scopes are enforced",
+      required: true,
+    },
+    {
+      id: "audit-logs",
+      label: "Logging",
+      description: "No secrets in logs",
+      required: false,
+    },
+  ]);
 });
 
 test("team add-on UI renders empty state and submits setup forms with revisions", async (t) => {

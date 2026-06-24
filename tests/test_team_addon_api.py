@@ -24,7 +24,6 @@ from truman_team_addon.api import (
     _conversation_snapshot_events,
     _team_state_payload_for_request,
 )
-from truman_team_addon.providers import ACTION_CONTRACT_SCHEMA_VERSION
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -525,7 +524,7 @@ def test_agent_avatar_delete_clears_state_and_asset(tmp_path: Path) -> None:
     assert client.get(f"/api/addons/team-addon/avatars/{asset_id}").status_code == 404
 
 
-def test_team_addon_admin_api_conversation_dispatch_and_reply(
+def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_reply(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -610,25 +609,18 @@ def test_team_addon_admin_api_conversation_dispatch_and_reply(
 
     assert sent.status_code == 202
     sent_payload = sent.json()
-    assert sent_payload["dispatch"]["success"] is True
+    assert sent_payload["dispatch"]["success"] is False
+    assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
-    assert sent_payload["dispatch"]["agent_setup"]["action_contract"]["schema_version"] == (
-        ACTION_CONTRACT_SCHEMA_VERSION
-    )
-    assert len(copy_calls) == 2
+    assert "queued for asynchronous agent dispatch" in sent_payload["dispatch"]["message"]
+    assert copy_calls == []
     message = sent_payload["message"]
     assert message["sender"] == "operator"
-    assert message["status"] == "running"
+    assert message["status"] == "queued"
     assert message["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
     assert message["metadata"]["sender_kind"] == "human_operator"
     assert message["metadata"]["operator_user_id"] == "admin"
-    assert resume_calls[0]["target"] == "session-backend"
-    assert resume_calls[0]["resume_mode"] == "same_context"
-    assert resume_calls[0]["dispatch_id"] == sent_payload["dispatch"]["dispatch_id"]
-    assert "chat_replies" in str(resume_calls[0]["prompt"])
-    assert "human operator" in str(resume_calls[0]["prompt"])
-    assert conversation["id"] in str(resume_calls[0]["prompt"])
-    assert message["id"] in str(resume_calls[0]["prompt"])
+    assert resume_calls == []
 
     state, result = repo.apply_agent_action(
         action={
@@ -704,7 +696,7 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     assert sent_payload["dispatch"]["success"] is False
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
-    assert "queued for retry" in sent_payload["dispatch"]["message"]
+    assert "queued for asynchronous agent dispatch" in sent_payload["dispatch"]["message"]
     assert resume_calls == []
     message = sent_payload["message"]
     assert message["status"] == "queued"
@@ -1376,6 +1368,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'name="lead_session_id"' not in ui.text
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
+    assert 'data-review-profile-criteria-editor' in ui.text
+    assert 'name="criterion_label"' in ui.text
     assert 'data-team-view="governance"' in ui.text
     assert "data-governance-create-toggle" in ui.text
     assert 'id="governance-create-panel"' in ui.text

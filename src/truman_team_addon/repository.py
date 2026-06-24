@@ -3151,6 +3151,16 @@ class TeamStateRepository:
             return self.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
+            terminal_task_states = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+            teams_with_open_tasks: set[str] = set()
+            for task in state_model.tasks.values():
+                if task.state in terminal_task_states:
+                    continue
+                owner = state_model.agents.get(task.owner_agent_id)
+                if owner is None or owner.team_id is None:
+                    continue
+                teams_with_open_tasks.add(owner.team_id)
+            teams_with_lease = set()
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
@@ -3177,26 +3187,32 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                wake_inbox = _wakeable_inbox_items(pending_inbox)
                 immediate_inbox = [
                     item
-                    for item in pending_inbox
+                    for item in wake_inbox
                     if item.priority != TeamInboxPriority.LOW
                 ]
                 low_priority_inbox = [
-                    item for item in pending_inbox if item.priority == TeamInboxPriority.LOW
+                    item for item in wake_inbox if item.priority == TeamInboxPriority.LOW
                 ]
                 action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
+                wakeable_tasks = [
+                    task
+                    for task in active_tasks
+                    if _task_can_wake_owner_for_work(state_model, task)
+                ]
                 task_work_ready = any(
                     state_model.dependency_status(task.id) == "satisfied"
-                    for task in active_tasks
+                    for task in wakeable_tasks
                 ) or any(
                     state_model.subtask_counts(task.id)["open"] > 0
-                    for task in active_tasks
+                    for task in wakeable_tasks
                 )
                 wake_eligible = (
                     rotation_pending
-                    or bool(pending_inbox)
+                    or bool(wake_inbox)
                     or bool(action_feedback)
                     or task_work_ready
                 )
@@ -3226,18 +3242,18 @@ class TeamStateRepository:
                 elif not low_priority_inbox:
                     _clear_low_priority_batch(runtime)
                 if (
-                    not pending_inbox
+                    not wake_inbox
                     and not rotation_pending
                     and not action_feedback
                     and not due_by_time
                 ):
                     continue
-                if pending_inbox and not immediate_wake_ready and not low_priority_wake_ready:
+                if wake_inbox and not immediate_wake_ready and not low_priority_wake_ready:
                     continue
                 if (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
-                    and not pending_inbox
+                    and not wake_inbox
                     and not rotation_pending
                     and not action_feedback
                 ):
@@ -3289,6 +3305,119 @@ class TeamStateRepository:
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                         "subordinates": _subordinate_agent_payloads(state_model, agent),
+                    }
+                )
+                if agent.team_id is not None:
+                    teams_with_lease.add(agent.team_id)
+
+            if normalized_limit and len(leases) >= normalized_limit:
+                return state_model
+
+            for team in sorted(state_model.teams.values(), key=lambda item: item.id):
+                if normalized_limit and len(leases) >= normalized_limit:
+                    break
+                if (
+                    team.archived
+                    or team.id in blocked_teams
+                    or team.id not in teams_with_open_tasks
+                ):
+                    continue
+                if normalized_team_id is not None and team.id != normalized_team_id:
+                    continue
+                if team.id in teams_with_lease:
+                    continue
+                manager = state_model.agents.get(team.manager_agent_id)
+                if (
+                    manager is None
+                    or manager.status != AgentStatus.ACTIVE
+                    or (manager.id is None)
+                ):
+                    continue
+                if normalized_project_id is not None and not agent_has_project_assignment(
+                    state_model,
+                    manager.id,
+                    normalized_project_id,
+                ):
+                    continue
+                if (
+                    normalized_agent_id is not None
+                    and manager.id != normalized_agent_id
+                ):
+                    continue
+                if (
+                    manager.id in state_model.agent_runtimes
+                    and state_model.agent_runtimes[manager.id].wake_leased_until
+                    and _ensure_utc(state_model.agent_runtimes[manager.id].wake_leased_until)
+                    > effective_now
+                ):
+                    continue
+                if _active_stand_downs_for_agent(state_model, manager.id):
+                    continue
+                manager_runtime = state_model.agent_runtimes.setdefault(
+                    manager.id,
+                    AgentRuntime(agent_id=manager.id),
+                )
+                due_by_time = (
+                    manager_runtime.next_wake_at is None
+                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
+                )
+                if not due_by_time:
+                    continue
+                dispatch_id = f"team-dispatch-{uuid4().hex}"
+                manager_runtime.active_dispatch_id = dispatch_id
+                manager_runtime.wake_reason = "manager_fallback"
+                manager_runtime.last_wake_at = effective_now
+                manager_runtime.wake_leased_until = effective_now + timedelta(
+                    seconds=lease_seconds
+                )
+                manager_runtime.next_wake_at = effective_now + timedelta(
+                    seconds=wake_interval_seconds
+                )
+                manager_runtime.updated_at = effective_now
+                if (
+                    manager_runtime.context_clearing_policy
+                    == AgentContextClearingPolicy.EVERY_WAKE
+                    and not manager_runtime.context_rotation_pending
+                ):
+                    _mark_context_rotation_pending(
+                        state_model,
+                        agent=manager,
+                        runtime=manager_runtime,
+                        reason="every_wake",
+                        requested_by=None,
+                        requested_at=effective_now,
+                        request_note=None,
+                    )
+                _clear_low_priority_batch(manager_runtime)
+                teams_with_lease.add(team.id)
+                leases.append(
+                    {
+                        "agent": _agent_payload(state_model, manager),
+                        "runtime": manager_runtime.model_dump(mode="json"),
+                        "dispatch_id": dispatch_id,
+                        "reason": "manager_fallback",
+                        "tasks": [
+                            task_payload_with_derived(state_model, task)
+                            for task in _active_tasks_for_agent(
+                                state_model,
+                                manager.id,
+                            )
+                        ],
+                        "inbox": [
+                            item.model_dump(mode="json")
+                            for item in _pending_inbox_for_agent(
+                                state_model,
+                                manager.id,
+                            )
+                        ],
+                        "recent_action_feedback": _latest_action_feedback_for_agent(
+                            state_model,
+                            manager.id,
+                        ),
+                        "operator_chat_participants": _operator_chat_participant_payloads(state_model),
+                        "superior_agent_id": manager.reports_to_agent_id,
+                        "subordinate_agent_ids": list(manager.subordinate_agent_ids),
+                        "subordinates": _subordinate_agent_payloads(state_model, manager),
                     }
                 )
             return state_model
@@ -5244,6 +5373,29 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     ]
     tasks.sort(key=lambda item: (item.priority, item.created_at, item.id))
     return tasks
+
+
+def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
+    return [item for item in items if item.response_requested]
+
+
+def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
+    return not _task_waits_on_active_deliverable_review(state, task)
+
+
+def _task_waits_on_active_deliverable_review(state: TeamState, task: AgentTask) -> bool:
+    if task.state != TeamTaskState.WAITING_FOR_REVIEW:
+        return False
+    review_states = {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+        TeamRecordState.ACCEPTED,
+    }
+    return any(
+        deliverable.state in review_states
+        for deliverable in _active_task_deliverables(state, task)
+    )
 
 
 def _active_stand_downs_for_agent(

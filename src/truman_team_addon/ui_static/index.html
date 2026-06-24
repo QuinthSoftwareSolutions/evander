@@ -617,7 +617,19 @@
                 <label>Name <input name="name" required /></label>
                 <label>Description <textarea name="description" rows="3"></textarea></label>
                 <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="roles"></select></label>
-                <label>Criteria <textarea name="criteria" rows="4" placeholder="id | label | description | required"></textarea></label>
+                <fieldset class="criteria-editor" data-review-profile-criteria-editor>
+                  <legend>Criteria</legend>
+                  <div class="criteria-editor-rows" data-review-profile-criteria-rows>
+                    <div class="criteria-editor-row" data-review-profile-criterion-row>
+                      <label>Label <input name="criterion_label" placeholder="Authorization" /></label>
+                      <label>Description <input name="criterion_description" placeholder="What reviewers should check" /></label>
+                      <label>Key <input name="criterion_id" placeholder="Auto from label" /></label>
+                      <label class="checkbox-label criteria-editor-required"><input name="criterion_required" type="checkbox" checked /> Required</label>
+                      <button class="record-action criteria-editor-remove" type="button" data-review-profile-criterion-remove>Remove</button>
+                    </div>
+                  </div>
+                  <button class="record-action criteria-editor-add" type="button" data-review-profile-criterion-add>Add criterion</button>
+                </fieldset>
                 <button type="submit">Create profile</button>
               </form>
             </details>

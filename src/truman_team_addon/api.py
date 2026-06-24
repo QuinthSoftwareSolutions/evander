@@ -17,7 +17,6 @@ from starlette.routing import Route
 from agent_sandbox.addons import AddonContext
 from agent_sandbox.admin.web.rbac import TEAM_CHATS_READ_ALL_PERMISSION
 from agent_sandbox.admin.web.user_store import normalize_admin_web_login
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -64,13 +63,7 @@ from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
-from .providers import (
-    DEFAULT_ACTION_ARTIFACT_PATH,
-    _build_team_chat_prompt,
-    _seed_action_contract_files,
-    _seed_team_agent_guidance,
-    _session_records_by_id,
-)
+from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
@@ -704,80 +697,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             expected_revision=_expected_revision(payload),
         )
         conversation = state.conversations[conversation_id]
-        agent = state.agents[conversation.agent_id]
         dispatch_id = f"team-chat:{message.id}"
+        state, message = repository.queue_chat_message_dispatch(
+            message_id=message.id,
+            dispatch_id=dispatch_id,
+            reason="queued by Team chat API for asynchronous dispatch",
+        )
         dispatch_payload: dict[str, Any] = {
             "success": False,
+            "queued": True,
             "dispatch_id": dispatch_id,
-            "message": None,
+            "message": "Chat message queued for asynchronous agent dispatch.",
         }
-        try:
-            state, message = repository.begin_chat_message_dispatch(
-                message_id=message.id,
-                dispatch_id=dispatch_id,
-            )
-            conversation = state.conversations[conversation_id]
-            agent_setup = _seed_team_chat_agent_files(
-                context,
-                agent,
-                dispatch_id=dispatch_id,
-            )
-            prompt = _build_team_chat_prompt(
-                state=state,
-                conversation=conversation,
-                message=message,
-                action_artifact_path=DEFAULT_ACTION_ARTIFACT_PATH,
-            )
-            dispatch_result = _resume_team_chat_agent(
-                context,
-                agent=agent,
-                prompt=prompt,
-                dispatch_id=dispatch_id,
-            )
-            dispatch_payload = _dispatch_result_payload(dispatch_result)
-            dispatch_payload["dispatch_id"] = dispatch_payload.get("dispatch_id") or dispatch_id
-            dispatch_payload["agent_setup"] = agent_setup
-            if not bool(dispatch_payload.get("success")):
-                state, message = repository.mark_chat_message_dispatch_failed(
-                    message_id=message.id,
-                    error=str(dispatch_payload.get("message") or "agent dispatch failed"),
-                )
-        except ValueError as exc:
-            if _is_active_team_dispatch_error(exc):
-                state, message = repository.queue_chat_message_dispatch(
-                    message_id=message.id,
-                    dispatch_id=dispatch_id,
-                    reason=str(exc),
-                )
-                dispatch_payload = {
-                    "success": False,
-                    "queued": True,
-                    "dispatch_id": dispatch_id,
-                    "message": (
-                        "Agent is busy with another Team dispatch; chat message "
-                        "queued for retry after that lease is released."
-                    ),
-                }
-            else:
-                state, message = repository.mark_chat_message_dispatch_failed(
-                    message_id=message.id,
-                    error=str(exc),
-                )
-                dispatch_payload = {
-                    "success": False,
-                    "dispatch_id": dispatch_id,
-                    "message": str(exc),
-                }
-        except Exception as exc:
-            state, message = repository.mark_chat_message_dispatch_failed(
-                message_id=message.id,
-                error=str(exc),
-            )
-            dispatch_payload = {
-                "success": False,
-                "dispatch_id": dispatch_id,
-                "message": str(exc),
-            }
         conversation = state.conversations[conversation_id]
         return JSONResponse(
             {
@@ -2275,93 +2206,6 @@ def _chat_agent_payload(agent: Any | None) -> dict[str, Any] | None:
 
 def _chat_agent_is_eligible(agent: Any) -> bool:
     return _enum_value(getattr(agent, "status", None)) != AgentStatus.ARCHIVED.value
-
-
-def _resume_team_chat_agent(
-    context: AddonContext,
-    *,
-    agent: Any,
-    prompt: str,
-    dispatch_id: str,
-) -> Any:
-    service = getattr(context, "service", None)
-    resume_agent = getattr(service, "resume_agent", None)
-    if not callable(resume_agent):
-        raise RuntimeError("AdminService resume_agent is unavailable")
-    return resume_agent(
-        agent.session_id,
-        prompt,
-        dispatch_id=dispatch_id,
-        resume_mode="same_context",
-    )
-
-
-def _dispatch_result_payload(result: Any) -> dict[str, Any]:
-    if result is None:
-        return {"success": False, "dispatch_id": None, "message": "no dispatch result"}
-    model_dump = getattr(result, "model_dump", None)
-    if callable(model_dump):
-        payload = model_dump(mode="json")
-    elif isinstance(result, Mapping):
-        payload = dict(result)
-    else:
-        payload = {
-            "success": bool(getattr(result, "success", False)),
-            "message": str(getattr(result, "message", "") or ""),
-        }
-    return {
-        "success": bool(payload.get("success")),
-        "dispatch_id": payload.get("dispatch_id"),
-        "message": payload.get("message"),
-        "action": payload.get("action"),
-        "vm_name": payload.get("vm_name"),
-        "thread_id": payload.get("thread_id"),
-    }
-
-
-def _is_active_team_dispatch_error(exc: ValueError) -> bool:
-    return "already has active Team dispatch" in str(exc)
-
-
-def _seed_team_chat_agent_files(
-    context: AddonContext,
-    agent: Any,
-    *,
-    dispatch_id: str,
-) -> dict[str, Any]:
-    runtime_context = _team_effect_runtime_context(context, agent=agent)
-    agent_payload = agent.model_dump(mode="json") if hasattr(agent, "model_dump") else dict(agent)
-    return {
-        "action_contract": _seed_action_contract_files(
-            runtime_context,
-            agent=agent_payload,
-            dispatch_id=dispatch_id,
-            action_artifact_path=DEFAULT_ACTION_ARTIFACT_PATH,
-        ),
-        "agent_guidance": _seed_team_agent_guidance(
-            runtime_context,
-            agent=agent_payload,
-        ),
-    }
-
-
-def _team_effect_runtime_context(
-    context: AddonContext,
-    *,
-    agent: Any,
-) -> EffectRuntimeContext:
-    directory_path = "root"
-    try:
-        runtime = _runtime_from_context(context)
-        session = runtime.session_repository.get_session(agent.session_id)
-        directory_path = str(getattr(session, "directory_path", None) or "root")
-    except Exception:
-        directory_path = "root"
-    return EffectRuntimeContext(
-        resolved_config=context.config,
-        metadata={"directory_path": directory_path},
-        admin_service=context.service,
-    )
 
 
 def _record_chat_voice_call_status(
