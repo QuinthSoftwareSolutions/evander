@@ -10,7 +10,6 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
@@ -82,7 +81,6 @@ from .mcp import (
     TEAM_UPDATE_TASK_TOOL,
 )
 from .models import (
-    AGENT_OPERATOR_ONLY_FIELDS,
     RolePermission,
     TeamState,
     team_session_health_payload,
@@ -2856,6 +2854,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"{TEAM_REQUEST_REVIEW_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
         "paths through communication tools.\n"
+        "- Deliverables may include verification with status passed, failed, "
+        "partial, not_run, or unknown plus a short summary. Use not_run when "
+        "test tooling or required services were unavailable.\n"
         "- When responding to a review_rejected inbox item, create a revised "
         "deliverable with supersedes_deliverable_id set to the "
         "payload's supersedes_deliverable_id.\n"
@@ -2873,6 +2874,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Git and release:\n"
         f"- Use {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} for review-branch promotion and "
         f"{TEAM_UPDATE_FEATURE_BRANCH_TOOL} for feature-branch promotion.\n"
+        "- Deliverable git_refs are provenance only. They do not publish a review "
+        f"branch by themselves; call {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} only when "
+        "a durable review branch is needed for reviewer access, feature "
+        "promotion, release sequencing, or a superior explicitly asks for one.\n"
         f"- Release requests stand alone. Use {TEAM_REQUEST_RELEASE_TOOL} once "
         "every deliverable is accepted and no release package already exists for "
         "that release. The release request can enqueue prerequisite feature "
@@ -3136,6 +3141,9 @@ def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
         "- A non-Git deliverable must include task_id, summary, and artifact paths. "
         "If you created or updated useful files only in the repo checkout, copy or "
         "summarize the deliverable under /artifacts before reporting it.\n"
+        "- Include verification.status when you ran checks or could not run them. "
+        "Use verification.status=not_run with verification.summary explaining "
+        "missing test tooling or unavailable services.\n"
         f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
         "paths through communication tools.\n"

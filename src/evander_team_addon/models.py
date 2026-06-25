@@ -812,6 +812,22 @@ class DeliverableGitRefs(TeamModel):
         return _unique_text_list(value, "promotion_record_ids")
 
 
+class DeliverableVerification(TeamModel):
+    status: Literal["passed", "failed", "partial", "not_run", "unknown"]
+    summary: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "evidence_refs")
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -821,6 +837,7 @@ class Deliverable(TeamModel):
     state: TeamRecordState = TeamRecordState.PENDING
     review_request_ids: list[str] = Field(default_factory=list)
     git_refs: DeliverableGitRefs = Field(default_factory=DeliverableGitRefs)
+    verification: DeliverableVerification | None = None
     supersedes_deliverable_id: str | None = None
     superseded_by_deliverable_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

@@ -22,10 +22,8 @@ from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
-    TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
-    TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
 )
 from evander_team_addon.models import (
     AgentActionRecord,
@@ -94,7 +92,6 @@ from evander_team_addon.providers import (
     _publish_deliverable_artifact_bundle,
 )
 from evander_team_addon.repository import (
-    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     TeamStateRepository,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1
@@ -1040,6 +1037,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "team_create_tasks" in guidance
     assert "team_submit_deliverable" in guidance
     assert "team_submit_deliverable_for_review" in guidance
+    assert "Use not_run when test tooling" in guidance
+    assert "git_refs are provenance only" in guidance
     assert "team_record_note" in guidance
     assert "not a completion ritual" in guidance
     assert "team-action.json" not in guidance

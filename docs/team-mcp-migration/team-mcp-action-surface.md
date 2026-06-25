@@ -555,6 +555,7 @@ Arguments:
 | `artifact_refs` | string[] | no | Existing artifact refs. |
 | `artifact_space_ref` | string or null | no | Appended to `artifact_refs` when supplied. |
 | `git_refs` | object | no | `{ "agent_branch"?, "commit_sha"? }`. |
+| `verification` | object | no | `{ "status": "passed" \| "failed" \| "partial" \| "not_run" \| "unknown", "summary"?, "evidence_refs"? }`. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
 
@@ -567,10 +568,18 @@ Semantics:
   deliverable item.
 - `artifact_space_ref` is preserved by appending it to `artifact_refs`.
 - `git_refs.agent_branch` must be a valid branch name.
+- `git_refs` are provenance only; they do not publish a review branch. Call
+  `team_publish_review_branch` separately only when a durable review branch is
+  needed for reviewer access, feature promotion, release sequencing, or an
+  explicit superior request.
+- `verification.status` records what was or was not checked. Use `not_run` when
+  test tooling, services, or credentials were unavailable and put the reason in
+  `verification.summary`.
 - Sets deliverable state to pending and task state to `waiting_for_review`.
 - Creates a `DELIVERABLE_NOTICE` inbox item for the caller's direct superior
   when one exists.
-- Returns `deliverable_id`, created inbox ids, and published artifact refs.
+- Returns `deliverable_id`, created inbox ids, published artifact refs, optional
+  verification, and `next_action_hints`.
 
 ### `team_submit_deliverable_for_review`
 
@@ -707,6 +716,9 @@ Semantics:
 - Project Git config is required.
 - Records a `review` git promotion and emits the existing promotion event.
 - Returns `git_promotion_event_id` and target review branch.
+- This is not required merely because `team_submit_deliverable` included
+  `git_refs`; use it only when the branch must be promoted for review, feature,
+  or release flow.
 
 ### `team_update_feature_branch`
 

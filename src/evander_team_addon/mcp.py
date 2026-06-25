@@ -937,6 +937,7 @@ def _register_slice7_tools(
         artifact_refs: list[str] | None = None,
         artifact_space_ref: str | None = None,
         git_refs: dict[str, Any] | None = None,
+        verification: dict[str, Any] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -957,6 +958,7 @@ def _register_slice7_tools(
                 artifact_refs=artifact_refs,
                 artifact_space_ref=artifact_space_ref,
                 git_refs=git_refs,
+                verification=verification,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -972,8 +974,11 @@ def _register_slice7_tools(
         name=TEAM_SUBMIT_DELIVERABLE_TOOL,
         description=(
             "Submit a deliverable for the caller's owned task. Publishes any "
-            "artifact_paths from /artifacts before recording state and requires "
-            "task_id, summary, and request_id."
+            "artifact_paths from /artifacts before recording state. Optional "
+            "verification records status passed, failed, partial, not_run, or "
+            "unknown with a summary. git_refs are provenance only; call "
+            "team_publish_review_branch separately only when a durable review "
+            "branch is needed. Requires task_id, summary, and request_id."
         ),
     )
 
@@ -1011,7 +1016,9 @@ def _register_slice7_tools(
         description=(
             "Submit one deliverable and explicit review requests atomically. "
             "Suppresses the normal superior deliverable notice and requires "
-            "deliverable, reviews, and request_id."
+            "deliverable, reviews, and request_id. The deliverable may include "
+            "verification status and git_refs; git_refs do not publish a review "
+            "branch by themselves."
         ),
     )
 
@@ -1142,7 +1149,10 @@ def _register_slice8_tools(
         name=TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
         description=(
             "Record asynchronous Git review-branch promotion intent. Requires "
-            "request_id and exactly one of assignment_id or deliverable_id."
+            "request_id and exactly one of assignment_id or deliverable_id. Use "
+            "with deliverable_id only after a deliverable exists and a durable "
+            "review branch is needed; it is not required merely because "
+            "team_submit_deliverable included git_refs."
         ),
     )
 

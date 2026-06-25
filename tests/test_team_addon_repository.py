@@ -19,6 +19,7 @@ from evander_team_addon.models import (
     AgentVoiceProfile,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableVerification,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -1413,6 +1414,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         task_id="task",
         summary="Backend work is ready.",
         artifact_paths=["reports/report.txt"],
+        git_refs={"agent_branch": "agents/session-backend/work", "commit_sha": "abc123"},
+        verification={
+            "status": "not_run",
+            "summary": "pytest is unavailable in this VM.",
+        },
         request_id="request-submit-deliverable",
         artifact_publisher=publish,
     )
@@ -1422,6 +1428,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         task_id="task",
         summary="Backend work is ready.",
         artifact_paths=["reports/report.txt"],
+        git_refs={"agent_branch": "agents/session-backend/work", "commit_sha": "abc123"},
+        verification={
+            "status": "not_run",
+            "summary": "pytest is unavailable in this VM.",
+        },
         request_id="request-submit-deliverable",
         artifact_publisher=publish,
     )
@@ -1433,6 +1444,20 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     assert state.deliverables["deliverable-1"].artifact_refs == [
         "artifact-space:/teams/team/projects/project/deliverables/deliverable-1"
     ]
+    assert state.deliverables["deliverable-1"].verification == DeliverableVerification(
+        status="not_run",
+        summary="pytest is unavailable in this VM.",
+    )
+    assert repo.read().deliverables["deliverable-1"].verification == (
+        state.deliverables["deliverable-1"].verification
+    )
+    assert first["verification"] == {
+        "status": "not_run",
+        "summary": "pytest is unavailable in this VM.",
+        "evidence_refs": [],
+    }
+    assert any("provenance only" in hint for hint in first["next_action_hints"])
+    assert any("not_run" in hint for hint in first["next_action_hints"])
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert state.agent_runtimes["backend"].active_dispatch_id == "dispatch-slice7"
     notices = [
@@ -2819,6 +2844,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "state_entered_at" in task_columns
     assert "supersedes_deliverable_id" in deliverable_columns
     assert "superseded_by_deliverable_id" in deliverable_columns
+    assert "verification_json" in deliverable_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
     assert "team_outbox" in tables
@@ -6880,6 +6906,26 @@ def test_apply_agent_action_review_request_creates_pending_review(tmp_path: Path
     assert len(inbox_items) == 1
     assert inbox_items[0].payload["review_request_id"] == "review-1"
     assert inbox_items[0].payload["instructions"] == "Check the slice carefully."
+
+
+def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
+
+    state, result = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Check the slice carefully.",
+        request_id="request-review",
+    )
+
+    assert result["success"] is True
+    assert result["created_review_request_ids"] == [result["review_request_id"]]
+    assert any("wait for the assigned reviewer" in hint for hint in result["next_action_hints"])
+    assert state.review_requests[result["review_request_id"]].reviewer_agent_id == "worker"
 
 
 def test_apply_agent_action_review_request_rejected_for_unrelated_agent(

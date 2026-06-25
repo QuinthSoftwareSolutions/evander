@@ -30,6 +30,7 @@ from evander_team_addon.mcp import (
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
+    TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
@@ -298,6 +299,14 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert set(MCP_TOOL_NAMES).issubset(context.policy.extra_mcp_tool_names)
     assert not set(MCP_TOOL_NAMES) & core_tool_names
     assert set(MCP_TOOL_NAMES).issubset(visible)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+    submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
+    publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
+    assert "verification records status" in submit_description
+    assert "git_refs are provenance only" in submit_description
+    assert "not required merely because team_submit_deliverable included git_refs" in (
+        publish_description
+    )
 
 
 def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> None:

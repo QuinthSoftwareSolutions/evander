@@ -38,6 +38,7 @@ from .models import (
     TeamDispatchActivityStatus,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableVerification,
     EphemeralAssignment,
     EphemeralAssignmentState,
     EphemeralAgentPolicy,
@@ -128,6 +129,9 @@ _MANAGER_FALLBACK_PENDING_REVIEW_STATES = frozenset(
     }
 )
 _ACTIVE_DELIVERABLE_WORK_STATES = _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+_DELIVERABLE_VERIFICATION_STATUSES = frozenset(
+    {"passed", "failed", "partial", "not_run", "unknown"}
+)
 _DISPATCH_NON_PROGRESS_CLASSES = frozenset({"", "none", "context", "context_only"})
 _DISPATCH_CONTEXT_SUPPRESSED_CLASSES = frozenset(
     {"none", "progress_no_context", "progress_report", "status_report"}
@@ -3266,6 +3270,7 @@ class TeamStateRepository:
         artifact_refs: Sequence[str] | None = None,
         artifact_space_ref: str | None = None,
         git_refs: Mapping[str, Any] | None = None,
+        verification: Mapping[str, Any] | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -3283,6 +3288,7 @@ class TeamStateRepository:
                 "artifact_refs": list(artifact_refs or []),
                 "artifact_space_ref": artifact_space_ref,
                 "git_refs": dict(git_refs or {}),
+                "verification": dict(verification) if verification is not None else None,
             },
             field_name="deliverable",
         )
@@ -3362,6 +3368,13 @@ class TeamStateRepository:
                     "task_state": state.tasks[task.id].state.value,
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
+                    "verification": normalized_deliverable.get("verification"),
+                    "next_action_hints": _deliverable_submission_next_action_hints(
+                        deliverable_id=deliverable_id,
+                        deliverable=normalized_deliverable,
+                        created_inbox_ids=created_inbox_ids,
+                        created_review_request_ids=[],
+                    ),
                     "progress_made": True,
                 },
                 created_domain_ids=[deliverable_id, *created_inbox_ids],
@@ -3521,6 +3534,13 @@ class TeamStateRepository:
                     "task_state": state.tasks[task.id].state.value,
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
+                    "verification": normalized_deliverable.get("verification"),
+                    "next_action_hints": _deliverable_submission_next_action_hints(
+                        deliverable_id=deliverable_id,
+                        deliverable=normalized_deliverable,
+                        created_inbox_ids=created_inbox_ids,
+                        created_review_request_ids=created_review_ids,
+                    ),
                     "progress_made": True,
                 },
                 created_domain_ids=[
@@ -3632,6 +3652,10 @@ class TeamStateRepository:
                     "reviewer_agent_id": review.reviewer_agent_id,
                     "intent_recorded": True,
                     "async_effect_pending": True,
+                    "next_action_hints": [
+                        "Review request created; wait for the assigned reviewer to "
+                        "decide it before treating the deliverable or task as accepted."
+                    ],
                     "progress_made": True,
                 },
                 created_domain_ids=[
@@ -9019,6 +9043,9 @@ class TeamStateRepository:
                     git_refs = _deliverable_git_refs_from_payload(
                         deliverable_payload.get("git_refs")
                     )
+                    verification = _deliverable_verification_from_payload(
+                        deliverable_payload.get("verification")
+                    )
                     supersedes_deliverable_id = _optional_text(
                         deliverable_payload.get("supersedes_deliverable_id")
                     )
@@ -9042,6 +9069,7 @@ class TeamStateRepository:
                         summary=_required_text(deliverable_payload.get("summary"), "summary"),
                         artifact_refs=artifact_refs,
                         git_refs=git_refs,
+                        verification=verification,
                         state=TeamRecordState.PENDING,
                         supersedes_deliverable_id=supersedes_deliverable_id,
                     )
@@ -11660,7 +11688,7 @@ def _normalize_deliverable_submission_mapping(
 ) -> dict[str, Any]:
     payload = _mapping(item, field_name)
     git_refs = _optional_mapping(payload.get("git_refs"), f"{field_name}.git_refs") or {}
-    return {
+    normalized = {
         "id": _optional_text(payload.get("id")),
         "task_id": _required_text(payload.get("task_id"), f"{field_name}.task_id"),
         "summary": _optional_text(payload.get("summary")) or "",
@@ -11680,6 +11708,35 @@ def _normalize_deliverable_submission_mapping(
             "agent_branch": _optional_text(git_refs.get("agent_branch")),
             "commit_sha": _optional_text(git_refs.get("commit_sha")),
         },
+    }
+    verification = _normalize_deliverable_verification_mapping(
+        payload.get("verification"),
+        field_name=f"{field_name}.verification",
+    )
+    if verification is not None:
+        normalized["verification"] = verification
+    return normalized
+
+
+def _normalize_deliverable_verification_mapping(
+    value: object,
+    *,
+    field_name: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    payload = _optional_mapping(value, field_name) or {}
+    status = _required_text(payload.get("status"), f"{field_name}.status").lower()
+    if status not in _DELIVERABLE_VERIFICATION_STATUSES:
+        allowed = ", ".join(sorted(_DELIVERABLE_VERIFICATION_STATUSES))
+        raise ValueError(f"{field_name}.status must be one of: {allowed}")
+    return {
+        "status": status,
+        "summary": _optional_text(payload.get("summary")),
+        "evidence_refs": _string_list(
+            payload.get("evidence_refs"),
+            f"{field_name}.evidence_refs",
+        ),
     }
 
 
@@ -12020,6 +12077,7 @@ def _validate_command_deliverable_submission_pre_publication(
             supersedes_deliverable_id=supersedes_deliverable_id,
         )
         _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
+        _deliverable_verification_from_payload(deliverable.get("verification"))
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",
@@ -12095,6 +12153,9 @@ def _apply_command_deliverable_submission(
             supersedes_deliverable_id=supersedes_deliverable_id,
         )
         git_refs = _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
+        verification = _deliverable_verification_from_payload(
+            deliverable.get("verification")
+        )
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",
@@ -12116,6 +12177,7 @@ def _apply_command_deliverable_submission(
         summary=summary,
         artifact_refs=artifact_refs,
         git_refs=git_refs,
+        verification=verification,
         state=TeamRecordState.PENDING,
         supersedes_deliverable_id=supersedes_deliverable_id,
     )
@@ -15422,6 +15484,58 @@ def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
     )
+
+
+def _deliverable_verification_from_payload(
+    value: object,
+) -> DeliverableVerification | None:
+    payload = _normalize_deliverable_verification_mapping(
+        value,
+        field_name="verification",
+    )
+    if payload is None:
+        return None
+    return DeliverableVerification.model_validate(payload)
+
+
+def _deliverable_submission_next_action_hints(
+    *,
+    deliverable_id: str,
+    deliverable: Mapping[str, Any],
+    created_inbox_ids: Sequence[str],
+    created_review_request_ids: Sequence[str],
+) -> list[str]:
+    hints: list[str] = []
+    git_refs = _optional_mapping(deliverable.get("git_refs"), "git_refs") or {}
+    if git_refs.get("agent_branch") or git_refs.get("commit_sha"):
+        hints.append(
+            "Deliverable git_refs are provenance only; they do not publish a "
+            "review branch by themselves."
+        )
+        hints.append(
+            f"Call team_publish_review_branch with deliverable_id {deliverable_id!r} "
+            "only when a durable review branch is needed for reviewer access, "
+            "feature promotion, release sequencing, or an explicit superior request."
+        )
+    if created_review_request_ids:
+        hints.append(
+            "Review requests were created; wait for assigned reviewers to decide "
+            "them before treating the task as accepted."
+        )
+    elif created_inbox_ids:
+        hints.append(
+            "A deliverable notice was sent to your superior; wait for review, "
+            "acceptance, or branch-promotion instructions before taking more "
+            "completion actions."
+        )
+    verification = _optional_mapping(deliverable.get("verification"), "verification")
+    if verification is not None and verification.get("status") == "not_run":
+        hints.append(
+            "Verification was recorded as not_run; keep the reason in "
+            "verification.summary so reviewers can decide whether more validation "
+            "is required."
+        )
+    return hints
 
 
 def _superseded_deliverable_for_rework(

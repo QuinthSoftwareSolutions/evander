@@ -621,6 +621,10 @@ Persistent agents may include `git_refs` on deliverables when the project has
 Git configured. Those refs are not published automatically; a supervising agent,
 project lead, or manager requests publication with `team_publish_review_branch`,
 `team_update_feature_branch`, or `team_request_release`.
+Deliverables may also include `verification` with `status` set to `passed`,
+`failed`, `partial`, `not_run`, or `unknown`, plus an optional summary and
+evidence refs. Use `not_run` when test tooling, services, or credentials were
+unavailable.
 
 ### Communication And Escalation Rules
 

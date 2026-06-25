@@ -9,6 +9,9 @@
 - Documented the clean Team MCP cutover from Team action artifacts to
   Team-owned MCP tools, including tool visibility, idempotency, finalization,
   deliverable artifact publication, and ephemeral worker reporting semantics.
+- Clarified deliverable Git/review-branch sequencing in Team MCP tool
+  descriptions and prompts, added next-action hints after deliverable
+  submissions, and added optional structured deliverable verification status.
 - Added a local Team MCP cutover runbook covering service quiescence, active
   lease inspection, pending artifact disposition, state backup/migration,
   restart, smoke checks, and common post-cutover troubleshooting.
