@@ -21,7 +21,9 @@ from agent_sandbox.models import SessionManifest
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon import api as team_addon_api
 from evander_team_addon.api import (
+    _bootstrap_payload_for_request,
     _conversation_snapshot_events,
+    _state_snapshot_events,
     _team_state_payload_for_request,
 )
 from evander_team_addon.models import (
@@ -813,6 +815,89 @@ def test_team_addon_conversation_list_can_inline_selected_message_page(
     ]
 
 
+def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
+    _repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    bootstrap = client.get("/api/addons/team-addon/bootstrap")
+    assert bootstrap.status_code == 200
+    bootstrap_payload = bootstrap.json()
+    assert bootstrap_payload["revision"] > 0
+    assert "chat" in bootstrap_payload["views"]
+    assert bootstrap_payload["counts"]["conversations"] == 1
+    assert "tasks" not in bootstrap_payload
+    assert "conversation_messages" not in bootstrap_payload
+
+    chat_view = client.get(
+        "/api/addons/team-addon/views/chat"
+        f"?selected_conversation_id={conversation_id}"
+    )
+    assert chat_view.status_code == 200
+    payload = chat_view.json()
+    assert payload["view"] == "chat"
+    assert set(payload["data"]) == {"chat", "state"}
+    assert payload["data"]["chat"]["selected_conversation_id"] == conversation_id
+    conversation = payload["data"]["chat"]["conversations"][0]
+    assert conversation["messages_limit"] == 50
+    assert len(conversation["messages"]) == 50
+    assert "tasks" not in payload["data"]["state"]
+    assert "conversation_messages" not in payload["data"]["state"]
+    assert set(payload["resource_tokens"]) == {"agents"}
+
+
+def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+
+    def _mutate(state):
+        state.inbox["handled-inbox"] = AgentInboxItem(
+            id="handled-inbox",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            state=TeamInboxItemState.HANDLED,
+            payload={"question": "Already handled"},
+            created_at=now,
+            updated_at=now,
+        )
+        state.action_records["dismissed-action"] = AgentActionRecord(
+            id="dismissed-action",
+            agent_id="backend",
+            dispatch_id="dispatch-backend",
+            action={"type": "dismissed"},
+            success=False,
+            error="dismissed failure",
+            created_at=now,
+            dismissed_at=now,
+            dismissed_by="operator",
+        )
+        state.action_records["successful-action"] = AgentActionRecord(
+            id="successful-action",
+            agent_id="lead",
+            dispatch_id="dispatch-lead",
+            action={"type": "ok"},
+            success=True,
+            created_at=now,
+        )
+
+    repo.update(_mutate)
+    client = _client(tmp_path)
+
+    people = client.get("/api/addons/team-addon/views/people")
+    assert people.status_code == 200
+    people_state = people.json()["data"]["state"]
+    assert set(people_state["inbox"]) == {"inbox-1", "escalation-1"}
+    assert "action_records" not in people_state
+
+    operations = client.get("/api/addons/team-addon/views/operations")
+    assert operations.status_code == 200
+    operations_state = operations.json()["data"]["state"]
+    assert set(operations_state["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(operations_state["action_records"]) == {"action-1"}
+    assert set(operations_state["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(operations_state["resource_tokens"]["action_records"]) == {"action-1"}
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:
@@ -911,6 +996,40 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     assert {alice_conversation.id, bob_conversation.id}.issubset(
         set(read_all_payload["conversations"])
     )
+
+
+def test_team_addon_bootstrap_counts_only_current_operator_chats_without_read_all(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        expected_revision=repo.read().revision,
+    )
+
+    class AuthStub:
+        def read_session(self, _request) -> dict[str, str]:
+            return {"login": "Alice@Example.com", "name": "Alice"}
+
+        def can(self, _request, _permission: str) -> bool:
+            return False
+
+    payload = _bootstrap_payload_for_request(
+        AuthStub(),
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+
+    assert payload["selected_operator"]["user_id"] == "alice@example.com"
+    assert payload["counts"]["conversations"] == 1
 
 
 def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:
@@ -1016,6 +1135,49 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
     assert second_payload["conversation"]["messages"][1]["body"] == (
         "The dependency task is still open."
     )
+
+
+def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    def _payload_from_event(event: str) -> dict:
+        line = next(line for line in event.splitlines() if line.startswith("data: "))
+        return json.loads(line.removeprefix("data: "))
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _state_snapshot_events(
+            lambda: team_addon_api.team_state_payload(repo.read()),
+            RequestStub(),  # type: ignore[arg-type]
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            repo.create_or_reprioritize_task(
+                task_id="live-task",
+                owner_agent_id="backend",
+                project_id="project",
+                priority=4,
+                title="Live task",
+                description="Task created while the UI stream is connected.",
+                created_by_agent_id="lead",
+            )
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+    first_payload = _payload_from_event(first_event)
+    second_payload = _payload_from_event(second_event)
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event.startswith("event: snapshot\n")
+    assert second_payload["revision"] > first_payload["revision"]
+    assert "live-task" in second_payload["tasks"]
 
 
 def test_agent_voice_session_create_query_and_end(
@@ -1532,6 +1694,13 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'document.addEventListener("submit"' in script.text
     assert 'closest?.("[data-chat-message-form]")' in script.text
     assert "data-agent-call-conversation-id" in script.text
+    assert "ensureStateStream" in script.text
+    assert "/state/stream" in script.text
+    assert "applyStateSnapshot" in script.text
+    assert "restoreFormDrafts(drafts)" in script.text
+    assert "chatReadMarkers" in script.text
+    assert "chatConversationHasUnread" in script.text
+    assert "team-view-tab-badge" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
     assert "new EventSource" in script.text
     assert 'document.addEventListener("visibilitychange"' in script.text
@@ -1556,6 +1725,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".projects-focus-row" in stylesheet.text
     assert ".project-review-profile-form" in stylesheet.text
     assert ".field-tooltip" in stylesheet.text
+    assert ".chat-conversation-row.has-unread" in stylesheet.text
+    assert ".chat-unread-badge" in stylesheet.text
+    assert ".team-view-tab.has-unread" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text
@@ -1636,6 +1808,13 @@ def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
     agenda_state = agenda.json()
     agenda_id = next(iter(agenda_state["governance_agenda"]))
     assert agenda_state["governance_agenda"][agenda_id]["state"] == "pending"
+
+    org_view = client.get("/api/addons/team-addon/views/org")
+    assert org_view.status_code == 200
+    org_state = org_view.json()["data"]["state"]
+    assert "portfolio" in org_state["governance_groups"]
+    assert agenda_id in org_state["governance_agenda"]
+    assert "governance_runtimes" in org_state
 
     handled = client.post(
         f"/api/addons/team-addon/governance-agenda/{agenda_id}/handle",
@@ -3756,6 +3935,30 @@ def test_team_addon_admin_api_exposes_resource_tokens(tmp_path: Path) -> None:
     token = state["resource_tokens"]["teams"]["team"]
     assert token.startswith("sha256:")
     assert state["teams"]["team"]["resource_token"] == token
+
+
+def test_team_addon_mutation_can_return_scoped_view_envelope(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        headers={"X-Team-Addon-Response-Scope": "view"},
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["response_scope"] == "view"
+    assert payload["revision"] == 1
+    assert "people" in payload["invalidated_views"]
+    assert "teams" not in payload
+    assert "runtime_operations" not in payload
 
 
 def _seed_rebase_backend_agent(client: TestClient) -> dict:

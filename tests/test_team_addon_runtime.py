@@ -22,10 +22,8 @@ from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
-    TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
-    TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
 )
 from evander_team_addon.models import (
     AgentActionRecord,
@@ -94,7 +92,6 @@ from evander_team_addon.providers import (
     _publish_deliverable_artifact_bundle,
 )
 from evander_team_addon.repository import (
-    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     TeamStateRepository,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1
@@ -1040,6 +1037,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "team_create_tasks" in guidance
     assert "team_submit_deliverable" in guidance
     assert "team_submit_deliverable_for_review" in guidance
+    assert "Use not_run when test tooling" in guidance
+    assert "git_refs are provenance only" in guidance
     assert "team_record_note" in guidance
     assert "not a completion ritual" in guidance
     assert "team-action.json" not in guidance
@@ -4726,6 +4725,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["source_branches"] == (
         "${{team-git-promotion-requested.payload.source_branches}}"
     )
+    assert effects["team-consolidate-feature-branches"]["bare_repo_path"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    )
+    assert effects["team-consolidate-feature-branches"]["bare_repo_name"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    )
     assert effects["team-record-feature-promotion"]["type"] == (
         "effect:team:record-git-promotion"
     )
@@ -4735,6 +4740,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # release -> consolidate -> record-git-promotion
     assert effects["team-consolidate-release-branches"]["type"] == (
         "effect:team:consolidate-git-branches"
+    )
+    assert effects["team-consolidate-release-branches"]["bare_repo_path"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    )
+    assert effects["team-consolidate-release-branches"]["bare_repo_name"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
     )
     assert effects["team-record-release-promotion"]["type"] == (
         "effect:team:record-git-promotion"

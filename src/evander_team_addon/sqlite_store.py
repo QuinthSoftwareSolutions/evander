@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 18
+SQLITE_SCHEMA_VERSION = 19
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -925,6 +925,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_deliverables",
                     column_name="superseded_by_deliverable_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="verification_json",
                     definition="TEXT",
                 )
                 connection.execute(
@@ -1854,6 +1860,11 @@ class TeamStateSqliteStore:
                     "commit_sha": row["commit_sha"],
                     "promotion_record_ids": promotions.get(row["id"], []),
                 },
+                "verification": (
+                    _json_loads(row["verification_json"])
+                    if row["verification_json"] is not None
+                    else None
+                ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
                 "superseded_by_deliverable_id": row["superseded_by_deliverable_id"],
                 "created_at": row["created_at"],
@@ -1870,10 +1881,10 @@ class TeamStateSqliteStore:
                 INSERT INTO team_deliverables(
                     id, task_id, producer_agent_id, summary, state, agent_branch,
                     review_branch, feature_branch, release_branch, commit_sha,
-                    supersedes_deliverable_id, superseded_by_deliverable_id,
-                    created_at
+                    verification_json, supersedes_deliverable_id,
+                    superseded_by_deliverable_id, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -1886,6 +1897,11 @@ class TeamStateSqliteStore:
                     git_refs.get("feature_branch"),
                     git_refs.get("release_branch"),
                     git_refs.get("commit_sha"),
+                    (
+                        _json_dumps(deliverable.get("verification"))
+                        if deliverable.get("verification") is not None
+                        else None
+                    ),
                     deliverable.get("supersedes_deliverable_id"),
                     deliverable.get("superseded_by_deliverable_id"),
                     deliverable["created_at"],
@@ -3337,6 +3353,7 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     feature_branch TEXT,
     release_branch TEXT,
     commit_sha TEXT,
+    verification_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
     created_at TEXT NOT NULL

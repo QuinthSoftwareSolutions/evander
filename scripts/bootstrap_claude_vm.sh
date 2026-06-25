@@ -38,6 +38,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/vm_network.sh"
 # shellcheck source=lib/guest_ssh.sh
 source "${SCRIPT_DIR}/lib/guest_ssh.sh"
+# shellcheck source=lib/guest_ripgrep.sh
+source "${SCRIPT_DIR}/lib/guest_ripgrep.sh"
 # shellcheck source=lib/agent_provider_assets.sh
 source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 
@@ -197,6 +199,7 @@ fi
 
 echo "Bootstrapping Claude Code into ${VM_USER}@${VM_IP}"
 prepare_guest_home
+guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail

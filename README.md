@@ -140,7 +140,7 @@ Directory-scoped config is rooted at `root`:
    By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes host-side OpenAI-compatible and Anthropic-compatible relay base URLs on `http://192.168.250.1:11434`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, `LLM_BASE_URL=...`, or `ANTHROPIC_BASE_URL=...` if needed.
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
-   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh`, `bootstrap_claude_vm.sh`, or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access.
+   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh`, `bootstrap_claude_vm.sh`, or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access. Cloud-init asks Ubuntu to install `ripgrep`, and provider bootstraps also seed a host `rg` binary into `~/bin/rg` so existing VMs can be repaired without guest internet.
    Host-side guest SSH commands cache guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `agent-sandbox-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
    To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
@@ -154,6 +154,7 @@ Directory-scoped config is rooted at `root`:
 
    By default, orchestration uses provider-neutral agent run state under `/home/agent/.agent-sandbox` (`agent-*.state`, `agent-*.pid`, and runner helper files). Agent transcripts are written by the privileged host-control path to root-owned logs under `/var/log/agent-sandbox/agent-runs`, so the unprivileged `agent` user cannot read or edit prior transcripts.
    Legacy VMs that still rely on `agent` for sudo should be recreated or migrated; for one-off maintenance against an old VM, set `VM_SSH_USER=agent` explicitly.
+   To seed `rg` into a current VM without rerunning a provider bootstrap, run `./scripts/bootstrap_ripgrep_vm.sh <vm-name> [vm-user]`.
 
    ### Codex provider bootstrap
 

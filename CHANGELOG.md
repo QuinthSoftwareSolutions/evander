@@ -1,10 +1,29 @@
 # Changelog
 
+## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
+
+- Added a Team Add-on state stream so the UI receives revision snapshots
+  without manual refresh and restores in-progress form drafts after live
+  renders.
+- Highlighted chats with unread incoming messages, surfaced a Chat tab unread
+  count, and clears unread markers when conversations are opened.
+- Fixed unread chat detection for previously opened conversations by preserving
+  fresh newest-message summary metadata from conversation-list refreshes.
+
 ## 2026-06-25 - Team Add-on Clean MCP Cutover
 
+- Seeded `rg` into current and future libvirt agent VMs: new VMs still request
+  `ripgrep` through cloud-init, provider bootstraps now copy a host `rg`
+  binary into `~/bin/rg`, and `bootstrap_ripgrep_vm.sh` repairs existing VMs
+  without relying on guest internet.
 - Documented the clean Team MCP cutover from Team action artifacts to
   Team-owned MCP tools, including tool visibility, idempotency, finalization,
   deliverable artifact publication, and ephemeral worker reporting semantics.
+- Clarified deliverable Git/review-branch sequencing in Team MCP tool
+  descriptions and prompts, added next-action hints after deliverable
+  submissions, and added optional structured deliverable verification status.
+- Propagated deliverable verification into superior notice and review-request
+  inbox payloads so review wakes see failed, partial, or skipped verification.
 - Added a local Team MCP cutover runbook covering service quiescence, active
   lease inspection, pending artifact disposition, state backup/migration,
   restart, smoke checks, and common post-cutover troubleshooting.
@@ -14,6 +33,9 @@
 - Added a Team runtime outbox publisher effect and wired it to the Team cron
   graph so MCP-recorded async intents publish their internal `team.*` workflow
   events and complete or retry their outbox rows.
+- Taught Team Git feature and release consolidation to fetch missing
+  `agents/...` source branches from the configured dropbox bare repo before
+  merging in the trusted host checkout.
 - Passed ephemeral assignment `allowed_tools` into the built-in
   `effect:agent:create` node so spawned workers receive the
   `team_report_ephemeral_result` MCP tool required to report completion.
@@ -21,6 +43,14 @@
   ordinary Team dispatches that share a persistent session.
 - Fixed the Team Chat conversation-list pagination fixture so the seeded
   conversation belongs to the default `admin` operator used by the API test.
+- Added Team Add-on bootstrap and view-scoped read APIs, moved the built-in UI
+  off full-state boot for normal tab loads, and let UI mutations request
+  scoped invalidation envelopes instead of full Team state payloads.
+- Fixed scoped Team Add-on loading edge cases so Chat preserves full cached
+  agent records, Org receives governance overlays, and bootstrap chat counts
+  respect the current operator's chat scope.
+- Trimmed non-actionable Team Add-on view history from scoped payloads so
+  handled inbox rows and stale action records do not slow default tab loads.
 - Renamed the bundled Team Add-on Python package to `evander_team_addon` across
   source, tests, docs, frontend build paths, and local add-on loader
   configuration.

@@ -10,7 +10,6 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
@@ -82,7 +81,6 @@ from .mcp import (
     TEAM_UPDATE_TASK_TOOL,
 )
 from .models import (
-    AGENT_OPERATOR_ONLY_FIELDS,
     RolePermission,
     TeamState,
     team_session_health_payload,
@@ -965,6 +963,22 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Base branch",
                 "string",
                 description="Optional base branch to reset from before merging source branches.",
+            ),
+            _catalog_field(
+                "bare_repo_path",
+                "Bare repo path",
+                "string",
+                description=(
+                    "Optional dropbox bare repository path used to fetch missing source branches."
+                ),
+            ),
+            _catalog_field(
+                "bare_repo_name",
+                "Bare repo name",
+                "string",
+                description=(
+                    "Optional dropbox bare repository name resolved under AGENT_SANDBOX_GIT_ROOT."
+                ),
             ),
         ],
     ),
@@ -2147,6 +2161,8 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             "source_branches",
             "target_branch",
             "base_branch",
+            "bare_repo_path",
+            "bare_repo_name",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -2161,6 +2177,13 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             )
             base_value = _optional_text(payload.get("base_branch"))
             base_branch = validate_branch_name(base_value) if base_value else None
+            bare_repo_value = _optional_text(payload.get("bare_repo_path"))
+            bare_repo_name = _optional_text(payload.get("bare_repo_name"))
+            bare_repo_path = (
+                _resolve_bare_repo_path(bare_repo_value, bare_repo_name)
+                if bare_repo_value is not None or bare_repo_name is not None
+                else None
+            )
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))
         if not source_branches:
@@ -2170,6 +2193,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             source_branches=source_branches,
             target_branch=target_branch,
             base_branch=base_branch,
+            bare_repo_path=bare_repo_path,
         )
 
 
@@ -2856,6 +2880,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"{TEAM_REQUEST_REVIEW_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
         "paths through communication tools.\n"
+        "- Deliverables may include verification with status passed, failed, "
+        "partial, not_run, or unknown plus a short summary. Use not_run when "
+        "test tooling or required services were unavailable.\n"
         "- When responding to a review_rejected inbox item, create a revised "
         "deliverable with supersedes_deliverable_id set to the "
         "payload's supersedes_deliverable_id.\n"
@@ -2873,6 +2900,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Git and release:\n"
         f"- Use {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} for review-branch promotion and "
         f"{TEAM_UPDATE_FEATURE_BRANCH_TOOL} for feature-branch promotion.\n"
+        "- Deliverable git_refs are provenance only. They do not publish a review "
+        f"branch by themselves; call {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} only when "
+        "a durable review branch is needed for reviewer access, feature "
+        "promotion, release sequencing, or a superior explicitly asks for one.\n"
         f"- Release requests stand alone. Use {TEAM_REQUEST_RELEASE_TOOL} once "
         "every deliverable is accepted and no release package already exists for "
         "that release. The release request can enqueue prerequisite feature "
@@ -3136,6 +3167,9 @@ def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
         "- A non-Git deliverable must include task_id, summary, and artifact paths. "
         "If you created or updated useful files only in the repo checkout, copy or "
         "summarize the deliverable under /artifacts before reporting it.\n"
+        "- Include verification.status when you ran checks or could not run them. "
+        "Use verification.status=not_run with verification.summary explaining "
+        "missing test tooling or unavailable services.\n"
         f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
         "paths through communication tools.\n"
@@ -5156,6 +5190,7 @@ def _consolidate_git_branches(
     source_branches: list[str],
     target_branch: str,
     base_branch: str | None,
+    bare_repo_path: Path | None = None,
 ) -> dict[str, Any]:
     """Merge ``source_branches`` into ``target_branch`` inside ``host_repo_path``.
 
@@ -5193,47 +5228,99 @@ def _consolidate_git_branches(
         )
         failure["output"] = status.stdout
         return failure
-
-    target_ref = f"refs/heads/{target_branch}"
-    target_exists = _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
-    if target_exists:
-        checkout = _git("checkout", target_branch)
-    elif base_branch is not None:
-        checkout = _git("checkout", "-B", target_branch, base_branch)
+    merge_sources: list[tuple[str, str]] = []
+    temp_refs: list[str] = []
+    if bare_repo_path is None:
+        merge_sources = [(source, source) for source in source_branches]
     else:
-        checkout = _git("checkout", "-B", target_branch)
-    if checkout.returncode != 0:
-        return _consolidation_failure(target_branch, _git_text(checkout))
-
-    merged: list[str] = []
-    for source in source_branches:
-        merge = _git(
-            "merge",
-            "--no-ff",
-            "-m",
-            f"Merge {source} into {target_branch}",
-            source,
-        )
-        if merge.returncode != 0:
-            _git("merge", "--abort")
-            failure = _consolidation_failure(
-                target_branch,
-                f"merge conflict while merging {source} into {target_branch}",
+        bare_repo_exists = bare_repo_path.exists()
+        for source in source_branches:
+            resolved = _git(
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{source}^{{commit}}",
             )
-            failure["merged_branches"] = merged
-            failure["conflict_branch"] = source
-            failure["output"] = _git_text(merge)
-            return failure
-        merged.append(source)
+            if not bare_repo_exists:
+                if resolved.returncode == 0:
+                    merge_sources.append((source, source))
+                    continue
+                return _consolidation_failure(
+                    target_branch,
+                    f"bare repo not found: {bare_repo_path}",
+                )
+            ref_hash = hashlib.sha256(
+                f"{target_branch}\0{source}".encode("utf-8")
+            ).hexdigest()[:16]
+            temp_ref = f"refs/agent-sandbox/team-consolidations/{ref_hash}"
+            fetch = _git(
+                "fetch",
+                "--no-tags",
+                str(bare_repo_path),
+                f"+refs/heads/{source}:{temp_ref}",
+            )
+            if fetch.returncode != 0:
+                for ref in temp_refs:
+                    _git("update-ref", "-d", ref)
+                failure = _consolidation_failure(
+                    target_branch,
+                    f"failed to fetch source branch {source} from {bare_repo_path}",
+                )
+                failure["output"] = _git_text(fetch)
+                failure["conflict_branch"] = source
+                return failure
+            temp_refs.append(temp_ref)
+            merge_sources.append((source, temp_ref))
 
-    head = _git("rev-parse", "HEAD")
-    commit_sha = head.stdout.strip() if head.returncode == 0 else None
-    return {
-        "success": True,
-        "target_branch": target_branch,
-        "merged_branches": merged,
-        "commit_sha": commit_sha,
-        "conflict_branch": None,
-        "output": None,
-        "error": None,
-    }
+    def _cleanup_temp_refs() -> None:
+        for ref in temp_refs:
+            _git("update-ref", "-d", ref)
+
+    try:
+        target_ref = f"refs/heads/{target_branch}"
+        target_exists = (
+            _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
+        )
+        if target_exists:
+            checkout = _git("checkout", target_branch)
+        elif base_branch is not None:
+            checkout = _git("checkout", "-B", target_branch, base_branch)
+        else:
+            checkout = _git("checkout", "-B", target_branch)
+        if checkout.returncode != 0:
+            return _consolidation_failure(target_branch, _git_text(checkout))
+
+        merged: list[str] = []
+        for source, merge_ref in merge_sources:
+            merge = _git(
+                "merge",
+                "--no-ff",
+                "-m",
+                f"Merge {source} into {target_branch}",
+                merge_ref,
+            )
+            if merge.returncode != 0:
+                _git("merge", "--abort")
+                failure = _consolidation_failure(
+                    target_branch,
+                    f"merge conflict while merging {source} into {target_branch}",
+                )
+                failure["merged_branches"] = merged
+                failure["conflict_branch"] = source
+                failure["output"] = _git_text(merge)
+                return failure
+            merged.append(source)
+
+        head = _git("rev-parse", "HEAD")
+        commit_sha = head.stdout.strip() if head.returncode == 0 else None
+        return {
+            "success": True,
+            "target_branch": target_branch,
+            "merged_branches": merged,
+            "commit_sha": commit_sha,
+            "conflict_branch": None,
+            "output": None,
+            "error": None,
+        }
+    finally:
+        _cleanup_temp_refs()

@@ -36,6 +36,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/guest_ssh.sh
 source "${SCRIPT_DIR}/lib/guest_ssh.sh"
+# shellcheck source=lib/guest_ripgrep.sh
+source "${SCRIPT_DIR}/lib/guest_ripgrep.sh"
 # shellcheck source=lib/agent_provider_assets.sh
 source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
@@ -91,6 +93,7 @@ VM_IP="$(get_vm_ip)"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping GitHub Copilot CLI into ${VM_USER}@${VM_IP}"
+guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail

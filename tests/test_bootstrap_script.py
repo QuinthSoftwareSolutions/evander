@@ -232,6 +232,36 @@ def test_node_bootstraps_preserve_home_bin_precedence() -> None:
     assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend
 
 
+def test_guest_ripgrep_is_seeded_by_provider_bootstraps() -> None:
+    helper = (ROOT / "scripts" / "lib" / "guest_ripgrep.sh").read_text(encoding="utf-8")
+    standalone = (ROOT / "scripts" / "bootstrap_ripgrep_vm.sh").read_text(encoding="utf-8")
+
+    assert "guest_ripgrep_resolve_host_binary() {" in helper
+    assert "HOST_RIPGREP_BIN" in helper
+    assert "codex-path/rg" in helper
+    assert 'remote_temp_name=".rg.agent-sandbox-bootstrap-$$"' in helper
+    assert '"${vm_user}@${vm_ip}:~/bin/${remote_temp_name}"' in helper
+    assert 'if "${rg_temp}" --version >/dev/null; then' in helper
+    assert 'mv -f "${rg_temp}" "${HOME}/bin/rg"' in helper
+    assert 'rm -f "${rg_temp}"' in helper
+    assert "GUEST_RIPGREP_REQUIRED" in helper
+    assert "Seeded rg did not run successfully in guest." in helper
+    assert "Usage: bootstrap_ripgrep_vm.sh <vm-name> [vm-user]" in standalone
+    assert (
+        'GUEST_RIPGREP_REQUIRED=1 guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"'
+        in standalone
+    )
+
+    for script_name in (
+        "bootstrap_codex_vm.sh",
+        "bootstrap_claude_vm.sh",
+        "bootstrap_copilot_vm.sh",
+    ):
+        script = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        assert 'source "${SCRIPT_DIR}/lib/guest_ripgrep.sh"' in script
+        assert 'guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"' in script
+
+
 def test_setup_vm_supports_codex_skills() -> None:
     script = (ROOT / "scripts" / "setup_vm.sh").read_text(encoding="utf-8")
 

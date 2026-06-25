@@ -805,6 +805,12 @@ button.team-record-kind-tab strong {
   background: rgba(23, 111, 122, 0.08);
 }
 
+.chat-conversation-row.has-unread {
+  border-color: rgba(23, 111, 122, 0.45);
+  background: rgba(23, 111, 122, 0.12);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .chat-conversation-main {
   min-width: 0;
   display: grid;
@@ -820,11 +826,42 @@ button.team-record-kind-tab strong {
 }
 
 .chat-conversation-main span,
-.chat-conversation-row time,
+.chat-conversation-meta,
 .chat-message-meta {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.chat-conversation-meta {
+  display: grid;
+  justify-items: end;
+  gap: 0.25rem;
+  min-width: 3.5rem;
+}
+
+.chat-unread-badge,
+.team-view-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  min-height: 1.35rem;
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.team-view-tab.has-unread {
+  border-color: rgba(23, 111, 122, 0.55);
+}
+
+.team-view-tab-badge {
+  margin-left: 0.35rem;
 }
 
 .chat-avatar {

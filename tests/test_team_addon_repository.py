@@ -19,6 +19,7 @@ from evander_team_addon.models import (
     AgentVoiceProfile,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableVerification,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -1413,6 +1414,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         task_id="task",
         summary="Backend work is ready.",
         artifact_paths=["reports/report.txt"],
+        git_refs={"agent_branch": "agents/session-backend/work", "commit_sha": "abc123"},
+        verification={
+            "status": "not_run",
+            "summary": "pytest is unavailable in this VM.",
+        },
         request_id="request-submit-deliverable",
         artifact_publisher=publish,
     )
@@ -1422,6 +1428,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         task_id="task",
         summary="Backend work is ready.",
         artifact_paths=["reports/report.txt"],
+        git_refs={"agent_branch": "agents/session-backend/work", "commit_sha": "abc123"},
+        verification={
+            "status": "not_run",
+            "summary": "pytest is unavailable in this VM.",
+        },
         request_id="request-submit-deliverable",
         artifact_publisher=publish,
     )
@@ -1433,6 +1444,20 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     assert state.deliverables["deliverable-1"].artifact_refs == [
         "artifact-space:/teams/team/projects/project/deliverables/deliverable-1"
     ]
+    assert state.deliverables["deliverable-1"].verification == DeliverableVerification(
+        status="not_run",
+        summary="pytest is unavailable in this VM.",
+    )
+    assert repo.read().deliverables["deliverable-1"].verification == (
+        state.deliverables["deliverable-1"].verification
+    )
+    assert first["verification"] == {
+        "status": "not_run",
+        "summary": "pytest is unavailable in this VM.",
+        "evidence_refs": [],
+    }
+    assert any("provenance only" in hint for hint in first["next_action_hints"])
+    assert any("not_run" in hint for hint in first["next_action_hints"])
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert state.agent_runtimes["backend"].active_dispatch_id == "dispatch-slice7"
     notices = [
@@ -1442,6 +1467,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     ]
     assert len(notices) == 1
     assert notices[0].recipient_agent_id == "lead"
+    assert notices[0].payload["verification"] == {
+        "status": "not_run",
+        "summary": "pytest is unavailable in this VM.",
+        "evidence_refs": [],
+    }
 
 
 def test_submit_deliverable_command_publish_failure_does_not_mutate_state(
@@ -1492,6 +1522,10 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
             "task_id": "task",
             "summary": "Backend work is ready.",
             "artifact_refs": ["artifact-space:/teams/team/projects/project/deliverables/deliverable-1"],
+            "verification": {
+                "status": "failed",
+                "summary": "Unit suite failed before handoff.",
+            },
         },
         reviews=[
             {
@@ -1520,6 +1554,11 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     ]
     assert len(review_items) == 1
     assert review_items[0].payload["review_profile"]["id"] == "profile"
+    assert review_items[0].payload["verification"] == {
+        "status": "failed",
+        "summary": "Unit suite failed before handoff.",
+        "evidence_refs": [],
+    }
     assert state.agent_runtimes["worker"].next_wake_at is None
 
 
@@ -2819,6 +2858,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "state_entered_at" in task_columns
     assert "supersedes_deliverable_id" in deliverable_columns
     assert "superseded_by_deliverable_id" in deliverable_columns
+    assert "verification_json" in deliverable_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
     assert "team_outbox" in tables
@@ -6882,6 +6922,46 @@ def test_apply_agent_action_review_request_creates_pending_review(tmp_path: Path
     assert inbox_items[0].payload["instructions"] == "Check the slice carefully."
 
 
+def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
+    repo.update(
+        lambda state: setattr(
+            state.deliverables["deliverable"],
+            "verification",
+            DeliverableVerification(
+                status="partial",
+                summary="Only schema checks ran before review.",
+            ),
+        )
+    )
+
+    state, result = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Check the slice carefully.",
+        request_id="request-review",
+    )
+
+    assert result["success"] is True
+    assert result["created_review_request_ids"] == [result["review_request_id"]]
+    assert any("wait for the assigned reviewer" in hint for hint in result["next_action_hints"])
+    assert state.review_requests[result["review_request_id"]].reviewer_agent_id == "worker"
+    review_item = next(
+        item
+        for item in state.inbox.values()
+        if item.payload.get("review_request_id") == result["review_request_id"]
+    )
+    assert review_item.payload["verification"] == {
+        "status": "partial",
+        "summary": "Only schema checks ran before review.",
+        "evidence_refs": [],
+    }
+
+
 def test_apply_agent_action_review_request_rejected_for_unrelated_agent(
     tmp_path: Path,
 ) -> None:
@@ -7771,6 +7851,9 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert feature_promotion.release_package_id == "rel-1"
     outbox_records = repo.list_outbox_records()
     assert [record.aggregate_id for record in outbox_records] == [feature_promotion_id]
+    feature_payload = result["events"][0]["payload"]
+    assert feature_payload["bare_repo_name"] == "Truman.git"
+    assert feature_payload["source_branches"] == ["team/team/reviews/deliverable"]
 
 
 def test_recover_release_command_records_retryable_recovery_outbox(
@@ -8821,6 +8904,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     assert payload["promotion_kind"] == "feature"
     assert payload["release_package_id"] == "rel-1"
     assert payload["source_branches"] == ["team/team/reviews/deliverable"]
+    assert payload["bare_repo_name"] == "Truman.git"
 
     state, promotion_result = repo.record_git_promotion_result(
         promotion_id=feature_promotion_id,
@@ -8850,6 +8934,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     }
     assert payloads["release"]["source_branches"] == ["team/team/features/task-lead"]
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
+    assert payloads["release"]["bare_repo_name"] == "Truman.git"
 
 
 def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) -> None:
