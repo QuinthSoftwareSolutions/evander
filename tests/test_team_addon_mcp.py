@@ -330,12 +330,26 @@ def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> Non
             "team_id": "team",
             "title": "Confirm blocker",
             "message": "Confirm the exact blocker and keep the interim demo available.",
+            "request_id": "request-directive-1",
             "source_message_id": "governance-dispatch-1",
         },
     )
 
     assert result["success"] is True
     assert result["recipient_agent_id"] == "manager"
+    replayed = _call_tool(
+        server,
+        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+        {
+            "session_id": "session-governance",
+            "team_id": "team",
+            "title": "Confirm blocker",
+            "message": "Confirm the exact blocker and keep the interim demo available.",
+            "request_id": "request-directive-1",
+            "source_message_id": "governance-dispatch-1",
+        },
+    )
+    assert replayed == result
     state = repo.read()
     item = state.inbox[result["inbox_item_id"]]
     assert item.recipient_agent_id == "manager"
@@ -343,6 +357,11 @@ def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> Non
     assert item.payload["source_message_id"] == "governance-dispatch-1"
     assert item.payload["created_by"] == "agent-session:session-governance"
     assert item.payload["requesting_session_id"] == "session-governance"
+    assert [
+        item
+        for item in state.inbox.values()
+        if item.payload.get("source_message_id") == "governance-dispatch-1"
+    ] == [item]
     assert state.agent_runtimes["manager"].next_wake_at is None
 
 
@@ -362,6 +381,7 @@ def test_team_addon_mcp_governance_tool_uses_ambient_session_context(
         {
             "team_id": "team",
             "message": "Report current launch risk.",
+            "request_id": "request-directive-ambient",
         },
         _make_request_context(session_id="session-governance"),
     )
@@ -391,6 +411,7 @@ def test_team_addon_mcp_rejects_conflicting_explicit_session_before_mutation(
                 "session_id": "session-other",
                 "team_id": "team",
                 "message": "This must not be applied.",
+                "request_id": "request-directive-conflict",
             },
             _make_request_context(session_id="session-governance"),
         )
@@ -1087,13 +1108,19 @@ def test_team_addon_mcp_rejects_directives_outside_governance_scope(
     _seed_governance_state(context.config.runtime_dir)
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="governance manager session"):
-        _call_tool(
-            server,
-            TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
-            {
-                "session_id": "session-governance",
-                "team_id": "other-team",
-                "message": "This team is outside the governance group.",
-            },
-        )
+    result = _call_tool(
+        server,
+        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+        {
+            "session_id": "session-governance",
+            "team_id": "other-team",
+            "message": "This team is outside the governance group.",
+            "request_id": "request-directive-outside-scope",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] in {
+        "team_not_in_governance_group",
+        "governance_group_required",
+    }

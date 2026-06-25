@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-06-25 - Team Add-on Clean MCP Cutover Documentation
+## 2026-06-25 - Team Add-on Clean MCP Cutover
 
 - Documented the clean Team MCP cutover from Team action artifacts to
   Team-owned MCP tools, including tool visibility, idempotency, finalization,
@@ -8,6 +8,15 @@
 - Added a local Team MCP cutover runbook covering service quiescence, active
   lease inspection, pending artifact disposition, state backup/migration,
   restart, smoke checks, and common post-cutover troubleshooting.
+- Removed the legacy Team action-artifact workflow providers from the Team
+  Add-on registration surface now that ordinary Team actions report through
+  Team-owned MCP tools.
+- Added a Team runtime outbox publisher effect and wired it to the Team cron
+  graph so MCP-recorded async intents publish their internal `team.*` workflow
+  events and complete or retry their outbox rows.
+- Passed ephemeral assignment `allowed_tools` into the built-in
+  `effect:agent:create` node so spawned workers receive the
+  `team_report_ephemeral_result` MCP tool required to report completion.
 
 ## 2026-06-25 - ADO Daily Status Elapsed Time Guard
 

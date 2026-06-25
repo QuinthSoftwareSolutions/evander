@@ -540,11 +540,13 @@ Prompted persistent agents drive the team by calling Team-owned MCP tools. The
 tools live in the Team Add-on, not in the core gateway policy surface, and the
 server enforces authorization even when a tool is hidden from the caller's MCP
 tool list. Normal Team tools infer the session, agent, active dispatch, Team
-lease, and worker assignment from the MCP connection/session. Tool calls mutate
-Team state immediately and atomically per call; they do not close the active
-dispatch lease. Session completion closes persistent dispatches through the
-dispatch activity ledger/finalizer and computes progress or no-progress from
-that ledger.
+lease, and worker assignment from the MCP connection/session; the deprecated
+explicit `session_id` argument is accepted only for compatibility and is
+rejected when it conflicts with the connected session. Tool calls mutate Team
+state immediately and atomically per call; they do not close the active dispatch
+lease. Session completion closes persistent dispatches through the dispatch
+activity ledger/finalizer and computes progress or no-progress from that
+ledger.
 
 Ordinary persistent Team wakes may receive these tools:
 
@@ -558,21 +560,24 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_escalate_operator`
 - `team_create_case`
 - `team_update_case`
-- `team_link_case_task`
 - `team_create_task`
+- `team_create_tasks`
 - `team_update_task`
-- `team_create_goal`
 - `team_update_goal`
+- `team_stand_down_agent`
 - `team_revoke_stand_down`
-- `team_clear_stand_down`
 - `team_submit_deliverable`
 - `team_submit_deliverable_for_review`
 - `team_request_review`
 - `team_decide_review`
+- `team_publish_review_branch`
+- `team_update_feature_branch`
 - `team_request_release`
-- `team_promote_git_branch`
+- `team_recover_release`
 - `team_request_ephemeral_agent`
 - `team_request_ephemeral_agents`
+- `team_accept_ephemeral_result`
+- `team_reject_ephemeral_result`
 
 Tool visibility is scoped by wake class:
 
@@ -614,8 +619,8 @@ promote.
 
 Persistent agents may include `git_refs` on deliverables when the project has
 Git configured. Those refs are not published automatically; a supervising agent,
-project lead, or manager requests publication with `team_promote_git_branch` or
-`team_request_release`.
+project lead, or manager requests publication with `team_publish_review_branch`,
+`team_update_feature_branch`, or `team_request_release`.
 
 ### Communication And Escalation Rules
 
@@ -745,7 +750,7 @@ branch → release branch → canonical push — using `GitPromotionRecord` rows
 tools record intent; the packaged pack routes each event on its
 `promotion_kind`:
 
-- `review` — `team_promote_git_branch` can promote an ephemeral assignment
+- `review` — `team_publish_review_branch` can promote an ephemeral assignment
   branch after the assignment is completed or accepted with an `agent_branch`, or
   promote a persistent deliverable branch when the actor is the producer,
   supervises the producer, or holds project-lead or manager authority over the
@@ -753,7 +758,7 @@ tools record intent; the packaged pack routes each event on its
   `git_refs.agent_branch` / `git_refs.commit_sha`.
   Routes to `effect:team:publish-review-branch` then
   `effect:team:record-git-promotion`.
-- `feature` — `team_promote_git_branch` can consolidate review branches into a
+- `feature` — `team_update_feature_branch` can consolidate review branches into a
   task feature branch when the actor owns the task or supervises its owner.
   Routes to `effect:team:consolidate-git-branches` then
   `effect:team:record-git-promotion`.

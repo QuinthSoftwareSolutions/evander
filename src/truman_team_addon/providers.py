@@ -89,10 +89,7 @@ from .models import (
 )
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
-    TeamAgentActionArtifactQueryDefinition,
     TeamAcceptEphemeralDeliverableEffectDefinition,
-    TeamApplyAgentActionEffectDefinition,
-    TeamApplyEphemeralActionEffectDefinition,
     TeamConsolidateGitBranchesEffectDefinition,
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
@@ -100,6 +97,7 @@ from .provider_schemas import (
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
+    TeamPublishOutboxEventsEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
@@ -111,7 +109,6 @@ from .provider_schemas import (
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
-DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
 TEAM_AGENT_GUIDANCE_VERSION = 10
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
@@ -324,6 +321,52 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Resume mode passed to the underlying agent resumer.",
                 default_value="same_context",
                 placeholder="same_context",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:publish-outbox-events",
+        "Publish Team outbox events",
+        "Claim pending Team outbox records and publish their internal runtime events.",
+        [
+            _catalog_field(
+                "limit",
+                "Publish limit",
+                "number",
+                description="Maximum pending Team outbox records to claim on this runtime tick.",
+                default_value=25,
+                placeholder="25",
+            ),
+            _catalog_field(
+                "intent_types",
+                "Intent types",
+                "json",
+                description="Optional Team event types to publish. Leave blank for all pending records.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "claim_ttl_seconds",
+                "Claim TTL seconds",
+                "number",
+                description="How long a claimed outbox record remains owned before another worker can retry it.",
+                default_value=300,
+                placeholder="300",
+            ),
+            _catalog_field(
+                "retry_after_seconds",
+                "Retry after seconds",
+                "number",
+                description="Delay before retrying a record whose event publish fails.",
+                default_value=60,
+                placeholder="60",
+            ),
+            _catalog_field(
+                "worker_id",
+                "Worker ID",
+                "string",
+                description="Optional stable worker label recorded on claimed outbox rows.",
+                placeholder="team-outbox-publisher",
             ),
         ],
     ),
@@ -1458,144 +1501,6 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
         return {**result, "state": state_payload}
 
 
-class TeamApplyAgentActionEffectProvider(EffectProviderBase):
-    @classmethod
-    def validate_definition(cls, effect_definition):
-        if isinstance(effect_definition, WorkflowNodeEnvelope):
-            return _materialize(TeamApplyAgentActionEffectDefinition, effect_definition)
-        return effect_definition
-
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        payload = _definition_payload(
-            self.effect_definition,
-            "action",
-            "valid",
-            "error",
-            "session_id",
-            "dispatch_id",
-            "expected_revision",
-        )
-        if resolved_config:
-            payload.update(dict(resolved_config))
-        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        expected_revision = _optional_int(payload.get("expected_revision"), default=None)
-        valid = _optional_bool(payload.get("valid"), default=True)
-        action = _optional_mapping(payload.get("action"), "action")
-        original_action = dict(action) if isinstance(action, dict) else None
-        artifact_publish_records: list[dict[str, Any]] = []
-        artifact_publish_errors: list[str] = []
-        action_error = _optional_text(payload.get("error"))
-        if valid:
-            action, artifact_publish_records, artifact_publish_errors = (
-                _prepare_deliverable_artifacts(
-                    self.runtime_context,
-                    repo=repo,
-                    action=action,
-                    session_id=_optional_text(payload.get("session_id")),
-                    dispatch_id=_optional_text(payload.get("dispatch_id")),
-                    expected_revision=expected_revision,
-                )
-            )
-        if artifact_publish_errors:
-            publish_error = "; ".join(artifact_publish_errors)
-            action_error = f"{action_error}; {publish_error}" if action_error else publish_error
-            action = original_action
-            valid = False
-        try:
-            state, result = repo.apply_agent_action(
-                action=action,
-                session_id=_optional_text(payload.get("session_id")),
-                dispatch_id=_optional_text(payload.get("dispatch_id")),
-                valid=valid,
-                error=action_error,
-                expected_revision=expected_revision,
-            )
-        except TeamStateConflictError as exc:
-            return {
-                "success": False,
-                "error": str(exc),
-                "expected_revision": exc.expected_revision,
-                "current_revision": exc.current_revision,
-            }
-        agent_id = result.get("agent_id")
-        if isinstance(agent_id, str) and agent_id in state.agents:
-            _mirror_session_metadata(
-                self.runtime_context,
-                repo=repo,
-                state=state,
-                agent_id=agent_id,
-                session_id=state.agents[agent_id].session_id,
-            )
-        published_event_ids = _publish_team_events(
-            self.runtime_context,
-            result.get("ephemeral_events"),
-        )
-        published_event_ids += _publish_team_events(
-            self.runtime_context,
-            result.get("events"),
-        )
-        if published_event_ids:
-            result["published_event_ids"] = published_event_ids
-        if artifact_publish_records:
-            result["published_deliverable_artifacts"] = artifact_publish_records
-        result.setdefault("recovery_dispatched", False)
-        result.setdefault("recovery_action_record_id", None)
-        result.setdefault("recovery_result", None)
-        if isinstance(agent_id, str):
-            state_payload = _filtered_team_state_payload(
-                state,
-                team_id=None,
-                project_id=None,
-                agent_id=agent_id,
-            )
-        else:
-            state_payload = team_state_payload(state, include_agent_avatars=False)
-            state_payload["conversations"] = {}
-            state_payload["conversation_messages"] = {}
-        return {**result, "state": state_payload}
-
-
-def _empty_apply_result(
-    *,
-    success: bool,
-    revision: int,
-    agent_id: str | None,
-) -> dict[str, Any]:
-    return {
-        "success": success,
-        "revision": revision,
-        "agent_id": agent_id,
-        "applied": False,
-        "errors": [],
-        "created_inbox_item_ids": [],
-        "created_deliverable_ids": [],
-        "created_task_ids": [],
-        "created_status_request_ids": [],
-        "created_review_request_ids": [],
-        "decided_review_request_ids": [],
-        "updated_goal_ids": [],
-        "operator_escalation_event_ids": [],
-        "git_promotion_event_ids": [],
-        "release_package_ids": [],
-        "updated_task_ids": [],
-        "handled_inbox_item_ids": [],
-        "created_ephemeral_assignment_ids": [],
-        "ephemeral_events": [],
-        "events": [],
-        "accepted_ephemeral_assignment_ids": [],
-        "rejected_ephemeral_assignment_ids": [],
-        "created_stand_down_ids": [],
-        "revoked_stand_down_ids": [],
-        "created_chat_reply_message_ids": [],
-        "replied_chat_message_ids": [],
-        "created_operator_chat_message_ids": [],
-        "published_deliverable_artifacts": [],
-        "recovery_dispatched": False,
-        "recovery_action_record_id": None,
-        "recovery_result": None,
-    }
-
-
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -1932,44 +1837,82 @@ class TeamMarkEphemeralSpawnedEffectProvider(EffectProviderBase):
         return result
 
 
-class TeamApplyEphemeralActionEffectProvider(EffectProviderBase):
+class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
         if isinstance(effect_definition, WorkflowNodeEnvelope):
-            return _materialize(TeamApplyEphemeralActionEffectDefinition, effect_definition)
+            return _materialize(TeamPublishOutboxEventsEffectDefinition, effect_definition)
         return effect_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "action",
-            "valid",
-            "error",
-            "session_id",
-            "expected_revision",
+            "limit",
+            "intent_types",
+            "claim_ttl_seconds",
+            "retry_after_seconds",
+            "worker_id",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
+        limit = _optional_int(payload.get("limit"), default=25)
+        limit = 25 if limit is None else max(0, limit)
+        claim_ttl_seconds = _optional_int(payload.get("claim_ttl_seconds"), default=300)
+        claim_ttl_seconds = 300 if claim_ttl_seconds is None else max(1, claim_ttl_seconds)
+        retry_after_seconds = _optional_int(payload.get("retry_after_seconds"), default=60)
+        retry_after_seconds = 60 if retry_after_seconds is None else max(0, retry_after_seconds)
+        worker_id = _optional_text(payload.get("worker_id")) or "team-outbox-publisher"
+        intent_types = _string_list(payload.get("intent_types"), "intent_types")
+
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        try:
-            _state, result = repo.apply_ephemeral_action(
-                action=_optional_mapping(payload.get("action"), "action"),
-                session_id=_optional_text(payload.get("session_id")),
-                valid=_optional_bool(payload.get("valid"), default=True),
-                error=_optional_text(payload.get("error")),
-                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
-            )
-        except TeamStateConflictError as exc:
-            return {
-                "success": False,
-                "error": str(exc),
-                "expected_revision": exc.expected_revision,
-                "current_revision": exc.current_revision,
-            }
-        published_event_ids = _publish_team_events(self.runtime_context, [result.get("event")])
-        if published_event_ids:
-            result["published_event_ids"] = published_event_ids
-        return result
+        claimed = repo.claim_outbox_records(
+            worker_id=worker_id,
+            limit=limit,
+            intent_types=intent_types or None,
+            claim_ttl_seconds=claim_ttl_seconds,
+        )
+        published_event_ids: list[str] = []
+        completed_record_ids: list[str] = []
+        failed_record_ids: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for record in claimed:
+            try:
+                event = dict(record.payload)
+                event.setdefault("idempotency_key", record.idempotency_key)
+                record_event_ids = _publish_team_events(self.runtime_context, [event])
+                if not record_event_ids:
+                    raise RuntimeError("outbox record did not publish an internal event")
+                repo.complete_outbox_record(
+                    record_id=record.id,
+                    claim_token=record.claim_token,
+                )
+                completed_record_ids.append(record.id)
+                published_event_ids.extend(record_event_ids)
+            except Exception as exc:
+                repo.fail_outbox_record(
+                    record_id=record.id,
+                    error_code="publish_failed",
+                    error_message=str(exc),
+                    claim_token=record.claim_token,
+                    retry_after_seconds=retry_after_seconds,
+                )
+                failed_record_ids.append(record.id)
+                errors.append(
+                    {
+                        "record_id": record.id,
+                        "intent_type": record.intent_type,
+                        "error": str(exc),
+                    }
+                )
+        return {
+            "success": not errors,
+            "claimed_count": len(claimed),
+            "published_count": len(completed_record_ids),
+            "published_event_ids": published_event_ids,
+            "completed_outbox_record_ids": completed_record_ids,
+            "failed_outbox_record_ids": failed_record_ids,
+            "errors": errors,
+        }
 
 
 class TeamAcceptEphemeralDeliverableEffectProvider(EffectProviderBase):
@@ -2226,49 +2169,6 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
         )
 
 
-class TeamAgentActionArtifactQueryProvider(QueryProviderBase):
-    @classmethod
-    def validate_definition(cls, query_definition):
-        if isinstance(query_definition, WorkflowNodeEnvelope):
-            return _materialize(TeamAgentActionArtifactQueryDefinition, query_definition)
-        return query_definition
-
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        payload = _definition_payload(self.query_definition, "session_id", "path", "vm_user")
-        if resolved_config:
-            payload.update(dict(resolved_config))
-        session_id = _required_text(payload.get("session_id"), "session_id")
-        path = _optional_text(payload.get("path")) or DEFAULT_ACTION_ARTIFACT_PATH
-        vm_user = _optional_text(payload.get("vm_user")) or "agent"
-        reader = getattr(self.runtime_context, "session_artifact_reader", None)
-        read_fn = getattr(reader, "read_session_artifact_text", None)
-        if not callable(read_fn):
-            raise RuntimeError("query:team:agent-action-artifact requires session_artifact_reader")
-        try:
-            result = read_fn(session_id=session_id, path=path, vm_user=vm_user)
-            content = result.get("content") if isinstance(result, Mapping) else result
-            action = json.loads(str(content or ""))
-            if not isinstance(action, dict):
-                raise ValueError("action artifact must contain a JSON object")
-            return {
-                "success": True,
-                "valid": True,
-                "session_id": session_id,
-                "path": path,
-                "action": action,
-                "error": None,
-            }
-        except Exception as exc:
-            return {
-                "success": False,
-                "valid": False,
-                "session_id": session_id,
-                "path": path,
-                "action": {},
-                "error": str(exc),
-            }
-
-
 class TeamStateQueryProvider(QueryProviderBase):
     @classmethod
     def validate_definition(cls, query_definition):
@@ -2396,119 +2296,6 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
             "reason": None,
             "expected_dispatch_id": None,
         }
-
-
-def _prepare_deliverable_artifacts(
-    context: Any,
-    *,
-    repo: TeamStateRepository,
-    action: dict[str, Any] | None,
-    session_id: str | None,
-    dispatch_id: str | None,
-    expected_revision: int | None,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[str]]:
-    if action is None:
-        return None, [], []
-    deliverables_value = action.get("deliverables")
-    if not isinstance(deliverables_value, list):
-        return action, [], []
-    if not any(
-        isinstance(item, Mapping) and item.get("artifact_paths") is not None
-        for item in deliverables_value
-    ):
-        return action, [], []
-
-    state = repo.read()
-    if expected_revision is not None and state.revision != expected_revision:
-        return action, [], []
-
-    normalized_action = dict(action)
-    normalized_session_id = _optional_text(session_id)
-    normalized_dispatch_id = _optional_text(dispatch_id) or _optional_text(
-        normalized_action.get("dispatch_id")
-    )
-    agent = _artifact_preflight_agent(
-        state,
-        action=normalized_action,
-        session_id=normalized_session_id,
-    )
-    runtime = state.agent_runtimes.get(agent.id) if agent is not None else None
-    if (
-        agent is None
-        or (normalized_session_id is not None and agent.session_id != normalized_session_id)
-        or (
-            normalized_dispatch_id is not None
-            and runtime is not None
-            and runtime.active_dispatch_id is not None
-            and normalized_dispatch_id != runtime.active_dispatch_id
-        )
-    ):
-        return action, [], []
-
-    next_deliverables: list[Any] = []
-    records: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for index, raw_deliverable in enumerate(deliverables_value):
-        if not isinstance(raw_deliverable, Mapping):
-            next_deliverables.append(raw_deliverable)
-            continue
-        deliverable = dict(raw_deliverable)
-        if deliverable.get("artifact_paths") is None:
-            next_deliverables.append(deliverable)
-            continue
-        try:
-            artifact_paths = _string_list(deliverable.get("artifact_paths"), "artifact_paths")
-            if not artifact_paths:
-                deliverable.pop("artifact_paths", None)
-                next_deliverables.append(deliverable)
-                continue
-            task_id = _required_text(deliverable.get("task_id"), "task_id")
-            task = state.tasks.get(task_id)
-            if task is None or task.owner_agent_id != agent.id:
-                next_deliverables.append(deliverable)
-                continue
-            deliverable_id = _optional_text(deliverable.get("id")) or f"deliverable-{uuid4().hex}"
-            deliverable["id"] = deliverable_id
-            artifact_record = _publish_deliverable_artifact_bundle(
-                context,
-                agent=agent.model_dump(
-                    mode="json",
-                    exclude=AGENT_OPERATOR_ONLY_FIELDS,
-                ),
-                team_id=agent.team_id,
-                project_id=task.project_id,
-                deliverable_id=deliverable_id,
-                dispatch_id=normalized_dispatch_id or "manual",
-                source_paths=artifact_paths,
-            )
-            artifact_refs = _string_list(deliverable.get("artifact_refs"), "artifact_refs")
-            deliverable["artifact_refs"] = _append_unique_text(
-                artifact_refs,
-                artifact_record["artifact_ref"],
-            )
-            records.append(artifact_record)
-            next_deliverables.append(deliverable)
-        except Exception as exc:
-            errors.append(f"deliverables[{index}]: failed to publish artifact_paths: {exc}")
-    normalized_action["deliverables"] = next_deliverables
-    return normalized_action, records, errors
-
-
-def _artifact_preflight_agent(
-    state: Any,
-    *,
-    action: Mapping[str, Any],
-    session_id: str | None,
-) -> Any | None:
-    agent_id = _optional_text(action.get("agent_id"))
-    if agent_id is not None:
-        return state.agents.get(agent_id)
-    if session_id is None:
-        return None
-    for agent in state.agents.values():
-        if agent.session_id == session_id:
-            return agent
-    return None
 
 
 def _publish_deliverable_artifact_bundle(
@@ -2917,7 +2704,7 @@ def register_providers() -> ProviderPluginRegistration:
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
             "effect:team:wake-governance-managers": TeamWakeGovernanceManagersEffectProvider,
-            "effect:team:apply-agent-action": TeamApplyAgentActionEffectProvider,
+            "effect:team:publish-outbox-events": TeamPublishOutboxEventsEffectProvider,
             "effect:team:finalize-agent-dispatch": (
                 TeamFinalizeAgentDispatchEffectProvider
             ),
@@ -2928,7 +2715,6 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
-            "effect:team:apply-ephemeral-action": TeamApplyEphemeralActionEffectProvider,
             "effect:team:accept-ephemeral-deliverable": (
                 TeamAcceptEphemeralDeliverableEffectProvider
             ),
@@ -2943,7 +2729,6 @@ def register_providers() -> ProviderPluginRegistration:
             ),
         },
         query_providers={
-            "query:team:agent-action-artifact": TeamAgentActionArtifactQueryProvider,
             "query:team:state": TeamStateQueryProvider,
             "query:team:session-routing": TeamSessionRoutingQueryProvider,
         },
@@ -2957,8 +2742,8 @@ def register_providers() -> ProviderPluginRegistration:
                     node,
                 )
             ),
-            "effect:team:apply-agent-action": (
-                lambda node: _materialize(TeamApplyAgentActionEffectDefinition, node)
+            "effect:team:publish-outbox-events": (
+                lambda node: _materialize(TeamPublishOutboxEventsEffectDefinition, node)
             ),
             "effect:team:finalize-agent-dispatch": (
                 lambda node: _materialize(
@@ -2984,9 +2769,6 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:mark-ephemeral-spawned": (
                 lambda node: _materialize(TeamMarkEphemeralSpawnedEffectDefinition, node)
             ),
-            "effect:team:apply-ephemeral-action": (
-                lambda node: _materialize(TeamApplyEphemeralActionEffectDefinition, node)
-            ),
             "effect:team:accept-ephemeral-deliverable": (
                 lambda node: _materialize(TeamAcceptEphemeralDeliverableEffectDefinition, node)
             ),
@@ -3004,9 +2786,6 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:consolidate-git-branches": (
                 lambda node: _materialize(TeamConsolidateGitBranchesEffectDefinition, node)
-            ),
-            "query:team:agent-action-artifact": (
-                lambda node: _materialize(TeamAgentActionArtifactQueryDefinition, node)
             ),
             "query:team:state": (lambda node: _materialize(TeamStateQueryDefinition, node)),
             "query:team:session-routing": (

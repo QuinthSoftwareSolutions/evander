@@ -19,6 +19,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-wake-due-agents",
                 "team-wake-queued-chat-message",
                 "team-wake-governance-managers",
+                "team-publish-outbox-events",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
@@ -234,6 +235,14 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "resume_mode": "same_context",
             },
             {
+                "id": "team-publish-outbox-events",
+                "display_name": "Publish Team outbox events",
+                "type": "effect:team:publish-outbox-events",
+                "limit": 25,
+                "claim_ttl_seconds": 300,
+                "retry_after_seconds": 60,
+            },
+            {
                 "id": "team-create-ephemeral-agent",
                 "display_name": "Create ephemeral team agent",
                 "type": "effect:agent:create",
@@ -246,6 +255,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "container_image": "${{team-ephemeral-requested.payload.container_image ?? null}}",
                 "ttl_hours": "${{team-ephemeral-requested.payload.ttl_hours ?? null}}",
                 "directory_path": "${{team-ephemeral-requested.payload.directory_path ?? null}}",
+                "allowed_tools": ["team_report_ephemeral_result"],
                 "metadata": "${{team-ephemeral-requested.payload.metadata}}",
             },
             {
@@ -496,6 +506,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "target_id": "team-wake-queued-chat-message",
             },
             {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
+            {"source_id": "team-cron", "target_id": "team-publish-outbox-events"},
             {"source_id": "team-ephemeral-requested", "target_id": "team-create-ephemeral-agent"},
             {"source_id": "team-create-ephemeral-agent", "target_id": "team-mark-ephemeral-spawned"},
             {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-ephemeral-spawned"},

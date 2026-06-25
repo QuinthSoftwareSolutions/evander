@@ -157,22 +157,27 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     def team_create_operator_directive(
         team_id: str,
         message: str,
+        request_id: str,
         session_id: str | None = None,
         recipient_agent_id: str | None = None,
         project_id: str | None = None,
         task_id: str | None = None,
         title: str | None = None,
         source_message_id: str | None = None,
-        expected_revision: int | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
     ) -> dict[str, Any]:
         caller = resolver.require_governance_context(
             session_id=session_id,
             tool_name=TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
         )
         try:
-            state, item = repo.create_operator_directive(
+            _state, result = repo.create_operator_directive_command(
+                session_id=caller.session_id,
                 team_id=team_id,
                 message=message,
+                request_id=request_id,
+                governance_group_id=_governance_group_id_for_team(caller, team_id),
                 recipient_agent_id=recipient_agent_id,
                 project_id=project_id,
                 task_id=task_id,
@@ -180,38 +185,12 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
                 source="team_governance_mcp",
                 source_message_id=source_message_id,
                 created_by=f"agent-session:{caller.session_id}",
-                requesting_session_id=caller.session_id,
-                expected_revision=expected_revision,
-            )
-        except TeamStateConflictError as exc:
-            return team_mcp_failure(
-                revision=exc.current_revision,
-                agent_id=caller.agent_id,
-                governance_group_id=_governance_group_id_for_team(caller, team_id),
-                errors=str(exc),
-                correction_context=caller.correction_context(),
-                inbox_item_id=None,
-                recipient_agent_id=None,
-                team_id=team_id,
-                project_id=project_id,
-                task_id=task_id,
-                expected_revision=exc.expected_revision,
-                current_revision=exc.current_revision,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return team_mcp_success(
-            revision=state.revision,
-            progress_made=True,
-            agent_id=caller.agent_id,
-            governance_group_id=_governance_group_id_for_team(caller, item.payload.get("team_id")),
-            inbox_item_id=item.id,
-            recipient_agent_id=item.recipient_agent_id,
-            team_id=item.payload.get("team_id"),
-            project_id=item.payload.get("project_id"),
-            task_id=item.task_id,
-            operator_directive=item.model_dump(mode="json"),
-        )
+        return _team_command_mcp_result(result, caller=caller)
 
     @server.tool()
     def team_mark_governance_agenda_handled(

@@ -429,6 +429,13 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     for node_id in synchronized_node_ids:
         assert checked_nodes[node_id] == source_nodes[node_id]
     assert required_edges.issubset(checked_edges & source_edges)
+    outbox_publisher = source_nodes["team-publish-outbox-events"]
+    assert outbox_publisher["type"] == "effect:team:publish-outbox-events"
+    assert outbox_publisher["config"]["limit"] == 25
+    ephemeral_create = source_nodes["team-create-ephemeral-agent"]
+    assert ephemeral_create["type"] == "effect:agent:create"
+    assert ephemeral_create["config"]["allowed_tools"] == ["team_report_ephemeral_result"]
+    assert ("team-cron", "team-publish-outbox-events") in source_edges
 
     layout_path = project_dir / "config" / "workflow-packs" / "team-runtime.v1.layout.json"
     layout_nodes = json.loads(layout_path.read_text(encoding="utf-8"))["nodes"]
