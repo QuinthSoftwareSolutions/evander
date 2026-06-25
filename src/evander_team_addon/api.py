@@ -325,6 +325,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             )
         )
 
+    async def stream_state(request: Request) -> StreamingResponse:
+        return StreamingResponse(
+            _state_snapshot_events(
+                lambda: _state_payload(request, repository.read()),
+                request,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     async def list_templates(_request: Request) -> JSONResponse:
         return JSONResponse(
             {
@@ -1994,6 +2004,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/bootstrap", _with_errors(get_bootstrap), methods=["GET"]),
         Route("/views/{view}", _with_errors(get_view), methods=["GET"]),
         Route("/state", _with_errors(get_state), methods=["GET"]),
+        Route("/state/stream", _with_errors(stream_state), methods=["GET"]),
         Route("/templates", _with_errors(list_templates), methods=["GET"]),
         Route(
             "/templates/{template_id}",
@@ -2901,6 +2912,7 @@ def _conversation_payload(
         conversation.id,
         messages_by_conversation=messages_by_conversation,
     )
+    newest_message = messages[-1] if messages else None
     payload = {
         "id": conversation.id,
         "agent_id": conversation.agent_id,
@@ -2921,6 +2933,8 @@ def _conversation_payload(
             else None
         ),
         "message_count": len(messages),
+        "newest_message_id": newest_message.id if newest_message is not None else None,
+        "newest_message_sender": newest_message.sender if newest_message is not None else None,
     }
     if include_messages:
         page = _bounded_conversation_message_page(messages, limit=message_limit)
@@ -3084,6 +3098,26 @@ async def _conversation_snapshot_events(
         except (ValueError, PermissionError):
             break
         serialized = json.dumps(snapshot, sort_keys=True)
+        if serialized == last_serialized:
+            yield ": keepalive\n\n"
+            continue
+        last_serialized = serialized
+        yield f"event: snapshot\ndata: {serialized}\n\n"
+
+
+async def _state_snapshot_events(
+    snapshot_factory: Any,
+    request: Request,
+    *,
+    poll_interval_seconds: float = 1.0,
+) -> AsyncIterator[str]:
+    last_serialized = json.dumps(snapshot_factory(), sort_keys=True)
+    yield f"event: snapshot\ndata: {last_serialized}\n\n"
+    while True:
+        if await request.is_disconnected():
+            break
+        await asyncio.sleep(max(0.0, poll_interval_seconds))
+        serialized = json.dumps(snapshot_factory(), sort_keys=True)
         if serialized == last_serialized:
             yield ": keepalive\n\n"
             continue

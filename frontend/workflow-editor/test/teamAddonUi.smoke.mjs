@@ -91,10 +91,19 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
   assert.match(script, /data-chat-scroll-conversation-id/);
   assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
+  assert.match(script, /ensureStateStream/);
+  assert.match(script, /\/state\/stream/);
+  assert.match(script, /applyStateSnapshot/);
+  assert.match(script, /chatReadMarkers/);
+  assert.match(script, /chatConversationHasUnread/);
+  assert.match(script, /team-view-tab-badge/);
   assert.match(
     stylesheet,
     /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
   );
+  assert.match(stylesheet, /\.chat-conversation-row\.has-unread/);
+  assert.match(stylesheet, /\.chat-unread-badge/);
+  assert.match(stylesheet, /\.team-view-tab\.has-unread/);
   assert.match(
     stylesheet,
     /\.chat-new-picker\s*\{[\s\S]*?overflow:\s*hidden;/,

@@ -23,6 +23,7 @@ from evander_team_addon import api as team_addon_api
 from evander_team_addon.api import (
     _bootstrap_payload_for_request,
     _conversation_snapshot_events,
+    _state_snapshot_events,
     _team_state_payload_for_request,
 )
 from evander_team_addon.models import (
@@ -1136,6 +1137,49 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
     )
 
 
+def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    def _payload_from_event(event: str) -> dict:
+        line = next(line for line in event.splitlines() if line.startswith("data: "))
+        return json.loads(line.removeprefix("data: "))
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _state_snapshot_events(
+            lambda: team_addon_api.team_state_payload(repo.read()),
+            RequestStub(),  # type: ignore[arg-type]
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            repo.create_or_reprioritize_task(
+                task_id="live-task",
+                owner_agent_id="backend",
+                project_id="project",
+                priority=4,
+                title="Live task",
+                description="Task created while the UI stream is connected.",
+                created_by_agent_id="lead",
+            )
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+    first_payload = _payload_from_event(first_event)
+    second_payload = _payload_from_event(second_event)
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event.startswith("event: snapshot\n")
+    assert second_payload["revision"] > first_payload["revision"]
+    assert "live-task" in second_payload["tasks"]
+
+
 def test_agent_voice_session_create_query_and_end(
     tmp_path: Path,
     monkeypatch,
@@ -1650,6 +1694,13 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'document.addEventListener("submit"' in script.text
     assert 'closest?.("[data-chat-message-form]")' in script.text
     assert "data-agent-call-conversation-id" in script.text
+    assert "ensureStateStream" in script.text
+    assert "/state/stream" in script.text
+    assert "applyStateSnapshot" in script.text
+    assert "restoreFormDrafts(drafts)" in script.text
+    assert "chatReadMarkers" in script.text
+    assert "chatConversationHasUnread" in script.text
+    assert "team-view-tab-badge" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
     assert "new EventSource" in script.text
     assert 'document.addEventListener("visibilitychange"' in script.text
@@ -1674,6 +1725,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".projects-focus-row" in stylesheet.text
     assert ".project-review-profile-form" in stylesheet.text
     assert ".field-tooltip" in stylesheet.text
+    assert ".chat-conversation-row.has-unread" in stylesheet.text
+    assert ".chat-unread-badge" in stylesheet.text
+    assert ".team-view-tab.has-unread" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text

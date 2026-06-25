@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
+
+- Added a Team Add-on state stream so the UI receives revision snapshots
+  without manual refresh and restores in-progress form drafts after live
+  renders.
+- Highlighted chats with unread incoming messages, surfaced a Chat tab unread
+  count, and clears unread markers when conversations are opened.
+- Fixed unread chat detection for previously opened conversations by preserving
+  fresh newest-message summary metadata from conversation-list refreshes.
+
 ## 2026-06-25 - Team Add-on Clean MCP Cutover
 
 - Seeded `rg` into current and future libvirt agent VMs: new VMs still request
