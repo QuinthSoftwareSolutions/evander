@@ -3,13 +3,10 @@
 This is the implementation plan for replacing the Team Add-on
 `/artifacts/team-action.json` action surface with Team-owned MCP tools.
 
-Authoritative design inputs:
-
-- `post-critique-design-decisions.md` is the highest-precedence contract.
-- `team-mcp-action-surface.md`, `agent-guidance-surface-inventory.md`,
-  `persistent-agent-instruction-replacements.md`, and
-  `specialized-instruction-replacements.md` define the lower-level design.
-- `critiques/` is background provenance only.
+This plan is intended to be self-contained for implementation. The neighboring
+Team MCP migration design files are background provenance only; where they
+disagree with this document, this document follows the post-critique design
+decisions incorporated below.
 
 The plan below is organized as vertical slices that can be assigned to separate
 coding agents. Slices name dependencies explicitly. A slice may start in parallel
@@ -57,47 +54,586 @@ The core gateway already has generic ambient-session mechanics and add-on MCP
 registration. If a new generic helper is needed, expose that capability for all
 add-ons rather than adding Team-specific core code.
 
-## Decisions To Confirm Before Affected Slices
+## Resolved Product Decisions
 
-These are the only remaining design points that appear underspecified after
-applying the post-critique overlay. Coding agents should not guess silently.
+These decisions are part of this plan and should not be re-opened by individual
+implementation slices unless the user explicitly changes the product direction.
 
-1. `team_submit_deliverable_for_review` notice behavior.
-   Recommendation: suppress the normal superior `DELIVERABLE_NOTICE` when the
-   compound tool creates explicit review requests, because the compound tool is
-   designed to avoid the extra superior-routing wake. If a superior notice is
-   still wanted, specify whether it is auto-handled or created as pending.
+1. `team_submit_deliverable_for_review` suppresses the normal superior
+   `DELIVERABLE_NOTICE` because explicit review requests are the routing signal.
+   It must not create a pending notice that triggers the extra superior wake.
+2. `team_create_case` does not accept `team_id` on the normal active-lease path.
+   The caller's team comes from the active lease. Any future teamless case
+   creation must be a separately scoped operator, governance, or Admin path.
+3. `team_update_task.state` accepts only `pending`, `in_progress`, `blocked`,
+   `waiting_for_review`, and `finished`. `accepted` and `rejected` are review or
+   system transitions, not ordinary task-update arguments.
+4. Question, status, and progress tools do not accept generic `payload`.
+   Assignment metadata is not part of the first-pass MCP schema unless the
+   implementation documents a bounded worker-start consumer and validates the
+   exact shape.
+5. `team_request_status`, `team_ask_question`, `team_send_progress_report`,
+   `team_send_operator_chat_message`, and `team_escalate_operator` require
+   non-empty meaningful body text. There is no implicit default-message rule.
+6. Team deliverable tools own host-side publication of `artifact_paths`, with
+   path safety checks, idempotent replay, and cleanup or orphan tracking when
+   publication succeeds but final state mutation fails.
+7. Related tool calls use optional `correlation_id` or `causation_id` for
+   grouping. `request_id` is never a prefix or grouping mechanism.
+8. New batch tools are all-or-nothing by default. There is no partial batch mode
+   in this migration.
 
-2. `team_create_case.team_id`.
-   Recommendation: omit `team_id` from the normal active-lease tool. The caller's
-   team is implied by the active lease. If teamless case creation is real, add a
-   separate explicitly scoped operator/governance/admin path rather than leaking
-   cross-team selection into ordinary agent tools.
+## Shared Tool Contract
 
-3. `team_update_task.state`.
-   Recommendation: ordinary task updates allow `pending`, `in_progress`,
-   `blocked`, `waiting_for_review`, and `finished`. Remove `accepted` and
-   `rejected` from ordinary agent arguments unless there is a precise direct
-   transition outside review decisions.
+Caller identity:
 
-4. Generic `payload` and broad `metadata` fields.
-   Recommendation: remove `payload` from question/status/progress tools and
-   replace it with named fields that have current consumers. Keep assignment
-   metadata only if a bounded worker-start consumer is documented and validation
-   constrains its shape.
+- Normal persistent Team tools infer `session_id`, Team agent, active runtime,
+  active dispatch id, and wake/session class from the MCP connection and active
+  Team lease.
+- Normal persistent Team tools must not accept `session_id`, `agent_id`,
+  `dispatch_id`, or `schema_version` as agent-facing arguments.
+- Existing governance tools move onto the same ambient-session helper. During
+  refactor, any temporary explicit identity argument must reject conflicts with
+  the ambient caller.
+- Ephemeral worker calls infer the worker assignment from the ambient worker
+  session when possible. An explicit `assignment_id` is allowed only when it
+  matches the ambient assignment.
 
-5. Meaningful content requirements.
-   Recommendation: require non-empty meaningful body text for
-   `team_request_status`, `team_ask_question`, `team_send_progress_report`,
-   `team_send_operator_chat_message`, and `team_escalate_operator` unless the
-   tool has an explicit default-message rule.
+Timing and concurrency:
 
-6. Artifact publication ownership.
-   Recommendation: Team deliverable tools own host-side publication of
-   `artifact_paths`, using path safety checks, idempotent replay, and cleanup or
-   orphan tracking when publication succeeds but the final state mutation fails.
+- A successful tool call mutates Team state immediately during the wake. Tool
+  calls do not close the active dispatch lease.
+- Session completion closes the active dispatch and computes progress from the
+  dispatch activity ledger.
+- Each tool call is a transaction boundary. Earlier successful tool calls remain
+  applied if a later call fails validation.
+- Agent-facing tools do not use global `expected_revision`. Command methods must
+  lock, re-read the relevant current rows, validate current semantic
+  dependencies, mutate only the scoped rows, append activity/audit/outbox rows,
+  bump Team revision as needed, and commit.
 
-These confirmations can happen once, before the impacted tool slices start.
+Idempotency and correlation:
+
+- `request_id` is the idempotency key for one intended operation. The storage key
+  is tool name, caller identity, dispatch or worker scope, and request id.
+- The normalized payload digest is stored as the checked payload identity, not as
+  part of the uniqueness key. Same key plus same digest returns the original
+  result. Same key plus different digest fails without mutation.
+- Create, append, message, and async-intent tools require `request_id` unless an
+  explicit natural domain id fully prevents duplication.
+- Pure updates may omit `request_id` when object id plus current-state
+  preconditions are sufficient to prevent duplicate effects.
+- Related calls use optional `correlation_id` or `causation_id`, copied to
+  activity/audit records.
+
+Inbox handling:
+
+- Tools that accept `handled_inbox_item_ids` must mark those inbox items handled
+  atomically with the primary action.
+- Each handled inbox item must still exist, be pending, and belong to the caller.
+- If any listed inbox item fails validation, the whole tool call fails without
+  partial handling.
+
+Return and error shape:
+
+- All tools return structured results with at least `success`, `applied`,
+  `progress_made`, `revision`, `activity_id`, `action_record_id` where one
+  exists, created or updated domain ids, and `errors`.
+- Async-intent tools also return `intent_recorded`, `async_effect_pending`,
+  created intent or event ids, current package/assignment state, and next-action
+  hints where applicable. They must not claim external work completed
+  synchronously.
+- Validation failures return `success: false`, `applied: false`,
+  `progress_made: false`, no domain mutation, and correction context containing
+  the relevant current state such as owner, assignee, terminal state, current
+  review state, dependency graph facts, or failed precondition reason.
+- Failed synchronous validation is visible in activity/audit but does not become
+  next-wake failed-action feedback.
+
+Tool visibility:
+
+- Normal persistent Team wakes get ordinary Team action tools.
+- Team Chat wakes get `team_reply_to_chat`, plus ordinary tools only when that
+  chat dispatch may mutate Team state.
+- Governance wakes get governance tools only unless explicitly also a normal
+  Team action dispatch.
+- Ephemeral worker wakes get `team_report_ephemeral_result` only unless a
+  specific extra capability is added later.
+- Inactive or teamless sessions get no ordinary Team action tools, except
+  governance tools when the caller is an authorized governance manager.
+- Server-side authorization must enforce every boundary even when tool hiding
+  would normally prevent a bad call.
+
+## Tool Surface Specification
+
+Common optional arguments:
+
+- `handled_inbox_item_ids: string[]` is accepted by ordinary persistent-agent
+  tools unless the tool is explicitly worker/governance scoped.
+- `correlation_id: string | null` or `causation_id: string | null` is accepted by
+  all mutating tools for audit grouping.
+- `request_id: string` is required according to the cross-slice matrix. Where the
+  matrix allows omission, an explicit domain id plus current preconditions must
+  fully prevent duplicate effects.
+
+`team_record_note`
+
+- Arguments: `body: string`.
+- Semantics: record a durable note for the caller's current dispatch. It is
+  audit/handoff context and does not count as progress by itself. Return
+  `note_id` or `action_record_id`.
+
+`team_mark_inbox_handled`
+
+- Arguments: `inbox_item_ids: string[]`.
+- Semantics: mark one or more pending caller-owned inbox items handled. Counts as
+  progress only when at least one pending item is handled. Return handled ids.
+
+`team_request_status`
+
+- Arguments: `recipient_agent_id: string`, `task_id: string | null`,
+  `question: string`, `response_requested: boolean`, `priority: low | normal |
+  high`.
+- Semantics: recipient must be a direct subordinate. Create a `STATUS_REQUEST`
+  inbox item and wake intent according to priority. Defaults:
+  `response_requested: true`, `priority: normal`. Return `inbox_item_id`.
+
+`team_ask_question`
+
+- Arguments: `recipient_agent_id: string | null`, `task_id: string | null`,
+  `question: string`, `message: string | null`, `summary: string | null`,
+  `response_requested: boolean`, `priority: low | normal | high`.
+- Semantics: communication is upward only. If `recipient_agent_id` is supplied,
+  it must equal the caller's direct superior. A top-level manager receives a
+  corrective error pointing to `team_escalate_operator`. Create a `QUESTION`
+  inbox item. Defaults: `response_requested: true`, `priority: normal`. Return
+  `inbox_item_id`.
+
+`team_send_progress_report`
+
+- Arguments: `recipient_agent_id: string | null`, `task_id: string | null`,
+  `message: string`, `summary: string | null`, `response_requested: boolean`,
+  `priority: low | normal | high`.
+- Semantics: communication is upward only. If `recipient_agent_id` is supplied,
+  it must equal the caller's direct superior. Create a `PROGRESS_REPORT` inbox
+  item. Defaults: `response_requested: false`, `priority: low`. Return
+  `inbox_item_id`.
+
+`team_reply_to_chat`
+
+- Arguments: `conversation_id: string`, `message_id: string`, `body: string`,
+  `summary: string | null`.
+- Semantics: conversation must belong to the caller and source message must be a
+  human operator message. Create an agent chat message and mark the source
+  message replied. Return `chat_message_id`, `conversation_id`, and
+  `replied_message_id`.
+
+`team_send_operator_chat_message`
+
+- Arguments: `recipient_operator_user_id: string`, `body: string`,
+  `summary: string | null`.
+- Semantics: recipient must be listed in current Team Chat operator
+  participants. Create or reuse the caller/operator conversation. Return
+  `chat_message_id` and `conversation_id`.
+
+`team_escalate_operator`
+
+- Arguments: `title: string`, `message: string`, `urgency: string`,
+  `project_id: string | null`, `task_id: string | null`.
+- Semantics: only the top-level team manager may call it. If the team escalates
+  directly to an operator, create the operator escalation event or intent. If the
+  team escalates to governance, create governance agenda items and wake relevant
+  managers. Default `urgency` is `normal`. Return operator event ids or
+  governance agenda item ids.
+
+`team_create_case`
+
+- Arguments: `id: string | null`, `project_id: string | null`, `title: string`,
+  `description: string | null`, `status: open | triage | in_progress | waiting |
+  resolved | closed`, `priority: low | normal | high`,
+  `owner_agent_id: string | null`, `source: string | null`,
+  `source_ref: string | null`, `tags: string[]`, `task_ids: string[]`.
+- Semantics: caller can create cases only for the active-lease team. If
+  `project_id` is set, caller must be team manager or assigned to the project.
+  Case scope must allow selected project, owner, and task links. Defaults:
+  `status: open`, `priority: normal`, `description: ""`. Return `case_id`.
+
+`team_update_case`
+
+- Arguments: `case_id: string`, plus any subset of `project_id`, `title`,
+  `description`, `status`, `priority`, `owner_agent_id`, `source`, `source_ref`,
+  `tags`, and `task_ids`.
+- Semantics: caller must be case owner, team manager, project lead, or supervisor
+  of the case owner. Scope changes revalidate project, owner, and task links.
+  Return `case_id`.
+
+`team_create_task`
+
+- Arguments: `task_id: string | null`, `owner_agent_id: string`,
+  `project_id: string`, `case_id: string | null`, `priority: integer`,
+  `title: string`, `description: string`, `state: pending | in_progress |
+  blocked | waiting_for_review`, `parent_task_id: string | null`,
+  `dependency_task_ids: string[]`.
+- Semantics: roles with `create_root_task` can create top-level tasks. Other
+  agents must create child tasks under their own active task. Target owner must
+  be within allowed team/project/supervision boundary. Parent and dependencies
+  must be same-project and acyclic. Return `task_id`.
+
+`team_create_tasks`
+
+- Arguments: `tasks: object[]`, where each item has the `team_create_task`
+  fields except common arguments.
+- Semantics: batch graph planning call. Validate sibling-created dependencies,
+  same-project constraints, and cycles across the full batch. Entire batch is
+  all-or-nothing. Return `created_task_ids`.
+
+`team_update_task`
+
+- Arguments: `task_id: string`, and any subset of `state: pending | in_progress |
+  blocked | waiting_for_review | finished`, `priority: integer`,
+  `title: string`, `description: string`, `owner_agent_id: string`,
+  `dependency_task_ids: string[]`.
+- Semantics: owner may update state, priority, title, and description. A
+  superior may claim or reassign non-terminal subordinate work when permitted.
+  Dependency edits are allowed for owner, supervisor, project lead, or team
+  manager and must pass same-project/cycle validation. Review tools own
+  acceptance and rejection. Return `task_id`.
+
+`team_update_goal`
+
+- Arguments: `project_id: string`, `goal_id: string`, `state: pending |
+  in_progress | accepted | rejected | blocked`.
+- Semantics: only project lead or team manager may update goals. Goal acceptance
+  remains explicit and is never inferred from text. Recalculate project status.
+  Return `goal_id`.
+
+`team_stand_down_agent`
+
+- Arguments: `agent_id: string`, `reason: string`.
+- Semantics: target must be a direct subordinate in the caller's team and active.
+  Create a superior-sourced stand-down affecting the subordinate subtree. Return
+  `stand_down_id`.
+
+`team_revoke_stand_down`
+
+- Arguments: `agent_id: string`.
+- Semantics: revoke only superior-sourced stand-downs previously set by the
+  caller for a direct subordinate. Operator stand-downs cannot be revoked by this
+  tool. Return `revoked_stand_down_ids`.
+
+`team_submit_deliverable`
+
+- Arguments: `id: string | null`, `task_id: string`, `summary: string`,
+  `supersedes_deliverable_id: string | null`, `artifact_paths: string[]`,
+  `artifact_refs: string[]`, `artifact_space_ref: string | null`,
+  `git_refs: {agent_branch?: string, commit_sha?: string}`.
+- Semantics: task must be owned by caller. `artifact_paths` are relative to the
+  session `/artifacts`, must not traverse or use absolute paths, and are
+  published to the host artifact store before recording the deliverable.
+  Publication failure creates no deliverable. Post-publication mutation failure
+  deletes the bundle if supported or records cleanup intent. Set deliverable
+  pending and task `waiting_for_review`; create a superior
+  `DELIVERABLE_NOTICE` when there is a direct superior. Return `deliverable_id`,
+  created inbox ids, and published artifact refs.
+
+`team_submit_deliverable_for_review`
+
+- Arguments: `deliverable: object` with `team_submit_deliverable` fields except
+  common arguments, and `reviews: object[]` with `id`, `reviewer_agent_id`,
+  `review_profile_id`, and `instructions`.
+- Semantics: record the deliverable and create review requests in one
+  transaction. Suppress the normal superior `DELIVERABLE_NOTICE`. Preserve all
+  deliverable validation, review profile validation, artifact import, and wake
+  intent behavior. Return `deliverable_id` and `created_review_request_ids`.
+
+`team_request_review`
+
+- Arguments: `id: string | null`, `deliverable_id: string`,
+  `reviewer_agent_id: string`, `review_profile_id: string | null`,
+  `instructions: string | null`.
+- Semantics: caller must be producer, producer's supervisor, project lead, or
+  team manager. Reviewer must be same-team. Review profile must be active and
+  applicable to the project and reviewer role when constrained. Import review
+  artifacts through the host boundary and create reviewer wake intent. Return
+  `review_request_id` and created inbox ids.
+
+`team_decide_review`
+
+- Arguments: `review_request_id: string`, `state: accepted | rejected | blocked`,
+  `findings: string[]`, `criteria: object[]`,
+  `override_routing_gap_reason: string | null`.
+- Semantics: only the assigned reviewer may decide. Criteria must reference
+  attached review-profile criteria. Accepted reviews cascade to accepted
+  deliverable/task only when all relevant reviews are accepted. Rejected reviews
+  reject the deliverable, move task to `in_progress`, and create a rework inbox
+  carrying `supersedes_deliverable_id`. Blocked reviews block deliverable/task.
+  Manager-fallback override is allowed only when current routing rules require
+  it. Return review, deliverable, task, and created inbox ids.
+
+`team_publish_review_branch`
+
+- Arguments: either `assignment_id: string` for ephemeral promotion or
+  `deliverable_id: string` for persistent promotion. Persistent shape may include
+  `source_branch: string | null` or `commit_sha: string | null`.
+- Semantics: exactly one promotion shape must be valid. Ephemeral promotion
+  requires assignment belonging to caller, completed or accepted state, and an
+  `agent_branch`. Persistent promotion requires producer, supervisor, project
+  lead, or team manager permission. Validate branch names, record review
+  promotion intent, and return promotion event id and target review branch.
+
+`team_update_feature_branch`
+
+- Arguments: `task_id: string`, `source_review_branches: string[]`,
+  `feature_branch: string | null`.
+- Semantics: caller must own the task or supervise the owner. Project Git config
+  is required. Validate branch names, record feature promotion intent, and return
+  promotion event id and target feature branch.
+
+`team_request_release`
+
+- Arguments: `id: string | null`, `project_id: string`,
+  `deliverable_ids: string[]`, `release_branch: string | null`,
+  `canonical_branch: string | null`, `summary: string | null`.
+- Semantics: caller must be project lead, team manager, or same-project role with
+  release permission. Every deliverable must belong to project and be accepted.
+  The repository derives source branches from deliverable `git_refs`; agents do
+  not provide source branch, target branch, or commit arguments. The tool may
+  create prerequisite feature-promotion intents, but must not combine feature
+  update and release in one atomic tool call. Return release package id,
+  promotion event ids, and next-action hints.
+
+`team_recover_release`
+
+- Arguments: `release_package_id: string`, `agent_branch: string`,
+  `commit_sha: string`, `summary: string | null`.
+- Semantics: caller must have release-request permission. Package must be
+  blocked and have a failed release promotion. Validate recovery branch shape,
+  record recovery intent, and return release package id.
+
+`team_request_ephemeral_agent`
+
+- Arguments: `id: string | null`, `task_id: string`,
+  `worker_session_id: string | null`, `title: string`, `prompt: string`,
+  `model: string | null`, `agent_provider: string | null`,
+  `execution_backend: string | null`, `container_image: string | null`,
+  `allowed_tools: string[]`, `ttl_hours: integer`,
+  `directory_path: string | null`.
+- Semantics: caller must own the task, be assigned to the project, and have
+  positive `ephemeral_policy.max_concurrent`. Active assignments cannot exceed
+  `max_concurrent`. Create assignment and worker-start intent. Return
+  `assignment_id`, worker session id, and intent/event ids.
+
+`team_request_ephemeral_agents`
+
+- Arguments: `assignments: object[]`, each with `team_request_ephemeral_agent`
+  fields except common arguments.
+- Semantics: all assignments are checked together against `max_concurrent`.
+  Entire batch is all-or-nothing. Return created assignment ids and intent/event
+  ids.
+
+`team_accept_ephemeral_result`
+
+- Arguments: `assignment_id: string`, `deliverable_id: string | null`.
+- Semantics: assignment must belong to caller and be completed, accepted,
+  cleanup-pending, or cleaned up. Create a parent-owned deliverable from the
+  assignment summary and artifacts, set assignment accepted, and move task to
+  `waiting_for_review`. Return `assignment_id` and `deliverable_id`.
+
+`team_reject_ephemeral_result`
+
+- Arguments: `assignment_id: string`, `rejection_reason: string | null`.
+- Semantics: assignment must belong to caller. Set assignment rejected and store
+  reason. Return `assignment_id`.
+
+`team_report_ephemeral_result`
+
+- Arguments: `assignment_id: string | null`, `summary: string | null`,
+  `artifact_refs: string[]`, `agent_branch: string | null`,
+  `commit_sha: string | null`, `error: string | null`.
+- Semantics: worker-scoped. Assignment is inferred from caller session unless an
+  explicit matching `assignment_id` is supplied. Success requires `summary` and
+  records summary, artifact refs, optional branch and commit, marks assignment
+  completed, creates low-priority parent deliverable notice, and records
+  completed-event intent. Error marks assignment failed. `agent_branch`, when
+  supplied, must match deterministic `agents/<session-id>/<assignment-id>`.
+  Return assignment id, state, created inbox ids, and event/intent ids.
+
+`team_create_operator_directive`
+
+- Arguments: `team_id: string`, `message: string`,
+  `recipient_agent_id: string | null`, `project_id: string | null`,
+  `task_id: string | null`, `title: string | null`,
+  `source_message_id: string | null`.
+- Semantics: governance-manager scoped. Requesting session must be an authorized,
+  active manager for a governance group that contains the team. Recipient
+  defaults to the member-team manager and must be active in the target team.
+  Create an operator-directive inbox item and wake intent. Return inbox item id,
+  recipient id, team/project/task ids, and directive payload.
+
+`team_mark_governance_agenda_handled`
+
+- Arguments: `agenda_item_id: string`.
+- Semantics: governance-manager scoped. Requesting session must be an authorized,
+  active manager for the agenda item's governance group. Item must still be
+  pending. Mark handled and return agenda item id, governance group id, and new
+  state.
+
+## Prompt And Guidance Specification
+
+Steady-state prompt style:
+
+- Fresh normal Team prompts must use positive, minimal wording. They should not
+  teach agents about removed artifacts or internal completion machinery.
+- Normal prompts should not mention `team-action.json`, `schema_version`,
+  `agent_id`, or `dispatch_id`.
+- Normal prompts should not include `available_team_mcp_tools` unless a concrete
+  MCP client limitation requires duplicating tool discovery.
+
+Managed `/home/agent/AGENTS.md` Team guidance:
+
+- Keep persistent identity and role context, but say that Team MCP tools infer
+  the current Team agent and active dispatch from the session.
+- Keep durable policy guidance: use current Team context, directional
+  communication only to direct superiors/subordinates, role-aware delegation,
+  task graph/dependency awareness, case-vs-task distinction, review handoff,
+  review artifact import, rejected-review rework lineage, manager-fallback
+  review routing, release sequencing, stand-down boundaries, and inbox handling.
+- Use MCP tool names in durable guidance. Field-level argument shapes belong to
+  tool descriptions, not durable prompt prose.
+- `team_record_note` is a note tool only. It is not a completion ritual.
+- For `response_requested: false` inbox items, agents should act or mark handled
+  when useful and should not send thank-you or no-op acknowledgement messages.
+- Non-Git deliverables should be staged under `/artifacts`; agents pass relative
+  paths to `team_submit_deliverable` or
+  `team_submit_deliverable_for_review`.
+- Review artifact handoff is through `team_request_review` or
+  `team_submit_deliverable_for_review`; agents should not pass local artifact
+  paths through communication tools.
+- Rejected-review rework uses `supersedes_deliverable_id` from the
+  `review_rejected` inbox payload.
+- Release requests stand alone. Agents use `team_recover_release` only when the
+  release package `next_action_hint` identifies a failed release promotion and
+  the resolved commit is pushed to an allowed `agents/...` ref.
+
+Normal Team wake prompt:
+
+```text
+Continue your assigned team-agent work. Use Team MCP tools when you need to
+change Team state or record a useful note. When you are done, finish normally.
+```
+
+The dynamic normal prompt must still include current context needed for decisions:
+agent, wake reason, superior/subordinates, task creation mandate, assigned tasks,
+cases, inbox, release packages, runtime attention, relevant asynchronous
+feedback, operator chat participants, repository checkout path, review imports,
+manager-fallback summary, and prior handoff summary.
+
+When the agent owns tasks, the prompt should include valid owned task ids and the
+prepared repository checkout path when one exists. When the agent is reviewing
+work, the prompt should include imported review artifact paths and import errors;
+reviewers should inspect imported paths and block or ask the lead when imports
+failed.
+
+Team Chat wake prompt:
+
+```text
+You have received a message from a human operator in the Team Add-on Chat tab.
+This is not an agent-to-agent inbox message. Use team_reply_to_chat to reply to
+the human operator.
+
+If the operator asks for a Team state change, call the relevant Team MCP action
+tool first, then call team_reply_to_chat with a concise summary of what you did
+or why the request could not be completed.
+```
+
+Team Chat prompts may include conversation id, source message id, recent
+transcript, current agent, operator participants, and human message. They should
+not expose `dispatch_id` as an action argument. They should keep the distinction
+between human chat replies and agent-to-agent inbox communication: use
+`team_reply_to_chat` for the human reply, not `team_ask_question` or
+`team_send_progress_report`.
+
+Governance guidance and wake prompt:
+
+- Governance managers may oversee governance groups even when their persistent
+  agent record has no `team_id`.
+- Governance wakes use the governance context as the source of group, agenda,
+  member-team summary, cost signal, and blocker signal facts.
+- Member teams remain separate execution units. Governance managers do not take
+  ownership of member-team project tasks, deliverables, reviews, releases, or
+  direct-report chains.
+- Governance-only wakes expose governance tools only:
+  `team_create_operator_directive` and
+  `team_mark_governance_agenda_handled`.
+- If no governance action is needed, the governance manager should say so
+  briefly and avoid inventing member-team project work.
+
+Inactive Team-agent guidance:
+
+- Keep the current assignment statement: this persistent agent is not currently
+  assigned to a Team.
+- Normal Team-agent task, deliverable, review, release, subordinate, and Team
+  action MCP tool instructions apply only when a future wake explicitly assigns
+  normal Team work.
+- If the agent also manages governance groups, it follows governance guidance and
+  current governance wake prompt instead.
+
+Ephemeral worker prompt:
+
+```text
+Complete this scoped ephemeral team-agent assignment. You are a disposable worker
+for one parent agent; keep the work scoped to that assignment.
+
+Before finishing, call team_report_ephemeral_result. For successful work include
+summary, artifact_refs when you produced artifacts, and agent_branch/commit_sha
+when you produced Git work. If you could not complete the assignment, call the
+same tool with error explaining the failure.
+```
+
+Ephemeral worker prompts expose only `team_report_ephemeral_result` unless a
+specific extra worker capability is added later. `task_notes` is removed unless
+the implementation intentionally persists it as audit metadata.
+
+Removed prompt and seeded-file surfaces:
+
+- Stop seeding `/artifacts/team-action.schema.json`,
+  `/artifacts/team-action.example.json`, and `team-finish`.
+- Remove the large final JSON action shape from prompts.
+- Remove action-artifact missing recovery for MCP-native Team wakes.
+- Remove delayed correction hints for synchronous MCP validation failures. Keep
+  delayed attention only for asynchronous or post-wake failures.
+
+## Action Coverage Map
+
+| Old action surface | MCP replacement |
+| --- | --- |
+| `schema_version` | Not an argument; owned by MCP tool registration. |
+| `agent_id` | Inferred from ambient session. |
+| `dispatch_id` | Inferred from active Team lease. |
+| `case_updates` | `team_create_case`, `team_update_case`. |
+| `task_creations` | `team_create_task`, `team_create_tasks`. |
+| `task_updates` | `team_update_task`. |
+| `status_requests` | `team_request_status`. |
+| `questions` | `team_ask_question`. |
+| `status_reports` | `team_send_progress_report`. |
+| `chat_replies` | `team_reply_to_chat`. |
+| `operator_chat_messages` | `team_send_operator_chat_message`. |
+| `operator_escalations` | `team_escalate_operator`. |
+| `stand_downs` | `team_stand_down_agent`. |
+| `stand_down_revocations` | `team_revoke_stand_down`. |
+| `deliverables` | `team_submit_deliverable`, `team_submit_deliverable_for_review`. |
+| `review_requests` | `team_request_review`, `team_submit_deliverable_for_review`. |
+| `review_decisions` | `team_decide_review`. |
+| `goal_updates` | `team_update_goal`. |
+| `git_review_promotions` | `team_publish_review_branch`. |
+| `git_feature_updates` | `team_update_feature_branch`. |
+| `git_release_requests` | `team_request_release`. |
+| `git_release_recoveries` | `team_recover_release`. |
+| `ephemeral_requests` | `team_request_ephemeral_agent`, `team_request_ephemeral_agents`. |
+| `ephemeral_acceptances` | `team_accept_ephemeral_result`, `team_reject_ephemeral_result`. |
+| Ephemeral worker result action file | `team_report_ephemeral_result`. |
+| `handled_inbox_item_ids` | Per-tool `handled_inbox_item_ids` or `team_mark_inbox_handled`. |
+| `notes` | `team_record_note`. |
 
 ## Dependency Map
 
@@ -213,9 +749,16 @@ Implementation tasks:
   - caller identity
   - dispatch id or worker assignment scope
   - request id
-  - normalized payload digest
+- The normalized payload digest is not part of that uniqueness key. Store it as
+  the checked payload identity for exact replay:
+  - same key plus same digest returns the original stored result
+  - same key plus different digest fails as an idempotency conflict before any
+    mutation
 - Persist the original normalized payload digest, response payload, created
   domain ids, created event ids, and status.
+- For tools that explicitly omit `request_id` because a natural domain id fully
+  prevents duplication, document the substitute uniqueness key on the command and
+  do not create a weaker synthetic idempotency scope.
 - Add durable async intent/outbox storage for effects that must not run
   synchronously inside MCP tools:
   - ephemeral worker start requests
@@ -234,6 +777,8 @@ Acceptance criteria:
 - Re-running schema initialization is idempotent.
 - Idempotency records can return the original result for identical replay.
 - Conflicting replay payloads fail without mutation.
+- Conflicting replay detection looks up by tool, caller, dispatch or worker
+  scope, and request id before comparing the stored normalized payload digest.
 - Outbox records can be queried/claimed idempotently by the existing workflow
   effect path or an add-on worker.
 
@@ -269,10 +814,19 @@ Implementation tasks:
   - resolves latest caller/runtime rows
   - checks active lease or worker/governance scope
   - applies idempotency preflight
+  - returns the stored result for an identical idempotent replay without domain
+    mutation or outbox creation
+  - records replay attempts as replay activity/audit only if the ledger needs
+    attempt-level visibility; replay activity must not count as progress
+  - returns an idempotency conflict for a reused key with a different normalized
+    payload before any mutation
   - re-reads semantic dependencies for the command
   - validates latest state
-  - applies scoped mutations
-  - records dispatch activity
+  - on validation or precondition failure, records failed dispatch activity and
+    audit visibility in the same transaction, skips domain mutation, skips
+    outbox rows, and returns rich correction context
+  - on success, applies scoped mutations
+  - records successful dispatch activity
   - records action/audit data
   - records outbox rows when needed
   - bumps Team revision
@@ -294,6 +848,8 @@ Acceptance criteria:
 - A successful command can mutate state without clearing
   `active_dispatch_id`/`wake_leased_until`.
 - A failed command leaves no domain mutation but records failure activity.
+- Failed validation activity is committed from an explicit failure path and does
+  not create outbox rows or store a success response for replay.
 - `team_record_note` or a simple stub command proves exact idempotency.
 - `handled_inbox_item_ids` closes only pending inbox items owned by the caller and
   is atomic with the primary command.
@@ -441,14 +997,13 @@ Primary files:
 Implementation tasks:
 
 - Use existing repository authorization and graph-validation helpers.
-- Make `team_create_tasks` all-or-nothing unless product explicitly accepts a
-  partial batch mode with item-scoped results and retry guidance.
+- Make `team_create_tasks` all-or-nothing. This migration has no partial batch
+  task creation mode.
 - Require `request_id` for create/batch tools unless explicit domain ids fully
   prevent duplication.
-- Remove or confirm broad `metadata` on cases before implementing the normal
-  agent MCP schema.
-- Remove or confirm `team_id` from normal `team_create_case`.
-- Remove or confirm `accepted`/`rejected` from normal `team_update_task.state`.
+- Do not include broad case `metadata` in the normal agent MCP schema.
+- Do not include `team_id` in normal `team_create_case`.
+- Do not include `accepted` or `rejected` in normal `team_update_task.state`.
 - Preserve task creation mandate rules:
   - root-task permission may create top-level tasks
   - other agents must create child tasks under their own active task
@@ -526,7 +1081,8 @@ Acceptance criteria:
 - Idempotent replay does not republish duplicate artifacts or duplicate review
   requests.
 - Review requests import artifacts through the existing host boundary.
-- Compound deliverable-for-review behavior follows the confirmed notice decision.
+- Compound deliverable-for-review suppresses the normal superior
+  `DELIVERABLE_NOTICE` and creates only the explicit review routing.
 - Review decision failures return current reviewer, deliverable, task, and review
   state needed for same-wake correction.
 
@@ -723,6 +1279,9 @@ Implementation tasks:
 - Remove schema/example/helper file constants if unused after cutover.
 - Remove delayed feedback/correction hints for synchronous validation failures.
   Keep delayed correction only for asynchronous or post-wake failures.
+- Remove `available_team_mcp_tools` from prompt context unless an MCP client
+  limitation requires duplicating tool discovery. If retained, document the
+  limitation and assert the list matches the wake-scoped tool grants.
 - Update wake-time tool grants:
   - normal persistent wake gets ordinary Team action tools
   - Team Chat wake gets `team_reply_to_chat`, plus ordinary tools only when
@@ -738,6 +1297,8 @@ Acceptance criteria:
   `team-action.example.json`, or `team-finish`.
 - No normal Team prompt mentions `team-action.json`, `schema_version`,
   `agent_id`, or `dispatch_id`.
+- Normal prompts do not duplicate `available_team_mcp_tools` unless a documented
+  MCP client limitation requires it.
 - Governance prompt exposes governance tools only.
 - Ephemeral worker prompt exposes only `team_report_ephemeral_result`.
 - Tool visibility tests cover normal, chat, governance, worker, inactive, and
@@ -754,7 +1315,7 @@ Parallelism: can draft early, final pass after implementation.
 Primary files:
 
 - `docs/addons.md`
-- `docs/team-mcp-migration/*.md`
+- this implementation plan and any remaining migration docs
 - `docs/operations.md` if runtime operation changes
 - `CHANGELOG.md`
 - optional migration script docs under `scripts/`
@@ -868,7 +1429,56 @@ Acceptance criteria:
 | `team_create_operator_directive` | 1/5 | governance progress | creates manager wake intent | yes |
 | `team_mark_governance_agenda_handled` | 1 | governance progress | no | no, agenda id plus state preconditions can suffice |
 
+## Atomicity And Retry Matrix
+
+Every tool implementation slice must carry these contracts into repository and
+MCP tests. Unless the table explicitly says otherwise, the primary action,
+`handled_inbox_item_ids`, activity/audit rows, and any outbox intent rows are one
+transaction. Identical idempotent replay returns the original ids/result without
+duplicating domain rows or events; conflicting replay payloads fail without
+mutation.
+
+| Tool | Atomicity and retry contract |
+| --- | --- |
+| `team_record_note` | Note record and handled inbox items are all-or-nothing. Replay returns the same note/action/activity ids. |
+| `team_mark_inbox_handled` | All listed inbox items close together, or none close. Missing, stale, or already-handled items return correction context without partial handling. |
+| `team_request_status` | Status inbox item, wake intent, activity, and handled inbox items are all-or-nothing. Replay returns the same inbox/intent ids. |
+| `team_ask_question` | Question inbox item, wake intent, activity, and handled inbox items are all-or-nothing. Replay returns the same inbox/intent ids. |
+| `team_send_progress_report` | Progress inbox/message record, wake intent, activity, and handled inbox items are all-or-nothing. Replay returns the same inbox/intent ids. |
+| `team_reply_to_chat` | Agent chat message, source-message replied state, activity, and handled inbox items are all-or-nothing. Replay must not duplicate chat messages. |
+| `team_send_operator_chat_message` | Conversation creation/reuse, chat message, activity, and handled inbox items are all-or-nothing. Replay must not duplicate chat messages. |
+| `team_escalate_operator` | Operator event or governance agenda creation, wake/notification intent, activity, and handled inbox items are all-or-nothing. Replay must not duplicate escalations. |
+| `team_create_case` | Case creation, task links, owner/scope updates, activity, and handled inbox items are all-or-nothing. Explicit case ids or request ids prevent duplicate cases. |
+| `team_update_case` | All field changes, task links, activity, and handled inbox items are all-or-nothing. Stale scope/link failures leave the case unchanged. |
+| `team_create_task` | Task creation, dependency edges, owner wake intent, activity, and handled inbox items are all-or-nothing. Explicit task ids or request ids prevent duplicates. |
+| `team_create_tasks` | Entire batch is all-or-nothing, including sibling dependency graph validation and owner wake intents, unless a later explicit partial-batch product decision changes this table. |
+| `team_update_task` | State/owner/dependency changes, wake intent when needed, activity, and handled inbox items are all-or-nothing. Stale graph or permission failures leave the task unchanged. |
+| `team_update_goal` | Goal state update, project-status recalculation, activity, and handled inbox items are all-or-nothing. Stale project/goal failures leave state unchanged. |
+| `team_stand_down_agent` | Superior hold creation, affected wake eligibility bookkeeping, activity, and handled inbox items are all-or-nothing. Replay must not duplicate holds. |
+| `team_revoke_stand_down` | Eligible superior-hold revocation, activity, and handled inbox items are all-or-nothing. Operator holds are never partially revoked. |
+| `team_submit_deliverable` | Publication plus deliverable/task/inbox/activity mutation must leave no inconsistent state: publication failure creates no deliverable; post-publication mutation failure deletes the bundle or records cleanup intent. Replay must not republish duplicates. |
+| `team_submit_deliverable_for_review` | Deliverable publication, review request creation, artifact import/wake intents, notice behavior, activity, and handled inbox items are all-or-nothing, with the same cleanup/orphan rules as deliverable submission. |
+| `team_request_review` | Review request, artifact import/wake intent, activity, and handled inbox items are all-or-nothing. Replay must not duplicate review requests or imports. |
+| `team_decide_review` | Review decision, deliverable/task cascade, rework inbox/wake intent when needed, activity, and handled inbox items are all-or-nothing. Failed cascades leave review state unchanged. |
+| `team_publish_review_branch` | Promotion intent/outbox row, activity, and handled inbox items are all-or-nothing. Git execution retries by the durable intent id, not by creating duplicate events. |
+| `team_update_feature_branch` | Feature promotion intent/outbox row, activity, and handled inbox items are all-or-nothing. Git execution retries by the durable intent id. |
+| `team_request_release` | Release package creation, prerequisite promotion intents, release intent, activity, and handled inbox items are all-or-nothing. Replay must not duplicate packages or promotion events. |
+| `team_recover_release` | Recovery intent/outbox row, activity, and handled inbox items are all-or-nothing. Replay must not duplicate recovery events. |
+| `team_request_ephemeral_agent` | Assignment creation, worker-start intent, activity, and handled inbox items are all-or-nothing. Replay must not duplicate assignments or start intents. |
+| `team_request_ephemeral_agents` | Entire assignment batch is all-or-nothing against `max_concurrent`, including worker-start intents and handled inbox items. No partial worker batch is allowed without a later explicit product decision. |
+| `team_accept_ephemeral_result` | Assignment acceptance, parent-owned deliverable creation, task state update, activity, and handled inbox items are all-or-nothing. Replay must not duplicate deliverables. |
+| `team_reject_ephemeral_result` | Assignment rejection, stored reason, activity, and handled inbox items are all-or-nothing. Stale assignment state leaves it unchanged. |
+| `team_report_ephemeral_result` | Assignment result/failure state, parent notice on success, completed-event intent, and activity are all-or-nothing. Replay must not duplicate notices or completion events. |
+| `team_create_operator_directive` | Governance directive, manager wake intent, and governance activity are all-or-nothing under governance scope. Replay must not duplicate directives. |
+| `team_mark_governance_agenda_handled` | Agenda `pending -> handled` transition and governance activity are all-or-nothing. Stale or already-handled agenda items fail without mutation. |
+
 ## Integration Test Plan
+
+Each tool slice must add focused tests for the contracts in the
+atomicity/retry matrix: success, validation failure with activity visibility,
+identical idempotent replay, conflicting replay payload, stale precondition
+correction context, active-scope denial, and atomic `handled_inbox_item_ids`
+where the tool supports inbox handling.
 
 Focused suites to run as slices land:
 
