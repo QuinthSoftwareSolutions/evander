@@ -28,6 +28,9 @@
 - Added Team Add-on bootstrap and view-scoped read APIs, moved the built-in UI
   off full-state boot for normal tab loads, and let UI mutations request
   scoped invalidation envelopes instead of full Team state payloads.
+- Fixed scoped Team Add-on loading edge cases so Chat preserves full cached
+  agent records, Org receives governance overlays, and bootstrap chat counts
+  respect the current operator's chat scope.
 - Renamed the bundled Team Add-on Python package to `evander_team_addon` across
   source, tests, docs, frontend build paths, and local add-on loader
   configuration.

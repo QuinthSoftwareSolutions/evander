@@ -21,6 +21,7 @@ from agent_sandbox.models import SessionManifest
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon import api as team_addon_api
 from evander_team_addon.api import (
+    _bootstrap_payload_for_request,
     _conversation_snapshot_events,
     _team_state_payload_for_request,
 )
@@ -943,6 +944,40 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     )
 
 
+def test_team_addon_bootstrap_counts_only_current_operator_chats_without_read_all(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="bob@example.com",
+        operator_display_name="Bob",
+        expected_revision=repo.read().revision,
+    )
+
+    class AuthStub:
+        def read_session(self, _request) -> dict[str, str]:
+            return {"login": "Alice@Example.com", "name": "Alice"}
+
+        def can(self, _request, _permission: str) -> bool:
+            return False
+
+    payload = _bootstrap_payload_for_request(
+        AuthStub(),
+        object(),  # type: ignore[arg-type]
+        repo.read(),
+    )
+
+    assert payload["selected_operator"]["user_id"] == "alice@example.com"
+    assert payload["counts"]["conversations"] == 1
+
+
 def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:
     repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
 
@@ -1666,6 +1701,13 @@ def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
     agenda_state = agenda.json()
     agenda_id = next(iter(agenda_state["governance_agenda"]))
     assert agenda_state["governance_agenda"][agenda_id]["state"] == "pending"
+
+    org_view = client.get("/api/addons/team-addon/views/org")
+    assert org_view.status_code == 200
+    org_state = org_view.json()["data"]["state"]
+    assert "portfolio" in org_state["governance_groups"]
+    assert agenda_id in org_state["governance_agenda"]
+    assert "governance_runtimes" in org_state
 
     handled = client.post(
         f"/api/addons/team-addon/governance-agenda/{agenda_id}/handle",

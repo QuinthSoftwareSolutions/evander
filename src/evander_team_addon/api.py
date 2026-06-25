@@ -199,6 +199,9 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
     },
     "org": {
         "teams",
+        "governance_groups",
+        "governance_agenda",
+        "governance_runtimes",
         "projects",
         "roles",
         "agents",
@@ -2283,6 +2286,7 @@ def _bootstrap_payload_for_request(
 ) -> dict[str, Any]:
     identity = _operator_identity_from_request(auth, request)
     scope = _chat_scope_for_operator(auth, request, state, identity["user_id"], identity=identity)
+    selected_operator_user_id = str(scope["selected_operator"]["user_id"])
     return {
         "revision": state.revision,
         "views": list(TEAM_VIEW_IDS),
@@ -2301,7 +2305,11 @@ def _bootstrap_payload_for_request(
             "tasks": len(state.tasks),
             "deliverables": len(state.deliverables),
             "review_requests": len(state.review_requests),
-            "conversations": len(state.conversations),
+            "conversations": sum(
+                1
+                for conversation in state.conversations.values()
+                if conversation.operator_user_id == selected_operator_user_id
+            ),
         },
     }
 

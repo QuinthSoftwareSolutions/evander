@@ -1584,7 +1584,9 @@ async function loadChatView({ force = false } = {}) {
 function applyViewPayload(payload) {
   const data = payload?.data || {};
   if (data.state) {
-    applyStateSlice(data.state, payload.resource_tokens);
+    applyStateSlice(data.state, payload.resource_tokens, {
+      mergeCollections: payload?.view === "chat" ? new Set(["agents"]) : null,
+    });
   } else if (payload?.revision !== undefined && payload?.revision !== null) {
     state = normalizeState({ ...state, revision: payload.revision });
   }
@@ -1597,10 +1599,14 @@ function applyViewPayload(payload) {
   }
 }
 
-function applyStateSlice(slice, envelopeResourceTokens = null) {
+function applyStateSlice(slice, envelopeResourceTokens = null, { mergeCollections = null } = {}) {
   const next = { ...state };
   for (const [key, value] of Object.entries(slice || {})) {
     if (teamStateCollectionKeys.includes(key) || key === "runtime_operations" || key === "agent_activity_summaries") {
+      if (mergeCollections?.has(key) && value && typeof value === "object" && !Array.isArray(value)) {
+        next[key] = { ...(next[key] || {}), ...value };
+        continue;
+      }
       next[key] = value;
     } else if (key === "resource_tokens") {
       next.resource_tokens = mergeResourceTokens(next.resource_tokens, value);
