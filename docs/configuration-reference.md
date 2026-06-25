@@ -1752,9 +1752,9 @@ The following environment variables are consumed directly by scripts as runtime 
 | Script | Environment variables consumed as overrides |
 |---|---|
 | `scripts/apply_firewall.sh` | `ALLOWED_TCP_PORTS` |
-| `scripts/bootstrap_claude_vm.sh` | `HOST_CLAUDE_BIN`, `ANTHROPIC_BASE_URL`, `GATEWAY_URL`, `SSH_PRIVATE_KEY_PATH` |
-| `scripts/bootstrap_codex_vm.sh` | `SSH_KEY_PATH`, `HOST_CODEX_ROOT`, `HOST_CODEX_SKILLS_DIR`, `HOST_REPO_CODEX_SKILLS_DIR`, `HOST_CODEX_MODELS_CACHE_PATH`, `LLM_BASE_URL`, `VM_SSH_USER`, `GUEST_BOOTSTRAP_WAIT_SECONDS`, `AGENT_MODEL`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT`, `OPENAI_API_KEY` |
-| `scripts/bootstrap_copilot_vm.sh` | `SSH_KEY_PATH`, `HOST_COPILOT_BIN`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT` |
+| `scripts/bootstrap_claude_vm.sh` | `HOST_CLAUDE_BIN`, `HOST_RIPGREP_BIN`, `ANTHROPIC_BASE_URL`, `GATEWAY_URL`, `SSH_PRIVATE_KEY_PATH` |
+| `scripts/bootstrap_codex_vm.sh` | `SSH_KEY_PATH`, `HOST_CODEX_ROOT`, `HOST_CODEX_SKILLS_DIR`, `HOST_REPO_CODEX_SKILLS_DIR`, `HOST_CODEX_MODELS_CACHE_PATH`, `HOST_RIPGREP_BIN`, `LLM_BASE_URL`, `VM_SSH_USER`, `GUEST_BOOTSTRAP_WAIT_SECONDS`, `AGENT_MODEL`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT`, `OPENAI_API_KEY` |
+| `scripts/bootstrap_copilot_vm.sh` | `SSH_KEY_PATH`, `HOST_COPILOT_BIN`, `HOST_RIPGREP_BIN`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT` |
 | `scripts/bootstrap_dotnet_vm.sh` | `SSH_KEY_PATH`, `HOST_DOTNET_ROOT`, `HOST_DOTNET_TOOLS_ROOT`, `HOST_NUGET_PACKAGES_ROOT` |
 | `scripts/bootstrap_frontend_deps_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT` |
 | `scripts/bootstrap_git_vm.sh` | `SSH_KEY_PATH` |
@@ -1765,6 +1765,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/bootstrap_nuget_vm.sh` | `SSH_KEY_PATH`, `NUGET_RELAY_BASE_URL`, `NUGET_FALLBACK_PACKAGES`, `NUGET_PACKAGES_DIR`, `NUGET_HTTP_CACHE_DIR` |
 | `scripts/bootstrap_playwright_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT`, `HOST_PLAYWRIGHT_NODE_MODULES`, `HOST_PLAYWRIGHT_BROWSERS` |
 | `scripts/bootstrap_python_packages_vm.sh` | `SSH_KEY_PATH`, `HOST_PYTHON_BIN`, `GUEST_PYTHON_BIN`, `GUEST_WHEELHOUSE_DIR` |
+| `scripts/bootstrap_ripgrep_vm.sh` | `SSH_KEY_PATH`, `HOST_RIPGREP_BIN` |
 | `scripts/check_issue_vm.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS` |
 | `scripts/check_session_vm_busy.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_AGENT_BUSY_CONNECT_TIMEOUT_SECONDS` |
 | `scripts/create_base_vm.sh` | `VM_STORAGE_DIR`, `DOWNLOAD_URL` |

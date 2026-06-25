@@ -530,7 +530,8 @@ Storage layout for directory config:
 
 ## SSH Access
 
-- New VMs install `openssh-server` and `ripgrep`.
+- New VMs install `openssh-server` and `ripgrep`. Provider bootstraps also copy a host `rg` binary into `~/bin/rg`, so rerunning the provider bootstrap repairs older VMs that predate the cloud-init package list or could not use guest apt.
+- For a current VM where you only want `rg`, run `./scripts/bootstrap_ripgrep_vm.sh <vm-name> [vm-user]`.
 - The launch script injects the caller's `~/.ssh/id_ed25519.pub` by default, falling back to `~/.ssh/id_rsa.pub`.
 - Override the key with `SSH_PUBLIC_KEY_FILE=/path/to/key.pub`, or point `SSH_PRIVATE_KEY_PATH` at the matching private key so the script can derive a temporary public key when needed.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.
@@ -547,14 +548,14 @@ Storage layout for directory config:
 
 ### Codex provider bootstrap
 
-- `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
+- `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, seeds `~/bin/rg`, and verifies Codex.
 - The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
 
 ### Claude Code provider bootstrap
 
-- `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user and verifies `claude --version`.
+- `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user, seeds `~/bin/rg`, and verifies `claude --version`.
 - The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, telemetry disabled, and Claude Code commit-message attribution disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
 - The bootstrap script appends `~/bin`, `AGENT_PROVIDER=claude`, placeholder Anthropic auth, and the configured Anthropic base URL to both `~/.profile` and `~/.bashrc`.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Claude bootstrap.
@@ -562,7 +563,7 @@ Storage layout for directory config:
 
 ### GitHub Copilot CLI provider bootstrap
 
-- `./scripts/bootstrap_copilot_vm.sh <vm-name>` copies the host `copilot` binary into `~/bin/copilot` for the guest user and verifies `copilot version`.
+- `./scripts/bootstrap_copilot_vm.sh <vm-name>` copies the host `copilot` binary into `~/bin/copilot` for the guest user, seeds `~/bin/rg`, and verifies `copilot version`.
 - The bootstrap script writes `~/.copilot/config.json` with provider-local defaults and `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
 - The bootstrap script also installs a guest `gh` shim in `~/bin/gh`. Copilot CLI uses GitHub CLI as its lowest-priority auth fallback, so the shim answers `gh auth token` by calling the host gateway at `/copilot-auth/token` with the guest session id. That keeps the long-lived GitHub token on the host while avoiding permanent guest-side token storage.
 - The bootstrap script appends `~/bin` and `COPILOT_HOME=~/.copilot` to both `~/.profile` and `~/.bashrc`.

@@ -16,6 +16,7 @@ SCRIPTS = [
     "bootstrap_playwright_vm.sh",
     "bootstrap_python_packages_vm.sh",
     "bootstrap_python_vm.sh",
+    "bootstrap_ripgrep_vm.sh",
     "check_issue_vm.sh",
     "create_base_vm.sh",
     "create_git_remote.sh",

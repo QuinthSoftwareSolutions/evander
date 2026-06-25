@@ -2,6 +2,10 @@
 
 ## 2026-06-25 - Team Add-on Clean MCP Cutover
 
+- Seeded `rg` into current and future libvirt agent VMs: new VMs still request
+  `ripgrep` through cloud-init, provider bootstraps now copy a host `rg`
+  binary into `~/bin/rg`, and `bootstrap_ripgrep_vm.sh` repairs existing VMs
+  without relying on guest internet.
 - Documented the clean Team MCP cutover from Team action artifacts to
   Team-owned MCP tools, including tool visibility, idempotency, finalization,
   deliverable artifact publication, and ephemeral worker reporting semantics.
