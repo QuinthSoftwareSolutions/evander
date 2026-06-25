@@ -11,6 +11,21 @@ const staticRoot = path.resolve(
   fileURLToPath(new URL("../../../src/evander_team_addon/ui_static", import.meta.url)),
 );
 const teamViewStorageKey = "team-addon:active-view";
+const teamViewIds = [
+  "workspace",
+  "overview",
+  "operations",
+  "delivery",
+  "projects",
+  "task-board",
+  "cases",
+  "people",
+  "chat",
+  "governance",
+  "planning",
+  "timeline",
+  "org",
+];
 
 test("team add-on static UI exposes runtime control hooks", async () => {
   const markup = await readFile(path.join(staticRoot, "index.html"), "utf8");
@@ -1125,6 +1140,56 @@ function chatCollectionPayload(state, { selectedConversationId = null, includeSe
   };
 }
 
+function bootstrapPayload(state) {
+  return {
+    revision: state.revision,
+    views: teamViewIds,
+    default_view: "people",
+    generated_at: "2026-06-09T00:00:00Z",
+    current_operator: { user_id: "admin", display_name: "Admin" },
+    selected_operator: { user_id: "admin", display_name: "Admin" },
+    can_view_all_operators: true,
+    operator_options: [{ user_id: "admin", display_name: "Admin" }],
+    counts: {
+      teams: Object.keys(state.teams || {}).length,
+      governance_groups: Object.keys(state.governance_groups || {}).length,
+      projects: Object.keys(state.projects || {}).length,
+      agents: Object.keys(state.agents || {}).length,
+      cases: Object.keys(state.cases || {}).length,
+      tasks: Object.keys(state.tasks || {}).length,
+      deliverables: Object.keys(state.deliverables || {}).length,
+      review_requests: Object.keys(state.review_requests || {}).length,
+      conversations: Object.keys(state.conversations || {}).length,
+    },
+  };
+}
+
+function viewPayload(state, view, url, template, timelinePayload) {
+  const data = { state };
+  if (view === "chat") {
+    data.chat = chatCollectionPayload(state, {
+      selectedConversationId: queryText(url.searchParams, "selected_conversation_id"),
+      includeSelectedMessages: queryBool(url.searchParams, "include_selected_messages") === true,
+    });
+  }
+  if (view === "workspace") {
+    data.templates = [template];
+  }
+  if (view === "timeline") {
+    data.timeline =
+      typeof timelinePayload === "function"
+        ? timelinePayload(state, url)
+        : timelinePayload || buildTimelinePayload(state, url);
+  }
+  return {
+    revision: state.revision,
+    view,
+    generated_at: "2026-06-09T00:00:00Z",
+    data,
+    resource_tokens: state.resource_tokens || {},
+  };
+}
+
 function taskNeedsAttention(state) {
   return ["pending", "blocked", "waiting_for_review", "rejected"].includes(state);
 }
@@ -1196,6 +1261,26 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/state") {
         jsonResponse(response, state);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/bootstrap") {
+        jsonResponse(response, bootstrapPayload(state));
+        return;
+      }
+      const viewMatch = pathname.match(/^\/api\/addons\/team-addon\/views\/([^/]+)$/);
+      if (request.method === "GET" && viewMatch) {
+        const view = decodeURIComponent(viewMatch[1]);
+        if (view === "chat") {
+          chatRequests.push({ method: request.method, pathname, search: url.search });
+          if (conversationsBeforeResponse) {
+            await conversationsBeforeResponse({ request, url, chatRequests });
+          }
+        }
+        if (!teamViewIds.includes(view)) {
+          jsonResponse(response, { error: "view not found" }, 404);
+          return;
+        }
+        jsonResponse(response, viewPayload(state, view, url, template, timelinePayload));
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/costs") {
@@ -4055,7 +4140,7 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
     chatRequests.some(
       (request) =>
         request.method === "GET" &&
-        request.pathname === "/api/addons/team-addon/conversations" &&
+        request.pathname === "/api/addons/team-addon/views/chat" &&
         String(request.search || "").includes("include_selected_messages=1"),
     ),
     "expected initial chat load to request selected conversation messages in the collection payload",

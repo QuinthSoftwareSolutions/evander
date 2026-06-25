@@ -21,6 +21,9 @@
   ordinary Team dispatches that share a persistent session.
 - Fixed the Team Chat conversation-list pagination fixture so the seeded
   conversation belongs to the default `admin` operator used by the API test.
+- Added Team Add-on bootstrap and view-scoped read APIs, moved the built-in UI
+  off full-state boot for normal tab loads, and let UI mutations request
+  scoped invalidation envelopes instead of full Team state payloads.
 - Renamed the bundled Team Add-on Python package to `evander_team_addon` across
   source, tests, docs, frontend build paths, and local add-on loader
   configuration.

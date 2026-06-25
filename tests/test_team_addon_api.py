@@ -813,6 +813,36 @@ def test_team_addon_conversation_list_can_inline_selected_message_page(
     ]
 
 
+def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
+    _repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    bootstrap = client.get("/api/addons/team-addon/bootstrap")
+    assert bootstrap.status_code == 200
+    bootstrap_payload = bootstrap.json()
+    assert bootstrap_payload["revision"] > 0
+    assert "chat" in bootstrap_payload["views"]
+    assert bootstrap_payload["counts"]["conversations"] == 1
+    assert "tasks" not in bootstrap_payload
+    assert "conversation_messages" not in bootstrap_payload
+
+    chat_view = client.get(
+        "/api/addons/team-addon/views/chat"
+        f"?selected_conversation_id={conversation_id}"
+    )
+    assert chat_view.status_code == 200
+    payload = chat_view.json()
+    assert payload["view"] == "chat"
+    assert set(payload["data"]) == {"chat", "state"}
+    assert payload["data"]["chat"]["selected_conversation_id"] == conversation_id
+    conversation = payload["data"]["chat"]["conversations"][0]
+    assert conversation["messages_limit"] == 50
+    assert len(conversation["messages"]) == 50
+    assert "tasks" not in payload["data"]["state"]
+    assert "conversation_messages" not in payload["data"]["state"]
+    assert set(payload["resource_tokens"]) == {"agents"}
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:
@@ -3756,6 +3786,30 @@ def test_team_addon_admin_api_exposes_resource_tokens(tmp_path: Path) -> None:
     token = state["resource_tokens"]["teams"]["team"]
     assert token.startswith("sha256:")
     assert state["teams"]["team"]["resource_token"] == token
+
+
+def test_team_addon_mutation_can_return_scoped_view_envelope(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        headers={"X-Team-Addon-Response-Scope": "view"},
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["response_scope"] == "view"
+    assert payload["revision"] == 1
+    assert "people" in payload["invalidated_views"]
+    assert "teams" not in payload
+    assert "runtime_operations" not in payload
 
 
 def _seed_rebase_backend_agent(client: TestClient) -> dict:

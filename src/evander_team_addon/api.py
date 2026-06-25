@@ -23,6 +23,7 @@ from agent_sandbox.events.internal import (
     internal_event_store_path,
 )
 from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.models import utc_now
 from agent_sandbox.voice_sessions import (
     OpenAIRealtimeClientSecretService,
     VoiceQueryDelegator,
@@ -73,6 +74,145 @@ from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
+TEAM_VIEW_IDS = (
+    "workspace",
+    "overview",
+    "operations",
+    "delivery",
+    "projects",
+    "task-board",
+    "cases",
+    "people",
+    "chat",
+    "governance",
+    "planning",
+    "timeline",
+    "org",
+)
+TEAM_STATE_COLLECTION_KEYS = (
+    "teams",
+    "governance_groups",
+    "governance_agenda",
+    "governance_runtimes",
+    "projects",
+    "roles",
+    "agents",
+    "project_assignments",
+    "agent_runtimes",
+    "stand_downs",
+    "cases",
+    "tasks",
+    "deliverables",
+    "review_requests",
+    "review_profiles",
+    "inbox",
+    "action_records",
+    "release_packages",
+    "ephemeral_assignments",
+    "git_promotions",
+    "conversations",
+    "conversation_messages",
+)
+TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
+    "overview": {
+        "teams",
+        "governance_groups",
+        "projects",
+        "agents",
+        "cases",
+        "tasks",
+        "deliverables",
+        "review_requests",
+        "review_profiles",
+        "ephemeral_assignments",
+    },
+    "operations": {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+        "agent_runtimes",
+        "stand_downs",
+        "tasks",
+        "inbox",
+        "action_records",
+    },
+    "delivery": {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+        "tasks",
+        "deliverables",
+        "review_requests",
+        "review_profiles",
+        "release_packages",
+        "git_promotions",
+    },
+    "projects": {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+        "tasks",
+        "deliverables",
+        "review_profiles",
+        "release_packages",
+        "cases",
+    },
+    "task-board": {"teams", "projects", "agents", "tasks", "cases"},
+    "cases": {"teams", "projects", "agents", "cases", "tasks"},
+    "people": {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+        "agent_runtimes",
+        "stand_downs",
+        "tasks",
+        "inbox",
+    },
+    "governance": {
+        "teams",
+        "governance_groups",
+        "governance_agenda",
+        "governance_runtimes",
+        "projects",
+        "agents",
+    },
+    "planning": {"teams", "projects", "agents", "tasks", "deliverables"},
+    "timeline": {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+        "cases",
+        "tasks",
+        "deliverables",
+        "review_requests",
+        "review_profiles",
+        "release_packages",
+        "inbox",
+        "action_records",
+        "ephemeral_assignments",
+        "git_promotions",
+    },
+    "org": {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+        "agent_runtimes",
+        "stand_downs",
+        "tasks",
+        "inbox",
+    },
+}
+TEAM_VIEW_COLLECTIONS["workspace"] = set(TEAM_STATE_COLLECTION_KEYS) - {
+    "conversations",
+    "conversation_messages",
+}
+TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "teams",
     "governance_groups",
@@ -112,10 +252,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         *,
         status_code: int = 200,
         rebased_from_revision: int | None = None,
+        extra: Mapping[str, Any] | None = None,
     ) -> JSONResponse:
+        if _request_wants_view_scoped_response(request):
+            response_payload = _mutation_view_response_payload(
+                state,
+                rebased_from_revision=rebased_from_revision,
+            )
+            if extra:
+                response_payload.update(extra)
+            return JSONResponse(response_payload, status_code=status_code)
         response_payload = _state_payload(request, state)
         if rebased_from_revision is not None:
             response_payload["rebased_from_revision"] = rebased_from_revision
+        if extra:
+            response_payload.update(extra)
         return JSONResponse(response_payload, status_code=status_code)
 
     def _run_ui_rebasable_mutation(
@@ -149,6 +300,27 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def get_state(request: Request) -> JSONResponse:
         return JSONResponse(_state_payload(request, repository.read()))
 
+    async def get_bootstrap(request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(_bootstrap_payload_for_request(context.auth, request, state))
+
+    async def get_view(request: Request) -> JSONResponse:
+        view = request.path_params["view"]
+        if view not in TEAM_VIEW_IDS:
+            return JSONResponse({"error": "view not found"}, status_code=404)
+        state = repository.read()
+        return JSONResponse(
+            _view_payload_for_request(
+                context.auth,
+                request,
+                state,
+                view=view,
+                session_records=_session_records_by_id(
+                    _session_repository_from_context(context)
+                ),
+            )
+        )
+
     async def list_templates(_request: Request) -> JSONResponse:
         return JSONResponse(
             {
@@ -174,9 +346,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             inputs=payload,
             expected_revision=_expected_revision(payload),
         )
-        response_payload = _state_payload(request, state)
-        response_payload["materialized"] = result
-        return JSONResponse(response_payload, status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            extra={"materialized": result},
+        )
 
     async def get_timeline(request: Request) -> JSONResponse:
         state = repository.read()
@@ -691,7 +866,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             )
             raise
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state)
 
     async def accept_agent_avatar_preview(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -720,7 +895,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         avatar_storage.promote_preview(preview_id=avatar.preview_id or avatar.asset_id)
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state)
 
     async def delete_agent_avatar(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -733,7 +908,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             expected_revision=_expected_revision(payload),
         )
         avatar_storage.delete_asset_if_unreferenced(asset_id=old_asset_id, state=state)
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state)
 
     async def list_conversations(request: Request) -> JSONResponse:
         state = repository.read()
@@ -1643,9 +1818,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             requesting_session_id=_optional(payload, "requesting_session_id"),
             expected_revision=_expected_revision(payload),
         )
-        response_payload = _state_payload(request, state)
-        response_payload["operator_directive"] = item.model_dump(mode="json")
-        return JSONResponse(response_payload, status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            extra={"operator_directive": item.model_dump(mode="json")},
+        )
 
     async def dismiss_action_record(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1761,6 +1939,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         published_event_ids = _publish_team_events(context, result.get("events"))
         if published_event_ids:
             response_payload["published_event_ids"] = published_event_ids
+        if _request_wants_view_scoped_response(request):
+            return _state_response(
+                request,
+                state,
+                status_code=201,
+                extra={"published_event_ids": published_event_ids},
+            )
         return JSONResponse(response_payload, status_code=201)
 
     async def list_release_packages(_request: Request) -> JSONResponse:
@@ -1802,6 +1987,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return JSONResponse(promotion.model_dump(mode="json"))
 
     return [
+        Route("/bootstrap", _with_errors(get_bootstrap), methods=["GET"]),
+        Route("/views/{view}", _with_errors(get_view), methods=["GET"]),
         Route("/state", _with_errors(get_state), methods=["GET"]),
         Route("/templates", _with_errors(list_templates), methods=["GET"]),
         Route(
@@ -2015,6 +2202,30 @@ def _with_errors(handler):
     return _wrapped
 
 
+def _request_wants_view_scoped_response(request: Request) -> bool:
+    scope = str(request.headers.get("X-Team-Addon-Response-Scope") or "").strip().casefold()
+    if scope in {"view", "scoped"}:
+        return True
+    query_scope = str(request.query_params.get("response_scope") or "").strip().casefold()
+    return query_scope in {"view", "scoped"}
+
+
+def _mutation_view_response_payload(
+    state: TeamState,
+    *,
+    rebased_from_revision: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "response_scope": "view",
+        "revision": state.revision,
+        "invalidated_views": list(TEAM_VIEW_IDS),
+        "resource_tokens": {},
+    }
+    if rebased_from_revision is not None:
+        payload["rebased_from_revision"] = rebased_from_revision
+    return payload
+
+
 def _session_repository_from_context(context: AddonContext) -> Any | None:
     service = getattr(context, "service", None)
     runtime = getattr(service, "runtime", None)
@@ -2065,6 +2276,183 @@ def _team_state_payload_for_request(
     return payload
 
 
+def _bootstrap_payload_for_request(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+) -> dict[str, Any]:
+    identity = _operator_identity_from_request(auth, request)
+    scope = _chat_scope_for_operator(auth, request, state, identity["user_id"], identity=identity)
+    return {
+        "revision": state.revision,
+        "views": list(TEAM_VIEW_IDS),
+        "default_view": "people",
+        "generated_at": utc_now().isoformat(),
+        "current_operator": scope["current_operator"],
+        "selected_operator": scope["selected_operator"],
+        "can_view_all_operators": bool(scope.get("can_view_all_operators")),
+        "operator_options": _operator_options(state, scope=scope),
+        "counts": {
+            "teams": len(state.teams),
+            "governance_groups": len(state.governance_groups),
+            "projects": len(state.projects),
+            "agents": len(state.agents),
+            "cases": len(state.cases),
+            "tasks": len(state.tasks),
+            "deliverables": len(state.deliverables),
+            "review_requests": len(state.review_requests),
+            "conversations": len(state.conversations),
+        },
+    }
+
+
+def _view_payload_for_request(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+    *,
+    view: str,
+    session_records: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    generated_at = utc_now().isoformat()
+    if view == "chat":
+        scope = _chat_list_scope(auth, request, state)
+        selected_conversation_id = _query_text(request, "selected_conversation_id")
+        chat_payload = _conversation_collection_payload(
+            state,
+            scope=scope,
+            selected_conversation_id=selected_conversation_id,
+            include_selected_messages=True,
+        )
+        agent_ids = {
+            str(conversation.get("agent_id"))
+            for conversation in chat_payload.get("conversations", [])
+            if isinstance(conversation, Mapping) and conversation.get("agent_id")
+        }
+        agent_ids.update(
+            str(agent.get("id"))
+            for agent in chat_payload.get("eligible_agents", [])
+            if isinstance(agent, Mapping) and agent.get("id")
+        )
+        agent_state = {
+            agent_id: _chat_agent_payload(state.agents.get(agent_id))
+            for agent_id in agent_ids
+            if state.agents.get(agent_id) is not None
+        }
+        return {
+            "revision": state.revision,
+            "view": view,
+            "generated_at": generated_at,
+            "data": {
+                "chat": chat_payload,
+                "state": {
+                    "revision": state.revision,
+                    "agents": agent_state,
+                    "resource_tokens": _team_resource_tokens_for_collections(
+                        state,
+                        {"agents"},
+                        ids_by_collection={"agents": agent_ids},
+                    ),
+                },
+            },
+            "resource_tokens": _team_resource_tokens_for_collections(
+                state,
+                {"agents"},
+                ids_by_collection={"agents": agent_ids},
+            ),
+        }
+
+    collections = TEAM_VIEW_COLLECTIONS.get(view, TEAM_VIEW_COLLECTIONS["workspace"])
+    data: dict[str, Any] = {
+        "state": _state_slice_payload_for_request(
+            auth,
+            request,
+            state,
+            collections=collections,
+            session_records=session_records,
+        )
+    }
+    if view == "timeline":
+        data["timeline"] = {
+            **derive_team_timeline(state),
+            "source": "derived_from_current_team_state",
+            "description": "Derived timeline from the current TeamState snapshot.",
+            "filters": {},
+        }
+    if view == "workspace":
+        data["templates"] = [
+            template.model_dump(mode="json") for template in template_catalog()
+        ]
+    return {
+        "revision": state.revision,
+        "view": view,
+        "generated_at": generated_at,
+        "data": data,
+        "resource_tokens": _team_resource_tokens_for_collections(state, collections),
+    }
+
+
+def _state_slice_payload_for_request(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+    *,
+    collections: set[str],
+    ids_by_collection: Mapping[str, set[str]] | None = None,
+    session_records: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = _team_state_payload_for_request(
+        auth,
+        request,
+        state,
+        session_records=session_records,
+    )
+    return _filter_state_payload(
+        payload,
+        collections=collections,
+        ids_by_collection=ids_by_collection or {},
+    )
+
+
+def _filter_state_payload(
+    payload: dict[str, Any],
+    *,
+    collections: set[str],
+    ids_by_collection: Mapping[str, set[str]],
+) -> dict[str, Any]:
+    filtered: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in TEAM_STATE_COLLECTION_KEYS:
+            if key not in collections:
+                continue
+            allowed_ids = ids_by_collection.get(key)
+            if allowed_ids is not None and isinstance(value, Mapping):
+                filtered[key] = {
+                    item_id: item
+                    for item_id, item in value.items()
+                    if item_id in allowed_ids
+                }
+                continue
+        filtered[key] = value
+    tokens = filtered.get("resource_tokens")
+    if isinstance(tokens, Mapping):
+        scoped_tokens: dict[str, Any] = {}
+        for collection, collection_tokens in tokens.items():
+            if collection not in collections:
+                continue
+            allowed_ids = ids_by_collection.get(str(collection))
+            if allowed_ids is not None and isinstance(collection_tokens, Mapping):
+                scoped_tokens[str(collection)] = {
+                    item_id: token
+                    for item_id, token in collection_tokens.items()
+                    if item_id in allowed_ids
+                }
+            else:
+                scoped_tokens[str(collection)] = collection_tokens
+        filtered["resource_tokens"] = scoped_tokens
+    return filtered
+
+
 def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None:
     tokens = _team_resource_tokens(state)
     payload["resource_tokens"] = tokens
@@ -2088,6 +2476,29 @@ def _team_resource_tokens(state: TeamState) -> dict[str, dict[str, str]]:
         }
         for collection in TEAM_RESOURCE_TOKEN_COLLECTIONS
     }
+
+
+def _team_resource_tokens_for_collections(
+    state: TeamState,
+    collections: set[str],
+    *,
+    ids_by_collection: Mapping[str, set[str]] | None = None,
+) -> dict[str, dict[str, str]]:
+    ids_by_collection = ids_by_collection or {}
+    tokens: dict[str, dict[str, str]] = {}
+    for collection in TEAM_RESOURCE_TOKEN_COLLECTIONS:
+        if collection not in collections:
+            continue
+        allowed_ids = ids_by_collection.get(collection)
+        rows = _team_state_collection(state, collection)
+        tokens[collection] = {
+            item_id: _team_resource_token(
+                _team_resource_value_for_token(state, collection, item_id, item)
+            )
+            for item_id, item in rows.items()
+            if allowed_ids is None or item_id in allowed_ids
+        }
+    return tokens
 
 
 def _team_resource_value_for_token(
