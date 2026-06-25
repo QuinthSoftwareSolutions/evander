@@ -79,6 +79,7 @@ const defaultPlanningTaskStates = new Set([
 ]);
 const defaultTeamView = "people";
 const teamViewStorageKey = "team-addon:active-view";
+const chatReadStorageKey = "team-addon:chat:read-markers";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
 const teamViewIds = new Set([
@@ -112,6 +113,9 @@ let chatSending = false;
 let chatStream = null;
 let chatStreamConversationId = null;
 let chatStreamErrorRefreshPending = false;
+let stateStream = null;
+let stateStreamErrorRefreshPending = false;
+let chatReadMarkers = readChatReadMarkers();
 let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
@@ -583,18 +587,23 @@ function storeTeamView(view) {
 function bindPageLifecycle() {
   window.addEventListener("beforeunload", () => {
     closeChatStream();
+    closeStateStream();
   });
   window.addEventListener("pagehide", () => {
     closeChatStream();
+    closeStateStream();
   });
   window.addEventListener("pageshow", () => {
+    ensureStateStream();
     syncChatStreamForActiveView({ refresh: true });
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       closeChatStream();
+      closeStateStream();
       return;
     }
+    ensureStateStream();
     syncChatStreamForActiveView({ refresh: true });
   });
 }
@@ -609,6 +618,7 @@ function setTeamView(view) {
   activeTeamView = nextView;
   storeTeamView(activeTeamView);
   if (enteringChat && selectedChatConversationId) {
+    markChatConversationRead(selectedChatConversationId, { rerender: false });
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   render();
@@ -625,8 +635,22 @@ function setTeamView(view) {
 }
 
 function updateTeamViewTabs() {
+  const unreadChatCount = unreadChatConversationCount();
   document.querySelectorAll("[data-team-view]").forEach((button) => {
     const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
+    if (!button.dataset.teamViewBaseLabel) {
+      button.dataset.teamViewBaseLabel = text(button.textContent);
+    }
+    const baseLabel = button.dataset.teamViewBaseLabel || text(button.textContent);
+    if ((button.dataset.teamView || "") === "chat" && unreadChatCount > 0) {
+      button.classList.add("has-unread");
+      button.innerHTML = `${escapeHtml(baseLabel)} <span class="team-view-tab-badge">${escapeHtml(unreadChatCount)}</span>`;
+      button.setAttribute("aria-label", `${baseLabel}, ${unreadChatCount} unread`);
+    } else {
+      button.classList.remove("has-unread");
+      button.textContent = baseLabel;
+      button.removeAttribute("aria-label");
+    }
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
     button.tabIndex = active ? 0 : -1;
@@ -999,6 +1023,7 @@ function bindRecordEditing() {
     if (chatConversationButton) {
       event.preventDefault();
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
+      markChatConversationRead(selectedChatConversationId, { rerender: false });
       renderChat();
       if (selectedChatConversationId) {
         ensureChatStream(selectedChatConversationId);
@@ -1455,10 +1480,66 @@ async function loadState({ preserveForms = false } = {}) {
     void loadCosts();
     void loadConversations({ preserveSelection: true });
     void loadTimeline();
+    ensureStateStream();
   } catch (error) {
     timelineLoading = false;
     setStatus(error instanceof Error ? error.message : "Team state failed to load.", "error");
   }
+}
+
+function applyStateSnapshot(payload) {
+  if (!payload || payload.revision === undefined || payload.revision === null) {
+    return;
+  }
+  if (Number(payload.revision) <= Number(state.revision || 0)) {
+    return;
+  }
+  const drafts = captureFormDrafts();
+  state = normalizeState(payload);
+  render();
+  restoreFormDrafts(drafts);
+  void loadCosts();
+  void loadConversations({ preserveSelection: true });
+  void loadTimeline();
+}
+
+function ensureStateStream() {
+  if (stateStream || typeof EventSource === "undefined") {
+    return;
+  }
+  stateStreamErrorRefreshPending = false;
+  const stream = new EventSource(`${API_BASE}/state/stream`);
+  stateStream = stream;
+  stream.addEventListener("snapshot", (event) => {
+    if (stateStream !== stream) {
+      return;
+    }
+    try {
+      applyStateSnapshot(JSON.parse(event.data || "{}"));
+      stateStreamErrorRefreshPending = false;
+    } catch {
+      // Ignore malformed stream events; EventSource will keep the connection alive.
+    }
+  });
+  stream.onerror = () => {
+    if (stateStream !== stream || stateStreamErrorRefreshPending) {
+      return;
+    }
+    stateStreamErrorRefreshPending = true;
+    void loadState({ preserveForms: true }).finally(() => {
+      if (stateStream === stream) {
+        stateStreamErrorRefreshPending = false;
+      }
+    });
+  };
+}
+
+function closeStateStream() {
+  if (stateStream) {
+    stateStream.close();
+  }
+  stateStream = null;
+  stateStreamErrorRefreshPending = false;
 }
 
 async function loadCosts() {
@@ -1671,6 +1752,9 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     }
     replaceChatConversation(payload.conversation);
     chatState = { ...chatState, loading: false, error: null, revision: payload.revision ?? chatState.revision };
+    if (activeTeamView === "chat" && text(selectedChatConversationId) === normalizedConversationId) {
+      markChatConversationRead(normalizedConversationId, { rerender: false });
+    }
     scheduleChatScrollToBottom(normalizedConversationId);
     renderChat();
   } catch (error) {
@@ -1852,6 +1936,9 @@ function applyChatSnapshot(payload, expectedConversationId) {
     error: null,
     revision: payload.revision ?? chatState.revision,
   };
+  if (activeTeamView === "chat" && text(selectedChatConversationId) === text(expectedConversationId)) {
+    markChatConversationRead(expectedConversationId, { rerender: false });
+  }
   if (shouldStickToBottom) {
     scheduleChatScrollToBottom(expectedConversationId);
   } else if (scrollSnapshot) {
@@ -4507,6 +4594,67 @@ function renderChat() {
   renderChatOperatorView();
   renderChatConversationList();
   renderChatThread();
+  updateTeamViewTabs();
+}
+
+function readChatReadMarkers() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(chatReadStorageKey) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function storeChatReadMarkers() {
+  try {
+    window.localStorage.setItem(chatReadStorageKey, JSON.stringify(chatReadMarkers));
+  } catch {
+    // Storage can be unavailable in hardened browser contexts.
+  }
+}
+
+function chatConversationNewestMessageId(conversation) {
+  return text(conversation?.newest_message_id) || text(conversationMessages(conversation).at(-1)?.id);
+}
+
+function chatConversationNewestSender(conversation) {
+  return text(conversation?.newest_message_sender) || text(conversationMessages(conversation).at(-1)?.sender);
+}
+
+function chatConversationHasUnread(conversation) {
+  const conversationId = text(conversation?.id);
+  const newestMessageId = chatConversationNewestMessageId(conversation);
+  const newestSender = chatConversationNewestSender(conversation);
+  if (!conversationId || !newestMessageId || newestSender === "operator") {
+    return false;
+  }
+  return text(chatReadMarkers[conversationId]) !== newestMessageId;
+}
+
+function unreadChatConversationCount() {
+  return chatState.conversations.filter(chatConversationHasUnread).length;
+}
+
+function markChatConversationRead(conversationId, { rerender = true } = {}) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId) {
+    return false;
+  }
+  const conversation = chatConversationById(normalizedConversationId);
+  const newestMessageId = chatConversationNewestMessageId(conversation);
+  if (!newestMessageId || text(chatReadMarkers[normalizedConversationId]) === newestMessageId) {
+    return false;
+  }
+  chatReadMarkers = {
+    ...chatReadMarkers,
+    [normalizedConversationId]: newestMessageId,
+  };
+  storeChatReadMarkers();
+  if (rerender) {
+    renderChat();
+  }
+  return true;
 }
 
 function renderChatOperatorView() {
@@ -4598,6 +4746,7 @@ function renderChatNewPicker() {
 
 function renderChatConversationRow(conversation) {
   const selected = text(conversation.id) === text(selectedChatConversationId);
+  const unread = chatConversationHasUnread(conversation);
   const agent = conversation.agent || {};
   const label = text(agent.display_name) || text(agent.id) || text(conversation.agent_id);
   const preview = text(conversation.last_message_preview) || "No messages yet.";
@@ -4605,16 +4754,20 @@ function renderChatConversationRow(conversation) {
     <li>
       <button
         type="button"
-        class="chat-conversation-row${selected ? " is-selected" : ""}"
+        class="chat-conversation-row${selected ? " is-selected" : ""}${unread ? " has-unread" : ""}"
         data-chat-conversation-id="${escapeAttr(conversation.id)}"
         aria-pressed="${selected ? "true" : "false"}"
+        aria-label="${escapeAttr(`${label}${unread ? ", unread" : ""}`)}"
       >
         ${renderChatAvatar(agent)}
         <span class="chat-conversation-main">
           <strong>${escapeHtml(label)}</strong>
           <span>${escapeHtml(preview)}</span>
         </span>
-        <time>${escapeHtml(formatChatTimestamp(conversation.last_interaction_at))}</time>
+        <span class="chat-conversation-meta">
+          ${unread ? `<span class="chat-unread-badge" aria-hidden="true">New</span>` : ""}
+          <time>${escapeHtml(formatChatTimestamp(conversation.last_interaction_at))}</time>
+        </span>
       </button>
     </li>
   `;
@@ -4819,13 +4972,15 @@ function mergeChatConversation(existing, incoming) {
 function normalizeChatConversation(conversation) {
   const messagesLoaded = Array.isArray(conversation?.messages) || conversation?.messages_loaded === true;
   const messages = conversationMessages(conversation);
+  const newestMessage = messages[messages.length - 1] || null;
   return {
     ...conversation,
     messages,
     messages_loaded: messagesLoaded,
     has_older: Boolean(conversation?.has_older),
     oldest_message_id: text(messages[0]?.id) || text(conversation?.oldest_message_id) || null,
-    newest_message_id: text(messages[messages.length - 1]?.id) || text(conversation?.newest_message_id) || null,
+    newest_message_id: text(newestMessage?.id) || text(conversation?.newest_message_id) || null,
+    newest_message_sender: text(newestMessage?.sender) || text(conversation?.newest_message_sender) || null,
   };
 }
 
