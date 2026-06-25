@@ -4966,7 +4966,18 @@ function mergeChatConversation(existing, incoming) {
       next.has_older = existing.has_older;
     }
   }
-  return normalizeChatConversation(next);
+  const normalized = normalizeChatConversation(next);
+  if (!incomingMessages.length) {
+    const incomingNewestMessageId = text(incoming?.newest_message_id);
+    const incomingNewestMessageSender = text(incoming?.newest_message_sender);
+    if (incomingNewestMessageId) {
+      normalized.newest_message_id = incomingNewestMessageId;
+    }
+    if (incomingNewestMessageSender) {
+      normalized.newest_message_sender = incomingNewestMessageSender;
+    }
+  }
+  return normalized;
 }
 
 function normalizeChatConversation(conversation) {

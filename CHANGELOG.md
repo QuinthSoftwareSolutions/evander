@@ -7,6 +7,8 @@
   renders.
 - Highlighted chats with unread incoming messages, surfaced a Chat tab unread
   count, and clears unread markers when conversations are opened.
+- Fixed unread chat detection for previously opened conversations by preserving
+  fresh newest-message summary metadata from conversation-list refreshes.
 
 ## 2026-06-25 - Team Add-on Clean MCP Cutover
 
