@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-25 - ADO Daily Status Elapsed Time Guard
+
+- Required `get_ado_daily_status_report_data` callers to opt into
+  `elapsed_time_mode: manual_override` before `elapsed_sprint_percent` can
+  replace the elapsed-time value computed from Azure DevOps iteration dates.
+- Recorded ignored elapsed-time override values in the report source metadata
+  so suspicious sprint-time percentages are auditable.
+
 ## 2026-06-24 - Team Add-on Blocked Release Guidance
 
 - Added explicit next-action hints to blocked release packages and runtime

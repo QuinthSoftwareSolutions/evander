@@ -851,11 +851,12 @@ A transport-terminated warning without client-visible failure can be expected fo
   - `team` (optional; when omitted, the helper resolves the Azure DevOps project's default team)
   - optional filters: `area_path`, `states`, `types`, `tags_any`, `text_search`
   - optional type exclusions: `exclude_types`, defaulting to `["Task"]`
-  - optional report overrides: `title`, `report_date`, `sprint_label`, `sprint_length`,
-    `elapsed_sprint_percent`
-  - optional elapsed-time options: `elapsed_time_mode` (`swedish_work_time` or
-    `calendar_time`), `workday_start`, `workday_end`, and
+  - optional report overrides: `title`, `report_date`, `sprint_label`, `sprint_length`
+  - optional elapsed-time options: `elapsed_time_mode` (`swedish_work_time`,
+    `calendar_time`, or `manual_override`), `workday_start`, `workday_end`, and
     `include_common_swedish_non_working_days`
+  - optional manual elapsed-time override: `elapsed_sprint_percent`; this is honored only
+    when `elapsed_time_mode` is `manual_override`
   - optional calculation overrides: `done_states`, `in_progress_states`, `effort_fields`,
     `max_items`
 - By default, elapsed time uses Swedish working time in `Europe/Stockholm`, counts only weekdays

@@ -1222,6 +1222,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
             "team": "Platform Team",
             "report_date": "2026-05-12",
             "elapsed_sprint_percent": 50,
+            "elapsed_time_mode": "manual_override",
             "max_items": 20,
         },
     )
