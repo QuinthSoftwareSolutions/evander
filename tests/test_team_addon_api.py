@@ -844,6 +844,59 @@ def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
     assert set(payload["resource_tokens"]) == {"agents"}
 
 
+def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+
+    def _mutate(state):
+        state.inbox["handled-inbox"] = AgentInboxItem(
+            id="handled-inbox",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            state=TeamInboxItemState.HANDLED,
+            payload={"question": "Already handled"},
+            created_at=now,
+            updated_at=now,
+        )
+        state.action_records["dismissed-action"] = AgentActionRecord(
+            id="dismissed-action",
+            agent_id="backend",
+            dispatch_id="dispatch-backend",
+            action={"type": "dismissed"},
+            success=False,
+            error="dismissed failure",
+            created_at=now,
+            dismissed_at=now,
+            dismissed_by="operator",
+        )
+        state.action_records["successful-action"] = AgentActionRecord(
+            id="successful-action",
+            agent_id="lead",
+            dispatch_id="dispatch-lead",
+            action={"type": "ok"},
+            success=True,
+            created_at=now,
+        )
+
+    repo.update(_mutate)
+    client = _client(tmp_path)
+
+    people = client.get("/api/addons/team-addon/views/people")
+    assert people.status_code == 200
+    people_state = people.json()["data"]["state"]
+    assert set(people_state["inbox"]) == {"inbox-1", "escalation-1"}
+    assert "action_records" not in people_state
+
+    operations = client.get("/api/addons/team-addon/views/operations")
+    assert operations.status_code == 200
+    operations_state = operations.json()["data"]["state"]
+    assert set(operations_state["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(operations_state["action_records"]) == {"action-1"}
+    assert set(operations_state["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(operations_state["resource_tokens"]["action_records"]) == {"action-1"}
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:

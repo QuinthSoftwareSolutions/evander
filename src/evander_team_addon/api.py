@@ -53,6 +53,7 @@ from .models import (
     ReviewProfileCriterion,
     TeamCaseStatus,
     TeamRecordState,
+    TeamInboxItemState,
     TeamInboxPriority,
     TeamTaskState,
     TeamState,
@@ -2371,12 +2372,14 @@ def _view_payload_for_request(
         }
 
     collections = TEAM_VIEW_COLLECTIONS.get(view, TEAM_VIEW_COLLECTIONS["workspace"])
+    ids_by_collection = _view_ids_by_collection(state, view)
     data: dict[str, Any] = {
         "state": _state_slice_payload_for_request(
             auth,
             request,
             state,
             collections=collections,
+            ids_by_collection=ids_by_collection,
             session_records=session_records,
         )
     }
@@ -2396,8 +2399,39 @@ def _view_payload_for_request(
         "view": view,
         "generated_at": generated_at,
         "data": data,
-        "resource_tokens": _team_resource_tokens_for_collections(state, collections),
+        "resource_tokens": _team_resource_tokens_for_collections(
+            state,
+            collections,
+            ids_by_collection=ids_by_collection,
+        ),
     }
+
+
+def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
+    ids_by_collection: dict[str, set[str]] = {}
+    if view in {"people", "org", "operations", "workspace"}:
+        ids_by_collection["inbox"] = {
+            item_id
+            for item_id, item in state.inbox.items()
+            if item.state != TeamInboxItemState.HANDLED
+        }
+    if view in {"operations", "workspace"}:
+        successful_action_keys = [
+            (record.agent_id, record.created_at)
+            for record in state.action_records.values()
+            if record.success
+        ]
+        ids_by_collection["action_records"] = {
+            record_id
+            for record_id, record in state.action_records.items()
+            if not record.success
+            and record.dismissed_at is None
+            and not any(
+                agent_id == record.agent_id and created_at > record.created_at
+                for agent_id, created_at in successful_action_keys
+            )
+        }
+    return ids_by_collection
 
 
 def _state_slice_payload_for_request(

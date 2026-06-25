@@ -31,6 +31,8 @@
 - Fixed scoped Team Add-on loading edge cases so Chat preserves full cached
   agent records, Org receives governance overlays, and bootstrap chat counts
   respect the current operator's chat scope.
+- Trimmed non-actionable Team Add-on view history from scoped payloads so
+  handled inbox rows and stale action records do not slow default tab loads.
 - Renamed the bundled Team Add-on Python package to `evander_team_addon` across
   source, tests, docs, frontend build paths, and local add-on loader
   configuration.
