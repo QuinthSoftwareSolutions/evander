@@ -12,6 +12,8 @@
 - Clarified deliverable Git/review-branch sequencing in Team MCP tool
   descriptions and prompts, added next-action hints after deliverable
   submissions, and added optional structured deliverable verification status.
+- Propagated deliverable verification into superior notice and review-request
+  inbox payloads so review wakes see failed, partial, or skipped verification.
 - Added a local Team MCP cutover runbook covering service quiescence, active
   lease inspection, pending artifact disposition, state backup/migration,
   restart, smoke checks, and common post-cutover troubleshooting.

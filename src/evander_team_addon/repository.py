@@ -9086,6 +9086,16 @@ class TeamStateRepository:
                     result["created_deliverable_ids"].append(deliverable.id)
                     if agent.reports_to_agent_id is not None:
                         inbox_id = f"inbox-{uuid4().hex}"
+                        payload = {
+                            "deliverable_id": deliverable.id,
+                            "summary": deliverable.summary,
+                            "artifact_refs": list(deliverable.artifact_refs),
+                        }
+                        verification_payload = _deliverable_verification_payload(
+                            deliverable
+                        )
+                        if verification_payload is not None:
+                            payload["verification"] = verification_payload
                         state_model.inbox[inbox_id] = AgentInboxItem(
                             id=inbox_id,
                             recipient_agent_id=agent.reports_to_agent_id,
@@ -9094,11 +9104,7 @@ class TeamStateRepository:
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
                             response_requested=True,
                             priority=TeamInboxPriority.LOW,
-                            payload={
-                                "deliverable_id": deliverable.id,
-                                "summary": deliverable.summary,
-                                "artifact_refs": list(deliverable.artifact_refs),
-                            },
+                            payload=payload,
                         )
                         result["created_inbox_item_ids"].append(inbox_id)
                     _mark_progress()
@@ -12192,6 +12198,14 @@ def _apply_command_deliverable_submission(
     created_inbox_ids: list[str] = []
     if not suppress_superior_notice and agent.reports_to_agent_id is not None:
         inbox_id = f"inbox-{uuid4().hex}"
+        payload = {
+            "deliverable_id": new_deliverable.id,
+            "summary": new_deliverable.summary,
+            "artifact_refs": list(new_deliverable.artifact_refs),
+        }
+        verification_payload = _deliverable_verification_payload(new_deliverable)
+        if verification_payload is not None:
+            payload["verification"] = verification_payload
         state.inbox[inbox_id] = AgentInboxItem(
             id=inbox_id,
             recipient_agent_id=agent.reports_to_agent_id,
@@ -12200,11 +12214,7 @@ def _apply_command_deliverable_submission(
             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
             response_requested=True,
             priority=TeamInboxPriority.LOW,
-            payload={
-                "deliverable_id": new_deliverable.id,
-                "summary": new_deliverable.summary,
-                "artifact_refs": list(new_deliverable.artifact_refs),
-            },
+            payload=payload,
             created_at=now,
             updated_at=now,
         )
@@ -15182,6 +15192,9 @@ def _apply_review_request(
         "instructions": instructions or "",
         "artifact_refs": list(deliverable.artifact_refs),
     }
+    verification_payload = _deliverable_verification_payload(deliverable)
+    if verification_payload is not None:
+        payload["verification"] = verification_payload
     if profile is not None:
         payload["review_profile"] = {
             "id": profile.id,
@@ -15496,6 +15509,12 @@ def _deliverable_verification_from_payload(
     if payload is None:
         return None
     return DeliverableVerification.model_validate(payload)
+
+
+def _deliverable_verification_payload(deliverable: Deliverable) -> dict[str, Any] | None:
+    if deliverable.verification is None:
+        return None
+    return deliverable.verification.model_dump(mode="json")
 
 
 def _deliverable_submission_next_action_hints(

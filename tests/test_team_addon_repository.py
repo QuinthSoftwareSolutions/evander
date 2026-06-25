@@ -1467,6 +1467,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     ]
     assert len(notices) == 1
     assert notices[0].recipient_agent_id == "lead"
+    assert notices[0].payload["verification"] == {
+        "status": "not_run",
+        "summary": "pytest is unavailable in this VM.",
+        "evidence_refs": [],
+    }
 
 
 def test_submit_deliverable_command_publish_failure_does_not_mutate_state(
@@ -1517,6 +1522,10 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
             "task_id": "task",
             "summary": "Backend work is ready.",
             "artifact_refs": ["artifact-space:/teams/team/projects/project/deliverables/deliverable-1"],
+            "verification": {
+                "status": "failed",
+                "summary": "Unit suite failed before handoff.",
+            },
         },
         reviews=[
             {
@@ -1545,6 +1554,11 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     ]
     assert len(review_items) == 1
     assert review_items[0].payload["review_profile"]["id"] == "profile"
+    assert review_items[0].payload["verification"] == {
+        "status": "failed",
+        "summary": "Unit suite failed before handoff.",
+        "evidence_refs": [],
+    }
     assert state.agent_runtimes["worker"].next_wake_at is None
 
 
@@ -6913,6 +6927,16 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
+    repo.update(
+        lambda state: setattr(
+            state.deliverables["deliverable"],
+            "verification",
+            DeliverableVerification(
+                status="partial",
+                summary="Only schema checks ran before review.",
+            ),
+        )
+    )
 
     state, result = repo.request_review_command(
         session_id="session-lead",
@@ -6926,6 +6950,16 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
     assert result["created_review_request_ids"] == [result["review_request_id"]]
     assert any("wait for the assigned reviewer" in hint for hint in result["next_action_hints"])
     assert state.review_requests[result["review_request_id"]].reviewer_agent_id == "worker"
+    review_item = next(
+        item
+        for item in state.inbox.values()
+        if item.payload.get("review_request_id") == result["review_request_id"]
+    )
+    assert review_item.payload["verification"] == {
+        "status": "partial",
+        "summary": "Only schema checks ran before review.",
+        "evidence_refs": [],
+    }
 
 
 def test_apply_agent_action_review_request_rejected_for_unrelated_agent(
