@@ -5228,12 +5228,12 @@ def _consolidate_git_branches(
         )
         failure["output"] = status.stdout
         return failure
-    if bare_repo_path is not None:
-        if not bare_repo_path.exists():
-            return _consolidation_failure(
-                target_branch,
-                f"bare repo not found: {bare_repo_path}",
-            )
+    merge_sources: list[tuple[str, str]] = []
+    temp_refs: list[str] = []
+    if bare_repo_path is None:
+        merge_sources = [(source, source) for source in source_branches]
+    else:
+        bare_repo_exists = bare_repo_path.exists()
         for source in source_branches:
             resolved = _git(
                 "rev-parse",
@@ -5241,15 +5241,27 @@ def _consolidate_git_branches(
                 "--quiet",
                 f"refs/heads/{source}^{{commit}}",
             )
-            if resolved.returncode == 0:
-                continue
+            if not bare_repo_exists:
+                if resolved.returncode == 0:
+                    merge_sources.append((source, source))
+                    continue
+                return _consolidation_failure(
+                    target_branch,
+                    f"bare repo not found: {bare_repo_path}",
+                )
+            ref_hash = hashlib.sha256(
+                f"{target_branch}\0{source}".encode("utf-8")
+            ).hexdigest()[:16]
+            temp_ref = f"refs/agent-sandbox/team-consolidations/{ref_hash}"
             fetch = _git(
                 "fetch",
                 "--no-tags",
                 str(bare_repo_path),
-                f"+refs/heads/{source}:refs/heads/{source}",
+                f"+refs/heads/{source}:{temp_ref}",
             )
             if fetch.returncode != 0:
+                for ref in temp_refs:
+                    _git("update-ref", "-d", ref)
                 failure = _consolidation_failure(
                     target_branch,
                     f"failed to fetch source branch {source} from {bare_repo_path}",
@@ -5257,47 +5269,58 @@ def _consolidate_git_branches(
                 failure["output"] = _git_text(fetch)
                 failure["conflict_branch"] = source
                 return failure
+            temp_refs.append(temp_ref)
+            merge_sources.append((source, temp_ref))
 
-    target_ref = f"refs/heads/{target_branch}"
-    target_exists = _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
-    if target_exists:
-        checkout = _git("checkout", target_branch)
-    elif base_branch is not None:
-        checkout = _git("checkout", "-B", target_branch, base_branch)
-    else:
-        checkout = _git("checkout", "-B", target_branch)
-    if checkout.returncode != 0:
-        return _consolidation_failure(target_branch, _git_text(checkout))
+    def _cleanup_temp_refs() -> None:
+        for ref in temp_refs:
+            _git("update-ref", "-d", ref)
 
-    merged: list[str] = []
-    for source in source_branches:
-        merge = _git(
-            "merge",
-            "--no-ff",
-            "-m",
-            f"Merge {source} into {target_branch}",
-            source,
+    try:
+        target_ref = f"refs/heads/{target_branch}"
+        target_exists = (
+            _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
         )
-        if merge.returncode != 0:
-            _git("merge", "--abort")
-            failure = _consolidation_failure(
-                target_branch,
-                f"merge conflict while merging {source} into {target_branch}",
-            )
-            failure["merged_branches"] = merged
-            failure["conflict_branch"] = source
-            failure["output"] = _git_text(merge)
-            return failure
-        merged.append(source)
+        if target_exists:
+            checkout = _git("checkout", target_branch)
+        elif base_branch is not None:
+            checkout = _git("checkout", "-B", target_branch, base_branch)
+        else:
+            checkout = _git("checkout", "-B", target_branch)
+        if checkout.returncode != 0:
+            return _consolidation_failure(target_branch, _git_text(checkout))
 
-    head = _git("rev-parse", "HEAD")
-    commit_sha = head.stdout.strip() if head.returncode == 0 else None
-    return {
-        "success": True,
-        "target_branch": target_branch,
-        "merged_branches": merged,
-        "commit_sha": commit_sha,
-        "conflict_branch": None,
-        "output": None,
-        "error": None,
-    }
+        merged: list[str] = []
+        for source, merge_ref in merge_sources:
+            merge = _git(
+                "merge",
+                "--no-ff",
+                "-m",
+                f"Merge {source} into {target_branch}",
+                merge_ref,
+            )
+            if merge.returncode != 0:
+                _git("merge", "--abort")
+                failure = _consolidation_failure(
+                    target_branch,
+                    f"merge conflict while merging {source} into {target_branch}",
+                )
+                failure["merged_branches"] = merged
+                failure["conflict_branch"] = source
+                failure["output"] = _git_text(merge)
+                return failure
+            merged.append(source)
+
+        head = _git("rev-parse", "HEAD")
+        commit_sha = head.stdout.strip() if head.returncode == 0 else None
+        return {
+            "success": True,
+            "target_branch": target_branch,
+            "merged_branches": merged,
+            "commit_sha": commit_sha,
+            "conflict_branch": None,
+            "output": None,
+            "error": None,
+        }
+    finally:
+        _cleanup_temp_refs()
