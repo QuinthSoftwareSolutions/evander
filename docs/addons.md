@@ -290,10 +290,9 @@ The Teams UI includes a dedicated `Cases` tab, a workspace cases panel, a
 `Create case` setup form, case selectors on task create/update forms, and case
 edit support in the generic record editor.
 
-Agent wake leases and the Team state query include visible open cases. The
-persistent action contract exposes `case_updates[]` for agents to create or
-update intake/lifecycle records, while `task_creations[]` may include `case_id`
-to attach new work to an existing case.
+Agent wake leases and the Team state query include visible open cases. Normal
+Team MCP tools let agents create and update case records, link cases to tasks,
+and attach new work to an existing case.
 
 Workflow automation can manage cases directly through the add-on-owned
 `effect:team:create-case` and `effect:team:update-case` nodes. These effects use
@@ -479,7 +478,8 @@ set:
   separate workflow node because one wake tick can lease multiple agents.
   Static Team operating rules are seeded as a managed Team Add-on section in
   `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
-  dynamic dispatch context and action artifact reminder.
+  dynamic dispatch context. Team state changes are made through Team-owned MCP
+  tools exposed only to the appropriate wake/session class.
   Each persistent agent can set `context_clearing_policy` to `off`, `idle`, or
   `every_wake`. `idle` preserves the original automatic behavior by rotating
   after real work has completed and the agent becomes idle. `every_wake` starts
@@ -488,23 +488,19 @@ set:
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.
-- `query:team:agent-action-artifact` reads the structured JSON action artifact
-  that a prompted persistent agent must write to `/artifacts/team-action.json`.
-- `effect:team:apply-agent-action` validates the action, updates add-on state,
-  routes questions/status reports/deliverable notices, and clears the runtime
-  lease. Persistent actions may include `ephemeral_requests` to request bounded
-  disposable workers and `ephemeral_acceptances` to promote or reject completed
-  ephemeral results.
-- If the most recent recorded action for an agent failed validation, the next
-  successful `effect:team:wake-due-agents` dispatch includes one-shot
-  `recent_action_feedback` for that failed dispatch only. The runtime marks that
-  feedback delivered after the resume succeeds, so older failures are not
-  replayed and the same feedback does not repeat on later wakes.
+- Team-owned MCP tools mutate Team state immediately and atomically during the
+  wake. They infer the caller identity, active Team lease, dispatch, and worker
+  assignment from the MCP connection/session and do not accept agent-facing
+  dispatch identity fields.
+- Session completion is finalized by `effect:team:finalize-agent-dispatch`,
+  which closes the persistent dispatch lease from `session_id`, `dispatch_id`,
+  and `agent_id`, then computes progress or no-progress from the dispatch
+  activity ledger. Individual MCP tool calls do not close the dispatch lease.
 - `effect:team:create-operator-directive` turns an operator request from
   Discord, Teams, Admin Web, or another workflow into a durable
   `operator_directive` inbox item. The item defaults to the team manager,
   resets the manager's no-progress throttle, and is handled by the next normal
-  Team wake through `team-action.json`.
+  Team wake through ordinary Team MCP tools.
 - `team_create_operator_directive` is the add-on-owned MCP tool for governance
   managers. It creates the same durable `operator_directive` inbox item, but
   only for member Teams of a governance group managed by the caller, and only
@@ -520,11 +516,10 @@ set:
   runtime evaluation.
 - `query:team:session-routing` classifies a completed Truman session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
-  unknown session before action artifacts are applied. Persistent agents are
-  routed only when the completed dispatch id matches the active Team runtime
-  lease, so ordinary Discord/Teams wake completions do not create missing
-  `team-action.json` failures.
-- `effect:team:mark-ephemeral-spawned`, `effect:team:apply-ephemeral-action`,
+  unknown session before completion finalization. Persistent agents are finalized
+  only when the completed dispatch id matches the active Team runtime lease, so
+  ordinary Discord/Teams wake completions do not affect Team dispatch state.
+- `effect:team:mark-ephemeral-spawned`,
   `effect:team:accept-ephemeral-deliverable`, and
   `effect:team:mark-ephemeral-cleaned-up` track the ephemeral worker lifecycle
   around normal Truman `effect:agent:create`, `effect:agent:prompt`, and
@@ -539,140 +534,88 @@ workflow pack for the intended cron plus agent-completion loop. Operators can
 write that definition into an operator-owned pack file when they want this
 opinionated runtime.
 
-### Agent Action Protocol
+### Team MCP Action Surface
 
-A prompted persistent agent drives the team by writing a single structured JSON
-action artifact to `/artifacts/team-action.json`. `effect:team:apply-agent-action`
-validates that artifact against the add-on state, records per-item errors without
-aborting the rest of the action, and returns the ids it produced. All of the
-fields below are optional lists; an agent includes only the ones it needs. Each
-applied item counts as progress and resets the agent's `no_progress_count`.
+Prompted persistent agents drive the team by calling Team-owned MCP tools. The
+tools live in the Team Add-on, not in the core gateway policy surface, and the
+server enforces authorization even when a tool is hidden from the caller's MCP
+tool list. Normal Team tools infer the session, agent, active dispatch, Team
+lease, and worker assignment from the MCP connection/session. Tool calls mutate
+Team state immediately and atomically per call; they do not close the active
+dispatch lease. Session completion closes persistent dispatches through the
+dispatch activity ledger/finalizer and computes progress or no-progress from
+that ledger.
 
-- `task_creations[]` — delegate work down or across the hierarchy. Shape:
-  `{"id"?, "owner_agent_id", "project_id", "priority"?, "title", "description",
-  "state"?, "parent_task_id"?, "dependency_task_ids"?}`. Top-level task
-  creation requires the actor's role to hold `create_root_task`; the built-in
-  manager and project-lead roles carry that permission, while ordinary worker
-  roles do not. Agents without `create_root_task` must create child tasks under
-  one of their own active parent tasks by setting `parent_task_id`. The actor may
-  create a task for itself, for a direct subordinate, for any agent in a project
-  it leads (`lead_agent_id`), or — as the team manager — for that project's
-  direct lead. Targets outside the actor's team or outside the target project
-  are rejected. Parent and dependency tasks must belong to the same project,
-  parent cycles and dependency cycles are rejected, tasks default to `pending`,
-  and tasks may only start in a non-terminal state. Created ids are returned in
-  `created_task_ids`.
-- `task_updates[]` — update owned task details, maintain dependency edges, or
-  move active work out of a subordinate queue. Shape:
-  `{"task_id", "state"?, "priority"?, "title"?, "description"?,
-  "owner_agent_id"?, "dependency_task_ids"?}`. State, priority, title, and
-  description remain owner-only. A superior agent may set `owner_agent_id` to
-  claim a non-terminal task currently owned by a subordinate, or reassign it to
-  another subordinate in the same project. Dependency edits may also be made by
-  a supervising agent, the project lead, or the team manager, and use the same
-  same-project and cycle validation as task creation. Do not use `task_updates`
-  to accept or reject another agent's delivered work; use `review_requests[]`
-  and `review_decisions[]` so the deliverable/task cascade is applied. Updated
-  ids are returned in `updated_task_ids`.
-- `status_requests[]` — ask a direct subordinate for an update (downward).
-  Shape: `{"recipient_agent_id", "task_id"?, "question"?,
-  "response_requested"?, "priority"?}`. The recipient must be a direct
-  subordinate; otherwise the item is rejected. `response_requested` defaults to
-  `true` and `priority` defaults to `"normal"`. A `STATUS_REQUEST` inbox item is
-  created for the subordinate and surfaced through the normal pending-inbox wake.
-  Returned in
-  `created_status_request_ids`.
-- `questions[]` and `status_reports[]` — talk upward only. Shape:
-  `{"recipient_agent_id"?, "task_id"?, "response_requested"?, "priority"?, ...}`; the
-  recipient defaults to the actor's `reports_to_agent_id` and must equal it. A
-  top-level manager (`reports_to_agent_id` is `None`) receives a clear per-item
-  error directing it to `operator_escalations` instead. `questions` default
-  `response_requested` to `true` and `priority` to `"normal"`; `status_reports`
-  default `response_requested` to `false` and `priority` to `"low"`. These create
-  `QUESTION` and `PROGRESS_REPORT` inbox items.
-- `operator_escalations[]` — manager-to-operator escalation. Shape:
-  `{"title", "message", "urgency"?, "project_id"?, "task_id"?}` (`urgency`
-  defaults to `"normal"`). Only the team's top-level manager may escalate. If the
-  team has no `operator_communication_target_id`, the item is recorded as a
-  failed action and **no** event is emitted. On success an `ESCALATION` inbox
-  item is written for audit and a `team.operator.escalation_requested` event is
-  published with payload `{team_id, manager_agent_id, communication_target_id,
-  title, message, urgency, project_id?, task_id?}`. Escalation ids are returned
-  in `operator_escalation_event_ids`.
-- `stand_downs[]` and `stand_down_revocations[]` — direct-superior hold control.
-  Shape: `{"agent_id", "reason"}` to stand down a direct subordinate and that
-  subordinate's subtree; `{"agent_id"}` to revoke a superior stand-down the
-  actor previously set. Held agents are skipped by future Team wake leasing, and
-  already-running dispatches from a held agent cannot apply non-empty Team
-  actions. Operator stand-downs are a separate source and cannot be revoked by
-  these agent-authored action items.
-- `operator_directive` inbox items — operator-to-manager instructions created
-  by the add-on Admin API or `effect:team:create-operator-directive`. These are
-  not agent-authored action items. The manager handles them during its normal
-  Team dispatch by taking the requested Team actions and listing the inbox id in
-  `handled_inbox_item_ids`.
-- `operator_chat_messages[]` — send a built-in Team Chat message to a known
-  human operator. Shape: `{"recipient_operator_user_id", "body", "summary"?}`.
-  Recipients must be listed in the dispatch context's
-  `operator_chat_participants`; this is direct human chat, not an agent-to-agent
-  inbox item. Returned in `created_operator_chat_message_ids`.
-- `deliverables[]` — record finished work for an owned task. Shape:
-  `{"id"?, "task_id", "summary", "artifact_paths"?, "artifact_refs"?,
-  "artifact_space_ref"?, "git_refs"?, "supersedes_deliverable_id"?}`.
-  When responding to a `review_rejected` inbox item, set
-  `supersedes_deliverable_id` to the rejected deliverable id from the inbox
-  payload. `artifact_paths` are relative paths under the session `/artifacts`
-  folder; when present, the Team runtime publishes only those files or
-  directories into the control-plane artifact store, records the latest version under
-  `/teams/<team_id>/projects/<project_id>/deliverables/<deliverable_id>`, and
-  appends the resulting `artifact-space:` ref to `artifact_refs`. Failed artifact
-  publication rejects that deliverable item without creating a ref-less
-  deliverable. Deliverable notices and review-request inbox items include the
-  final `artifact_refs`. Reviewer wakes automatically import review-request
-  `artifact-space:` refs into
-  `/artifacts/team-review-inputs/<review>/<deliverable>/<artifact>/<ref-version>`
-  and surface successful imports or import errors in the Team context JSON.
-  Status requests that merely mention `artifact-space:` refs or copied
-  `/artifacts/team-review-inputs` paths do not trigger this import; create a
-  `review_requests[]` item whenever another agent needs to inspect deliverable
-  artifacts.
-- `review_requests[]` — request a review of a deliverable; reviews are never
-  auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
-  "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's
-  `producer_agent_id`, supervise the producer (direct or transitive), or hold
-  project-lead/manager authority over the deliverable's project; the reviewer
-  must be in the same team. When `review_profile_id` is provided, the profile
-  must be active, in the same team, applicable to the deliverable's project, and
-  applicable to the assigned reviewer's role when the profile lists roles.
-  Leads that want reviewer-agent sign-off create a review request for that
-  reviewer; reassigning an existing review request is not part of the agent
-  action protocol. Returned in `created_review_request_ids`.
-- `review_decisions[]` — decide a review. Shape: `{"review_request_id",
-  "state", "findings"?, "criteria"?}` where `state` is `accepted`, `rejected`,
-  or `blocked`, and `criteria[]` contains `{"criterion_id", "state",
-  "finding"?}` entries with criterion state `passed`, `failed`, or `skipped`.
-  Criterion ids must exist on the review profile attached to the review request.
-  Only the assigned `reviewer_agent_id` may decide. Returned in
-  `decided_review_request_ids`.
-- `goal_updates[]` — set explicit goal acceptance. Shape: `{"project_id",
-  "goal_id", "state"}`. Only that project's `lead_agent_id` or the team manager
-  may update goals; goal acceptance is always explicit and never inferred from
-  text. Returned in `updated_goal_ids`.
-- `git_review_promotions[]`, `git_feature_updates[]`, and
-  `git_release_requests[]` — the Git delivery actions, documented under
-  *Deterministic Git Branch Naming* and *Git Promotion And Release Publication*
-  below. They populate `git_promotion_event_ids` and `release_package_ids`.
+Ordinary persistent Team wakes may receive these tools:
 
-Ephemeral workers report through their own `/artifacts/team-action.json`, which
-may additionally carry `agent_branch` and `commit_sha`. When present,
-`agent_branch` must equal the deterministic `agents/<session-id>/<assignment-id>`
-name for that assignment; a mismatch fails the assignment rather than recording a
-branch the add-on cannot later promote.
+- `team_record_note`
+- `team_mark_inbox_handled`
+- `team_request_status`
+- `team_ask_question`
+- `team_send_progress_report`
+- `team_reply_to_chat`
+- `team_send_operator_chat_message`
+- `team_escalate_operator`
+- `team_create_case`
+- `team_update_case`
+- `team_link_case_task`
+- `team_create_task`
+- `team_update_task`
+- `team_create_goal`
+- `team_update_goal`
+- `team_revoke_stand_down`
+- `team_clear_stand_down`
+- `team_submit_deliverable`
+- `team_submit_deliverable_for_review`
+- `team_request_review`
+- `team_decide_review`
+- `team_request_release`
+- `team_promote_git_branch`
+- `team_request_ephemeral_agent`
+- `team_request_ephemeral_agents`
 
-Persistent agents may include `git_refs` on a deliverable with `agent_branch`
-and/or `commit_sha` when the project has Git configured. Those refs are not
-published automatically; a supervising agent, project lead, or manager requests
-publication with `git_review_promotions[]`.
+Tool visibility is scoped by wake class:
+
+- Normal persistent wakes get ordinary Team action tools.
+- Team Chat wakes get `team_reply_to_chat`, plus ordinary tools only when that
+  chat dispatch may mutate Team state.
+- Governance wakes get governance tools only.
+- Ephemeral worker wakes get `team_report_ephemeral_result` only.
+- Inactive or teamless sessions get no ordinary Team action tools, except
+  governance tools for authorized governance managers.
+
+`request_id` is the idempotency key for create, append, message, and
+async-intent operations. Reusing the same key with the same normalized payload
+returns the original result; reusing it with a different payload is an
+idempotency conflict and does not mutate state. Related tool calls may carry
+`correlation_id` or `causation_id` for audit grouping. Tools that accept
+`handled_inbox_item_ids` mark those pending caller-owned inbox items handled
+atomically with the primary action; if any listed inbox item fails validation,
+the whole tool call fails without partial handling.
+
+Async-intent tools may record durable intent while external work is still
+pending. Their result reports the recorded intent and pending effect state
+rather than claiming the external operation completed synchronously.
+
+Deliverable tools publish `artifact_paths` host-side before recording the final
+Team mutation. Paths are checked for safety, publication is replay-idempotent,
+and Team state stores the resulting stable artifact references. If publication
+succeeds but the final mutation fails, operators should treat the published
+artifact as an orphan until it is linked by a replay or cleaned up intentionally.
+Reviewer wakes automatically import review-request artifact refs into
+`/artifacts/team-review-inputs/<review>/<deliverable>/<artifact>/<ref-version>`
+and surface successful imports or import errors in the Team context JSON.
+
+Ephemeral workers report assignment results with `team_report_ephemeral_result`.
+When they report Git output, the branch must match the deterministic
+`agents/<session-id>/<assignment-id>` branch for that assignment; a mismatch
+fails the assignment rather than recording a branch the add-on cannot later
+promote.
+
+Persistent agents may include `git_refs` on deliverables when the project has
+Git configured. Those refs are not published automatically; a supervising agent,
+project lead, or manager requests publication with `team_promote_git_branch` or
+`team_request_release`.
 
 ### Communication And Escalation Rules
 
@@ -697,19 +640,18 @@ Team communication is directional and enforced by the repository, not by prose:
   or the `team_create_operator_directive` MCP tool for governance managers.
   These surfaces create a pending `operator_directive` inbox item for the
   manager and mark the manager due, so an instruction like "ask the lead for
-  status on next dispatch" becomes normal Team work instead of an out-of-band
-  `team-action.json` write.
+  status on next dispatch" becomes normal Team work.
 - **Governance agenda completion** — governance managers use the
   `team_mark_governance_agenda_handled` MCP tool to mark agenda items handled
   for groups they manage. Operators can still use the Admin API or UI handle
   action.
-- **Team Chat to a human** — use `chat_replies` only to answer a specific human
-  operator message from the built-in Chat tab. If that operator message
-  explicitly asks for a Team state change, include the corresponding action
-  fields in the same action object alongside `chat_replies`; otherwise send only
-  the chat reply. Use `operator_chat_messages[]` only for human operators listed
-  in the current dispatch context. Do not use `questions`, `status_reports`, or
-  `operator_chat_messages[]` for normal agent-to-agent coordination.
+- **Team Chat to a human** — use `team_reply_to_chat` only to answer a specific
+  human operator message from the built-in Chat tab. If that operator message
+  explicitly asks for a Team state change, use the relevant ordinary Team tools
+  in the same dispatch when mutation is allowed. Use
+  `team_send_operator_chat_message` only for human operators listed in the
+  current dispatch context. Do not use question, status-report, or operator-chat
+  tools for normal agent-to-agent coordination.
 - `Team.operator_communication_target_id` is outbound-only. It does not grant the
   manager's real session inbound Discord or Teams access and does not wake that
   session by itself. If the operator should message or wake the manager through
@@ -718,10 +660,10 @@ Team communication is directional and enforced by the repository, not by prose:
 - **Operator stand-down** — use `POST /agents/{agent_id}/stand-down` with a
   required `reason` to disable that agent and its subordinate subtree. Held
   agents are skipped by future Team wake leasing, and any already-running
-  dispatch that later submits non-empty Team actions is recorded as a failed
-  action instead of being applied. Operator holds are durable state and can only
-  be cleared through `POST /agents/{agent_id}/stand-down/revoke`; agent actions
-  cannot revoke or override them.
+  dispatch that later attempts Team mutations is rejected instead of being
+  applied. Operator holds are durable state and can only be cleared through
+  `POST /agents/{agent_id}/stand-down/revoke`; ordinary Team MCP tools cannot
+  revoke or override them.
 
 Inbox priority controls wake timing, not visibility or permission. `high` and
 `normal` pending inbox items wake recipients immediately on the next Team wake
@@ -731,11 +673,11 @@ seen that low-priority work. Additional low-priority items do not reset an activ
 countdown. Any other wake reason cancels the countdown and includes all pending
 low-priority inbox in that dispatch.
 
-### Action-Driven Reviews And Decision Cascade
+### Review Decisions And Decision Cascade
 
 Reviews are created explicitly and decided only by the assigned reviewer. A
 decision cascades deterministically through the deliverable, task, and project,
-and the same cascade backs both the `review_decisions` action and the
+and the same cascade backs both the `team_decide_review` MCP tool and the
 `POST /review-requests/{id}/decision` Admin API endpoint:
 
 - **accepted** — the review is accepted. The deliverable becomes accepted only
@@ -774,7 +716,7 @@ to one project, constrained to specific reviewer roles with `applicable_role_ids
 and populated with criteria rows. Review requests can attach a profile and
 instructions; review decisions can then record per-criterion outcomes. Archived
 profiles remain visible for history but cannot be assigned to new review
-requests through either the agent action protocol or Admin API.
+requests through either Team MCP tools or the Admin API.
 
 ### Deterministic Git Branch Naming
 
@@ -799,37 +741,36 @@ subprocess git call.
 
 Git delivery flows up a fixed ladder — agent branch → review branch → feature
 branch → release branch → canonical push — using `GitPromotionRecord` rows in
-`TeamState.git_promotions` and `team.git.promotion_requested` events. The
-repository only records intent; the packaged pack routes each event on its
+`TeamState.git_promotions` and `team.git.promotion_requested` events. Team MCP
+tools record intent; the packaged pack routes each event on its
 `promotion_kind`:
 
-- `review` — `git_review_promotions[]` supports two shapes. Ephemeral workers
-  use `{"assignment_id", "deliverable_id"?}`; the actor must be the assignment's
-  parent and the assignment must be completed or accepted with an `agent_branch`.
-  Persistent agents use `{"deliverable_id", "source_branch"?, "commit_sha"?}`;
-  the actor must be the producer, supervise the producer, or hold project-lead or
-  manager authority over the deliverable's project, and the source may also come
-  from the deliverable's `git_refs.agent_branch` / `git_refs.commit_sha`.
+- `review` — `team_promote_git_branch` can promote an ephemeral assignment
+  branch after the assignment is completed or accepted with an `agent_branch`, or
+  promote a persistent deliverable branch when the actor is the producer,
+  supervises the producer, or holds project-lead or manager authority over the
+  deliverable's project. Persistent sources may come from the deliverable's
+  `git_refs.agent_branch` / `git_refs.commit_sha`.
   Routes to `effect:team:publish-review-branch` then
   `effect:team:record-git-promotion`.
-- `feature` — `git_feature_updates[]` (`{"task_id", "source_review_branches"[],
-  "feature_branch"?}`): the actor owns the task or supervises its owner. Routes to
-  `effect:team:consolidate-git-branches` then `effect:team:record-git-promotion`.
-- `release` and `canonical_push` — `git_release_requests[]` (`{"id"?,
-  "project_id", "deliverable_ids"[], "release_branch"?, "canonical_branch"?}`):
-  only the project lead, the team manager, or an agent whose same-project role
-  has `request_release` may request a release, and every deliverable must belong
-  to the project and be accepted. Deliverables may already carry
+- `feature` — `team_promote_git_branch` can consolidate review branches into a
+  task feature branch when the actor owns the task or supervises its owner.
+  Routes to `effect:team:consolidate-git-branches` then
+  `effect:team:record-git-promotion`.
+- `release` and `canonical_push` — `team_request_release` creates a pending
+  `ReleasePackage` for accepted deliverables in one project. Only the project
+  lead, the team manager, or an agent whose same-project role has
+  `request_release` may request a release. Deliverables may already carry
   `git_refs.feature_branch`, may carry `git_refs.review_branch` or
-  `git_refs.agent_branch` for automatic prerequisite feature promotion, or may be
-  non-Git artifact deliverables with `artifact_refs`. This creates a pending
-  `ReleasePackage`; if prerequisite feature promotions are needed, they are
-  enqueued first and the release continues after they succeed. Once feature
-  branches are available, project Git config is required and the runtime creates
-  a `release` promotion (consolidate feature branches → release branch) followed
-  by a `canonical_push` promotion (release branch → canonical branch, finalized
-  by `effect:team:mark-release-published`). Pure artifact releases do not require
-  project Git config and do not create release or canonical branches.
+  `git_refs.agent_branch` for automatic prerequisite feature promotion, or may
+  be non-Git artifact deliverables with `artifact_refs`. If prerequisite feature
+  promotions are needed, they are enqueued first and the release continues after
+  they succeed. Once feature branches are available, project Git config is
+  required and the runtime creates a `release` promotion (consolidate feature
+  branches → release branch) followed by a `canonical_push` promotion (release
+  branch → canonical branch, finalized by `effect:team:mark-release-published`).
+  Pure artifact releases do not require project Git config and do not create
+  release or canonical branches.
 
 Four add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the

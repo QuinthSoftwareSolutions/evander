@@ -18,7 +18,6 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     wake_interval_seconds: ConfigValue | None = None
     max_no_progress_count: ConfigValue | None = None
     low_priority_wake_after_cycles: ConfigValue | None = None
-    action_artifact_path: ConfigValue | None = None
     resume_mode: ConfigValue | None = None
 
 
@@ -39,9 +38,6 @@ class TeamApplyAgentActionEffectDefinition(EffectDefinition):
     error: ConfigValue | None = None
     session_id: ConfigValue | None = None
     dispatch_id: ConfigValue | None = None
-    action_artifact_path: ConfigValue | None = None
-    recover_missing_action: ConfigValue | None = None
-    recovery_resume_mode: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
     @field_validator("action")
@@ -50,6 +46,14 @@ class TeamApplyAgentActionEffectDefinition(EffectDefinition):
         if value is None or isinstance(value, (Mapping, str)):
             return value
         raise ValueError("effect:team:apply-agent-action action must be a JSON object")
+
+
+class TeamFinalizeAgentDispatchEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:finalize-agent-dispatch"]
+    session_id: ConfigValue
+    dispatch_id: ConfigValue
+    agent_id: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
 
 
 class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
@@ -339,6 +343,21 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "recovery_dispatched": {"type": "boolean"},
         "recovery_action_record_id": {"type": ["string", "null"]},
         "recovery_result": {"type": ["object", "null"]},
+    },
+    "effect:team:finalize-agent-dispatch": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "agent_id": {"type": ["string", "null"]},
+        "dispatch_id": {"type": "string"},
+        "finalized": {"type": "boolean"},
+        "applied": {"type": "boolean"},
+        "progress_made": {"type": "boolean"},
+        "activity_count": {"type": "integer"},
+        "successful_activity_count": {"type": "integer"},
+        "failed_activity_count": {"type": "integer"},
+        "context_activity": {"type": "boolean"},
+        "events": {"type": "array"},
+        "errors": {"type": "array"},
     },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},

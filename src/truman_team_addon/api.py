@@ -738,7 +738,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def list_conversations(request: Request) -> JSONResponse:
         state = repository.read()
         scope = _chat_list_scope(context.auth, request, state)
-        return JSONResponse(_conversation_collection_payload(state, scope=scope))
+        return JSONResponse(
+            _conversation_collection_payload(
+                state,
+                scope=scope,
+                selected_conversation_id=_query_text(request, "selected_conversation_id"),
+                include_selected_messages=bool(_query_bool(request, "include_selected_messages")),
+            )
+        )
 
     async def create_conversation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -755,6 +762,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state,
             scope=scope,
             selected_conversation_id=conversation.id,
+            include_selected_messages=True,
         )
         response_payload["created"] = created
         return JSONResponse(response_payload, status_code=201 if created else 200)
@@ -2378,6 +2386,7 @@ def _conversation_collection_payload(
     *,
     scope: Mapping[str, Any],
     selected_conversation_id: str | None = None,
+    include_selected_messages: bool = False,
 ) -> dict[str, Any]:
     selected_operator = scope["selected_operator"]
     selected_operator_user_id = str(selected_operator["user_id"])
@@ -2394,9 +2403,18 @@ def _conversation_collection_payload(
         ),
         reverse=True,
     )
+    selected_id = (
+        selected_conversation_id
+        if selected_conversation_id
+        and any(conversation.id == selected_conversation_id for conversation in conversations)
+        else None
+    )
+    if selected_id is None and include_selected_messages and conversations:
+        selected_id = conversations[0].id
+    messages_by_conversation = _conversation_messages_by_conversation(state)
     return {
         "revision": state.revision,
-        "selected_conversation_id": selected_conversation_id,
+        "selected_conversation_id": selected_id,
         **_chat_scope_payload(state, scope),
         "eligible_agents": [
             _chat_agent_payload(agent)
@@ -2407,7 +2425,8 @@ def _conversation_collection_payload(
             _conversation_payload(
                 state,
                 conversation,
-                include_messages=False,
+                include_messages=include_selected_messages and conversation.id == selected_id,
+                messages_by_conversation=messages_by_conversation,
                 current_operator_user_id=current_operator_user_id,
             )
             for conversation in conversations
@@ -2421,9 +2440,14 @@ def _conversation_payload(
     *,
     include_messages: bool,
     message_limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
+    messages_by_conversation: Mapping[str, Sequence[Any]] | None = None,
     current_operator_user_id: str | None = None,
 ) -> dict[str, Any]:
-    messages = _conversation_messages(state, conversation.id)
+    messages = _conversation_messages(
+        state,
+        conversation.id,
+        messages_by_conversation=messages_by_conversation,
+    )
     payload = {
         "id": conversation.id,
         "agent_id": conversation.agent_id,
@@ -2451,7 +2475,23 @@ def _conversation_payload(
     return payload
 
 
-def _conversation_messages(state: TeamState, conversation_id: str) -> list[Any]:
+def _conversation_messages_by_conversation(state: TeamState) -> dict[str, list[Any]]:
+    messages_by_conversation: dict[str, list[Any]] = {}
+    for message in state.conversation_messages.values():
+        messages_by_conversation.setdefault(message.conversation_id, []).append(message)
+    for messages in messages_by_conversation.values():
+        messages.sort(key=lambda message: (message.created_at, message.id))
+    return messages_by_conversation
+
+
+def _conversation_messages(
+    state: TeamState,
+    conversation_id: str,
+    *,
+    messages_by_conversation: Mapping[str, Sequence[Any]] | None = None,
+) -> list[Any]:
+    if messages_by_conversation is not None:
+        return list(messages_by_conversation.get(conversation_id, ()))
     messages = [
         message
         for message in state.conversation_messages.values()

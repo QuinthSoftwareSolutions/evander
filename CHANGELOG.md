@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-25 - Team Add-on Clean MCP Cutover Documentation
+
+- Documented the clean Team MCP cutover from Team action artifacts to
+  Team-owned MCP tools, including tool visibility, idempotency, finalization,
+  deliverable artifact publication, and ephemeral worker reporting semantics.
+- Added a local Team MCP cutover runbook covering service quiescence, active
+  lease inspection, pending artifact disposition, state backup/migration,
+  restart, smoke checks, and common post-cutover troubleshooting.
+
 ## 2026-06-25 - ADO Daily Status Elapsed Time Guard
 
 - Required `get_ado_daily_status_report_data` callers to opt into
@@ -359,6 +368,24 @@
   before assigning tasks.
 - Added role-aware delegation guidance to reduce implementation tasks being
   assigned to reviewer-role agents.
+
+## 2026-06-23 - Team Add-on Chat Load Performance
+
+- Optimized the Team Add-on Chat load path so the conversation list can inline
+  the selected thread's first message page, letting the client render a usable
+  chat view without a redundant detail request.
+- Grouped conversation messages once while building chat collection payloads so
+  large chat histories no longer rescan all messages for every conversation row.
+- Preserved the current Chat conversation selection when a refresh response
+  arrives after the operator has selected a different conversation.
+
+## 2026-06-23 - Workflow Editor Undo Review Fixes
+
+- Limited workflow editor undo snapshots to editable workflow content so
+  validation diagnostics, output schemas, and revision-only refreshes do not
+  create or restore undo history entries.
+- Added smoke coverage proving validation metadata refreshes leave undo disabled
+  and save revision refreshes clear undo availability.
 
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 

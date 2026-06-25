@@ -984,6 +984,172 @@ class AgentActionRecord(TeamModel):
         return _optional_text(value)
 
 
+class TeamDispatchActivityStatus(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class TeamOutboxStatus(str, Enum):
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TeamDispatchActivity(TeamModel):
+    id: str
+    tool_name: str
+    caller_session_id: str
+    caller_identity: str
+    agent_id: str | None = None
+    governance_group_id: str | None = None
+    assignment_id: str | None = None
+    dispatch_id: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+    status: TeamDispatchActivityStatus = TeamDispatchActivityStatus.SUCCESS
+    progress_classification: str = "none"
+    action_record_id: str | None = None
+    audit_record_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    correction_context_summary: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "tool_name", "caller_session_id", "caller_identity", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "agent_id",
+        "governance_group_id",
+        "assignment_id",
+        "dispatch_id",
+        "request_id",
+        "correlation_id",
+        "causation_id",
+        "action_record_id",
+        "audit_record_id",
+        "error_code",
+        "error_message",
+        "correction_context_summary",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("progress_classification", mode="before")
+    @classmethod
+    def _progress_classification(cls, value: object) -> str:
+        return _optional_text(value) or "none"
+
+    @model_validator(mode="after")
+    def _validate_domain_identity(self) -> "TeamDispatchActivity":
+        if not (self.agent_id or self.governance_group_id or self.assignment_id):
+            raise ValueError(
+                "dispatch activity requires agent_id, governance_group_id, or assignment_id"
+            )
+        return self
+
+
+class TeamIdempotencyRecord(TeamModel):
+    id: str
+    tool_name: str
+    caller_identity: str
+    scope_kind: str
+    scope_id: str
+    request_id: str
+    normalized_payload_digest: str
+    response_payload: dict[str, Any] = Field(default_factory=dict)
+    created_domain_ids: list[str] = Field(default_factory=list)
+    created_event_ids: list[str] = Field(default_factory=list)
+    status: str = "succeeded"
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "tool_name",
+        "caller_identity",
+        "scope_kind",
+        "scope_id",
+        "request_id",
+        "normalized_payload_digest",
+        "status",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("response_payload", mode="before")
+    @classmethod
+    def _response_payload(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("response_payload must be a JSON object")
+        return dict(value)
+
+    @field_validator("created_domain_ids", "created_event_ids", mode="before")
+    @classmethod
+    def _created_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+
+class TeamOutboxRecord(TeamModel):
+    id: str
+    intent_type: str
+    aggregate_type: str | None = None
+    aggregate_id: str | None = None
+    idempotency_key: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    status: TeamOutboxStatus = TeamOutboxStatus.PENDING
+    available_at: datetime = Field(default_factory=utc_now)
+    attempt_count: int = Field(default=0, ge=0)
+    claimed_at: datetime | None = None
+    claimed_by: str | None = None
+    claim_token: str | None = None
+    claim_expires_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "intent_type", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "aggregate_type",
+        "aggregate_id",
+        "idempotency_key",
+        "claimed_by",
+        "claim_token",
+        "last_error_code",
+        "last_error_message",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _payload(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("payload must be a JSON object")
+        return dict(value)
+
+
 class TeamConversation(TeamModel):
     id: str
     agent_id: str

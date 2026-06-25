@@ -780,6 +780,37 @@ def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     ]
 
 
+def test_team_addon_conversation_list_can_inline_selected_message_page(
+    tmp_path: Path,
+) -> None:
+    _repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    default_response = client.get("/api/addons/team-addon/conversations")
+    assert default_response.status_code == 200
+    default_conversation = default_response.json()["conversations"][0]
+    assert default_conversation["message_count"] == 75
+    assert "messages" not in default_conversation
+
+    selected_response = client.get(
+        "/api/addons/team-addon/conversations"
+        f"?include_selected_messages=1&selected_conversation_id={conversation_id}"
+    )
+    assert selected_response.status_code == 200
+    payload = selected_response.json()
+    assert payload["selected_conversation_id"] == conversation_id
+    conversation = payload["conversations"][0]
+    assert conversation["id"] == conversation_id
+    assert conversation["message_count"] == 75
+    assert conversation["messages_limit"] == 50
+    assert conversation["has_older"] is True
+    assert conversation["oldest_message_id"] == "msg-025"
+    assert conversation["newest_message_id"] == "msg-074"
+    assert [message["id"] for message in conversation["messages"]] == [
+        f"msg-{index:03d}" for index in range(25, 75)
+    ]
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:

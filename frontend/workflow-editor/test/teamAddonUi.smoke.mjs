@@ -76,6 +76,18 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
   assert.match(script, /data-chat-scroll-conversation-id/);
   assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
+  assert.match(
+    stylesheet,
+    /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-new-picker\s*\{[\s\S]*?overflow:\s*hidden;/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-agent-picker\s*\{[\s\S]*?max-height:\s*min\(18rem, 45vh\);[\s\S]*?overflow-y:\s*auto;/,
+  );
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
   assert.match(script, /peopleViewTeams/);
@@ -1084,23 +1096,31 @@ function chatConversationPayload(state, conversation, { includeMessages = false,
   return payload;
 }
 
-function chatCollectionPayload(state, { selectedConversationId = null } = {}) {
+function chatCollectionPayload(state, { selectedConversationId = null, includeSelectedMessages = false } = {}) {
   const conversations = Object.values(state.conversations || {}).sort((left, right) => {
     return (
       String(right.last_interaction_at || "").localeCompare(String(left.last_interaction_at || "")) ||
       String(right.id || "").localeCompare(String(left.id || ""))
     );
   });
+  let resolvedSelectedConversationId = selectedConversationId;
+  if (
+    !conversations.some((conversation) => conversation.id === resolvedSelectedConversationId)
+  ) {
+    resolvedSelectedConversationId = includeSelectedMessages ? conversations[0]?.id || null : selectedConversationId;
+  }
   const eligibleAgents = Object.values(state.agents || {})
     .filter((agent) => (agent.status || "active") !== "archived")
     .sort((left, right) => String(left.display_name || left.id).localeCompare(String(right.display_name || right.id)))
     .map((agent) => chatAgentPayload(state, agent.id));
   return {
     revision: state.revision,
-    selected_conversation_id: selectedConversationId,
+    selected_conversation_id: resolvedSelectedConversationId,
     eligible_agents: eligibleAgents,
     conversations: conversations.map((conversation) =>
-      chatConversationPayload(state, conversation, { includeMessages: false }),
+      chatConversationPayload(state, conversation, {
+        includeMessages: includeSelectedMessages && conversation.id === resolvedSelectedConversationId,
+      }),
     ),
   };
 }
@@ -1132,6 +1152,7 @@ async function createTeamAddonServer(
   t,
   {
     conflictOnFirstTeamCreate = false,
+    conversationsBeforeResponse = null,
     costsBeforeResponse = null,
     costsDelayMs = 0,
     costsPayload = null,
@@ -1143,6 +1164,7 @@ async function createTeamAddonServer(
   const requests = [];
   const costResponses = [];
   const timelineRequests = [];
+  const chatRequests = [];
   const openChatStreams = new Set();
   let conflictSent = false;
   const template = autoDevSquadTemplate();
@@ -1204,12 +1226,17 @@ async function createTeamAddonServer(
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/conversations") {
-        jsonResponse(response, {
-          revision: state.revision,
-          selected_conversation_id: null,
-          eligible_agents: [],
-          conversations: [],
-        });
+        chatRequests.push({ method: request.method, pathname, search: url.search });
+        if (conversationsBeforeResponse) {
+          await conversationsBeforeResponse({ request, url, chatRequests });
+        }
+        jsonResponse(
+          response,
+          chatCollectionPayload(state, {
+            selectedConversationId: queryText(url.searchParams, "selected_conversation_id"),
+            includeSelectedMessages: queryBool(url.searchParams, "include_selected_messages") === true,
+          }),
+        );
         return;
       }
       if (
@@ -1441,7 +1468,7 @@ async function createTeamAddonServer(
   });
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
-  return { port: address.port, requests, state, timelineRequests, costResponses };
+  return { port: address.port, requests, state, timelineRequests, costResponses, chatRequests };
 }
 
 function materializationDuplicateError(state, payload, template) {
@@ -3929,6 +3956,21 @@ function seededLongChatState(messageCount = 120) {
   const state = seededGitState();
   state.revision = 9;
   state.agents["alpha-lead"].display_name = "Ada";
+  for (let index = 1; index <= 30; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    state.agents[`scroll-agent-${suffix}`] = {
+      id: `scroll-agent-${suffix}`,
+      team_id: "team-alpha",
+      project_id: "alpha-project",
+      role_id: "alpha-project__implementer",
+      display_name: `Scrollable Agent ${suffix}`,
+      session_id: `session-scroll-agent-${suffix}`,
+      reports_to_agent_id: "alpha-lead",
+      subordinate_agent_ids: [],
+      ephemeral_policy: { max_concurrent: 0 },
+      status: "active",
+    };
+  }
   state.conversations = {
     "conversation-alpha-lead": {
       id: "conversation-alpha-lead",
@@ -3962,8 +4004,41 @@ function seededLongChatState(messageCount = 120) {
   return state;
 }
 
-test("team add-on Chat panel stays bounded and loads older messages on upward scroll", async (t) => {
-  const { port, requests } = await createTeamAddonServer(t, {
+function seededTwoConversationChatState() {
+  const state = seededLongChatState(80);
+  state.agents["beta-lead"].display_name = "Bea";
+  state.conversations["conversation-beta-lead"] = {
+    id: "conversation-beta-lead",
+    agent_id: "beta-lead",
+    created_by: "operator",
+    last_message_preview: "Beta message 019",
+    created_at: "2026-06-09T00:00:00Z",
+    updated_at: "2026-06-09T01:00:00Z",
+    last_interaction_at: "2026-06-09T01:00:00Z",
+  };
+  for (let index = 0; index < 20; index += 1) {
+    const timestamp = new Date(Date.UTC(2026, 5, 9, 0, index, 30)).toISOString();
+    state.conversation_messages[`beta-msg-${String(index).padStart(3, "0")}`] = {
+      id: `beta-msg-${String(index).padStart(3, "0")}`,
+      conversation_id: "conversation-beta-lead",
+      sender: index % 2 === 0 ? "operator" : "agent",
+      message_type: "text",
+      body: `Beta message ${String(index).padStart(3, "0")}`,
+      status: "sent",
+      dispatch_id: null,
+      voice_session_id: null,
+      source_message_id: null,
+      error: null,
+      metadata: {},
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+  }
+  return state;
+}
+
+test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
+  const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
   const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
@@ -3976,6 +4051,24 @@ test("team add-on Chat panel stays bounded and loads older messages on upward sc
   await messageList.getByText("Message 119").waitFor({ state: "visible" });
   assert.equal(await page.locator(".chat-message").count(), 50);
   assert.equal(await messageList.getByText("Message 000").count(), 0);
+  assert.ok(
+    chatRequests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/conversations" &&
+        String(request.search || "").includes("include_selected_messages=1"),
+    ),
+    "expected initial chat load to request selected conversation messages in the collection payload",
+  );
+  assert.equal(
+    requests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead",
+    ),
+    false,
+    "expected initial usable chat view to skip the redundant conversation detail request",
+  );
 
   await page.waitForFunction(() => {
     const list = document.querySelector(".chat-message-list");
@@ -4060,6 +4153,94 @@ test("team add-on Chat panel stays bounded and loads older messages on upward sc
   assert.ok(
     afterScrollMetrics.scrollTop > 0,
     `expected scroll position to be preserved after prepend: ${JSON.stringify(afterScrollMetrics)}`,
+  );
+
+  await page.getByRole("button", { name: "New chat" }).click();
+  const picker = page.locator(".chat-agent-picker");
+  await picker.waitFor({ state: "visible" });
+  const pickerMetrics = await picker.evaluate((element) => {
+    const sidebar = document.querySelector(".chat-sidebar");
+    if (!(sidebar instanceof HTMLElement)) {
+      return null;
+    }
+    const pickerBox = element.getBoundingClientRect();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    return {
+      clientHeight: element.clientHeight,
+      overflowY: getComputedStyle(element).overflowY,
+      pickerBottom: pickerBox.bottom,
+      scrollHeight: element.scrollHeight,
+      sidebarBottom: sidebarBox.bottom,
+    };
+  });
+  assert.ok(pickerMetrics, "expected chat picker metrics");
+  assert.match(pickerMetrics.overflowY, /auto|scroll/);
+  assert.ok(
+    pickerMetrics.scrollHeight > pickerMetrics.clientHeight,
+    `expected long agent picker to scroll internally: ${JSON.stringify(pickerMetrics)}`,
+  );
+  assert.ok(
+    pickerMetrics.pickerBottom <= pickerMetrics.sidebarBottom + 2,
+    `expected picker to stay inside sidebar: ${JSON.stringify(pickerMetrics)}`,
+  );
+  const lateAgent = page.locator('[data-chat-agent-id="scroll-agent-30"]');
+  await lateAgent.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  await lateAgent.click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "scroll-agent-30",
+      ),
+    "expected selecting a late-list chat agent to create or focus that chat",
+  );
+});
+
+test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", async (t) => {
+  let holdConversationList = false;
+  let releaseRefreshResponse = null;
+  let refreshRequestStarted = null;
+  const refreshStarted = new Promise((resolve) => {
+    refreshRequestStarted = resolve;
+  });
+  const refreshRelease = new Promise((resolve) => {
+    releaseRefreshResponse = resolve;
+  });
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+    conversationsBeforeResponse: async () => {
+      if (!holdConversationList) {
+        return;
+      }
+      holdConversationList = false;
+      refreshRequestStarted?.();
+      await refreshRelease;
+    },
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+
+  holdConversationList = true;
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await refreshStarted;
+  await page.locator('[data-chat-conversation-id="conversation-beta-lead"]').click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+
+  releaseRefreshResponse?.();
+  await page.waitForFunction(() => {
+    const selected = document.querySelector(".chat-conversation-row.is-selected");
+    return selected?.dataset?.chatConversationId === "conversation-beta-lead";
+  });
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".chat-thread-title").getByText("Ada").count(),
+    0,
+    "expected delayed conversation-list response not to restore the stale selection",
   );
 });
 

@@ -99,11 +99,14 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
 
     nodes = {node["type"]: node for node in payload["nodes"]}
     wake = nodes["effect:team:wake-due-agents"]
-    apply_action = nodes["effect:team:apply-agent-action"]
+    finalize_dispatch = nodes["effect:team:finalize-agent-dispatch"]
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
     read_state = nodes["query:team:state"]
 
+    assert "query:team:agent-action-artifact" not in nodes
+    assert "effect:team:apply-agent-action" not in nodes
+    assert "effect:team:apply-ephemeral-action" not in nodes
     assert wake["kind"] == "effect"
     assert wake["label"] == "Wake Team agents"
     assert wake["description"]
@@ -116,15 +119,15 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
         "wake_interval_seconds",
         "max_no_progress_count",
         "low_priority_wake_after_cycles",
-        "action_artifact_path",
         "resume_mode",
     ]
     assert all(field["description"] for field in wake["fields"])
-    action_fields = {field["key"]: field for field in apply_action["fields"]}
-    assert action_fields["action"]["kind"] == "json"
-    assert action_fields["action"]["json_value_type"] == "object"
-    assert action_fields["valid"]["kind"] == "boolean"
-    assert action_fields["valid"]["bindable"]
+    finalize_fields = {field["key"]: field for field in finalize_dispatch["fields"]}
+    assert finalize_dispatch["kind"] == "effect"
+    assert finalize_dispatch["label"] == "Finalize Team dispatch"
+    assert finalize_fields["session_id"]["required"] is True
+    assert finalize_fields["dispatch_id"]["required"] is True
+    assert finalize_fields["agent_id"]["kind"] == "string"
     create_case_fields = {field["key"]: field for field in create_case["fields"]}
     assert create_case["kind"] == "effect"
     assert create_case["label"] == "Create Team case"
