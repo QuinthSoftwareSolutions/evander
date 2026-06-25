@@ -114,6 +114,7 @@ Source: `_missing_action_recovery_prompt()`.
 | Minimum JSON shape | Prompt prints minimal JSON action shape. | Remove. |
 
 MCP-native replacement:
+`Human note: I don't think we need to give a negative instruction to not use a tool, and we probably don't need to tell them about system internals like no progress.`
 
 ```text
 If you have no Team action to take, call no Team tool. The normal session
