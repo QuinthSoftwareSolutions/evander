@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_sandbox.models import SessionManifest
-from truman_team_addon.git_naming import (
+from evander_team_addon.git_naming import (
     canonical_release_branch,
     ephemeral_agent_branch,
     feature_branch,
@@ -14,7 +14,7 @@ from truman_team_addon.git_naming import (
     review_branch,
     validate_branch_name,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentContextClearingPolicy,
     AgentInboxItem,
@@ -46,7 +46,6 @@ from truman_team_addon.models import (
     TeamTaskState,
     runtime_operations_payload,
     agent_project_ids,
-    effective_role_permissions,
     project_lead_agent_id,
     team_state_payload,
 )
@@ -283,8 +282,9 @@ def _state_with_runtime_operations() -> TeamState:
         project_id="project",
         deliverable_ids=["deliverable"],
         artifact_refs=["published/release.tar.gz"],
+        release_branch="team/team/releases/release",
         state=TeamRecordState.BLOCKED,
-        error="release blocked",
+        error="merge conflict while merging feature into team/team/releases/release",
     )
     state.git_promotions["promotion-1"] = GitPromotionRecord(
         id="promotion-1",
@@ -591,6 +591,24 @@ def test_canonical_release_branch_honors_project_prefix() -> None:
     assert canonical_release_branch(custom_project, "release-1") == "ship/release-1"
 
 
+def test_canonical_release_branch_prefix_normalizes_trailing_slash() -> None:
+    project = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        git=ProjectGitConfig(
+            host_repo_path="/srv/repo",
+            bare_repo_name="repo.git",
+            canonical_release_branch_prefix="release",
+        ),
+    )
+
+    assert project.git is not None
+    assert project.git.canonical_release_branch_prefix == "release/"
+    assert canonical_release_branch(project, "release-1") == "release/release-1"
+
+
 def test_git_promotion_and_release_round_trip_through_team_state() -> None:
     state = _valid_state()
     state.deliverables["deliverable"].git_refs.feature_branch = (
@@ -681,6 +699,50 @@ def test_old_shape_task_without_graph_fields_validates() -> None:
 
     assert validated.tasks["task"].parent_task_id is None
     assert validated.tasks["task"].dependency_task_ids == []
+
+
+def test_case_linked_task_validates_bidirectional_link() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["cases"] = {
+        "case": {
+            "id": "case",
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Customer ticket",
+            "description": "Track the reported issue.",
+            "status": "triage",
+            "priority": "high",
+            "owner_agent_id": "lead",
+            "source": "github",
+            "source_ref": "issue-42",
+            "tags": ["customer", "bug"],
+            "task_ids": ["task"],
+        }
+    }
+    state["tasks"]["task"]["case_id"] = "case"
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.cases["case"].task_ids == ["task"]
+    assert validated.tasks["task"].case_id == "case"
+
+
+def test_case_link_rejects_missing_task_backlink() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["cases"] = {
+        "case": {
+            "id": "case",
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Customer ticket",
+            "task_ids": ["task"],
+        }
+    }
+
+    with pytest.raises(
+        ValidationError, match="case case task task does not point back"
+    ):
+        TeamState.model_validate(state)
 
 
 def test_task_graph_rejects_missing_parent() -> None:
@@ -860,6 +922,59 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
     )
 
 
+def test_team_state_payload_includes_blocked_release_next_action_hint() -> None:
+    state = _state_with_runtime_operations()
+
+    payload = team_state_payload(state)
+
+    release = payload["release_packages"]["release"]
+    assert release["next_action"] == "resolve_blocked_release"
+    assert "do not create another git_release_requests" in release["next_action_hint"]
+    assert "git_release_recoveries" in release["next_action_hint"]
+    assert "team/team/releases/release" in release["next_action_hint"]
+    assert "Resolve the merge conflict" in release["next_action_hint"]
+
+
+def test_blocked_release_hint_uses_failed_feature_promotion_target() -> None:
+    state = _valid_state()
+    state.release_packages["release"] = ReleasePackage(
+        id="release",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        release_branch="team/team/releases/release",
+        git_promotion_record_ids=["feature-promotion"],
+        state=TeamRecordState.BLOCKED,
+        error=(
+            "merge conflict while merging team/team/reviews/deliverable into "
+            "team/team/features/task-ui"
+        ),
+    )
+    state.git_promotions["feature-promotion"] = GitPromotionRecord(
+        id="feature-promotion",
+        project_id="project",
+        release_package_id="release",
+        task_id="task",
+        actor_agent_id="lead",
+        source_branch="team/team/reviews/deliverable",
+        target_branch="team/team/features/task-ui",
+        promotion_kind="feature",
+        state="failed",
+        error="merge conflict",
+    )
+
+    payload = team_state_payload(state)
+
+    hint = payload["release_packages"]["release"]["next_action_hint"]
+    assert "Failed feature promotion feature-promotion" in hint
+    assert (
+        "Resolve and commit on failed promotion target branch "
+        "team/team/features/task-ui"
+    ) in hint
+    assert "do not submit git_release_recoveries" in hint
+    assert "git_release_recoveries only applies to failed release promotions" in hint
+    assert "Continue from release branch" not in hint
+
+
 def test_team_state_payload_can_exclude_operator_only_agent_fields() -> None:
     state = _valid_state()
     state.agents["ui"].avatar = None
@@ -924,6 +1039,16 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_git_promotion"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["state"] == "blocked"
+    assert rows["blocked_release_package"]["next_action"] == "resolve_blocked_release"
+    assert "do not create another git_release_requests" in rows[
+        "blocked_release_package"
+    ]["next_action_hint"]
+    assert "git_release_recoveries" in rows["blocked_release_package"][
+        "next_action_hint"
+    ]
+    assert "team/team/releases/release" in rows["blocked_release_package"][
+        "next_action_hint"
+    ]
     assert rows["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
     assert rows["failed_ephemeral_assignment"]["state"] == "failed"
     assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"

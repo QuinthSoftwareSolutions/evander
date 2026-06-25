@@ -17,6 +17,7 @@ DEFAULT_EFFORT_FIELDS = (
     "Microsoft.VSTS.Scheduling.OriginalEstimate",
 )
 DEFAULT_ELAPSED_TIME_MODE = "swedish_work_time"
+MANUAL_ELAPSED_TIME_MODES = frozenset({"manual", "manual_override"})
 DEFAULT_WORKDAY_START = "08:00"
 DEFAULT_WORKDAY_END = "17:00"
 SWEDEN_TIMEZONE = "Europe/Stockholm"
@@ -108,16 +109,27 @@ def build_ado_daily_status_report_data(
 
     generated_at = (now or datetime.now(UTC)).astimezone(UTC)
     resolved_report_date = _date_string(report_date, fallback=generated_at.date())
+    elapsed_calculation_mode = str(elapsed_time_mode or DEFAULT_ELAPSED_TIME_MODE).strip().lower()
+    manual_elapsed_override_requested = (
+        elapsed_sprint_percent is not None
+        and elapsed_calculation_mode in MANUAL_ELAPSED_TIME_MODES
+    )
+    configured_elapsed_time_mode = (
+        DEFAULT_ELAPSED_TIME_MODE
+        if elapsed_calculation_mode in MANUAL_ELAPSED_TIME_MODES
+        else elapsed_time_mode
+    )
     elapsed_calculation = _elapsed_time_calculation(
         iteration_start_date,
         iteration_finish_date,
         now=generated_at,
-        elapsed_time_mode=elapsed_time_mode,
+        elapsed_time_mode=configured_elapsed_time_mode,
         workday_start=workday_start,
         workday_end=workday_end,
         include_common_swedish_non_working_days=include_common_swedish_non_working_days,
     )
-    if elapsed_sprint_percent is not None:
+    ignored_elapsed_override = None
+    if manual_elapsed_override_requested:
         resolved_elapsed_percent = _round_percent(elapsed_sprint_percent)
         elapsed_calculation = {
             **elapsed_calculation,
@@ -127,6 +139,8 @@ def build_ado_daily_status_report_data(
         }
     else:
         resolved_elapsed_percent = _round_percent(elapsed_calculation["percent"])
+        if elapsed_sprint_percent is not None:
+            ignored_elapsed_override = _round_percent(elapsed_sprint_percent)
     resolved_sprint_label = (
         _string_or_none(sprint_label)
         or _sprint_label_from_iteration(iteration_path)
@@ -196,6 +210,7 @@ def build_ado_daily_status_report_data(
             "items_with_effort": items_with_effort,
             "items_missing_effort": missing_effort_count,
             "elapsed_time_calculation": elapsed_calculation,
+            "ignored_elapsed_sprint_percent_override": ignored_elapsed_override,
             "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
         },
     }

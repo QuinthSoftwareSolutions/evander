@@ -23,6 +23,13 @@
             </span>
             <span>Show archived</span>
           </label>
+          <label class="checkbox-label archived-toggle governance-agenda-toggle" data-team-view-action="governance" hidden>
+            <span class="archived-toggle-track" aria-hidden="true">
+              <input id="show-handled-governance-agenda-toggle" type="checkbox" />
+              <span class="archived-toggle-slider" aria-hidden="true"></span>
+            </span>
+            <span>Show handled agenda</span>
+          </label>
           <span id="revision-badge" class="revision-badge">Revision 0</span>
           <button
             id="team-tab-create-governance-group-action"
@@ -54,10 +61,10 @@
       <nav class="team-view-tabs" role="tablist" aria-label="Team Add-on views">
         <button
           id="team-view-workspace-tab"
-          class="team-view-tab active"
+          class="team-view-tab"
           type="button"
           role="tab"
-          aria-selected="true"
+          aria-selected="false"
           aria-controls="team-workspace-page"
           data-team-view="workspace"
         >
@@ -97,6 +104,17 @@
           Delivery
         </button>
         <button
+          id="team-view-projects-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-projects-page"
+          data-team-view="projects"
+        >
+          Projects
+        </button>
+        <button
           id="team-view-task-board-tab"
           class="team-view-tab"
           type="button"
@@ -108,11 +126,22 @@
           Task board
         </button>
         <button
-          id="team-view-people-tab"
+          id="team-view-cases-tab"
           class="team-view-tab"
           type="button"
           role="tab"
           aria-selected="false"
+          aria-controls="team-cases-page"
+          data-team-view="cases"
+        >
+          Cases
+        </button>
+        <button
+          id="team-view-people-tab"
+          class="team-view-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
           aria-controls="team-people-page"
           data-team-view="people"
         >
@@ -152,17 +181,6 @@
           Planning
         </button>
         <button
-          id="team-view-setup-tab"
-          class="team-view-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          aria-controls="team-setup-page"
-          data-team-view="setup"
-        >
-          Setup
-        </button>
-        <button
           id="team-view-timeline-tab"
           class="team-view-tab"
           type="button"
@@ -192,6 +210,7 @@
         role="tabpanel"
         aria-labelledby="team-view-workspace-tab"
         data-team-view-panel="workspace"
+        hidden
       >
         <section class="team-main">
           <section class="summary-panel" aria-labelledby="summary-heading">
@@ -288,6 +307,11 @@
             <div id="projects-view" class="projects-view" data-projects-view></div>
           </section>
 
+          <section class="content-panel" aria-labelledby="cases-heading">
+            <h2 id="cases-heading">Cases</h2>
+            <div id="cases-view" class="cases-view" data-cases-view></div>
+          </section>
+
           <section class="content-panel" aria-labelledby="review-profiles-heading">
             <h2 id="review-profiles-heading">Review profiles</h2>
             <div id="review-profiles-view" class="review-profiles-view" data-review-profiles-view></div>
@@ -379,26 +403,14 @@
         <aside id="setup-forms-panel" class="forms-panel" aria-labelledby="forms-heading" data-setup-forms-panel>
           <h2 id="forms-heading">Setup</h2>
           <div class="form-stack">
-            <details open class="template-setup">
+            <details class="template-setup">
               <summary>Setup from template</summary>
               <div class="template-setup-body">
-                <div id="template-preview" class="template-preview" aria-live="polite"></div>
                 <form id="setup-template-form" data-template-endpoint="/templates/{template_id}/materialize" data-method="POST">
                   <label>Template <select id="template-select" name="template_id" required></select></label>
+                  <div id="template-preview" class="template-preview" aria-live="polite"></div>
                   <p class="subheading">Team</p>
                   <label>Team name <input name="team_name" required /></label>
-                  <label>
-                    Manager existing agent
-                    <select
-                      name="manager_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="manager_session_id"
-                      data-suggested-role="manager"
-                    ></select>
-                  </label>
-                  <label>Manager session ID <input name="manager_session_id" required /></label>
                   <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                   <label class="checkbox-label">
                     <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
@@ -406,72 +418,26 @@
                   <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
                   <p class="subheading">Project</p>
                   <label>Project name <input name="project_name" required /></label>
-                  <label>
-                    Project lead existing agent
-                    <select
-                      name="project_lead_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="project_lead_session_id"
-                      data-suggested-role="project-lead"
-                    ></select>
-                  </label>
-                  <label>Project lead session ID <input name="project_lead_session_id" required /></label>
-                  <p class="subheading">Git config (optional)</p>
-                  <label>Host repo path <input name="host_repo_path" /></label>
-                  <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
-                  <div class="git-import-actions">
-                    <button type="button" data-git-import-button>Import Git repo</button>
-                    <span class="meta-line" data-git-import-status></span>
+                  <div data-template-role-fields></div>
+                  <div data-template-git-fields>
+                    <p class="subheading">Git config (optional)</p>
+                    <label>Host repo path <input name="host_repo_path" /></label>
+                    <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+                    <div class="git-import-actions">
+                      <button type="button" data-git-import-button>Import Git repo</button>
+                      <span class="meta-line" data-git-import-status></span>
+                    </div>
+                    <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                    <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                    <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
+                    <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                   </div>
-                  <label>Base branch <input name="base_branch" placeholder="main" /></label>
-                  <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                  <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
-                  <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
-                  <p class="subheading">Agents</p>
-                  <label>
-                    Implementer existing agent
-                    <select
-                      name="implementer_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="implementer_session_id"
-                      data-suggested-role="implementer"
-                    ></select>
-                  </label>
-                  <label>Implementer session ID <input name="implementer_session_id" required /></label>
-                  <label>
-                    Reviewer existing agent
-                    <select
-                      name="reviewer_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="reviewer_session_id"
-                      data-suggested-role="reviewer"
-                    ></select>
-                  </label>
-                  <label>Reviewer session ID <input name="reviewer_session_id" required /></label>
-                  <label>
-                    Release operator existing agent
-                    <select
-                      name="release_operator_existing_agent_id"
-                      data-options="agents"
-                      data-placeholder="Select existing agent"
-                      data-agent-source-picker
-                      data-session-field="release_operator_session_id"
-                      data-suggested-role="release-operator"
-                    ></select>
-                  </label>
-                  <label>Release operator session ID <input name="release_operator_session_id" required /></label>
                   <button type="submit">Materialize template</button>
                 </form>
               </div>
             </details>
 
-            <details open>
+            <details>
               <summary>Create team</summary>
               <form id="create-team-form" data-endpoint="/teams" data-method="POST">
                 <label>Name <input name="name" required /></label>
@@ -580,10 +546,29 @@
             </details>
 
             <details>
+              <summary>Create case</summary>
+              <form id="create-case-form" data-endpoint="/cases" data-method="POST">
+                <label>Team <select name="team_id" required data-options="teams"></select></label>
+                <label>Project <select name="project_id" data-options="projects" data-placeholder="Team-wide"></select></label>
+                <label>Owner <select name="owner_agent_id" data-options="agents" data-placeholder="No owner"></select></label>
+                <label>Status <select name="status" data-options="case-statuses"></select></label>
+                <label>Priority <select name="priority" data-options="inbox-priorities"></select></label>
+                <label>Title <input name="title" required /></label>
+                <label>Description <textarea name="description" rows="3"></textarea></label>
+                <label>Source <input name="source" placeholder="github, jira, zendesk" /></label>
+                <label>Source ref <input name="source_ref" placeholder="External ticket or issue id" /></label>
+                <label>Tags <textarea name="tags" rows="2"></textarea></label>
+                <label>Linked tasks <textarea name="task_ids" rows="2"></textarea></label>
+                <button type="submit">Create case</button>
+              </form>
+            </details>
+
+            <details>
               <summary>Create task</summary>
               <form id="create-task-form" data-endpoint="/tasks" data-method="POST">
                 <label>Owner <select name="owner_agent_id" required data-options="agents"></select></label>
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
+                <label>Case <select name="case_id" data-options="cases" data-placeholder="No case"></select></label>
                 <label>Priority <input name="priority" type="number" min="0" value="10" required /></label>
                 <label>Title <input name="title" required /></label>
                 <label>Description <textarea name="description" rows="3" required></textarea></label>
@@ -600,6 +585,7 @@
               <form id="update-task-form">
                 <label>Task <select name="task_id" required data-options="tasks"></select></label>
                 <label>State <select name="state" data-options="task-states"></select></label>
+                <label>Case <select name="case_id" data-options="cases" data-placeholder="No case"></select></label>
                 <label>Priority <input name="priority" type="number" min="0" /></label>
                 <label>Title <input name="title" /></label>
                 <label>Description <textarea name="description" rows="3"></textarea></label>
@@ -766,7 +752,6 @@
         role="tabpanel"
         aria-labelledby="team-view-people-tab"
         data-team-view-panel="people"
-        hidden
       >
         <div class="people-layout">
           <section class="people-agents-panel" aria-labelledby="focused-teams-heading">
@@ -815,6 +800,56 @@
           <aside class="content-panel people-agent-detail-panel" aria-label="Selected team record detail">
             <div id="people-agent-detail-view" class="people-agent-detail-view" data-agent-detail-view></div>
           </aside>
+        </div>
+      </main>
+
+      <main
+        id="team-projects-page"
+        class="focused-team-page projects-page"
+        role="tabpanel"
+        aria-labelledby="team-view-projects-tab"
+        data-team-view-panel="projects"
+        hidden
+      >
+        <div class="projects-workbench">
+          <section class="content-panel projects-list-panel" aria-labelledby="projects-workbench-heading">
+            <div class="focused-section-header">
+              <div>
+                <p class="section-label">Projects</p>
+                <h2 id="projects-workbench-heading">Project Catalog</h2>
+              </div>
+            </div>
+            <form
+              id="create-project-from-projects-form"
+              class="projects-create-form"
+              data-form-id="create-project-form"
+              data-endpoint="/projects"
+              data-method="POST"
+            >
+              <label>Team <select name="team_id" required data-options="teams"></select></label>
+              <label>Name <input name="name" required /></label>
+              <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
+              <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
+              <details>
+                <summary>Git config</summary>
+                <label>Host repo path <input name="host_repo_path" /></label>
+                <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+                <div class="git-import-actions">
+                  <button type="button" data-git-import-button>Import Git repo</button>
+                  <span class="meta-line" data-git-import-status></span>
+                </div>
+                <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
+                <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+              </details>
+              <button type="submit">Create project</button>
+            </form>
+            <div class="projects-focus-list" data-projects-focus-list></div>
+          </section>
+          <section class="content-panel projects-detail-panel" aria-label="Selected project">
+            <div class="projects-focus-detail" data-projects-focus-detail></div>
+          </section>
         </div>
       </main>
 
@@ -873,6 +908,25 @@
       </main>
 
       <main
+        id="team-cases-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-cases-tab"
+        data-team-view-panel="cases"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-cases-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Cases</p>
+              <h2 id="focused-cases-heading">Intake &amp; Tickets</h2>
+            </div>
+          </div>
+          <div class="cases-view" data-cases-view></div>
+        </section>
+      </main>
+
+      <main
         id="team-governance-page"
         class="focused-team-page"
         role="tabpanel"
@@ -897,7 +951,7 @@
               <label>Name <input name="name" required /></label>
               <label>Manager <select name="manager_agent_id" required data-options="agents-by-display-name"></select></label>
               <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
-              <label>Goals <textarea name="goals" rows="4" placeholder="id | description | state"></textarea></label>
+              <label>Goals <textarea name="goals" rows="4" placeholder="id | description"></textarea></label>
               <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
               <button type="submit">Create governance group</button>
             </form>
@@ -932,17 +986,6 @@
           </div>
           <div class="projects-view" data-projects-view></div>
         </section>
-      </main>
-
-      <main
-        id="team-setup-page"
-        class="focused-team-page setup-page"
-        role="tabpanel"
-        aria-labelledby="team-view-setup-tab"
-        data-team-view-panel="setup"
-        hidden
-      >
-        <div id="focused-setup-mount" class="setup-form-mount"></div>
       </main>
 
       <main

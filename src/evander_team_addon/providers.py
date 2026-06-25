@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from agent_sandbox.effects.providers.artifacts import ArtifactPublishArtifactsEffectProvider
+from agent_sandbox.effects.providers.artifacts import (
+    ArtifactImportPublishedEffectProvider,
+    ArtifactPublishArtifactsEffectProvider,
+)
 from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.artifact_spaces import ArtifactSpaceStore
+from agent_sandbox.artifact_spaces import (
+    ArtifactSpacePermissionError,
+    ArtifactSpaceStore,
+    normalize_space_path,
+)
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
 from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
+    ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
 )
 from agent_sandbox.events.models import WorkflowNodeEnvelope
@@ -36,8 +46,40 @@ from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
 from .mcp import (
+    CHAT_TEAM_MCP_TOOL_NAMES,
+    GOVERNANCE_TEAM_MCP_TOOL_NAMES,
+    MCP_TOOL_NAMES,
+    ORDINARY_TEAM_MCP_TOOL_NAMES,
+    TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
+    TEAM_ASK_QUESTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+    TEAM_CREATE_CASE_TOOL,
+    TEAM_CREATE_TASKS_TOOL,
+    TEAM_CREATE_TASK_TOOL,
+    TEAM_DECIDE_REVIEW_TOOL,
+    TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+    TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
+    TEAM_RECORD_NOTE_TOOL,
+    TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_REJECT_EPHEMERAL_RESULT_TOOL,
+    TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
+    TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
+    TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_REQUEST_REVIEW_TOOL,
+    TEAM_REQUEST_STATUS_TOOL,
+    TEAM_REVOKE_STAND_DOWN_TOOL,
+    TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_SEND_PROGRESS_REPORT_TOOL,
+    TEAM_STAND_DOWN_AGENT_TOOL,
+    TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
+    TEAM_SUBMIT_DELIVERABLE_TOOL,
+    TEAM_UPDATE_CASE_TOOL,
+    TEAM_UPDATE_FEATURE_BRANCH_TOOL,
+    TEAM_UPDATE_GOAL_TOOL,
+    TEAM_UPDATE_TASK_TOOL,
 )
 from .models import (
     AGENT_OPERATOR_ONLY_FIELDS,
@@ -48,37 +90,35 @@ from .models import (
 )
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
-    TeamAgentActionArtifactQueryDefinition,
     TeamAcceptEphemeralDeliverableEffectDefinition,
-    TeamApplyAgentActionEffectDefinition,
-    TeamApplyEphemeralActionEffectDefinition,
     TeamConsolidateGitBranchesEffectDefinition,
+    TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
+    TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
+    TeamPublishOutboxEventsEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
+    TeamUpdateCaseEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
-DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 12
-ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
-ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
-ACTION_CONTRACT_HELPER_PATH = "/home/agent/.agent-sandbox/bin/team-finish"
-TEAM_AGENT_GUIDANCE_VERSION = 2
+TEAM_AGENT_GUIDANCE_VERSION = 10
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
-TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
+TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
-TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "truman-team-addon-governance"
+TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
+_ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
+_TEAM_REVIEW_ARTIFACT_ID_DEFAULT = "bundle"
 
 
 def _catalog_field(
@@ -221,52 +261,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 placeholder="4",
             ),
             _catalog_field(
-                "action_artifact_path",
-                "Action artifact path",
-                "string",
-                description="Relative artifact path the Team agent must write after it is resumed.",
-                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
-                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
-            ),
-            _catalog_field(
                 "resume_mode",
                 "Resume mode",
                 "string",
                 description="Agent resume mode for Team wakes. Leave blank for same-context resumes.",
                 default_value="same_context",
                 placeholder="same_context",
-            ),
-        ],
-    ),
-    _catalog_entry(
-        "query",
-        "query:team:agent-action-artifact",
-        "Read Team action artifact",
-        "Read and validate the JSON action artifact written by a Team agent session.",
-        [
-            _catalog_field(
-                "session_id",
-                "Session ID",
-                "string",
-                required=True,
-                description="Truman session whose artifacts should be inspected.",
-                placeholder="${{team-route-completed-session.session_id}}",
-            ),
-            _catalog_field(
-                "path",
-                "Path",
-                "string",
-                description="Relative artifact path to read from the session artifacts directory.",
-                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
-                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
-            ),
-            _catalog_field(
-                "vm_user",
-                "VM user",
-                "string",
-                description="Guest user that owns the artifact path for libvirt-backed sessions.",
-                default_value="agent",
-                placeholder="agent",
             ),
         ],
     ),
@@ -327,58 +327,75 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     _catalog_entry(
         "effect",
-        "effect:team:apply-agent-action",
-        "Apply Team action",
-        "Apply a persistent Team agent action, update Team state, and clear the active lease.",
+        "effect:team:publish-outbox-events",
+        "Publish Team outbox events",
+        "Claim pending Team outbox records and publish their internal runtime events.",
         [
             _catalog_field(
-                "action",
-                "Action",
-                "json",
-                description="Structured Team action object, usually from Read Team action artifact.",
-                json_value_type="object",
+                "limit",
+                "Publish limit",
+                "number",
+                description="Maximum pending Team outbox records to claim on this runtime tick.",
+                default_value=25,
+                placeholder="25",
             ),
-            _valid_field(),
             _catalog_field(
-                "error",
-                "Error",
-                "string",
-                description="Validation or artifact-read error to record when the action is not valid.",
+                "intent_types",
+                "Intent types",
+                "json",
+                description="Optional Team event types to publish. Leave blank for all pending records.",
+                json_value_type="array",
             ),
+            _catalog_field(
+                "claim_ttl_seconds",
+                "Claim TTL seconds",
+                "number",
+                description="How long a claimed outbox record remains owned before another worker can retry it.",
+                default_value=300,
+                placeholder="300",
+            ),
+            _catalog_field(
+                "retry_after_seconds",
+                "Retry after seconds",
+                "number",
+                description="Delay before retrying a record whose event publish fails.",
+                default_value=60,
+                placeholder="60",
+            ),
+            _catalog_field(
+                "worker_id",
+                "Worker ID",
+                "string",
+                description="Optional stable worker label recorded on claimed outbox rows.",
+                placeholder="team-outbox-publisher",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:finalize-agent-dispatch",
+        "Finalize Team dispatch",
+        "Close a persistent Team agent dispatch from recorded Team MCP activity.",
+        [
             _catalog_field(
                 "session_id",
                 "Session ID",
                 "string",
-                description="Persistent Team agent session that produced the action.",
+                required=True,
+                description="Persistent Team agent session whose completed dispatch is being finalized.",
             ),
             _catalog_field(
                 "dispatch_id",
                 "Dispatch ID",
                 "string",
-                description="Dispatch id for the active Team lease being completed.",
+                required=True,
+                description="Active Team dispatch id to close.",
             ),
             _catalog_field(
-                "action_artifact_path",
-                "Action artifact path",
+                "agent_id",
+                "Agent ID",
                 "string",
-                description="Artifact path the persistent agent was expected to write.",
-                default_value=DEFAULT_ACTION_ARTIFACT_PATH,
-                placeholder=DEFAULT_ACTION_ARTIFACT_PATH,
-            ),
-            _catalog_field(
-                "recover_missing_action",
-                "Recover missing action",
-                "boolean",
-                description="When true, one missing action artifact completion resumes the same dispatch with a narrow recovery prompt before failing the lease.",
-                default_value=True,
-            ),
-            _catalog_field(
-                "recovery_resume_mode",
-                "Recovery resume mode",
-                "string",
-                description="Resume mode used for the missing-action recovery prompt.",
-                default_value="same_context",
-                placeholder="same_context",
+                description="Optional guard requiring the session to resolve to this Team agent.",
             ),
             _revision_field(),
         ],
@@ -452,6 +469,201 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Requesting session ID",
                 "string",
                 description="Optional Truman session that requested the directive.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:create-case",
+        "Create Team case",
+        "Create a Team intake or lifecycle case, optionally linked to existing execution tasks.",
+        [
+            _catalog_field(
+                "case_id",
+                "Case ID",
+                "string",
+                description="Optional stable case id. Leave blank to generate one.",
+                placeholder="case-customer-ticket",
+            ),
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                required=True,
+                description="Team that owns the case.",
+                placeholder="team-accounting",
+            ),
+            _catalog_field(
+                "title",
+                "Title",
+                "string",
+                required=True,
+                description="Short case title shown in Team case views.",
+            ),
+            _catalog_field(
+                "description",
+                "Description",
+                "string",
+                multiline=True,
+                description="Intake details, ticket summary, or lifecycle context.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional Team project scope for the case.",
+            ),
+            _catalog_field(
+                "status",
+                "Status",
+                "string",
+                description=(
+                    "Initial case status: open, triage, in_progress, waiting, "
+                    "resolved, or closed."
+                ),
+                default_value="open",
+                placeholder="open",
+            ),
+            _catalog_field(
+                "priority",
+                "Priority",
+                "string",
+                description="Initial priority: low, normal, or high.",
+                default_value="normal",
+                placeholder="normal",
+            ),
+            _catalog_field(
+                "owner_agent_id",
+                "Owner agent ID",
+                "string",
+                description="Optional same-team persistent agent that owns the case.",
+            ),
+            _catalog_field(
+                "source",
+                "Source",
+                "string",
+                description="Optional external system label such as jira, zendesk, or email.",
+                placeholder="jira",
+            ),
+            _catalog_field(
+                "source_ref",
+                "Source ref",
+                "string",
+                description="Optional upstream ticket, issue, message, or conversation id.",
+            ),
+            _catalog_field(
+                "tags",
+                "Tags",
+                "json",
+                description="Optional case tags.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "metadata",
+                "Metadata",
+                "json",
+                description="Optional structured case metadata.",
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "task_ids",
+                "Task IDs",
+                "json",
+                description="Existing Team tasks to link to this case.",
+                json_value_type="array",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:update-case",
+        "Update Team case",
+        "Update a Team intake or lifecycle case and synchronize task links.",
+        [
+            _catalog_field(
+                "case_id",
+                "Case ID",
+                "string",
+                required=True,
+                description="Team case to update.",
+                placeholder="case-customer-ticket",
+            ),
+            _catalog_field(
+                "title",
+                "Title",
+                "string",
+                description="Replacement case title when configured.",
+            ),
+            _catalog_field(
+                "description",
+                "Description",
+                "string",
+                multiline=True,
+                description="Replacement case description. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Replacement project scope. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "status",
+                "Status",
+                "string",
+                description=(
+                    "Replacement status: open, triage, in_progress, waiting, "
+                    "resolved, or closed."
+                ),
+                placeholder="in_progress",
+            ),
+            _catalog_field(
+                "priority",
+                "Priority",
+                "string",
+                description="Replacement priority: low, normal, or high.",
+                placeholder="high",
+            ),
+            _catalog_field(
+                "owner_agent_id",
+                "Owner agent ID",
+                "string",
+                description="Replacement owner. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "source",
+                "Source",
+                "string",
+                description="Replacement external system label. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "source_ref",
+                "Source ref",
+                "string",
+                description="Replacement external reference. Configure blank or null to clear it.",
+            ),
+            _catalog_field(
+                "tags",
+                "Tags",
+                "json",
+                description="Replacement case tags when configured.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "metadata",
+                "Metadata",
+                "json",
+                description="Replacement structured case metadata when configured.",
+                json_value_type="object",
+            ),
+            _catalog_field(
+                "task_ids",
+                "Task IDs",
+                "json",
+                description="Replacement linked Team task ids when configured.",
+                json_value_type="array",
             ),
             _revision_field(),
         ],
@@ -532,35 +744,6 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 description="Raw result object from the upstream agent-create node.",
                 json_value_type="object",
-            ),
-            _revision_field(),
-        ],
-    ),
-    _catalog_entry(
-        "effect",
-        "effect:team:apply-ephemeral-action",
-        "Apply Team worker action",
-        "Apply the action produced by a Team ephemeral worker session.",
-        [
-            _catalog_field(
-                "action",
-                "Action",
-                "json",
-                description="Structured action object produced by the ephemeral worker.",
-                json_value_type="object",
-            ),
-            _valid_field(),
-            _catalog_field(
-                "error",
-                "Error",
-                "string",
-                description="Validation or artifact-read error to record when the action is not valid.",
-            ),
-            _catalog_field(
-                "session_id",
-                "Session ID",
-                "string",
-                description="Ephemeral worker session that produced the action.",
             ),
             _revision_field(),
         ],
@@ -854,7 +1037,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "wake_interval_seconds",
             "max_no_progress_count",
             "low_priority_wake_after_cycles",
-            "action_artifact_path",
             "resume_mode",
         )
         if resolved_config:
@@ -878,10 +1060,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             _required_text(record["team_id"], "team_id")
             for record in cost_guard_blocked_teams
         }
-        action_path = (
-            _optional_text(payload.get("action_artifact_path"))
-            or DEFAULT_ACTION_ARTIFACT_PATH
-        )
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
         lease_limit = _optional_int(payload.get("limit"), default=10)
         normalized_limit = max(0, int(lease_limit or 0))
@@ -900,7 +1078,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             state=state,
             claims=queued_chat_claims,
             resumer=resumer,
-            action_artifact_path=action_path,
         )
         errors.extend(chat_errors)
         if normalized_limit and len(queued_chat_claims) >= normalized_limit:
@@ -934,6 +1111,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
+        review_artifact_imports: list[dict[str, Any]] = []
+        review_artifact_import_errors: list[dict[str, Any]] = []
         for lease in leases:
             agent = lease["agent"]
             try:
@@ -945,11 +1124,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         agent_ids=_prompt_session_health_agent_ids(state, agent),
                     ),
                 }
-                seed_result = _seed_action_contract_files(
+                tool_grant_result = _set_session_team_mcp_tools(
                     context,
-                    agent=agent,
+                    session_id=agent["session_id"],
+                    tool_names=_ordinary_team_tools_for_agent(agent),
                     dispatch_id=lease["dispatch_id"],
-                    action_artifact_path=action_path,
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
@@ -972,12 +1151,26 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             project_repo=project_repo,
                         )
                     )
+                review_artifacts = _prepare_review_artifacts_for_lease(
+                    context,
+                    lease=lease,
+                )
+                if review_artifacts["review_artifact_imports"] or review_artifacts[
+                    "review_artifact_import_errors"
+                ]:
+                    lease = {**lease, **review_artifacts}
+                    review_artifact_imports.extend(
+                        review_artifacts["review_artifact_imports"]
+                    )
+                    review_artifact_import_errors.extend(
+                        review_artifacts["review_artifact_import_errors"]
+                    )
                 runtime_payload = lease.get("runtime")
                 context_rotation_pending = (
                     isinstance(runtime_payload, Mapping)
                     and bool(runtime_payload.get("context_rotation_pending"))
                 )
-                prompt = _build_prompt(lease, action_artifact_path=action_path)
+                prompt = _build_prompt(lease)
                 _register_team_dispatch_model_usage_context(
                     context,
                     agent=agent,
@@ -996,23 +1189,24 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
-                feedback_source_dispatch_id = _action_feedback_source_dispatch_id(lease)
-                if feedback_source_dispatch_id is not None:
-                    state = repo.mark_action_feedback_delivered(
-                        agent_id=agent["id"],
-                        source_dispatch_id=feedback_source_dispatch_id,
-                        delivery_dispatch_id=lease["dispatch_id"],
-                    )
                 dispatch_payload = {
                     "agent_id": agent["id"],
                     "session_id": agent["session_id"],
                     "dispatch_id": lease["dispatch_id"],
-                    "action_contract": seed_result,
                     "agent_guidance": guidance_result,
+                    "team_mcp_tools": tool_grant_result,
                     "result": result_payload,
                 }
                 if project_repo is not None:
                     dispatch_payload["project_repo"] = project_repo
+                if lease.get("review_artifact_imports"):
+                    dispatch_payload["review_artifact_imports"] = lease[
+                        "review_artifact_imports"
+                    ]
+                if lease.get("review_artifact_import_errors"):
+                    dispatch_payload["review_artifact_import_errors"] = lease[
+                        "review_artifact_import_errors"
+                    ]
                 if context_rotation_pending:
                     thread_id = _optional_text(result_payload.get("thread_id"))
                     state = repo.record_context_rotation_dispatch_started(
@@ -1050,6 +1244,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
+            "review_artifact_imports": review_artifact_imports,
+            "review_artifact_import_errors": review_artifact_import_errors,
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
@@ -1063,7 +1259,6 @@ def _dispatch_queued_team_chat_messages(
     state: Any,
     claims: list[dict[str, Any]],
     resumer: Any,
-    action_artifact_path: str,
 ) -> tuple[Any, list[dict[str, Any]], list[str]]:
     dispatches: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -1077,18 +1272,22 @@ def _dispatch_queued_team_chat_messages(
         conversation = state.conversations[conversation_id]
         try:
             agent_payload = agent.model_dump(mode="json")
-            seed_result = _seed_action_contract_files(
+            mutation_allowed = _team_chat_mutation_allowed(message)
+            chat_tool_names = list(CHAT_TEAM_MCP_TOOL_NAMES)
+            if mutation_allowed:
+                chat_tool_names.extend(_ordinary_team_tools_for_agent(agent_payload))
+            tool_grant_result = _set_session_team_mcp_tools(
                 context,
-                agent=agent_payload,
+                session_id=agent.session_id,
+                tool_names=chat_tool_names,
                 dispatch_id=dispatch_id,
-                action_artifact_path=action_artifact_path,
             )
             guidance_result = _seed_team_agent_guidance(context, agent=agent_payload)
             prompt = _build_team_chat_prompt(
                 state=state,
                 conversation=conversation,
                 message=message,
-                action_artifact_path=action_artifact_path,
+                mutation_allowed=mutation_allowed,
             )
             result = resumer.resume_agent(
                 target=agent.session_id,
@@ -1112,8 +1311,8 @@ def _dispatch_queued_team_chat_messages(
                     "conversation_id": conversation_id,
                     "message_id": message_id,
                     "dispatch_id": dispatch_id,
-                    "action_contract": seed_result,
                     "agent_guidance": guidance_result,
+                    "team_chat_mcp_tools": tool_grant_result,
                     "result": result_payload,
                 }
             )
@@ -1187,13 +1386,11 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             group = lease["governance_group"]
             try:
                 guidance_result = _seed_team_governance_guidance(context, agent=agent)
-                tool_grant_result = _ensure_session_allows_mcp_tools(
+                tool_grant_result = _set_session_team_mcp_tools(
                     context,
                     session_id=agent["session_id"],
-                    tool_names=[
-                        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
-                        TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
-                    ],
+                    tool_names=GOVERNANCE_TEAM_MCP_TOOL_NAMES,
+                    dispatch_id=lease["dispatch_id"],
                 )
                 _register_team_dispatch_model_usage_context(
                     context,
@@ -1241,84 +1438,36 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
         }
 
 
-class TeamApplyAgentActionEffectProvider(EffectProviderBase):
+class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
         if isinstance(effect_definition, WorkflowNodeEnvelope):
-            return _materialize(TeamApplyAgentActionEffectDefinition, effect_definition)
+            return _materialize(
+                TeamFinalizeAgentDispatchEffectDefinition,
+                effect_definition,
+            )
         return effect_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "action",
-            "valid",
-            "error",
             "session_id",
             "dispatch_id",
-            "action_artifact_path",
-            "recover_missing_action",
-            "recovery_resume_mode",
+            "agent_id",
             "expected_revision",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        expected_revision = _optional_int(payload.get("expected_revision"), default=None)
-        valid = _optional_bool(payload.get("valid"), default=True)
-        action = _optional_mapping(payload.get("action"), "action")
-        original_action = dict(action) if isinstance(action, dict) else None
-        artifact_publish_records: list[dict[str, Any]] = []
-        artifact_publish_errors: list[str] = []
-        action_error = _optional_text(payload.get("error"))
-        action_artifact_path = (
-            _optional_text(payload.get("action_artifact_path"))
-            or DEFAULT_ACTION_ARTIFACT_PATH
-        )
-        if (
-            not valid
-            and _optional_bool(payload.get("recover_missing_action"), default=True)
-            and _is_missing_action_artifact_error(action_error, action_artifact_path)
-        ):
-            recovery = _dispatch_missing_action_recovery(
-                self.runtime_context,
-                repo=repo,
-                session_id=_optional_text(payload.get("session_id")),
-                dispatch_id=_optional_text(payload.get("dispatch_id")),
-                action_artifact_path=action_artifact_path,
-                error=action_error or "artifact file not found",
-                expected_revision=expected_revision,
-                resume_mode=(
-                    _optional_text(payload.get("recovery_resume_mode"))
-                    or "same_context"
-                ),
-            )
-            if recovery is not None:
-                return recovery
-        if valid:
-            action, artifact_publish_records, artifact_publish_errors = (
-                _prepare_deliverable_artifacts(
-                    self.runtime_context,
-                    repo=repo,
-                    action=action,
-                    session_id=_optional_text(payload.get("session_id")),
-                    dispatch_id=_optional_text(payload.get("dispatch_id")),
-                    expected_revision=expected_revision,
-                )
-            )
-        if artifact_publish_errors:
-            publish_error = "; ".join(artifact_publish_errors)
-            action_error = f"{action_error}; {publish_error}" if action_error else publish_error
-            action = original_action
-            valid = False
         try:
-            state, result = repo.apply_agent_action(
-                action=action,
-                session_id=_optional_text(payload.get("session_id")),
-                dispatch_id=_optional_text(payload.get("dispatch_id")),
-                valid=valid,
-                error=action_error,
-                expected_revision=expected_revision,
+            state, result = repo.finalize_agent_dispatch_from_activity(
+                session_id=_required_text(payload.get("session_id"), "session_id"),
+                dispatch_id=_required_text(payload.get("dispatch_id"), "dispatch_id"),
+                agent_id=_optional_text(payload.get("agent_id")),
+                expected_revision=_optional_int(
+                    payload.get("expected_revision"),
+                    default=None,
+                ),
             )
         except TeamStateConflictError as exc:
             return {
@@ -1328,7 +1477,7 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
                 "current_revision": exc.current_revision,
             }
         agent_id = result.get("agent_id")
-        if isinstance(agent_id, str) and agent_id in state.agents:
+        if result.get("finalized") and isinstance(agent_id, str) and agent_id in state.agents:
             _mirror_session_metadata(
                 self.runtime_context,
                 repo=repo,
@@ -1338,19 +1487,10 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             )
         published_event_ids = _publish_team_events(
             self.runtime_context,
-            result.get("ephemeral_events"),
-        )
-        published_event_ids += _publish_team_events(
-            self.runtime_context,
             result.get("events"),
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
-        if artifact_publish_records:
-            result["published_deliverable_artifacts"] = artifact_publish_records
-        result.setdefault("recovery_dispatched", False)
-        result.setdefault("recovery_action_record_id", None)
-        result.setdefault("recovery_result", None)
         if isinstance(agent_id, str):
             state_payload = _filtered_team_state_payload(
                 state,
@@ -1363,251 +1503,6 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             state_payload["conversations"] = {}
             state_payload["conversation_messages"] = {}
         return {**result, "state": state_payload}
-
-
-def _is_missing_action_artifact_error(
-    error: str | None,
-    action_artifact_path: str,
-) -> bool:
-    normalized = str(error or "").casefold()
-    if "artifact file not found" not in normalized:
-        return False
-    path = action_artifact_path.strip()
-    if path.startswith("/artifacts/"):
-        path = path[len("/artifacts/") :]
-    path = path.strip("/")
-    if not path:
-        return True
-    return path.casefold() in normalized or Path(path).name.casefold() in normalized
-
-
-def _dispatch_missing_action_recovery(
-    context: Any,
-    *,
-    repo: TeamStateRepository,
-    session_id: str | None,
-    dispatch_id: str | None,
-    action_artifact_path: str,
-    error: str,
-    expected_revision: int | None,
-    resume_mode: str,
-) -> dict[str, Any] | None:
-    if not session_id or not dispatch_id:
-        return None
-    resumer = getattr(context, "agent_resumer", None)
-    resume_agent = getattr(resumer, "resume_agent", None)
-    if not callable(resume_agent):
-        return None
-    try:
-        state, recovery_record = repo.record_missing_action_recovery_prompted(
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            action_artifact_path=action_artifact_path,
-            error=error,
-            expected_revision=expected_revision,
-        )
-    except (TeamStateConflictError, ValueError):
-        return None
-    if recovery_record.get("already_prompted") or recovery_record.get("error"):
-        recovery_error = _optional_text(recovery_record.get("error"))
-        if recovery_error is None:
-            recovery_error = "missing Team action recovery was already prompted"
-        return _apply_missing_action_after_recovery_dispatch_failed(
-            repo,
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            error=error,
-            state=state,
-            recovery_record=recovery_record,
-            recovery_result={
-                "success": False,
-                "error": recovery_error,
-            },
-        )
-    agent_id = _optional_text(recovery_record.get("agent_id"))
-    if agent_id is None:
-        return None
-    prompt = _missing_action_recovery_prompt(
-        agent_id=agent_id,
-        dispatch_id=dispatch_id,
-        action_artifact_path=action_artifact_path,
-        error=error,
-    )
-    try:
-        resume_result = resume_agent(
-            target=session_id,
-            prompt=prompt,
-            resume_mode=resume_mode,
-            dispatch_id=dispatch_id,
-        )
-    except Exception as exc:
-        return _apply_missing_action_after_recovery_dispatch_failed(
-            repo,
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            error=error,
-            state=state,
-            recovery_record=recovery_record,
-            recovery_result={
-                "success": False,
-                "error": str(exc) or exc.__class__.__name__,
-            },
-        )
-    result_payload = _coerce_mapping(resume_result)
-    if _result_reports_failure(result_payload):
-        return _apply_missing_action_after_recovery_dispatch_failed(
-            repo,
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            error=error,
-            state=state,
-            recovery_record=recovery_record,
-            recovery_result=result_payload,
-        )
-    state_payload = _filtered_team_state_payload(
-        state,
-        team_id=None,
-        project_id=None,
-        agent_id=agent_id,
-    )
-    return {
-        **_empty_apply_result(
-            success=True,
-            revision=state.revision,
-            agent_id=agent_id,
-        ),
-        "recovery_dispatched": True,
-        "recovery_action_record_id": recovery_record.get("action_record_id"),
-        "recovery_result": result_payload,
-        "state": state_payload,
-    }
-
-
-def _apply_missing_action_after_recovery_dispatch_failed(
-    repo: TeamStateRepository,
-    *,
-    session_id: str,
-    dispatch_id: str,
-    error: str,
-    state: TeamState,
-    recovery_record: Mapping[str, Any],
-    recovery_result: Mapping[str, Any],
-) -> dict[str, Any]:
-    agent_id = _optional_text(recovery_record.get("agent_id"))
-    try:
-        failed_state, result = repo.apply_agent_action(
-            action={
-                "agent_id": agent_id,
-                "dispatch_id": dispatch_id,
-            },
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            valid=False,
-            error=error,
-            expected_revision=state.revision,
-        )
-    except TeamStateConflictError as exc:
-        return {
-            "success": False,
-            "error": str(exc),
-            "expected_revision": exc.expected_revision,
-            "current_revision": exc.current_revision,
-        }
-    result["recovery_dispatched"] = False
-    result["recovery_action_record_id"] = recovery_record.get("action_record_id")
-    result["recovery_result"] = dict(recovery_result)
-    if agent_id is not None:
-        state_payload = _filtered_team_state_payload(
-            failed_state,
-            team_id=None,
-            project_id=None,
-            agent_id=agent_id,
-        )
-    else:
-        state_payload = team_state_payload(failed_state, include_agent_avatars=False)
-        state_payload["conversations"] = {}
-        state_payload["conversation_messages"] = {}
-    return {**result, "state": state_payload}
-
-
-def _missing_action_recovery_prompt(
-    *,
-    agent_id: str,
-    dispatch_id: str,
-    action_artifact_path: str,
-    error: str,
-) -> str:
-    absolute_path = (
-        action_artifact_path
-        if action_artifact_path.startswith("/artifacts/")
-        else f"/artifacts/{action_artifact_path.strip('/')}"
-    )
-    example = {
-        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-        "agent_id": agent_id,
-        "dispatch_id": dispatch_id,
-        "task_updates": [],
-        "status_reports": [],
-        "questions": [],
-        "deliverables": [],
-        "handled_inbox_item_ids": [],
-        "notes": "Recovery action artifact for the completed Team dispatch.",
-    }
-    return (
-        "Your previous Team dispatch completed without the required Team action "
-        f"artifact. Original artifact read error: {error}\n\n"
-        "Do not continue implementation work in this recovery turn. Write only the "
-        f"missing UTF-8 JSON action object to {absolute_path}, then finish.\n\n"
-        "Use the Team context from the just-completed dispatch. If work is not ready "
-        "for a deliverable, write a status_reports item to your direct superior or "
-        "a question if you need a response. If you created deliverable files, make "
-        "sure they are under /artifacts and reference them with relative "
-        "deliverables[].artifact_paths plus the correct task_id. Include any "
-        "status-request inbox ids you are answering in handled_inbox_item_ids.\n\n"
-        "Minimum valid shape:\n"
-        f"{json.dumps(example, sort_keys=True, indent=2)}\n"
-    )
-
-
-def _empty_apply_result(
-    *,
-    success: bool,
-    revision: int,
-    agent_id: str | None,
-) -> dict[str, Any]:
-    return {
-        "success": success,
-        "revision": revision,
-        "agent_id": agent_id,
-        "applied": False,
-        "errors": [],
-        "created_inbox_item_ids": [],
-        "created_deliverable_ids": [],
-        "created_task_ids": [],
-        "created_status_request_ids": [],
-        "created_review_request_ids": [],
-        "decided_review_request_ids": [],
-        "updated_goal_ids": [],
-        "operator_escalation_event_ids": [],
-        "git_promotion_event_ids": [],
-        "release_package_ids": [],
-        "updated_task_ids": [],
-        "handled_inbox_item_ids": [],
-        "created_ephemeral_assignment_ids": [],
-        "ephemeral_events": [],
-        "events": [],
-        "accepted_ephemeral_assignment_ids": [],
-        "rejected_ephemeral_assignment_ids": [],
-        "created_stand_down_ids": [],
-        "revoked_stand_down_ids": [],
-        "created_chat_reply_message_ids": [],
-        "replied_chat_message_ids": [],
-        "created_operator_chat_message_ids": [],
-        "published_deliverable_artifacts": [],
-        "recovery_dispatched": False,
-        "recovery_action_record_id": None,
-        "recovery_result": None,
-    }
 
 
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
@@ -1686,6 +1581,193 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
         }
 
 
+class TeamCreateCaseEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateCaseEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "case_id",
+            "team_id",
+            "title",
+            "description",
+            "project_id",
+            "status",
+            "priority",
+            "owner_agent_id",
+            "source",
+            "source_ref",
+            "tags",
+            "metadata",
+            "task_ids",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        case_id = _optional_text(payload.get("case_id"))
+        try:
+            state, effective_case_id = repo.create_case_with_id(
+                case_id=case_id,
+                team_id=_required_text(payload.get("team_id"), "team_id"),
+                title=_required_text(payload.get("title"), "title"),
+                description=_optional_text(payload.get("description")) or "",
+                project_id=_optional_text(payload.get("project_id")),
+                status=_optional_text(payload.get("status")) or "open",
+                priority=_optional_text(payload.get("priority")) or "normal",
+                owner_agent_id=_optional_text(payload.get("owner_agent_id")),
+                source=_optional_text(payload.get("source")),
+                source_ref=_optional_text(payload.get("source_ref")),
+                tags=_string_list(payload.get("tags"), "tags"),
+                metadata=_optional_mapping(payload.get("metadata"), "metadata") or {},
+                task_ids=_string_list(payload.get("task_ids"), "task_ids"),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _case_effect_error_result(
+                revision=exc.current_revision,
+                case_id=case_id,
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            return _case_effect_error_result(
+                revision=repo.read().revision,
+                case_id=case_id,
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+            )
+        return _case_effect_success_result(state, case_id=effective_case_id)
+
+
+class TeamUpdateCaseEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamUpdateCaseEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "case_id",
+            "title",
+            "description",
+            "project_id",
+            "status",
+            "priority",
+            "owner_agent_id",
+            "source",
+            "source_ref",
+            "tags",
+            "metadata",
+            "task_ids",
+            "expected_revision",
+        )
+        resolved_fields = set(resolved_config or {})
+        definition_fields = _configured_definition_fields(self.effect_definition)
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        case_id = _optional_text(payload.get("case_id"))
+        try:
+            required_case_id = _required_text(payload.get("case_id"), "case_id")
+            state = repo.update_case(
+                case_id=required_case_id,
+                title=_optional_text(payload.get("title")),
+                description=_optional_text(payload.get("description")),
+                set_description=_payload_field_configured(
+                    "description",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                project_id=_optional_text(payload.get("project_id")),
+                set_project_id=_payload_field_configured(
+                    "project_id",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                status=_optional_text(payload.get("status")),
+                priority=_optional_text(payload.get("priority")),
+                owner_agent_id=_optional_text(payload.get("owner_agent_id")),
+                set_owner_agent_id=_payload_field_configured(
+                    "owner_agent_id",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                source=_optional_text(payload.get("source")),
+                set_source=_payload_field_configured(
+                    "source",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                source_ref=_optional_text(payload.get("source_ref")),
+                set_source_ref=_payload_field_configured(
+                    "source_ref",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
+                tags=(
+                    _string_list(payload.get("tags"), "tags")
+                    if _payload_field_configured(
+                        "tags",
+                        definition_fields=definition_fields,
+                        resolved_fields=resolved_fields,
+                    )
+                    and payload.get("tags") is not None
+                    else None
+                ),
+                metadata=(
+                    _optional_mapping(payload.get("metadata"), "metadata")
+                    if _payload_field_configured(
+                        "metadata",
+                        definition_fields=definition_fields,
+                        resolved_fields=resolved_fields,
+                    )
+                    and payload.get("metadata") is not None
+                    else None
+                ),
+                task_ids=(
+                    _string_list(payload.get("task_ids"), "task_ids")
+                    if _payload_field_configured(
+                        "task_ids",
+                        definition_fields=definition_fields,
+                        resolved_fields=resolved_fields,
+                    )
+                    and payload.get("task_ids") is not None
+                    else None
+                ),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _case_effect_error_result(
+                revision=exc.current_revision,
+                case_id=case_id,
+                team_id=None,
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            return _case_effect_error_result(
+                revision=repo.read().revision,
+                case_id=case_id,
+                team_id=None,
+                project_id=_optional_text(payload.get("project_id")),
+                error=str(exc),
+            )
+        return _case_effect_success_result(state, case_id=required_case_id)
+
+
 class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -1759,44 +1841,82 @@ class TeamMarkEphemeralSpawnedEffectProvider(EffectProviderBase):
         return result
 
 
-class TeamApplyEphemeralActionEffectProvider(EffectProviderBase):
+class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
         if isinstance(effect_definition, WorkflowNodeEnvelope):
-            return _materialize(TeamApplyEphemeralActionEffectDefinition, effect_definition)
+            return _materialize(TeamPublishOutboxEventsEffectDefinition, effect_definition)
         return effect_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "action",
-            "valid",
-            "error",
-            "session_id",
-            "expected_revision",
+            "limit",
+            "intent_types",
+            "claim_ttl_seconds",
+            "retry_after_seconds",
+            "worker_id",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
+        limit = _optional_int(payload.get("limit"), default=25)
+        limit = 25 if limit is None else max(0, limit)
+        claim_ttl_seconds = _optional_int(payload.get("claim_ttl_seconds"), default=300)
+        claim_ttl_seconds = 300 if claim_ttl_seconds is None else max(1, claim_ttl_seconds)
+        retry_after_seconds = _optional_int(payload.get("retry_after_seconds"), default=60)
+        retry_after_seconds = 60 if retry_after_seconds is None else max(0, retry_after_seconds)
+        worker_id = _optional_text(payload.get("worker_id")) or "team-outbox-publisher"
+        intent_types = _string_list(payload.get("intent_types"), "intent_types")
+
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        try:
-            _state, result = repo.apply_ephemeral_action(
-                action=_optional_mapping(payload.get("action"), "action"),
-                session_id=_optional_text(payload.get("session_id")),
-                valid=_optional_bool(payload.get("valid"), default=True),
-                error=_optional_text(payload.get("error")),
-                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
-            )
-        except TeamStateConflictError as exc:
-            return {
-                "success": False,
-                "error": str(exc),
-                "expected_revision": exc.expected_revision,
-                "current_revision": exc.current_revision,
-            }
-        published_event_ids = _publish_team_events(self.runtime_context, [result.get("event")])
-        if published_event_ids:
-            result["published_event_ids"] = published_event_ids
-        return result
+        claimed = repo.claim_outbox_records(
+            worker_id=worker_id,
+            limit=limit,
+            intent_types=intent_types or None,
+            claim_ttl_seconds=claim_ttl_seconds,
+        )
+        published_event_ids: list[str] = []
+        completed_record_ids: list[str] = []
+        failed_record_ids: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for record in claimed:
+            try:
+                event = dict(record.payload)
+                event.setdefault("idempotency_key", record.idempotency_key)
+                record_event_ids = _publish_team_events(self.runtime_context, [event])
+                if not record_event_ids:
+                    raise RuntimeError("outbox record did not publish an internal event")
+                repo.complete_outbox_record(
+                    record_id=record.id,
+                    claim_token=record.claim_token,
+                )
+                completed_record_ids.append(record.id)
+                published_event_ids.extend(record_event_ids)
+            except Exception as exc:
+                repo.fail_outbox_record(
+                    record_id=record.id,
+                    error_code="publish_failed",
+                    error_message=str(exc),
+                    claim_token=record.claim_token,
+                    retry_after_seconds=retry_after_seconds,
+                )
+                failed_record_ids.append(record.id)
+                errors.append(
+                    {
+                        "record_id": record.id,
+                        "intent_type": record.intent_type,
+                        "error": str(exc),
+                    }
+                )
+        return {
+            "success": not errors,
+            "claimed_count": len(claimed),
+            "published_count": len(completed_record_ids),
+            "published_event_ids": published_event_ids,
+            "completed_outbox_record_ids": completed_record_ids,
+            "failed_outbox_record_ids": failed_record_ids,
+            "errors": errors,
+        }
 
 
 class TeamAcceptEphemeralDeliverableEffectProvider(EffectProviderBase):
@@ -2053,49 +2173,6 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
         )
 
 
-class TeamAgentActionArtifactQueryProvider(QueryProviderBase):
-    @classmethod
-    def validate_definition(cls, query_definition):
-        if isinstance(query_definition, WorkflowNodeEnvelope):
-            return _materialize(TeamAgentActionArtifactQueryDefinition, query_definition)
-        return query_definition
-
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        payload = _definition_payload(self.query_definition, "session_id", "path", "vm_user")
-        if resolved_config:
-            payload.update(dict(resolved_config))
-        session_id = _required_text(payload.get("session_id"), "session_id")
-        path = _optional_text(payload.get("path")) or DEFAULT_ACTION_ARTIFACT_PATH
-        vm_user = _optional_text(payload.get("vm_user")) or "agent"
-        reader = getattr(self.runtime_context, "session_artifact_reader", None)
-        read_fn = getattr(reader, "read_session_artifact_text", None)
-        if not callable(read_fn):
-            raise RuntimeError("query:team:agent-action-artifact requires session_artifact_reader")
-        try:
-            result = read_fn(session_id=session_id, path=path, vm_user=vm_user)
-            content = result.get("content") if isinstance(result, Mapping) else result
-            action = json.loads(str(content or ""))
-            if not isinstance(action, dict):
-                raise ValueError("action artifact must contain a JSON object")
-            return {
-                "success": True,
-                "valid": True,
-                "session_id": session_id,
-                "path": path,
-                "action": action,
-                "error": None,
-            }
-        except Exception as exc:
-            return {
-                "success": False,
-                "valid": False,
-                "session_id": session_id,
-                "path": path,
-                "action": {},
-                "error": str(exc),
-            }
-
-
 class TeamStateQueryProvider(QueryProviderBase):
     @classmethod
     def validate_definition(cls, query_definition):
@@ -2134,6 +2211,7 @@ class TeamStateQueryProvider(QueryProviderBase):
             "teams": filtered["teams"],
             "projects": filtered["projects"],
             "agents": filtered["agents"],
+            "cases": filtered["cases"],
             "tasks": filtered["tasks"],
         }
 
@@ -2224,119 +2302,6 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
         }
 
 
-def _prepare_deliverable_artifacts(
-    context: Any,
-    *,
-    repo: TeamStateRepository,
-    action: dict[str, Any] | None,
-    session_id: str | None,
-    dispatch_id: str | None,
-    expected_revision: int | None,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[str]]:
-    if action is None:
-        return None, [], []
-    deliverables_value = action.get("deliverables")
-    if not isinstance(deliverables_value, list):
-        return action, [], []
-    if not any(
-        isinstance(item, Mapping) and item.get("artifact_paths") is not None
-        for item in deliverables_value
-    ):
-        return action, [], []
-
-    state = repo.read()
-    if expected_revision is not None and state.revision != expected_revision:
-        return action, [], []
-
-    normalized_action = dict(action)
-    normalized_session_id = _optional_text(session_id)
-    normalized_dispatch_id = _optional_text(dispatch_id) or _optional_text(
-        normalized_action.get("dispatch_id")
-    )
-    agent = _artifact_preflight_agent(
-        state,
-        action=normalized_action,
-        session_id=normalized_session_id,
-    )
-    runtime = state.agent_runtimes.get(agent.id) if agent is not None else None
-    if (
-        agent is None
-        or (normalized_session_id is not None and agent.session_id != normalized_session_id)
-        or (
-            normalized_dispatch_id is not None
-            and runtime is not None
-            and runtime.active_dispatch_id is not None
-            and normalized_dispatch_id != runtime.active_dispatch_id
-        )
-    ):
-        return action, [], []
-
-    next_deliverables: list[Any] = []
-    records: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for index, raw_deliverable in enumerate(deliverables_value):
-        if not isinstance(raw_deliverable, Mapping):
-            next_deliverables.append(raw_deliverable)
-            continue
-        deliverable = dict(raw_deliverable)
-        if deliverable.get("artifact_paths") is None:
-            next_deliverables.append(deliverable)
-            continue
-        try:
-            artifact_paths = _string_list(deliverable.get("artifact_paths"), "artifact_paths")
-            if not artifact_paths:
-                deliverable.pop("artifact_paths", None)
-                next_deliverables.append(deliverable)
-                continue
-            task_id = _required_text(deliverable.get("task_id"), "task_id")
-            task = state.tasks.get(task_id)
-            if task is None or task.owner_agent_id != agent.id:
-                next_deliverables.append(deliverable)
-                continue
-            deliverable_id = _optional_text(deliverable.get("id")) or f"deliverable-{uuid4().hex}"
-            deliverable["id"] = deliverable_id
-            artifact_record = _publish_deliverable_artifact_bundle(
-                context,
-                agent=agent.model_dump(
-                    mode="json",
-                    exclude=AGENT_OPERATOR_ONLY_FIELDS,
-                ),
-                team_id=agent.team_id,
-                project_id=task.project_id,
-                deliverable_id=deliverable_id,
-                dispatch_id=normalized_dispatch_id or "manual",
-                source_paths=artifact_paths,
-            )
-            artifact_refs = _string_list(deliverable.get("artifact_refs"), "artifact_refs")
-            deliverable["artifact_refs"] = _append_unique_text(
-                artifact_refs,
-                artifact_record["artifact_ref"],
-            )
-            records.append(artifact_record)
-            next_deliverables.append(deliverable)
-        except Exception as exc:
-            errors.append(f"deliverables[{index}]: failed to publish artifact_paths: {exc}")
-    normalized_action["deliverables"] = next_deliverables
-    return normalized_action, records, errors
-
-
-def _artifact_preflight_agent(
-    state: Any,
-    *,
-    action: Mapping[str, Any],
-    session_id: str | None,
-) -> Any | None:
-    agent_id = _optional_text(action.get("agent_id"))
-    if agent_id is not None:
-        return state.agents.get(agent_id)
-    if session_id is None:
-        return None
-    for agent in state.agents.values():
-        if agent.session_id == session_id:
-            return agent
-    return None
-
-
 def _publish_deliverable_artifact_bundle(
     context: Any,
     *,
@@ -2412,6 +2377,273 @@ def _publish_deliverable_artifact_bundle(
     }
 
 
+def _prepare_review_artifacts_for_lease(
+    context: Any,
+    *,
+    lease: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    imports: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    requests = _review_artifact_ref_requests(lease)
+    if not requests:
+        return {
+            "review_artifact_imports": imports,
+            "review_artifact_import_errors": errors,
+        }
+
+    try:
+        artifact_state = ArtifactSpaceStore(_runtime_dir(context)).read()
+    except Exception as exc:
+        for request in requests:
+            errors.append({**_review_artifact_request_payload(request), "error": str(exc)})
+        return {
+            "review_artifact_imports": imports,
+            "review_artifact_import_errors": errors,
+        }
+
+    for request in requests:
+        artifact_ref = _required_text(request.get("artifact_ref"), "artifact_ref")
+        try:
+            artifact_space_path = _artifact_space_path_from_ref(artifact_ref)
+            _require_review_artifact_space_read(
+                artifact_state,
+                artifact_space_path=artifact_space_path,
+                subject=_required_text(request.get("subject"), "subject"),
+            )
+            versions = artifact_state.latest_versions_for_space(
+                artifact_space_path,
+                artifact_id=_TEAM_REVIEW_ARTIFACT_ID_DEFAULT,
+            )
+            if not versions:
+                versions = artifact_state.latest_versions_for_space(artifact_space_path)
+            if not versions:
+                raise ValueError(
+                    "artifact space has no latest published versions: "
+                    f"{artifact_space_path}"
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    **_review_artifact_request_payload(request),
+                    "artifact_space_path": artifact_ref.removeprefix(
+                        _ARTIFACT_SPACE_REF_PREFIX
+                    ),
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        for version in versions:
+            try:
+                imports.append(
+                    _import_review_artifact_version(
+                        context,
+                        request=request,
+                        artifact_space_path=artifact_space_path,
+                        artifact_id=version.artifact_id,
+                        artifact_key=version.artifact_key,
+                        artifact_space_version_id=version.id,
+                        artifact_space_version=version.version,
+                    )
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        **_review_artifact_request_payload(request),
+                        "artifact_space_path": artifact_space_path,
+                        "artifact_id": version.artifact_id,
+                        "artifact_key": version.artifact_key,
+                        "artifact_space_version_id": version.id,
+                        "artifact_space_version": version.version,
+                        "error": str(exc),
+                    }
+                )
+
+    return {
+        "review_artifact_imports": imports,
+        "review_artifact_import_errors": errors,
+    }
+
+
+def _review_artifact_ref_requests(lease: Mapping[str, Any]) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    agent = lease.get("agent")
+    if not isinstance(agent, Mapping):
+        return requests
+    agent_id = _optional_text(agent.get("id"))
+    if agent_id is None:
+        return requests
+    session_id = _optional_text(agent.get("session_id"))
+    if session_id is None:
+        return requests
+    subject = f"team-agent:{agent_id}"
+    for item in lease.get("inbox") or []:
+        if not isinstance(item, Mapping):
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        if _optional_text(payload.get("kind")) != "review_request":
+            continue
+        review_request_id = (
+            _optional_text(payload.get("review_request_id"))
+            or _optional_text(item.get("id"))
+            or "review"
+        )
+        deliverable_id = _optional_text(payload.get("deliverable_id")) or "deliverable"
+        for artifact_ref in _string_items(payload.get("artifact_refs")):
+            if not artifact_ref.startswith(_ARTIFACT_SPACE_REF_PREFIX):
+                continue
+            key = (review_request_id, deliverable_id, artifact_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            requests.append(
+                {
+                    "review_request_id": review_request_id,
+                    "deliverable_id": deliverable_id,
+                    "artifact_ref": artifact_ref,
+                    "inbox_item_id": _optional_text(item.get("id")),
+                    "session_id": session_id,
+                    "subject": subject,
+                }
+            )
+    return requests
+
+
+def _review_artifact_request_payload(request: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: request[key]
+        for key in (
+            "review_request_id",
+            "deliverable_id",
+            "artifact_ref",
+            "inbox_item_id",
+        )
+        if request.get(key) is not None
+    }
+
+
+def _artifact_space_path_from_ref(artifact_ref: str) -> str:
+    if not artifact_ref.startswith(_ARTIFACT_SPACE_REF_PREFIX):
+        raise ValueError(f"unsupported artifact ref: {artifact_ref}")
+    return normalize_space_path(artifact_ref.removeprefix(_ARTIFACT_SPACE_REF_PREFIX))
+
+
+def _require_review_artifact_space_read(
+    artifact_state: Any,
+    *,
+    artifact_space_path: str,
+    subject: str,
+) -> None:
+    space = artifact_state.spaces.get(artifact_space_path)
+    if space is None:
+        raise ValueError(f"artifact space does not exist: {artifact_space_path}")
+    if not space.grants.allows(subject, "read"):
+        raise ArtifactSpacePermissionError(
+            f"subject {subject or '<anonymous>'} cannot read artifact space "
+            f"{artifact_space_path}"
+        )
+
+
+def _import_review_artifact_version(
+    context: Any,
+    *,
+    request: Mapping[str, Any],
+    artifact_space_path: str,
+    artifact_id: str,
+    artifact_key: str,
+    artifact_space_version_id: str,
+    artifact_space_version: int,
+) -> dict[str, Any]:
+    review_request_id = _required_text(
+        request.get("review_request_id"),
+        "review_request_id",
+    )
+    deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
+    destination_path = _review_artifact_destination_path(
+        review_request_id=review_request_id,
+        deliverable_id=deliverable_id,
+        artifact_space_path=artifact_space_path,
+        artifact_id=artifact_id,
+        artifact_space_version_id=artifact_space_version_id,
+    )
+    provider = ArtifactImportPublishedEffectProvider()
+    ref_version_segment = _review_artifact_ref_version_segment(
+        artifact_space_path=artifact_space_path,
+        artifact_space_version_id=artifact_space_version_id,
+    )
+    provider.initialize(
+        ArtifactImportPublishedEffectDefinition(
+            id=(
+                "team-review-artifact-import-"
+                f"{_artifact_space_path_segment(review_request_id, 'review_request_id')}-"
+                f"{_artifact_space_path_segment(artifact_id, 'artifact_id')}-"
+                f"{ref_version_segment}"
+            ),
+            display_name="Import Team review artifact",
+            type="effect:artifact:import-published",
+            session_id=_required_text(request.get("session_id"), "session_id"),
+            key=artifact_key,
+            destination_path=destination_path,
+            overwrite=True,
+        ),
+        context,
+    )
+    import_result = provider.execute()
+    return {
+        "review_request_id": review_request_id,
+        "deliverable_id": deliverable_id,
+        "artifact_ref": request.get("artifact_ref"),
+        "artifact_space_path": artifact_space_path,
+        "artifact_id": artifact_id,
+        "artifact_key": artifact_key,
+        "artifact_space_version_id": artifact_space_version_id,
+        "artifact_space_version": artifact_space_version,
+        "destination_path": destination_path,
+        "artifact_path": f"/artifacts/{destination_path}",
+        "imported_paths": list(import_result.get("imported_paths") or []),
+        "imported_file_count": int(import_result.get("imported_file_count") or 0),
+    }
+
+
+def _review_artifact_destination_path(
+    *,
+    review_request_id: str,
+    deliverable_id: str,
+    artifact_space_path: str,
+    artifact_id: str,
+    artifact_space_version_id: str,
+) -> str:
+    ref_version_segment = _review_artifact_ref_version_segment(
+        artifact_space_path=artifact_space_path,
+        artifact_space_version_id=artifact_space_version_id,
+    )
+    return "/".join(
+        [
+            "team-review-inputs",
+            _artifact_space_path_segment(review_request_id, "review_request_id"),
+            _artifact_space_path_segment(deliverable_id, "deliverable_id"),
+            _artifact_space_path_segment(artifact_id, "artifact_id"),
+            ref_version_segment,
+        ]
+    )
+
+
+def _review_artifact_ref_version_segment(
+    *,
+    artifact_space_path: str,
+    artifact_space_version_id: str,
+) -> str:
+    ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
+    version_segment = _artifact_space_path_segment(
+        artifact_space_version_id,
+        "artifact_space_version_id",
+    )
+    return f"ref-{ref_hash}-{version_segment}"
+
+
 def _artifact_space_path_segment(value: str, field_name: str) -> str:
     text = _required_text(value, field_name)
     if (
@@ -2476,13 +2708,17 @@ def register_providers() -> ProviderPluginRegistration:
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
             "effect:team:wake-governance-managers": TeamWakeGovernanceManagersEffectProvider,
-            "effect:team:apply-agent-action": TeamApplyAgentActionEffectProvider,
+            "effect:team:publish-outbox-events": TeamPublishOutboxEventsEffectProvider,
+            "effect:team:finalize-agent-dispatch": (
+                TeamFinalizeAgentDispatchEffectProvider
+            ),
             "effect:team:create-operator-directive": (
                 TeamCreateOperatorDirectiveEffectProvider
             ),
+            "effect:team:create-case": TeamCreateCaseEffectProvider,
+            "effect:team:update-case": TeamUpdateCaseEffectProvider,
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
-            "effect:team:apply-ephemeral-action": TeamApplyEphemeralActionEffectProvider,
             "effect:team:accept-ephemeral-deliverable": (
                 TeamAcceptEphemeralDeliverableEffectProvider
             ),
@@ -2497,7 +2733,6 @@ def register_providers() -> ProviderPluginRegistration:
             ),
         },
         query_providers={
-            "query:team:agent-action-artifact": TeamAgentActionArtifactQueryProvider,
             "query:team:state": TeamStateQueryProvider,
             "query:team:session-routing": TeamSessionRoutingQueryProvider,
         },
@@ -2511,8 +2746,14 @@ def register_providers() -> ProviderPluginRegistration:
                     node,
                 )
             ),
-            "effect:team:apply-agent-action": (
-                lambda node: _materialize(TeamApplyAgentActionEffectDefinition, node)
+            "effect:team:publish-outbox-events": (
+                lambda node: _materialize(TeamPublishOutboxEventsEffectDefinition, node)
+            ),
+            "effect:team:finalize-agent-dispatch": (
+                lambda node: _materialize(
+                    TeamFinalizeAgentDispatchEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:create-operator-directive": (
                 lambda node: _materialize(
@@ -2520,14 +2761,17 @@ def register_providers() -> ProviderPluginRegistration:
                     node,
                 )
             ),
+            "effect:team:create-case": (
+                lambda node: _materialize(TeamCreateCaseEffectDefinition, node)
+            ),
+            "effect:team:update-case": (
+                lambda node: _materialize(TeamUpdateCaseEffectDefinition, node)
+            ),
             "effect:team:request-ephemeral-agents": (
                 lambda node: _materialize(TeamRequestEphemeralAgentsEffectDefinition, node)
             ),
             "effect:team:mark-ephemeral-spawned": (
                 lambda node: _materialize(TeamMarkEphemeralSpawnedEffectDefinition, node)
-            ),
-            "effect:team:apply-ephemeral-action": (
-                lambda node: _materialize(TeamApplyEphemeralActionEffectDefinition, node)
             ),
             "effect:team:accept-ephemeral-deliverable": (
                 lambda node: _materialize(TeamAcceptEphemeralDeliverableEffectDefinition, node)
@@ -2546,9 +2790,6 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:consolidate-git-branches": (
                 lambda node: _materialize(TeamConsolidateGitBranchesEffectDefinition, node)
-            ),
-            "query:team:agent-action-artifact": (
-                lambda node: _materialize(TeamAgentActionArtifactQueryDefinition, node)
             ),
             "query:team:state": (lambda node: _materialize(TeamStateQueryDefinition, node)),
             "query:team:session-routing": (
@@ -2573,69 +2814,101 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Identity:\n"
         f"- Persistent agent id: {json.dumps(identity['agent_id'])}\n"
         f"{display_line}\n"
-        "Use the provided Team context and update only your own assigned tasks. "
-        "Questions and progress reports must go to your direct superior; "
-        "agents without a direct superior use operator_escalations. Use "
-        "task_creations only according to the task creation mandate in your wake "
-        "prompt. Use "
-        "status_requests only for direct subordinates. Use "
-        "review_requests/review_decisions for deliverable review, goal_updates "
-        "for project goals, git_* actions for review/feature/release branch "
-        "promotion, stand_downs/stand_down_revocations for direct-subordinate "
-        "hold control, and ephemeral_* actions for scoped worker delegation.\n\n"
+        "Use the Team MCP tools granted to your session. Tool discovery is the "
+        "source of truth for argument shapes; do not write local coordination "
+        "files, helper scripts, or finish commands.\n\n"
+        "Core MCP surface:\n"
+        f"- Use {TEAM_UPDATE_TASK_TOOL} for tasks you own. State, priority, title, "
+        "and description edits are owner-only. Superior agents may use the same "
+        "tool to claim a subordinate's non-terminal task or reassign it within "
+        "the same project. Do not accept or reject someone else's task through "
+        f"{TEAM_UPDATE_TASK_TOOL}.\n"
+        f"- Use {TEAM_CREATE_CASE_TOOL} and {TEAM_UPDATE_CASE_TOOL} for intake, "
+        "source references, priority, owner, lifecycle, and case-task links.\n"
+        f"- Use {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} only within "
+        "the task creation mandate in your wake prompt.\n"
+        f"- Use {TEAM_REQUEST_STATUS_TOOL} only for direct subordinates. Use "
+        f"{TEAM_ASK_QUESTION_TOOL} and {TEAM_SEND_PROGRESS_REPORT_TOOL} for "
+        "allowed directional coordination with your direct superior.\n"
+        f"- Use {TEAM_ESCALATE_OPERATOR_TOOL} when you have no direct superior or "
+        "the current issue genuinely needs operator attention.\n"
+        f"- Use {TEAM_UPDATE_GOAL_TOOL} for project goal updates.\n"
+        f"- Use {TEAM_RECORD_NOTE_TOOL} only to record a useful note; it is not a "
+        "completion ritual.\n\n"
         "Each task carries derived graph context: dependency_status, "
         "child_task_ids, blocked_by_task_ids, and subtask_counts. Do not start "
         "tasks whose dependency_status is not 'satisfied'; wait until their "
         "blocked_by_task_ids clear. Decompose large work by creating child tasks "
-        "via task_creations with parent_task_id instead of ad hoc checklists in "
-        "descriptions. Declare ordering between tasks with dependency_task_ids.\n\n"
-        "Action surface guide:\n"
-        "- Use task_updates for tasks you own. State, priority, title, and "
-        "description edits are owner-only. Do not accept or reject someone else's "
-        "task with task_updates.\n"
-        "- Use review_requests to ask a specific same-team agent to review a "
-        "deliverable. Include instructions when the reviewer needs a focused "
-        "check.\n"
-        "- For non-Git deliverables, stage files under /artifacts and list the "
-        "exact relative files or directories in deliverables[].artifact_paths. "
-        "The Team runtime publishes only those paths and records artifact refs "
-        "for reviewers.\n"
+        f"with {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} instead of ad "
+        "hoc checklists in descriptions. Declare ordering between tasks with "
+        "dependency_task_ids.\n\n"
+        "Deliverables and review:\n"
+        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} for finished work that does not "
+        "need a separate reviewer. Use "
+        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL} when the deliverable should "
+        "immediately be handed to a reviewer.\n"
+        "- For non-Git deliverables, stage files under /artifacts and pass paths "
+        f"relative to /artifacts to {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
+        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}. The Team runtime publishes "
+        "only those paths and records artifact refs for reviewers.\n"
+        f"- Use {TEAM_REQUEST_REVIEW_TOOL} to ask a specific same-team reviewer "
+        "to review a deliverable. Review artifact handoff is through "
+        f"{TEAM_REQUEST_REVIEW_TOOL} or "
+        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
+        "paths through communication tools.\n"
         "- When responding to a review_rejected inbox item, create a revised "
-        "deliverable with deliverables[].supersedes_deliverable_id set to the "
+        "deliverable with supersedes_deliverable_id set to the "
         "payload's supersedes_deliverable_id.\n"
-        "- Use review_decisions only for review requests assigned to you. "
-        "Accepting a review is the action that cascades to deliverable/task "
-        "acceptance once all attached reviews are accepted.\n"
-        "- Before git_release_requests for Git work, make sure every deliverable "
-        "is accepted and already has git_refs.feature_branch. Raw agent or review "
-        "branches are not release sources; use git_review_promotions and "
-        "git_feature_updates first.\n"
-        "- If a deliverable should be reviewed by another agent, create a "
-        "review_requests item for that reviewer; do not mark the task accepted "
-        "yourself unless the task is actually yours.\n"
+        f"- Use {TEAM_DECIDE_REVIEW_TOOL} only for review requests assigned to "
+        "you. Accepting a review is what cascades to deliverable/task acceptance "
+        "once all attached reviews are accepted.\n"
+        "- During manager fallback, routing_gaps take priority. If a gap says an "
+        "idle profile-eligible reviewer has review work, create a fresh "
+        f"{TEAM_REQUEST_REVIEW_TOOL} call for that reviewer instead of accepting "
+        "the review yourself. Use override_routing_gap_reason only when intentionally "
+        "bypassing that guardrail.\n"
+        f"- If a deliverable should be reviewed by another agent, use "
+        f"{TEAM_REQUEST_REVIEW_TOOL}; do not mark the task accepted yourself "
+        "unless the task is actually yours.\n\n"
+        "Git and release:\n"
+        f"- Use {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} for review-branch promotion and "
+        f"{TEAM_UPDATE_FEATURE_BRANCH_TOOL} for feature-branch promotion.\n"
+        f"- Release requests stand alone. Use {TEAM_REQUEST_RELEASE_TOOL} once "
+        "every deliverable is accepted and no release package already exists for "
+        "that release. The release request can enqueue prerequisite feature "
+        "promotions from accepted deliverable git_refs.review_branch or "
+        "git_refs.agent_branch before continuing to the release branch.\n"
+        "- If release_packages shows an existing blocked package, do not submit "
+        "another release request with that id; follow the package's "
+        f"next_action_hint. Use {TEAM_RECOVER_RELEASE_TOOL} only when that hint "
+        "identifies a failed release promotion and the resolved commit is pushed "
+        "to an allowed agents/... ref.\n\n"
+        "Inbox, chat, delegation, and controls:\n"
         "- Inbox items with item_type operator_directive are durable operator "
         "instructions that were relayed from an out-of-band channel. Handle them "
-        "through the Team dispatch by writing the appropriate task/status/review "
-        "actions to the configured Team action artifact, then include their ids "
-        "in handled_inbox_item_ids.\n"
+        f"with the appropriate Team MCP tools, then use {TEAM_MARK_INBOX_HANDLED_TOOL} "
+        "when the item no longer needs attention.\n"
         "- Inbox items include response_requested. When response_requested is "
         "false, do not send thank-you, acknowledgement, or other no-op replies; "
-        "either take the needed Team action or mark the item handled with "
-        "handled_inbox_item_ids. When response_requested is true, respond through "
-        "the normal allowed directional action surface if a response is needed.\n"
+        f"either take the needed Team action or mark the item handled with "
+        f"{TEAM_MARK_INBOX_HANDLED_TOOL}. When response_requested is true, respond "
+        "through the normal allowed directional tool if a response is needed.\n"
         "- Inbox messages may include priority low, normal, or high. Use low for "
         "FYI updates that can be batched, normal for ordinary coordination, and "
         "high only for urgent blockers. Low-priority inbox may be delivered with "
         "other work instead of waking the recipient immediately.\n"
         "- Team Chat messages are direct conversations with human operators, not "
-        "agent-to-agent inbox items. Use chat_replies only when a wake prompt "
-        "gives you a conversation_id and message_id from a human operator. Use "
-        "operator_chat_messages only for human operators listed in the current "
-        "Team context as operator_chat_participants.\n"
-        "- Use stand_downs when you need a direct subordinate and that "
-        "subordinate's subtree to stop future Team work. Use "
-        "stand_down_revocations to clear a stand-down you set. Do not encode "
-        "stand-downs as prose-only status_requests.\n"
+        f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
+        f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
+        "human operators listed in the current Team context as operator chat participants.\n"
+        f"- Use {TEAM_REQUEST_EPHEMERAL_AGENT_TOOL} or "
+        f"{TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL} for scoped worker delegation, then "
+        f"{TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL} or {TEAM_REJECT_EPHEMERAL_RESULT_TOOL} "
+        "when a worker result is ready for your decision.\n"
+        f"- Use {TEAM_STAND_DOWN_AGENT_TOOL} when you need a direct subordinate and "
+        f"that subordinate's subtree to stop future Team work. Use "
+        f"{TEAM_REVOKE_STAND_DOWN_TOOL} to clear a stand-down you set. Do not "
+        "encode stand-downs as prose-only status requests.\n"
     )
 
 
@@ -2670,9 +2943,8 @@ def _team_governance_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"{TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL} MCP tool after you have "
         "made the needed decision, routed any directive, or determined that no "
         "action is needed.\n"
-        "- Governance wakes are not normal Team action-artifact dispatches unless "
-        "the wake prompt explicitly says otherwise. Do not write or rely on "
-        "/artifacts/team-action.json for governance-only decisions.\n"
+        "- Governance wakes grant governance MCP tools only. Do not use ordinary "
+        "Team action tools for member-team project work from a governance wake.\n"
         "- Keep decisions concise. If no governance action is needed, say so "
         "briefly and do not invent member-team project work.\n"
     )
@@ -2695,33 +2967,55 @@ def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
         "Current Team assignment:\n"
         "- This persistent agent is not currently assigned to a Team.\n"
         "- Normal Team-agent task, deliverable, review, release, subordinate, "
-        "and /artifacts/team-action.json instructions do not apply unless a "
-        "future wake prompt explicitly assigns normal Team work.\n"
+        "and ordinary Team MCP tool instructions do not apply unless a future "
+        "wake prompt explicitly assigns normal Team work.\n"
+        "- Inactive or teamless sessions must not use ordinary Team action tools.\n"
         "- If this agent also manages governance groups, follow the separate "
         f"{TEAM_GOVERNANCE_GUIDANCE_SECTION_ID} section and the current "
         "governance wake prompt instead.\n"
     )
 
 
-def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str:
+def _build_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
     context = {
-        "agent": _agent_prompt_payload(agent),
-        "dispatch_id": lease["dispatch_id"],
+        "agent": _prompt_context_payload(_agent_prompt_payload(agent)),
         "reason": lease["reason"],
-        "superior_agent_id": lease["superior_agent_id"],
-        "subordinate_agent_ids": lease["subordinate_agent_ids"],
-        "subordinates": lease.get("subordinates") or [],
-        "session_health": lease.get("session_health") or [],
-        "tasks": lease["tasks"],
-        "inbox": lease["inbox"],
-        "recent_action_feedback": lease.get("recent_action_feedback") or [],
-        "operator_chat_participants": lease.get("operator_chat_participants") or [],
-        "action_artifact_path": f"/artifacts/{action_artifact_path}",
+        "superior_id": lease["superior_agent_id"],
+        "subordinate_ids": lease["subordinate_agent_ids"],
+        "subordinates": _prompt_context_payload(lease.get("subordinates") or []),
+        "session_health": _prompt_context_payload(lease.get("session_health") or []),
+        "cases": _prompt_context_payload(lease.get("cases") or []),
+        "tasks": _prompt_context_payload(lease["tasks"]),
+        "inbox": _prompt_context_payload(lease["inbox"]),
+        "release_packages": _prompt_context_payload(
+            lease.get("release_packages") or {}
+        ),
+        "runtime_attention": _prompt_context_payload(
+            _prompt_runtime_attention(lease.get("runtime_attention") or [])
+        ),
+        "operator_chat_participants": _prompt_context_payload(
+            lease.get("operator_chat_participants") or []
+        ),
     }
+    manager_fallback_summary = lease.get("manager_fallback_summary")
+    if isinstance(manager_fallback_summary, Mapping):
+        prompt_summary = dict(manager_fallback_summary)
+        prompt_summary.pop("latest_failed_actions", None)
+        context["manager_fallback_summary"] = _prompt_context_payload(prompt_summary)
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
-        context["project_repo"] = dict(project_repo)
+        context["project_repo"] = _prompt_context_payload(dict(project_repo))
+    review_artifact_imports = lease.get("review_artifact_imports")
+    if isinstance(review_artifact_imports, list) and review_artifact_imports:
+        context["review_artifact_imports"] = _prompt_context_payload(
+            review_artifact_imports
+        )
+    review_artifact_import_errors = lease.get("review_artifact_import_errors")
+    if isinstance(review_artifact_import_errors, list) and review_artifact_import_errors:
+        context["review_artifact_import_errors"] = _prompt_context_payload(
+            review_artifact_import_errors
+        )
     runtime = lease.get("runtime")
     handoff_summary = (
         _optional_text(runtime.get("last_handoff_summary"))
@@ -2734,70 +3028,85 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         if handoff_summary
         else ""
     )
-    action_feedback = lease.get("recent_action_feedback")
-    action_feedback_section = (
-        "Most recent Team action feedback (one-shot):\n"
-        "Your previous Team dispatch had validation errors. Do not repeat these "
-        "mistakes. Some valid parts of that action may already have applied, so "
-        "inspect the current Team context and retry only missing corrected action "
-        "items.\n"
-        f"{json.dumps(action_feedback, sort_keys=True, indent=2)}\n\n"
-        if isinstance(action_feedback, list) and action_feedback
+    review_artifact_section = (
+        "Review artifact access for this wake:\n"
+        "- review_artifact_imports lists published deliverable archives already "
+        "imported into this session. Inspect artifact_path or imported_paths under "
+        "/artifacts instead of trying to open artifact-space refs directly.\n"
+        "- If review_artifact_import_errors is present, treat the review artifact "
+        "as unavailable and report the review as blocked or ask the lead to "
+        "republish it.\n\n"
+        if context.get("review_artifact_imports")
+        or context.get("review_artifact_import_errors")
         else ""
     )
-    schema = {
-        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-        "agent_id": agent["id"],
-        "dispatch_id": lease["dispatch_id"],
-        "task_updates": [],
-        "task_creations": [],
-        "status_requests": [],
-        "questions": [],
-        "status_reports": [],
-        "operator_chat_messages": [],
-        "deliverables": [],
-        "review_requests": [],
-        "review_decisions": [],
-        "goal_updates": [],
-        "operator_escalations": [],
-        "stand_downs": [],
-        "stand_down_revocations": [],
-        "git_review_promotions": [],
-        "git_feature_updates": [],
-        "git_release_requests": [],
-        "ephemeral_requests": [],
-        "ephemeral_acceptances": [],
-        "handled_inbox_item_ids": [],
-        "notes": "",
-    }
-    schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
-    example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
+    git_release_sequence_section = (
+        "Git release sequencing:\n"
+        f"- Use {TEAM_REQUEST_RELEASE_TOOL} for accepted deliverables when the "
+        "intent is to release. The repository will enqueue prerequisite feature "
+        "promotions for accepted deliverables that still only have "
+        "git_refs.review_branch or git_refs.agent_branch, then continue the "
+        "release after those promotions succeed.\n"
+        f"- Do not combine {TEAM_UPDATE_FEATURE_BRANCH_TOOL} with "
+        f"{TEAM_REQUEST_RELEASE_TOOL}; use {TEAM_UPDATE_FEATURE_BRANCH_TOOL} only "
+        "when you need a feature branch without requesting a release.\n"
+        "- Release requests create new release packages only. When release_packages "
+        "already contains a blocked package, follow its next_action_hint. Use "
+        f"{TEAM_RECOVER_RELEASE_TOOL} only when that hint identifies a failed "
+        "release promotion, after the resolved commit is available under an "
+        "agents/... ref.\n\n"
+    )
+    manager_fallback_section = (
+        "Manager fallback wake:\n"
+        "- This wake means no other team member is currently wakeable while the team "
+        "still has open work.\n"
+        "- Treat manager_fallback_summary as the compact source of stalled team "
+        "and project work, even when this manager's top-level tasks and inbox "
+        "arrays are empty.\n"
+        "- Start from manager_fallback_summary.routing_gaps when present; those "
+        "rows identify likely assignment or review-routing fixes.\n"
+        "- For reviewer_without_assigned_review_work gaps, create a fresh review "
+        f"request with {TEAM_REQUEST_REVIEW_TOOL} for the listed reviewer. Omit "
+        "id unless you are choosing a new unique id; never reuse the existing "
+        "review request id.\n"
+        "- If a pending review is assigned to you for a deliverable with a routing "
+        "gap, route it to the listed reviewer instead of deciding it yourself. "
+        f"Only use {TEAM_DECIDE_REVIEW_TOOL} with override_routing_gap_reason when you are "
+        "intentionally accepting responsibility for bypassing that reviewer.\n"
+        "- If a pending review is assigned to you and no routing gap applies, "
+        f"handle it with {TEAM_DECIDE_REVIEW_TOOL}.\n"
+        "- Do not return a no-op merely because your own tasks and inbox arrays are "
+        "empty; use the team context to route, review, report, or escalate the stall.\n\n"
+        if lease.get("reason") == "manager_fallback"
+        else ""
+    )
+    context_json = json.dumps(context, sort_keys=True, indent=2)
     return (
         "Continue your assigned team-agent work.\n"
         f"Follow the Team Add-on guidance in {TEAM_AGENT_GUIDANCE_PATH}, managed "
         f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
-        f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below for this "
-        "dispatch and write the requested action artifact before finishing.\n\n"
+        f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below and the MCP "
+        "tools granted to this session. Tool discovery is authoritative for exact "
+        "arguments.\n\n"
         "Role-aware delegation: when creating tasks or requests for subordinates, "
         "use subordinates[].role_name and subordinates[].role_description. "
-        "Reviewer roles should generally receive review_requests or review-focused "
-        "tasks, not implementation task ownership.\n\n"
+        f"Reviewer roles should generally receive {TEAM_REQUEST_REVIEW_TOOL} calls "
+        "or review-focused tasks, not implementation task ownership.\n\n"
         f"{_task_creation_mandate_guidance(agent)}"
         f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repo_prompt_guidance(project_repo)}"
         f"{handoff_section}"
-        f"{action_feedback_section}"
-        f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
-        f"Team action contract files have been seeded at {schema_path} and "
-        f"{example_path}. Read {schema_path} for the JSON Schema contract and "
-        f"use {example_path} as a writable template. Do not infer required fields "
-        "from memory; follow the schema file. A helper command has also been "
-        f"seeded at {ACTION_CONTRACT_HELPER_PATH}; pass it a draft JSON file or "
-        "pipe a JSON object to it and it will fill schema_version, agent_id, "
-        f"dispatch_id, and write /artifacts/{action_artifact_path}.\n\n"
-        "Before finishing, write a UTF-8 JSON action object to "
-        f"/artifacts/{action_artifact_path}. Use this shape:\n"
-        f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
+        f"{review_artifact_section}"
+        f"{git_release_sequence_section}"
+        f"{manager_fallback_section}"
+        f"Team context JSON:\n{context_json}\n\n"
+        "MCP action surface:\n"
+        "- Call the appropriate Team MCP tool for each state change, handoff, "
+        "message, review decision, release request, or note.\n"
+        f"- {TEAM_RECORD_NOTE_TOOL} is only for a useful note; it is not required "
+        "before finishing.\n"
+        f"- Use {TEAM_MARK_INBOX_HANDLED_TOOL} for inbox items that are handled "
+        "without needing a reply.\n"
     )
 
 
@@ -2809,29 +3118,29 @@ def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
     ]
     if not tasks:
         return (
-            "Deliverable mechanics for this dispatch:\n"
-            "- If no deliverable is ready, still write the Team action artifact with "
-            "notes, questions, status_reports, or handled_inbox_item_ids as needed.\n"
-            "- Do not finish without writing the action artifact, even for a status-only "
-            "wake.\n\n"
+            "Deliverable mechanics for this wake:\n"
+            "- If no deliverable is ready, use the appropriate MCP tools for notes, "
+            "questions, progress reports, or handled inbox items when useful.\n"
+            "- Do not submit a placeholder deliverable or no-op acknowledgement.\n\n"
         )
     task_ids = [_required_text(task.get("id"), "task.id") for task in tasks]
     default_task_id = task_ids[0]
     return (
-        "Deliverable mechanics for this dispatch:\n"
-        f"- Valid owned task_id values for deliverables are: {', '.join(task_ids)}.\n"
+        "Deliverable mechanics for this wake:\n"
+        f"- Valid owned task_id values for deliverable tools are: {', '.join(task_ids)}.\n"
         "- For a report deliverable, write it under /artifacts first, for example "
         f"/artifacts/team-deliverables/{default_task_id}/report.md.\n"
-        "- In deliverables[].artifact_paths, list paths relative to /artifacts, for "
-        f"example team-deliverables/{default_task_id}/report.md. Do not use absolute "
-        "paths there.\n"
-        "- A non-Git deliverable must include task_id, summary, and artifact_paths. "
+        "- Pass artifact paths relative to /artifacts, for example "
+        f"team-deliverables/{default_task_id}/report.md. Do not use absolute paths "
+        "there.\n"
+        "- A non-Git deliverable must include task_id, summary, and artifact paths. "
         "If you created or updated useful files only in the repo checkout, copy or "
         "summarize the deliverable under /artifacts before reporting it.\n"
-        "- If no deliverable is ready, still write the Team action artifact with "
-        "notes, questions, status_reports, or handled_inbox_item_ids as needed.\n"
-        "- Do not finish without writing the action artifact, even for a status-only "
-        "wake.\n\n"
+        f"- Use {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
+        f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}; do not pass local artifact "
+        "paths through communication tools.\n"
+        "- If no deliverable is ready, use the appropriate MCP tools for notes, "
+        "questions, progress reports, or handled inbox items when useful.\n\n"
     )
 
 
@@ -2840,7 +3149,7 @@ def _build_team_chat_prompt(
     state: Any,
     conversation: Any,
     message: Any,
-    action_artifact_path: str = DEFAULT_ACTION_ARTIFACT_PATH,
+    mutation_allowed: bool,
 ) -> str:
     agents = _object_mapping_field(state, "agents")
     conversation_messages = _object_mapping_field(state, "conversation_messages")
@@ -2882,36 +3191,25 @@ def _build_team_chat_prompt(
     transcript = "\n".join(transcript_lines)
     agent_display_name = _team_chat_agent_display_name(agent)
     message_id = _required_text(_object_field(message, "id"), "message.id")
-    dispatch_id = _optional_text(_object_field(message, "dispatch_id")) or ""
-    action_artifact = f"/artifacts/{action_artifact_path}"
+    mutation_guidance = (
+        "If the operator explicitly asks you to change Team state, you may also "
+        "use the ordinary Team MCP tools granted to this chat wake. Do not mutate "
+        "Team state for a thank-you, acknowledgement, or no-op reply.\n\n"
+        if mutation_allowed
+        else "This chat wake is reply-only. Do not mutate Team state; use only "
+        f"{TEAM_REPLY_TO_CHAT_TOOL}.\n\n"
+    )
     return (
         "You have received a message from a human operator in the Team Add-on Chat tab.\n"
         "This is not an agent-to-agent inbox message. Treat it as the current human "
-        "operator request. Reply to this human operator by writing "
-        f"{action_artifact} with a chat_replies entry. Do not use questions "
-        "or status_reports for this human chat reply; those are for agent-to-agent "
-        "inbox communication. A helper command has been seeded at "
-        f"{ACTION_CONTRACT_HELPER_PATH}; pass it a draft JSON file or pipe a JSON "
-        "object to it and it will fill schema_version, agent_id, dispatch_id, and "
-        f"write {action_artifact}.\n\n"
+        f"operator request. Reply with the {TEAM_REPLY_TO_CHAT_TOOL} MCP tool. Do "
+        f"not use {TEAM_ASK_QUESTION_TOOL} or {TEAM_SEND_PROGRESS_REPORT_TOOL} "
+        "for this human chat reply; those are for agent-to-agent inbox communication. "
+        f"{mutation_guidance}"
         f"Current agent: {agent_display_name} ({agent_id})\n"
         f"Human operator: {operator_label} ({operator_user_id})\n"
         f"Conversation ID: {conversation_id}\n"
-        f"Human operator message ID: {message_id}\n"
-        f"Dispatch ID: {dispatch_id}\n\n"
-        "Required reply shape:\n"
-        "{\n"
-        f'  "schema_version": {ACTION_CONTRACT_SCHEMA_VERSION},\n'
-        f'  "agent_id": "{agent_id}",\n'
-        f'  "dispatch_id": "{dispatch_id}",\n'
-        '  "chat_replies": [\n'
-        "    {\n"
-        f'      "conversation_id": "{conversation_id}",\n'
-        f'      "message_id": "{message_id}",\n'
-        '      "body": "Your reply to the operator."\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
+        f"Human operator message ID: {message_id}\n\n"
         "Recent conversation:\n"
         f"{transcript or '(no earlier messages)'}\n\n"
         "Human operator message:\n"
@@ -2922,14 +3220,15 @@ def _build_team_chat_prompt(
 def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
     context = {
-        "agent": _agent_prompt_payload(agent),
-        "dispatch_id": lease["dispatch_id"],
+        "agent": _prompt_context_payload(_agent_prompt_payload(agent)),
         "reason": lease["reason"],
-        "governance_group": lease["governance_group"],
-        "agenda": lease.get("agenda") or [],
-        "member_teams": lease.get("member_teams") or [],
-        "cost_signals": lease.get("cost_signals") or [],
-        "blocked_team_signals": lease.get("blocked_team_signals") or [],
+        "governance_group": _prompt_context_payload(lease["governance_group"]),
+        "agenda": _prompt_context_payload(lease.get("agenda") or []),
+        "member_teams": _prompt_context_payload(lease.get("member_teams") or []),
+        "cost_signals": _prompt_context_payload(lease.get("cost_signals") or []),
+        "blocked_team_signals": _prompt_context_payload(
+            lease.get("blocked_team_signals") or []
+        ),
     }
     return (
         "Continue as a Team Add-on governance manager.\n"
@@ -2939,10 +3238,12 @@ def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
         "reporting chain. Member teams remain separate execution units.\n\n"
         "Use this wake to inspect agenda items, cost-cap signals, blocked-team "
         "signals, and member-team summaries. Respond with concise decisions, "
-        "recommended operator actions, and any directives that should be routed "
-        "to the relevant member-team managers with the "
-        f"{TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} MCP tool. Mark agenda items "
-        f"handled with the {TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL} MCP tool "
+        "recommended operator actions, and any directives that should be routed. "
+        f"The only Team MCP tools granted for this wake are "
+        f"{TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL} and "
+        f"{TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL}. Route directives to the "
+        f"relevant member-team managers with {TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL}. "
+        f"Mark agenda items handled with {TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL} "
         "after deciding, routing required follow-up, or determining no action "
         "is needed. Do not invent project work.\n\n"
         f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
@@ -2968,17 +3269,19 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
             else ""
         )
         return (
-            "Task creation mandate for this dispatch: your effective permissions"
+            "Task creation mandate for this wake: your effective permissions"
             f"{lead_scope} include {RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
-            "tasks by omitting parent_task_id when you otherwise have authority "
-            "to create the task. You may also create child tasks with "
+            f"tasks with {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} by omitting "
+            "parent_task_id when you otherwise have authority to create the task. "
+            "You may also create child tasks with "
             "parent_task_id.\n\n"
         )
     return (
-        "Task creation mandate for this dispatch: your effective permissions do not "
+        "Task creation mandate for this wake: your effective permissions do not "
         f"have {RolePermission.CREATE_ROOT_TASK.value}. You may NOT create "
-        "top-level tasks. Every task_creations item you submit must set "
-        "parent_task_id to one of your own active tasks.\n\n"
+        f"top-level tasks. Every {TEAM_CREATE_TASK_TOOL} or "
+        f"{TEAM_CREATE_TASKS_TOOL} call must set parent_task_id to one of your "
+        "own active tasks.\n\n"
     )
 
 
@@ -2986,6 +3289,54 @@ def _agent_prompt_payload(agent: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(agent)
     payload.pop("display_name", None)
     return payload
+
+
+def _prompt_context_payload(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            _prompt_context_key(str(key)): _prompt_context_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_prompt_context_payload(item) for item in value]
+    return value
+
+
+def _prompt_runtime_attention(value: object) -> list[object]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item
+        for item in value
+        if not (isinstance(item, Mapping) and item.get("kind") == "failed_action_record")
+    ]
+
+
+def _prompt_context_key(key: str) -> str:
+    exact = {
+        "agent_id": "agent",
+        "agent_ids": "agents",
+        "active_dispatch_id": "active_wake",
+        "completed_dispatch_id": "completed_wake",
+        "delivery_dispatch_id": "delivery_wake",
+        "dispatch_id": "wake",
+        "feedback_delivered_by_dispatch_id": "feedback_delivered_by_wake",
+        "requested_dispatch_id": "requested_wake",
+        "source_dispatch_id": "source_wake",
+    }
+    if key in exact:
+        return exact[key]
+    if key.endswith("_agent_ids"):
+        return f"{key[:-len('_agent_ids')]}_ids"
+    if key.endswith("_agent_id"):
+        return f"{key[:-len('_agent_id')]}_id"
+    if key.endswith("_dispatch_id"):
+        return f"{key[:-len('_dispatch_id')]}_wake"
+    if "agent_id" in key:
+        return key.replace("agent_id", "agent")
+    if "dispatch_id" in key:
+        return key.replace("dispatch_id", "wake")
+    return key
 
 
 def _object_field(item: object, field_name: str) -> object:
@@ -3006,16 +3357,6 @@ def _team_chat_agent_display_name(agent: object) -> str:
         _optional_text(_object_field(agent, "display_name"))
         or _required_text(_object_field(agent, "id"), "agent.id")
     )
-
-
-def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:
-    feedback = lease.get("recent_action_feedback")
-    if not isinstance(feedback, list) or not feedback:
-        return None
-    first = feedback[0]
-    if not isinstance(first, Mapping):
-        return None
-    return _optional_text(first.get("dispatch_id"))
 
 
 def _project_repo_prompt_guidance(project_repo: object) -> str:
@@ -3142,147 +3483,6 @@ def _project_repo_prepare_record(
     if error is not None:
         record["error"] = error
     return record
-
-
-def _seed_action_contract_files(
-    context: Any,
-    *,
-    agent: Mapping[str, Any],
-    dispatch_id: str,
-    action_artifact_path: str,
-) -> dict[str, Any]:
-    session_id = _required_text(agent.get("session_id"), "session_id")
-    agent_id = _required_text(agent.get("id"), "agent.id")
-    normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
-    schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
-    example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
-
-    provider = AgentCopyFilesEffectProvider()
-    provider.initialize(
-        AgentCopyFilesEffectDefinition(
-            id="team-seed-action-contract",
-            display_name="Seed Team action contract",
-            type="effect:agent:copy-files",
-            session_id=session_id,
-            vm_user="agent",
-            files=[
-                {
-                    "content": _json_dumps(_persistent_action_schema()),
-                    "destination_path": schema_path,
-                    "mode": "0644",
-                    "overwrite": True,
-                },
-                {
-                    "content": _json_dumps(_persistent_action_example()),
-                    "destination_path": example_path,
-                    "mode": "0644",
-                    "overwrite": True,
-                },
-                {
-                    "content": _team_finish_helper_content(
-                        agent_id=agent_id,
-                        dispatch_id=normalized_dispatch_id,
-                        action_artifact_path=action_artifact_path,
-                    ),
-                    "destination_path": ACTION_CONTRACT_HELPER_PATH,
-                    "mode": "0755",
-                    "overwrite": True,
-                },
-            ],
-        ),
-        context,
-    )
-    copy_result = provider.execute()
-    if not bool(copy_result.get("success")):
-        message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
-        raise RuntimeError(message or "failed to seed Team action contract files")
-
-    copied_vm_ip = _optional_text(copy_result.get("vm_ip"))
-    _mark_action_contract_seeded(
-        context,
-        session_id=session_id,
-        schema_path=schema_path,
-        example_path=example_path,
-        action_artifact_path=f"/artifacts/{action_artifact_path}",
-        helper_path=ACTION_CONTRACT_HELPER_PATH,
-        copy_result=copy_result,
-        vm_ip=copied_vm_ip,
-    )
-    return {
-        "seeded": True,
-        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-        "schema_path": schema_path,
-        "example_path": example_path,
-        "helper_path": ACTION_CONTRACT_HELPER_PATH,
-        "vm_ip": copied_vm_ip,
-        "copied_paths": list(copy_result.get("copied_paths") or []),
-    }
-
-
-def _team_finish_helper_content(
-    *,
-    agent_id: str,
-    dispatch_id: str,
-    action_artifact_path: str,
-) -> str:
-    absolute_path = (
-        action_artifact_path
-        if action_artifact_path.startswith("/artifacts/")
-        else f"/artifacts/{action_artifact_path.strip('/')}"
-    )
-    defaults = {
-        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-        "agent_id": agent_id,
-        "dispatch_id": dispatch_id,
-        "task_updates": [],
-        "task_creations": [],
-        "status_requests": [],
-        "questions": [],
-        "status_reports": [],
-        "operator_chat_messages": [],
-        "deliverables": [],
-        "review_requests": [],
-        "review_decisions": [],
-        "goal_updates": [],
-        "operator_escalations": [],
-        "stand_downs": [],
-        "stand_down_revocations": [],
-        "git_review_promotions": [],
-        "git_feature_updates": [],
-        "git_release_requests": [],
-        "ephemeral_requests": [],
-        "ephemeral_acceptances": [],
-        "handled_inbox_item_ids": [],
-        "notes": "",
-    }
-    return (
-        "#!/usr/bin/env python3\n"
-        "import json\n"
-        "import sys\n"
-        "from pathlib import Path\n\n"
-        f"DEFAULTS = {json.dumps(defaults, sort_keys=True, indent=2)}\n"
-        f"ACTION_PATH = Path({json.dumps(absolute_path)})\n\n"
-        "def load_payload():\n"
-        "    if len(sys.argv) > 2:\n"
-        "        print('usage: team-finish [draft-action.json]', file=sys.stderr)\n"
-        "        raise SystemExit(64)\n"
-        "    if len(sys.argv) == 2:\n"
-        "        return json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
-        "    raw = sys.stdin.read().strip()\n"
-        "    return json.loads(raw) if raw else {}\n\n"
-        "payload = load_payload()\n"
-        "if not isinstance(payload, dict):\n"
-        "    print('team action must be a JSON object', file=sys.stderr)\n"
-        "    raise SystemExit(64)\n"
-        "for key, value in DEFAULTS.items():\n"
-        "    payload.setdefault(key, value)\n"
-        "payload['schema_version'] = DEFAULTS['schema_version']\n"
-        "payload['agent_id'] = DEFAULTS['agent_id']\n"
-        "payload['dispatch_id'] = DEFAULTS['dispatch_id']\n"
-        "ACTION_PATH.parent.mkdir(parents=True, exist_ok=True)\n"
-        "ACTION_PATH.write_text(json.dumps(payload, sort_keys=True, indent=2) + '\\n', encoding='utf-8')\n"
-        "print(str(ACTION_PATH))\n"
-    )
 
 
 def _seed_team_agent_guidance(
@@ -3528,40 +3728,6 @@ def _session_metadata(context: Any, *, session_id: str) -> dict[str, Any]:
     return dict(metadata) if isinstance(metadata, Mapping) else {}
 
 
-def _mark_action_contract_seeded(
-    context: Any,
-    *,
-    session_id: str,
-    schema_path: str,
-    example_path: str,
-    action_artifact_path: str,
-    helper_path: str,
-    copy_result: Mapping[str, Any],
-    vm_ip: str | None,
-) -> None:
-    updater = getattr(context, "session_metadata_updater", None)
-    update_fn = getattr(updater, "session_update_metadata", None)
-    if not callable(update_fn):
-        return
-    team_metadata: dict[str, Any] = {
-        "action_contract": {
-            "seeded": True,
-            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-            "schema_path": schema_path,
-            "example_path": example_path,
-            "action_artifact_path": action_artifact_path,
-            "helper_path": helper_path,
-            "copied_paths": list(copy_result.get("copied_paths") or []),
-        }
-    }
-    if vm_ip:
-        team_metadata["last_known_vm_ip"] = vm_ip
-    update_fn(
-        target=session_id,
-        metadata={"team_addon": team_metadata},
-    )
-
-
 def _mark_agent_guidance_seeded(
     context: Any,
     *,
@@ -3650,457 +3816,6 @@ def _mark_project_repo_prepared(
         target=session_id,
         metadata={"team_addon": {"project_repo": dict(project_repo)}},
     )
-
-
-def _persistent_action_schema() -> dict[str, Any]:
-    text_or_null = {"type": ["string", "null"]}
-    string_array = {"type": "array", "items": {"type": "string"}, "default": []}
-    non_empty_string_array = {
-        "type": "array",
-        "items": {"type": "string", "minLength": 1},
-        "minItems": 1,
-    }
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://agent-sandbox.local/team-addon/team-action.v1.schema.json",
-        "title": "Team Add-on persistent agent action",
-        "description": (
-            "Action artifact written by a persistent Team agent to "
-            "/artifacts/team-action.json after a Team wake."
-        ),
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["agent_id"],
-        "properties": {
-            "schema_version": {"type": "integer", "const": ACTION_CONTRACT_SCHEMA_VERSION},
-            "agent_id": {"type": "string", "minLength": 1},
-            "dispatch_id": {"type": "string", "minLength": 1},
-            "task_updates": {
-                "type": "array",
-                "description": (
-                    "Update tasks owned by this agent. State, priority, title, "
-                    "and description are owner-only. Supervisors/leads/managers "
-                    "may maintain dependency_task_ids, but must use "
-                    "review_decisions to accept or reject deliverables and the "
-                    "tasks they satisfy."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["task_id"],
-                    "properties": {
-                        "task_id": {"type": "string", "minLength": 1},
-                        "state": {"enum": ["pending", "in_progress", "blocked", "waiting_for_review", "finished", "accepted", "rejected"]},
-                        "priority": {"type": "integer", "minimum": 0},
-                        "title": {"type": "string", "minLength": 1},
-                        "description": {"type": "string", "minLength": 1},
-                        "dependency_task_ids": string_array,
-                    },
-                },
-            },
-            "task_creations": {
-                "type": "array",
-                "description": (
-                    "Create tasks only under an active mandate. Roles with "
-                    "create_root_task may create top-level tasks; other agents "
-                    "must create child tasks by setting parent_task_id to one of "
-                    "their own active tasks."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["owner_agent_id", "project_id", "title", "description"],
-                    "properties": {
-                        "task_id": {"type": "string", "minLength": 1},
-                        "id": {"type": "string", "minLength": 1},
-                        "owner_agent_id": {"type": "string", "minLength": 1},
-                        "project_id": {"type": "string", "minLength": 1},
-                        "priority": {"type": "integer", "minimum": 0},
-                        "title": {"type": "string", "minLength": 1},
-                        "description": {"type": "string", "minLength": 1},
-                        "state": {"enum": ["pending", "in_progress", "blocked", "waiting_for_review"]},
-                        "parent_task_id": text_or_null,
-                        "dependency_task_ids": string_array,
-                    },
-                },
-            },
-            "status_requests": {
-                "type": "array",
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "required": ["recipient_agent_id"],
-                    "properties": {
-                        "recipient_agent_id": {"type": "string", "minLength": 1},
-                        "task_id": text_or_null,
-                        "question": {"type": "string"},
-                        "response_requested": {"type": "boolean"},
-                        "priority": {"enum": ["low", "normal", "high"]},
-                    },
-                },
-            },
-            "questions": {
-                "type": "array",
-                "default": [],
-                "items": _message_item_schema(),
-            },
-            "status_reports": {
-                "type": "array",
-                "default": [],
-                "items": _message_item_schema(),
-            },
-            "chat_replies": {
-                "type": "array",
-                "description": (
-                    "Reply to an operator Team Chat message. Use only when the wake "
-                    "prompt provides a conversation_id and message_id for operator chat."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["conversation_id", "message_id", "body"],
-                    "properties": {
-                        "conversation_id": {"type": "string", "minLength": 1},
-                        "message_id": {"type": "string", "minLength": 1},
-                        "body": {"type": "string", "minLength": 1},
-                        "summary": text_or_null,
-                    },
-                },
-            },
-            "operator_chat_messages": {
-                "type": "array",
-                "description": (
-                    "Send a new Team Chat message to a known human operator. "
-                    "Use only recipient_operator_user_id values listed in the "
-                    "current Team context as operator_chat_participants."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["recipient_operator_user_id", "body"],
-                    "properties": {
-                        "recipient_operator_user_id": {
-                            "type": "string",
-                            "minLength": 1,
-                        },
-                        "body": {"type": "string", "minLength": 1},
-                        "summary": text_or_null,
-                    },
-                },
-            },
-            "operator_escalations": {
-                "type": "array",
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["title", "message"],
-                    "properties": {
-                        "title": {"type": "string", "minLength": 1},
-                        "message": {"type": "string", "minLength": 1},
-                        "urgency": {"type": "string"},
-                        "project_id": text_or_null,
-                        "task_id": text_or_null,
-                    },
-                },
-            },
-            "stand_downs": {
-                "type": "array",
-                "description": (
-                    "Stand down a direct subordinate and that subordinate's subtree. "
-                    "Operator stand-downs are separate and cannot be revoked here."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["agent_id", "reason"],
-                    "properties": {
-                        "agent_id": {"type": "string", "minLength": 1},
-                        "reason": {"type": "string", "minLength": 1},
-                    },
-                },
-            },
-            "stand_down_revocations": {
-                "type": "array",
-                "description": (
-                    "Revoke a superior stand-down that this agent previously set "
-                    "on a direct subordinate. Operator stand-downs require operator revoke."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["agent_id"],
-                    "properties": {
-                        "agent_id": {"type": "string", "minLength": 1},
-                    },
-                },
-            },
-            "deliverables": {
-                "type": "array",
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["task_id", "summary"],
-                    "properties": {
-                        "id": {"type": "string", "minLength": 1},
-                        "task_id": {"type": "string", "minLength": 1},
-                        "summary": {"type": "string", "minLength": 1},
-                        "supersedes_deliverable_id": text_or_null,
-                        "artifact_paths": non_empty_string_array,
-                        "artifact_refs": string_array,
-                        "artifact_space_ref": text_or_null,
-                        "git_refs": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "agent_branch": text_or_null,
-                                "commit_sha": text_or_null,
-                            },
-                        },
-                    },
-                },
-            },
-            "review_requests": {
-                "type": "array",
-                "description": (
-                    "Request review of a deliverable from a specific same-team "
-                    "reviewer. This is how leads route deliverable review to a "
-                    "reviewer agent instead of directly accepting subordinate work."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["deliverable_id", "reviewer_agent_id"],
-                    "properties": {
-                        "id": {"type": "string", "minLength": 1},
-                        "deliverable_id": {"type": "string", "minLength": 1},
-                        "reviewer_agent_id": {"type": "string", "minLength": 1},
-                        "review_profile_id": text_or_null,
-                        "instructions": text_or_null,
-                    },
-                },
-            },
-            "review_decisions": {
-                "type": "array",
-                "description": (
-                    "Decide review requests assigned to this agent. Accepted "
-                    "review decisions cascade to deliverable/task acceptance only "
-                    "after every review attached to the deliverable is accepted."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "required": ["review_request_id", "state"],
-                    "properties": {
-                        "review_request_id": {"type": "string", "minLength": 1},
-                        "state": {"enum": ["accepted", "rejected", "blocked"]},
-                        "findings": string_array,
-                        "criteria": {"type": "array"},
-                    },
-                },
-            },
-            "goal_updates": {
-                "type": "array",
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["project_id", "goal_id", "state"],
-                    "properties": {
-                        "project_id": {"type": "string", "minLength": 1},
-                        "goal_id": {"type": "string", "minLength": 1},
-                        "state": {"enum": ["pending", "in_progress", "accepted", "rejected", "blocked"]},
-                        "description": {"type": "string"},
-                    },
-                },
-            },
-            "git_review_promotions": {
-                "type": "array",
-                "description": (
-                    "Publish a durable Team review branch. Use assignment_id for "
-                    "completed ephemeral assignments, or deliverable_id with "
-                    "source_branch/commit_sha for persistent-agent deliverables."
-                ),
-                "default": [],
-                "items": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["assignment_id"],
-                            "properties": {
-                                "assignment_id": {"type": "string", "minLength": 1},
-                                "deliverable_id": text_or_null,
-                            },
-                        },
-                        {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["deliverable_id"],
-                            "properties": {
-                                "deliverable_id": {"type": "string", "minLength": 1},
-                                "source_branch": text_or_null,
-                                "commit_sha": text_or_null,
-                            },
-                        },
-                    ]
-                },
-            },
-            "git_feature_updates": {"type": "array", "default": [], "items": {"type": "object"}},
-            "git_release_requests": {
-                "type": "array",
-                "description": (
-                    "Create a release package from accepted deliverables. Git deliverables "
-                    "must already have git_refs.feature_branch; use git_review_promotions "
-                    "and git_feature_updates first when a deliverable only has agent or "
-                    "review refs. The repository derives source branches from deliverable git_refs; "
-                    "do not provide source_branch, target_branch, or commit_sha here."
-                ),
-                "default": [],
-                "items": {
-                    "type": "object",
-                    "description": (
-                        "Create a release package from accepted deliverables. Git deliverables "
-                        "must already have git_refs.feature_branch; use git_review_promotions "
-                        "and git_feature_updates first when a deliverable only has agent or "
-                        "review refs."
-                    ),
-                    "additionalProperties": False,
-                    "required": ["project_id", "deliverable_ids"],
-                    "properties": {
-                        "id": {"type": "string", "minLength": 1},
-                        "project_id": {"type": "string", "minLength": 1},
-                        "deliverable_ids": string_array,
-                        "release_branch": text_or_null,
-                        "canonical_branch": text_or_null,
-                        "summary": text_or_null,
-                    },
-                },
-            },
-            "ephemeral_requests": {"type": "array", "default": [], "items": {"type": "object"}},
-            "ephemeral_acceptances": {"type": "array", "default": [], "items": {"type": "object"}},
-            "handled_inbox_item_ids": string_array,
-            "notes": {"type": "string"},
-        },
-    }
-
-
-def _message_item_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": True,
-        "properties": {
-            "recipient_agent_id": {"type": ["string", "null"]},
-            "task_id": {"type": ["string", "null"]},
-            "message": {"type": "string"},
-            "summary": {"type": "string"},
-            "question": {"type": "string"},
-            "response_requested": {"type": "boolean"},
-            "priority": {"enum": ["low", "normal", "high"]},
-        },
-    }
-
-
-def _persistent_action_example() -> dict[str, Any]:
-    return {
-        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-        "agent_id": "replace-with-current-agent-id",
-        "dispatch_id": "replace-with-current-dispatch-id",
-        "task_updates": [],
-        "task_creations": [
-            {
-                "task_id": "optional-stable-task-id",
-                "owner_agent_id": "target-agent-id",
-                "project_id": "project-id",
-                "priority": 10,
-                "title": "Short task title",
-                "description": "Complete task instructions.",
-                "state": "pending",
-                "parent_task_id": None,
-                "dependency_task_ids": [],
-            }
-        ],
-        "status_requests": [
-            {
-                "recipient_agent_id": "direct-subordinate-agent-id",
-                "question": "Short status question.",
-                "response_requested": True,
-                "priority": "normal",
-            }
-        ],
-        "questions": [
-            {
-                "recipient_agent_id": "direct-superior-agent-id",
-                "question": "Question that needs a response.",
-                "response_requested": True,
-                "priority": "normal",
-            }
-        ],
-        "status_reports": [
-            {
-                "summary": "FYI progress update.",
-                "message": "No reply needed unless this changes your plan.",
-                "response_requested": False,
-                "priority": "low",
-            }
-        ],
-        "chat_replies": [
-            {
-                "conversation_id": "operator-chat-conversation-id",
-                "message_id": "operator-chat-message-id",
-                "body": "Concise reply for the operator.",
-                "summary": "Short reply summary.",
-            }
-        ],
-        "operator_chat_messages": [
-            {
-                "recipient_operator_user_id": "known-human-operator-login",
-                "body": "New chat message for a human operator.",
-                "summary": "Short outbound chat summary.",
-            }
-        ],
-        "operator_escalations": [],
-        "stand_downs": [],
-        "stand_down_revocations": [],
-        "deliverables": [],
-        "review_requests": [
-            {
-                "deliverable_id": "deliverable-id",
-                "reviewer_agent_id": "reviewer-agent-id",
-                "instructions": "Review this deliverable for the criteria needed to unblock dependent work.",
-            }
-        ],
-        "review_decisions": [
-            {
-                "review_request_id": "review-request-assigned-to-this-agent",
-                "state": "accepted",
-                "findings": [],
-            }
-        ],
-        "goal_updates": [],
-        "git_review_promotions": [
-            {
-                "deliverable_id": "deliverable-id",
-                "commit_sha": "commit-sha-or-use-source_branch",
-            }
-        ],
-        "git_feature_updates": [],
-        "git_release_requests": [],
-        "ephemeral_requests": [],
-        "ephemeral_acceptances": [],
-        "handled_inbox_item_ids": [],
-        "notes": "",
-    }
 
 
 def _json_dumps(value: Any) -> str:
@@ -4314,27 +4029,45 @@ def _session_repository_for_manifest_updates(context: Any) -> Any | None:
     return None
 
 
-def _ensure_session_allows_mcp_tools(
+def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
+    if _optional_text(agent.get("team_id")) is None:
+        return []
+    return list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+
+
+def _team_chat_mutation_allowed(message: object) -> bool:
+    metadata = _object_field(message, "metadata")
+    if not isinstance(metadata, Mapping):
+        return True
+    for key in (
+        "allow_team_mutations",
+        "allow_team_mutation",
+        "mutation_allowed",
+        "team_mutation_allowed",
+    ):
+        if key in metadata:
+            return bool(metadata[key])
+    return True
+
+
+def _set_session_team_mcp_tools(
     context: Any,
     *,
     session_id: object,
-    tool_names: list[str],
+    tool_names: list[str] | tuple[str, ...],
+    dispatch_id: object | None = None,
 ) -> dict[str, Any]:
     normalized_session_id = _required_text(session_id, "session_id")
-    requested_tools = [
-        tool
-        for tool in (str(tool_name or "").strip() for tool_name in tool_names)
-        if tool
-    ]
+    requested_tools = _unique_requested_tools(tool_names)
+    normalized_dispatch_id = _optional_text(dispatch_id)
     result: dict[str, Any] = {
         "session_id": normalized_session_id,
         "requested_tools": requested_tools,
         "already_allowed_tools": [],
         "granted_tools": [],
+        "removed_tools": [],
         "error": None,
     }
-    if not requested_tools:
-        return result
     repository = _session_repository_for_manifest_updates(context)
     if repository is None:
         result["error"] = "session repository is not available"
@@ -4344,26 +4077,119 @@ def _ensure_session_allows_mcp_tools(
         result["error"] = f"session {normalized_session_id} was not found"
         return result
     allowed_values = [tool_name_value(tool) for tool in getattr(session, "allowed_tools", [])]
-    seen = set(allowed_values)
-    added: list[str] = []
-    already_allowed: list[str] = []
-    for tool_name in requested_tools:
-        if tool_name in seen:
-            already_allowed.append(tool_name)
+    managed_tools = set(MCP_TOOL_NAMES)
+    existing_team_tools = [tool for tool in allowed_values if tool in managed_tools]
+    active_scope_tools = _active_team_mcp_tools_for_other_dispatches(
+        context,
+        session_id=normalized_session_id,
+        dispatch_id=normalized_dispatch_id,
+    )
+    effective_team_tools = _unique_requested_tools(
+        [*requested_tools, *active_scope_tools]
+    )
+    effective_team_tool_set = set(effective_team_tools)
+    preserved_tools: list[str] = []
+    seen_preserved: set[str] = set()
+    for tool in allowed_values:
+        if tool in managed_tools or tool in seen_preserved:
             continue
-        seen.add(tool_name)
-        allowed_values.append(tool_name)
-        added.append(tool_name)
-    if added:
+        preserved_tools.append(tool)
+        seen_preserved.add(tool)
+    next_allowed_values = preserved_tools + effective_team_tools
+    already_allowed = [tool for tool in requested_tools if tool in existing_team_tools]
+    granted = [tool for tool in requested_tools if tool not in existing_team_tools]
+    removed = [tool for tool in existing_team_tools if tool not in effective_team_tool_set]
+    if next_allowed_values != allowed_values:
         if callable(getattr(session, "model_copy", None)):
-            updated_session = session.model_copy(update={"allowed_tools": allowed_values})
+            updated_session = session.model_copy(update={"allowed_tools": next_allowed_values})
         else:
-            setattr(session, "allowed_tools", allowed_values)
+            setattr(session, "allowed_tools", next_allowed_values)
             updated_session = session
         repository.upsert_session(updated_session)
     result["already_allowed_tools"] = already_allowed
-    result["granted_tools"] = added
+    result["granted_tools"] = granted
+    result["removed_tools"] = removed
     return result
+
+
+def _active_team_mcp_tools_for_other_dispatches(
+    context: Any,
+    *,
+    session_id: str,
+    dispatch_id: str | None,
+) -> list[str]:
+    try:
+        state = TeamStateRepository(_runtime_dir(context)).read()
+    except Exception:
+        return []
+
+    now = datetime.now(UTC)
+    tool_names: list[str] = []
+    for agent_id, runtime in sorted(state.agent_runtimes.items()):
+        active_dispatch_id = _optional_text(getattr(runtime, "active_dispatch_id", None))
+        if active_dispatch_id is None or active_dispatch_id == dispatch_id:
+            continue
+        if not _team_runtime_lease_active(runtime, now=now):
+            continue
+        agent = state.agents.get(agent_id)
+        if agent is None or getattr(agent, "session_id", None) != session_id:
+            continue
+        if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
+            tool_names.extend(CHAT_TEAM_MCP_TOOL_NAMES)
+        else:
+            tool_names.extend(
+                _ordinary_team_tools_for_agent(
+                    {"team_id": getattr(agent, "team_id", None)}
+                )
+            )
+
+    for group_id, runtime in sorted(state.governance_runtimes.items()):
+        active_dispatch_id = _optional_text(getattr(runtime, "active_dispatch_id", None))
+        if active_dispatch_id is None or active_dispatch_id == dispatch_id:
+            continue
+        if not _team_runtime_lease_active(runtime, now=now):
+            continue
+        group = state.governance_groups.get(group_id)
+        if group is None:
+            continue
+        agent = state.agents.get(group.manager_agent_id)
+        if agent is None or getattr(agent, "session_id", None) != session_id:
+            continue
+        tool_names.extend(GOVERNANCE_TEAM_MCP_TOOL_NAMES)
+
+    return _unique_requested_tools(tool_names)
+
+
+def _team_runtime_lease_active(runtime: Any, *, now: datetime) -> bool:
+    wake_leased_until = getattr(runtime, "wake_leased_until", None)
+    if wake_leased_until is None:
+        return False
+    if isinstance(wake_leased_until, str):
+        lease_text = wake_leased_until.strip()
+        if not lease_text:
+            return False
+        try:
+            wake_leased_until = datetime.fromisoformat(
+                lease_text.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+    if not isinstance(wake_leased_until, datetime):
+        return False
+    if wake_leased_until.tzinfo is None:
+        wake_leased_until = wake_leased_until.replace(tzinfo=UTC)
+    return wake_leased_until > now
+
+
+def _unique_requested_tools(tool_names: list[str] | tuple[str, ...]) -> list[str]:
+    requested: list[str] = []
+    seen: set[str] = set()
+    for tool in (str(tool_name or "").strip() for tool_name in tool_names):
+        if not tool or tool in seen:
+            continue
+        seen.add(tool)
+        requested.append(tool)
+    return requested
 
 
 def _register_team_dispatch_model_usage_context(
@@ -4479,6 +4305,70 @@ def _definition_payload(definition: Any, *field_names: str) -> dict[str, Any]:
         for field_name in field_names
         if definition is not None and hasattr(definition, field_name)
     }
+
+
+def _configured_definition_fields(definition: Any) -> set[str]:
+    fields_set = getattr(definition, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(definition, "__fields_set__", None)
+    if isinstance(fields_set, set):
+        return {str(field) for field in fields_set}
+    return set()
+
+
+def _payload_field_configured(
+    field_name: str,
+    *,
+    definition_fields: set[str],
+    resolved_fields: set[str],
+) -> bool:
+    return field_name in definition_fields or field_name in resolved_fields
+
+
+def _case_effect_success_result(
+    state: TeamState,
+    *,
+    case_id: str | None,
+) -> dict[str, Any]:
+    case = state.cases.get(case_id or "")
+    case_payload = case.model_dump(mode="json") if case is not None else None
+    return {
+        "success": case is not None,
+        "revision": state.revision,
+        "case_id": case.id if case is not None else case_id,
+        "team_id": case.team_id if case is not None else None,
+        "project_id": case.project_id if case is not None else None,
+        "task_ids": list(case.task_ids) if case is not None else [],
+        "case": case_payload,
+        "error": None if case is not None else "case was not found after mutation",
+    }
+
+
+def _case_effect_error_result(
+    *,
+    revision: int,
+    case_id: str | None,
+    team_id: str | None,
+    project_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "case_id": case_id,
+        "team_id": team_id,
+        "project_id": project_id,
+        "task_ids": [],
+        "case": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
 
 
 def _result_outputs_payload(payload: Mapping[str, Any]) -> Any:
@@ -4653,6 +4543,24 @@ def _filtered_team_state_payload(
         and value.get("owner_agent_id") in visible_agent_ids
     }
     visible_task_ids = set(filtered["tasks"])
+    filtered["cases"] = {
+        key: {
+            **value,
+            "task_ids": _filter_ids(value.get("task_ids"), visible_task_ids),
+        }
+        for key, value in filtered.get("cases", {}).items()
+        if value.get("team_id") in visible_team_ids
+        and (
+            value.get("project_id") is None
+            or value.get("project_id") in visible_project_ids
+        )
+        and (
+            agent_id is None
+            or value.get("owner_agent_id") in visible_agent_ids
+            or any(task_id in visible_task_ids for task_id in _string_items(value.get("task_ids")))
+        )
+    }
+    visible_case_ids = set(filtered["cases"])
     filtered["deliverables"] = {
         key: value
         for key, value in filtered.get("deliverables", {}).items()
@@ -4707,6 +4615,7 @@ def _filtered_team_state_payload(
         key: {
             **value,
             "deliverable_ids": _filter_ids(value.get("deliverable_ids"), visible_deliverable_ids),
+            "case_id": value.get("case_id") if value.get("case_id") in visible_case_ids else None,
             # Keep the graph self-consistent within the scoped view: drop edges that
             # point at tasks the caller cannot see. dependency_status and
             # subtask_counts are intentionally left as computed from the full state
@@ -4813,7 +4722,120 @@ def _filtered_team_state_payload(
         visible_git_promotion_ids=visible_git_promotion_ids,
         visible_assignment_ids=set(filtered["ephemeral_assignments"]),
     )
+    visible_session_ids = {
+        session_id
+        for value in filtered["agents"].values()
+        if (session_id := _optional_text(value.get("session_id"))) is not None
+    }
+    visible_dispatch_ids = {
+        dispatch_id
+        for value in filtered.get("agent_runtimes", {}).values()
+        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
+    }
+    visible_dispatch_ids.update(
+        dispatch_id
+        for value in _mapping_items(filtered["runtime_operations"].get("agents"))
+        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
+    )
+    visible_stand_down_ids = {
+        stand_down_id
+        for value in filtered["agents"].values()
+        for item in _mapping_items(value.get("effective_stand_downs"))
+        if (stand_down_id := _optional_text(item.get("id"))) is not None
+    }
+    filtered_activity_summaries = _filter_agent_activity_summaries(
+        filtered.get("agent_activity_summaries"),
+        visible_agent_ids=visible_agent_ids,
+        visible_session_ids=visible_session_ids,
+        visible_stand_down_ids=visible_stand_down_ids,
+        visible_task_ids=visible_task_ids,
+        visible_deliverable_ids=visible_deliverable_ids,
+        visible_inbox_ids=set(filtered["inbox"]),
+        visible_action_ids=set(filtered["action_records"]),
+        visible_release_ids=visible_release_ids,
+        visible_git_promotion_ids=visible_git_promotion_ids,
+        visible_assignment_ids=set(filtered["ephemeral_assignments"]),
+        visible_dispatch_ids=visible_dispatch_ids,
+    )
+    filtered["agent_activity_summaries"] = filtered_activity_summaries
+    filtered["agents"] = {
+        key: _agent_payload_with_filtered_activity_summary(
+            value,
+            filtered_activity_summaries.get(key),
+        )
+        for key, value in filtered["agents"].items()
+    }
     return filtered
+
+
+def _filter_agent_activity_summaries(
+    value: object,
+    *,
+    visible_agent_ids: set[str],
+    visible_session_ids: set[str],
+    visible_stand_down_ids: set[str],
+    visible_task_ids: set[str],
+    visible_deliverable_ids: set[str],
+    visible_inbox_ids: set[str],
+    visible_action_ids: set[str],
+    visible_release_ids: set[str],
+    visible_git_promotion_ids: set[str],
+    visible_assignment_ids: set[str],
+    visible_dispatch_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_by_type = {
+        "agent": visible_agent_ids,
+        "session": visible_session_ids,
+        "stand_down": visible_stand_down_ids,
+        "task": visible_task_ids,
+        "deliverable": visible_deliverable_ids,
+        "inbox": visible_inbox_ids,
+        "action": visible_action_ids,
+        "release": visible_release_ids,
+        "promotion": visible_git_promotion_ids,
+        "assignment": visible_assignment_ids,
+        "dispatch": visible_dispatch_ids,
+    }
+    return {
+        agent_id: dict(summary)
+        for agent_id, summary in value.items()
+        if agent_id in visible_agent_ids
+        and isinstance(summary, dict)
+        and _activity_summary_refs_are_visible(summary.get("reason_refs"), allowed_by_type)
+    }
+
+
+def _activity_summary_refs_are_visible(
+    refs: object,
+    allowed_by_type: Mapping[str, set[str]],
+) -> bool:
+    if not isinstance(refs, list) or not refs:
+        return False
+    for ref in refs:
+        if not isinstance(ref, dict):
+            return False
+        ref_type = _optional_text(ref.get("type"))
+        ref_id = _optional_text(ref.get("id"))
+        if ref_type is None or ref_id is None:
+            return False
+        allowed_ids = allowed_by_type.get(ref_type)
+        if allowed_ids is None or ref_id not in allowed_ids:
+            return False
+    return True
+
+
+def _agent_payload_with_filtered_activity_summary(
+    value: dict[str, Any],
+    summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(value)
+    if summary is None:
+        payload.pop("activity_summary", None)
+    else:
+        payload["activity_summary"] = summary
+    return payload
 
 
 def _filter_runtime_operations(

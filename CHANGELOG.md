@@ -1,5 +1,286 @@
 # Changelog
 
+## 2026-06-25 - Team Add-on Clean MCP Cutover
+
+- Documented the clean Team MCP cutover from Team action artifacts to
+  Team-owned MCP tools, including tool visibility, idempotency, finalization,
+  deliverable artifact publication, and ephemeral worker reporting semantics.
+- Added a local Team MCP cutover runbook covering service quiescence, active
+  lease inspection, pending artifact disposition, state backup/migration,
+  restart, smoke checks, and common post-cutover troubleshooting.
+- Removed the legacy Team action-artifact workflow providers from the Team
+  Add-on registration surface now that ordinary Team actions report through
+  Team-owned MCP tools.
+- Added a Team runtime outbox publisher effect and wired it to the Team cron
+  graph so MCP-recorded async intents publish their internal `team.*` workflow
+  events and complete or retry their outbox rows.
+- Passed ephemeral assignment `allowed_tools` into the built-in
+  `effect:agent:create` node so spawned workers receive the
+  `team_report_ephemeral_result` MCP tool required to report completion.
+- Preserved Team MCP tools required by overlapping active governance and
+  ordinary Team dispatches that share a persistent session.
+- Fixed the Team Chat conversation-list pagination fixture so the seeded
+  conversation belongs to the default `admin` operator used by the API test.
+- Renamed the bundled Team Add-on Python package to `evander_team_addon` across
+  source, tests, docs, frontend build paths, and local add-on loader
+  configuration.
+
+## 2026-06-25 - ADO Daily Status Elapsed Time Guard
+
+- Required `get_ado_daily_status_report_data` callers to opt into
+  `elapsed_time_mode: manual_override` before `elapsed_sprint_percent` can
+  replace the elapsed-time value computed from Azure DevOps iteration dates.
+- Recorded ignored elapsed-time override values in the report source metadata
+  so suspicious sprint-time percentages are auditable.
+
+## 2026-06-24 - Team Add-on Blocked Release Guidance
+
+- Added explicit next-action hints to blocked release packages and runtime
+  attention rows so agents and operators resolve the existing release branch
+  instead of creating duplicate release requests.
+- Improved duplicate release-package action feedback with the existing package
+  state, branch, blocker, and correction guidance.
+- Clarified Team agent release prompts and schemas that `git_release_requests[]`
+  creates new packages only and blocked packages should follow their
+  `next_action_hint`.
+- Scoped release package recovery hints into normal agent wake prompts and made
+  blocked-release guidance point at the failed promotion target branch instead
+  of assuming the release branch is always the recovery branch.
+- Required `git_release_recoveries[]` to include the resolved `commit_sha`,
+  included that SHA in recovery idempotency, and validated it before the trusted
+  release target branch is updated.
+- Stopped advertising release recovery for blocked packages caused by failed
+  feature or canonical promotions; those hints now point at the failed promotion
+  target and reserve `git_release_recoveries[]` for failed release promotions.
+
+## 2026-06-24 - Team Add-on Release Prefix Normalization
+
+- Normalized Team project canonical release branch prefixes to one trailing
+  slash so `release` and `release/` both publish under `release/<id>`.
+
+## 2026-06-24 - Team Add-on Case Workflow Effects
+
+- Added `effect:team:create-case` and `effect:team:update-case` workflow nodes
+  so ticket/accounting intake workflows can create, update, and task-link Team
+  cases without routing through a persistent agent action.
+- Exposed the new Team case effects in the add-on workflow editor catalog with
+  output schemas and focused runtime/catalog coverage.
+- Returned generated `effect:team:create-case` ids from inside the repository
+  mutation so concurrent case creation cannot make a committed workflow-created
+  case look like a failed create.
+
+## 2026-06-24 - Team Add-on Release Flow Recovery
+
+- Attached successful feature promotions back to matching accepted Git
+  deliverables instead of creating extra pending synthetic deliverables when the
+  source review branch can be identified.
+- Added a safe repair path for existing synthetic feature-promotion deliverables
+  and made manager fallback wake on active deliverables even when their tasks are
+  already terminal.
+- Clarified Team Chat wake prompts and docs so explicit operator requests may
+  include state-changing Team action fields alongside `chat_replies`.
+- Let `git_release_requests[]` enqueue prerequisite feature promotions for
+  accepted review/agent branches and automatically continue the release package
+  after those promotions succeed, removing the old manual feature-then-release
+  agent workflow.
+- Added `git_release_recoveries[]` and a Team runtime recovery graph so blocked
+  release merge conflicts can resume from a resolved `agents/...` ref without
+  creating a duplicate release package.
+
+## 2026-06-24 - Team Add-on Git Release Sequencing
+
+- Rejected Team actions that combine non-empty `git_feature_updates[]` and
+  `git_release_requests[]` before they can enqueue partial Git promotion events.
+- Clarified the seeded Team action schema, wake prompt, and durable agent
+  guidance so agents request feature promotion first, then release on a later
+  wake after `git_refs.feature_branch` is visible.
+- Added action-feedback hints for the combined Git release mistake and bumped
+  the Team action contract and agent guidance versions.
+
+## 2026-06-24 - Team Add-on Review Artifact Routing
+
+- Clarified that reviewer artifact imports only happen for `review_requests[]`
+  inbox items, and added coverage so status requests with copied artifact paths
+  cannot be mistaken for review artifact delivery.
+- Bumped the Team agent guidance version so existing persistent agents receive
+  the corrected review-artifact routing instruction on their next wake.
+
+## 2026-06-24 - Team Add-on Setup Tab Deprecation
+
+- Removed the Team Add-on `Setup` top-level tab and made old stored `setup`
+  view preferences fall back to the `Teams` tab while keeping the temporary
+  Workspace setup rail available for flows that still need contextual homes.
+
+## 2026-06-24 - Team Add-on Agent Edit Filtering
+
+- Scoped agent edit Project, Role, and Reports-to dropdowns to the currently
+  selected team so changing the Team field no longer exposes invalid cross-team
+  choices.
+
+## 2026-06-24 - Team Add-on Agent Removal History
+
+- Allowed removing agents from a team when the only remaining references are
+  terminal deliverable producer or inbox sender records, while preserving
+  blockers for active deliverables and pending inbox items addressed to the
+  agent.
+
+## 2026-06-24 - Team Add-on Case Update Fixes
+
+- Rolled back failed agent `case_updates[]` items so invalid task links cannot
+  persist partial case edits, inserts, or task associations.
+- Preserved explicit blank case descriptions through repository and API update
+  paths so optional case text can be cleared.
+
+## 2026-06-24 - Team Add-on Activity Summaries
+
+- Added host-derived per-agent activity summaries to the Team Add-on payload so
+  the org overview can show concise natural-language current work and waiting
+  state without prompting agents or calling a classifier model.
+- Filtered scoped Team state payload summaries so hidden tasks, inbox items, and
+  other reason refs cannot leak through agent-visible activity summaries.
+- Wired Team org cards to prefer the derived `activity_summary` while retaining
+  existing task, inbox, runtime, and session details for drill-down.
+- Made Team Add-on view tabs use delegated click handling and live DOM queries
+  so tab switching remains responsive if tab elements are rendered or captured
+  after the initial static element cache is built.
+- Removed a duplicate Team UI `prioritySortValue` declaration that aborted the
+  page script before Team Add-on tab handlers could initialize.
+
+## 2026-06-24 - Team Add-on Case Domain
+
+- Added first-class Team cases for intake and ticket lifecycle tracking, with
+  optional external `source`/`source_ref`, owner, project scope, status,
+  priority, tags, and linked task ids.
+- Exposed case create/update API routes, `task.case_id`, wake/query context,
+  agent `case_updates[]`, and Team UI case views/forms/editing.
+- Bumped the Team action contract and agent guidance versions for the new case
+  action surface.
+
+## 2026-06-24 - Team Add-on Setup Panel Defaults
+
+- Collapsed the Setup from template and Create team forms by default, and moved
+  the template selector above the setup preview content.
+
+## 2026-06-24 - Team Add-on Governance Agenda Defaults
+
+- Hid handled Governance agenda items by default behind a Governance-tab toggle,
+  and moved governance goals above member teams with a subtle gold card
+  treatment that does not show routine goal states.
+
+## 2026-06-24 - Team Add-on Task Ownership Handoff
+
+- Allowed superior Team agents to set `owner_agent_id` in `task_updates[]` to
+  claim or reassign non-terminal tasks currently owned by subordinate agents,
+  while preserving owner-only task state/title/priority/description edits.
+- Kept task handoff targets inside the task project and routed rejected-review
+  rework to the current task owner so handed-off tasks can be revised cleanly.
+- Bumped the Team action contract and agent guidance versions so persistent
+  agents receive the new task handoff schema and instructions.
+
+## 2026-06-24 - Admin Stream Connection Hygiene
+
+- Closed Team Add-on chat, workflow-run, and Admin chat EventSource streams while
+  their browser tab is hidden, and reopened them with a fresh snapshot when the
+  tab becomes visible.
+- Routed Team Add-on UI requests through a timeout wrapper so queued or stalled
+  async operations report an error and release busy UI state instead of hanging
+  indefinitely.
+
+## 2026-06-24 - Team Add-on Inline Git Import
+
+- Added the Git repo import action to team-scoped inline project creation so all
+  Team Add-on project create/edit surfaces with Git fields can seed bare mirror
+  config from the UI.
+
+## 2026-06-24 - Team Add-on Accounting Template
+
+- Added an Accounting Department Team template with bookkeeping roles, starter
+  tasks, review criteria, and accounting-oriented role permissions for
+  Bokio/Skatteverket-assisted workflows.
+- Made the Team setup form render role/session fields from the selected
+  template and hide Git setup for non-Git templates.
+
+## 2026-06-24 - Team Add-on Review Artifact Imports
+
+- Imported Team review-request `artifact-space:` refs into reviewer sessions
+  during wake preparation so review prompts include concrete
+  `/artifacts/team-review-inputs/...` paths and structured import errors.
+- Enforced artifact-space read grants before review wake imports and isolated
+  each imported ref/version under its own destination path.
+
+## 2026-06-24 - Team Add-on Manager Fallback Active Lease Guard
+
+- Suppressed manager fallback wakes while another active team member still has
+  an unexpired wake lease, avoiding oversight prompts for work already in
+  progress.
+- Applied the active-lease guard before agent-specific wake scoping so targeted
+  manager wake runs follow the same fallback suppression.
+
+## 2026-06-24 - Team Add-on Revision Conflict Recovery
+
+- Added Team state resource tokens and opt-in unchanged-target rebasing for
+  operator UI writes so unrelated agent revision bumps no longer force common
+  Team Add-on form saves to fail.
+- Included agent project assignments and context-clearing settings in agent
+  retry tokens, and rejected stale generated-id creates instead of duplicating
+  records with suffixed ids.
+- Preserved Team UI form drafts across conflict reloads and added a retry-save
+  action after revision conflicts so operators can resubmit without re-entering
+  form data.
+
+## 2026-06-24 - Team Add-on Fallback Review Routing Fixes
+
+- Preserved compact artifact and Git evidence for pending-review deliverables
+  in manager fallback summaries, and excluded paused, leased, or stood-down
+  reviewers from fallback routing-gap recommendations.
+- Made fallback reviewer eligibility explicit through review profiles, added a
+  guardrail against manager self-review when an idle profile-eligible reviewer
+  can take the review, and improved duplicate review-id recovery hints.
+- Fixed fallback review routing edge cases for blank review-profile role filters,
+  busy reviewers, and reviewers who already handled the deliverable.
+
+## 2026-06-24 - Team Add-on Manager Fallback Summary
+
+- Replaced the manager fallback wake context dump with a compact summary of
+  active team work, assignments, review routing, and routing gaps so managers
+  get enough state to act without oversized wake prompts.
+
+## 2026-06-24 - Team Add-on Chat Wake Retry
+
+- Re-emitted queued Team chat wake events when an agent finishes its current
+  Team dispatch, so chat messages queued while the agent is leased wake
+  promptly instead of waiting for the cron fallback.
+
+## 2026-06-24 - Local OpenAI Websocket Rejection
+
+- Rejected `local_openai` websocket/realtime relay requests before dialing the
+  upstream Ollama-compatible endpoint, preventing unsupported websocket upgrades
+  from surfacing as retryable relay 500s during Codex startup.
+
+## 2026-06-24 - Team Add-on Manager Fallback Context
+
+- Added team-scoped manager fallback wake context with open team tasks,
+  deliverables, pending reviews, related inbox items, action records, and runtime
+  attention signals so stalled teams can be routed from the fallback prompt.
+- Added manager fallback prompt guidance to use that team context instead of
+  returning a no-op when the manager has no personally owned tasks or inbox.
+- Generated fallback runtime attention snapshots from the lease timestamp so
+  explicit scheduler times and prompt runtime state stay consistent.
+
+## 2026-06-24 - Team Add-on Chat Status
+
+- Stopped showing a separate queued-success status card after operators send
+  Team chat messages while keeping dispatch-failure warnings visible.
+- Published a Team chat queued event so chat sends trigger the async Team wake
+  dispatcher immediately instead of waiting for the next 15-minute runtime tick.
+
+## 2026-06-24 - Team Add-on Projects Tab
+
+- Added a top-level Team Add-on Projects tab that centers project creation,
+  selection, details, goals, tasks, deliverables, releases, agents, and roles.
+- Added project-scoped review-profile creation from the selected project while
+  preserving existing project visibility and editing under Teams and Planning.
+
 ## 2026-06-24 - Team Add-on Review Profile Criteria Editor
 
 - Replaced the Team Add-on review-profile criteria textarea with structured
@@ -103,6 +384,24 @@
   before assigning tasks.
 - Added role-aware delegation guidance to reduce implementation tasks being
   assigned to reviewer-role agents.
+
+## 2026-06-23 - Team Add-on Chat Load Performance
+
+- Optimized the Team Add-on Chat load path so the conversation list can inline
+  the selected thread's first message page, letting the client render a usable
+  chat view without a redundant detail request.
+- Grouped conversation messages once while building chat collection payloads so
+  large chat histories no longer rescan all messages for every conversation row.
+- Preserved the current Chat conversation selection when a refresh response
+  arrives after the operator has selected a different conversation.
+
+## 2026-06-23 - Workflow Editor Undo Review Fixes
+
+- Limited workflow editor undo snapshots to editable workflow content so
+  validation diagnostics, output schemas, and revision-only refreshes do not
+  create or restore undo history entries.
+- Added smoke coverage proving validation metadata refreshes leave undo disabled
+  and save revision refreshes clear undo availability.
 
 ## 2026-06-23 - Team Add-on Governance Membership Wakes
 
@@ -1027,7 +1326,7 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-16 - Team Runtime Pack Materialization
 
-- Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
+- Made `evander_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
   workflow pack directly, so operators can write it to `config/workflow-packs/`
   and list it in `workflow_packs` without local schema conversion.
 - Allowed workflow bindings in communication target references and Git promotion
@@ -1795,7 +2094,7 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-09 - Team Add-on State Model
 
-- Added the optional `truman_team_addon` package with private add-on state for
+- Added the optional `evander_team_addon` package with private add-on state for
   hierarchical teams, projects, persistent agents, prioritized tasks,
   deliverables, review requests, and release packages.
 - Exposed initial Team Add-on Admin API routes under `/api/addons/team-addon`

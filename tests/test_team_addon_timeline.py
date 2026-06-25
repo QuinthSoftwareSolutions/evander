@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentTask,
@@ -22,7 +22,7 @@ from truman_team_addon.models import (
     TeamState,
     TeamTaskState,
 )
-from truman_team_addon.timeline import derive_team_timeline
+from evander_team_addon.timeline import derive_team_timeline
 
 
 def _dt(day: int, hour: int, minute: int = 0) -> datetime:

@@ -62,5 +62,6 @@ test("chat launcher updates preparation status without a blocking loading pill",
   assert.match(launcher, /setAssistantSession\(session\.assistant_session\)/);
   assert.match(launcher, /setAssistantSession\(transcript\.assistant_session\)/);
   assert.match(launcher, /retryChatAssistantPrewarm/);
-  assert.match(launcher, /if \(!threadId \|\| !assistantEnabled\) return;/);
+  assert.match(launcher, /if \(!threadId \|\| !assistantEnabled \|\| !pageVisible\) return;/);
+  assert.match(launcher, /globalThis\.document\.addEventListener\("visibilitychange", updateVisibility\)/);
 });

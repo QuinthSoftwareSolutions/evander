@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -16,7 +16,10 @@ from pydantic import (
 )
 
 from agent_sandbox.models import utc_now
-from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
+from evander_team_addon.git_naming import (
+    DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
+    normalize_canonical_release_branch_prefix,
+)
 
 SCHEMA_VERSION = 2
 AGENT_OPERATOR_ONLY_FIELDS = {"avatar", "voice_profile"}
@@ -34,6 +37,9 @@ REALTIME_BUILT_IN_VOICE_IDS = (
 )
 _DEFAULT_LOW_PRIORITY_WAKE_AFTER_CYCLES = 4
 _DEFAULT_MAX_NO_PROGRESS_COUNT = 3
+_ACTIVITY_SUMMARY_HEADLINE_MAX = 90
+_ACTIVITY_SUMMARY_LINE_MAX = 80
+_ACTIVITY_SUMMARY_REF_MAX = 5
 
 
 class TeamTaskState(str, Enum):
@@ -52,6 +58,15 @@ class TeamRecordState(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+
+
+class TeamCaseStatus(str, Enum):
+    OPEN = "open"
+    TRIAGE = "triage"
+    IN_PROGRESS = "in_progress"
+    WAITING = "waiting"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
 
 
 class EphemeralAssignmentState(str, Enum):
@@ -92,7 +107,10 @@ class AgentProjectAssignmentKind(str, Enum):
 
 class RolePermission(str, Enum):
     CREATE_ROOT_TASK = "create_root_task"
+    PREPARE_BOOKKEEPING_ACTION = "prepare_bookkeeping_action"
+    REQUEST_PAYMENT_PREPARATION = "request_payment_preparation"
     REQUEST_RELEASE = "request_release"
+    REVIEW_BOOKKEEPING_ACTION = "review_bookkeeping_action"
 
 
 class AgentStandDownSource(str, Enum):
@@ -435,12 +453,17 @@ class ProjectGitConfig(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("base_branch", "canonical_release_branch_prefix", mode="before")
+    @field_validator("base_branch", mode="before")
     @classmethod
     def _required_with_default(cls, value: object, info) -> str:
         if value is None or (isinstance(value, str) and not value.strip()):
             return cls.model_fields[info.field_name].default
         return _required_text(value, info.field_name)
+
+    @field_validator("canonical_release_branch_prefix", mode="before")
+    @classmethod
+    def _canonical_release_branch_prefix(cls, value: object) -> str:
+        return normalize_canonical_release_branch_prefix(value)
 
     @field_validator(
         "bare_repo_name",
@@ -639,10 +662,65 @@ class AgentRuntime(TeamModel):
         return self
 
 
+class TeamCase(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    title: str
+    description: str = ""
+    status: TeamCaseStatus = TeamCaseStatus.OPEN
+    priority: TeamInboxPriority = TeamInboxPriority.NORMAL
+    owner_agent_id: str | None = None
+    source: str | None = None
+    source_ref: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    task_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    closed_at: datetime | None = None
+
+    @field_validator("id", "team_id", "title", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "project_id",
+        "owner_agent_id",
+        "source",
+        "source_ref",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _description_text(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("tags", "task_ids", mode="before")
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
 class AgentTask(TeamModel):
     id: str
     owner_agent_id: str
     project_id: str
+    case_id: str | None = None
     priority: int = Field(ge=0)
     state: TeamTaskState = TeamTaskState.PENDING
     state_entered_at: datetime = Field(default_factory=utc_now)
@@ -676,7 +754,13 @@ class AgentTask(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("created_by_agent_id", "created_by_actor", "parent_task_id", mode="before")
+    @field_validator(
+        "case_id",
+        "created_by_agent_id",
+        "created_by_actor",
+        "parent_task_id",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -898,6 +982,172 @@ class AgentActionRecord(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+
+class TeamDispatchActivityStatus(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class TeamOutboxStatus(str, Enum):
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TeamDispatchActivity(TeamModel):
+    id: str
+    tool_name: str
+    caller_session_id: str
+    caller_identity: str
+    agent_id: str | None = None
+    governance_group_id: str | None = None
+    assignment_id: str | None = None
+    dispatch_id: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+    status: TeamDispatchActivityStatus = TeamDispatchActivityStatus.SUCCESS
+    progress_classification: str = "none"
+    action_record_id: str | None = None
+    audit_record_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    correction_context_summary: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "tool_name", "caller_session_id", "caller_identity", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "agent_id",
+        "governance_group_id",
+        "assignment_id",
+        "dispatch_id",
+        "request_id",
+        "correlation_id",
+        "causation_id",
+        "action_record_id",
+        "audit_record_id",
+        "error_code",
+        "error_message",
+        "correction_context_summary",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("progress_classification", mode="before")
+    @classmethod
+    def _progress_classification(cls, value: object) -> str:
+        return _optional_text(value) or "none"
+
+    @model_validator(mode="after")
+    def _validate_domain_identity(self) -> "TeamDispatchActivity":
+        if not (self.agent_id or self.governance_group_id or self.assignment_id):
+            raise ValueError(
+                "dispatch activity requires agent_id, governance_group_id, or assignment_id"
+            )
+        return self
+
+
+class TeamIdempotencyRecord(TeamModel):
+    id: str
+    tool_name: str
+    caller_identity: str
+    scope_kind: str
+    scope_id: str
+    request_id: str
+    normalized_payload_digest: str
+    response_payload: dict[str, Any] = Field(default_factory=dict)
+    created_domain_ids: list[str] = Field(default_factory=list)
+    created_event_ids: list[str] = Field(default_factory=list)
+    status: str = "succeeded"
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "tool_name",
+        "caller_identity",
+        "scope_kind",
+        "scope_id",
+        "request_id",
+        "normalized_payload_digest",
+        "status",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("response_payload", mode="before")
+    @classmethod
+    def _response_payload(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("response_payload must be a JSON object")
+        return dict(value)
+
+    @field_validator("created_domain_ids", "created_event_ids", mode="before")
+    @classmethod
+    def _created_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+
+class TeamOutboxRecord(TeamModel):
+    id: str
+    intent_type: str
+    aggregate_type: str | None = None
+    aggregate_id: str | None = None
+    idempotency_key: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    status: TeamOutboxStatus = TeamOutboxStatus.PENDING
+    available_at: datetime = Field(default_factory=utc_now)
+    attempt_count: int = Field(default=0, ge=0)
+    claimed_at: datetime | None = None
+    claimed_by: str | None = None
+    claim_token: str | None = None
+    claim_expires_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "intent_type", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "aggregate_type",
+        "aggregate_id",
+        "idempotency_key",
+        "claimed_by",
+        "claim_token",
+        "last_error_code",
+        "last_error_message",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _payload(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("payload must be a JSON object")
+        return dict(value)
 
 
 class TeamConversation(TeamModel):
@@ -1182,6 +1432,7 @@ class TeamState(TeamModel):
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
     project_assignments: dict[str, AgentProjectAssignment] = Field(default_factory=dict)
     agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
+    cases: dict[str, TeamCase] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
@@ -1341,6 +1592,7 @@ class TeamState(TeamModel):
         self._validate_agents(errors)
         self._validate_project_assignments(errors)
         self._validate_agent_runtimes(errors)
+        self._validate_cases(errors)
         self._validate_tasks(errors)
         self._validate_task_graph(errors)
         self._validate_deliverables(errors)
@@ -1374,6 +1626,7 @@ class TeamState(TeamModel):
             "agents",
             "project_assignments",
             "agent_runtimes",
+            "cases",
             "tasks",
             "deliverables",
             "review_requests",
@@ -1674,6 +1927,50 @@ class TeamState(TeamModel):
             current = self.agents.get(current_id)
             current_id = current.reports_to_agent_id if current is not None else None
 
+    def _validate_cases(self, errors: list[str]) -> None:
+        for case in self.cases.values():
+            team = self.teams.get(case.team_id)
+            if team is None:
+                errors.append(f"case {case.id} references missing team {case.team_id}")
+            if case.project_id is not None:
+                project = self.projects.get(case.project_id)
+                if project is None:
+                    errors.append(
+                        f"case {case.id} references missing project {case.project_id}"
+                    )
+                elif project.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} project {project.id} belongs to team "
+                        f"{project.team_id}"
+                    )
+            if case.owner_agent_id is not None:
+                owner = self.agents.get(case.owner_agent_id)
+                if owner is None:
+                    errors.append(
+                        f"case {case.id} references missing owner {case.owner_agent_id}"
+                    )
+                elif owner.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} owner {owner.id} belongs to team {owner.team_id}"
+                    )
+            for task_id in case.task_ids:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    errors.append(f"case {case.id} references missing task {task_id}")
+                    continue
+                if task.case_id != case.id:
+                    errors.append(f"case {case.id} task {task_id} does not point back")
+                project = self.projects.get(task.project_id)
+                if project is not None and project.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} task {task.id} belongs to team {project.team_id}"
+                    )
+                if case.project_id is not None and task.project_id != case.project_id:
+                    errors.append(
+                        f"case {case.id} task {task.id} belongs to project "
+                        f"{task.project_id}"
+                    )
+
     def _validate_tasks(self, errors: list[str]) -> None:
         terminal_task_states = {
             TeamTaskState.FINISHED,
@@ -1694,6 +1991,23 @@ class TeamState(TeamModel):
                 and owner.team_id != project.team_id
             ):
                 errors.append(f"task {task.id} owner {owner.id} is outside project team")
+            if task.case_id is not None:
+                case = self.cases.get(task.case_id)
+                if case is None:
+                    errors.append(f"task {task.id} references missing case {task.case_id}")
+                elif project is not None:
+                    if case.team_id != project.team_id:
+                        errors.append(
+                            f"task {task.id} case {case.id} belongs to team "
+                            f"{case.team_id}"
+                        )
+                    if case.project_id is not None and case.project_id != task.project_id:
+                        errors.append(
+                            f"task {task.id} case {case.id} belongs to project "
+                            f"{case.project_id}"
+                        )
+                    if task.id not in case.task_ids:
+                        errors.append(f"task {task.id} case {case.id} does not link back")
             if (
                 task.created_by_agent_id is not None
                 and task.created_by_agent_id not in self.agents
@@ -1873,11 +2187,6 @@ class TeamState(TeamModel):
                             f"deliverable {deliverable.id} supersedes deliverable "
                             f"{previous.id} from another task"
                         )
-                    if previous.producer_agent_id != deliverable.producer_agent_id:
-                        errors.append(
-                            f"deliverable {deliverable.id} supersedes deliverable "
-                            f"{previous.id} from another producer"
-                        )
                     if previous.superseded_by_deliverable_id != deliverable.id:
                         errors.append(
                             f"deliverable {deliverable.id} supersedes deliverable "
@@ -1902,11 +2211,6 @@ class TeamState(TeamModel):
                         errors.append(
                             f"deliverable {deliverable.id} is superseded by deliverable "
                             f"{replacement.id} from another task"
-                        )
-                    if replacement.producer_agent_id != deliverable.producer_agent_id:
-                        errors.append(
-                            f"deliverable {deliverable.id} is superseded by deliverable "
-                            f"{replacement.id} from another producer"
                         )
                     if replacement.supersedes_deliverable_id != deliverable.id:
                         errors.append(
@@ -2321,6 +2625,445 @@ def effective_role_permissions(
     return permissions
 
 
+def agent_activity_summaries_payload(
+    state: TeamState,
+    *,
+    runtime_operations: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    generated_at = (now or utc_now()).isoformat()
+    if runtime_operations is None:
+        runtime_operations = runtime_operations_payload(state, now=now)
+    runtime_agent_rows = _activity_rows_by_agent(runtime_operations.get("agents"))
+    session_health_rows = _activity_rows_by_agent(runtime_operations.get("session_health"))
+    attention_rows = _activity_attention_rows_by_agent(runtime_operations.get("attention"))
+    return {
+        agent_id: _agent_activity_summary_payload(
+            state,
+            agent_id=agent_id,
+            generated_at=generated_at,
+            runtime_row=runtime_agent_rows.get(agent_id),
+            session_health_row=session_health_rows.get(agent_id),
+            attention_rows=attention_rows.get(agent_id, []),
+        )
+        for agent_id in sorted(state.agents)
+    }
+
+
+def _agent_activity_summary_payload(
+    state: TeamState,
+    *,
+    agent_id: str,
+    generated_at: str,
+    runtime_row: Mapping[str, Any] | None,
+    session_health_row: Mapping[str, Any] | None,
+    attention_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    agent = state.agents[agent_id]
+    runtime = state.agent_runtimes.get(agent_id)
+    open_tasks = _activity_open_tasks(state, agent_id)
+    inbox_items = _activity_pending_inbox_items(state, agent_id)
+    current_task = _activity_current_task(state, open_tasks)
+    blocked_task = next((task for task in open_tasks if _activity_task_blocked(state, task)), None)
+    waiting_task = next(
+        (task for task in open_tasks if not _activity_task_blocked(state, task) and _activity_task_waiting(state, task)),
+        None,
+    )
+
+    session_issue = _activity_session_issue(agent, runtime_row, session_health_row)
+    if session_issue is not None:
+        return _activity_summary(
+            headline=session_issue,
+            working_on="Unavailable",
+            waiting_for=session_issue,
+            tone="offline",
+            refs=[_activity_ref("session", agent.session_id)],
+            generated_at=generated_at,
+        )
+
+    stand_down = _activity_active_stand_down_for_agent(state, agent_id)
+    if stand_down is not None:
+        reason = _activity_text(stand_down.reason)
+        headline = f"Stood down{f': {reason}' if reason else ''}"
+        return _activity_summary(
+            headline=headline,
+            working_on="Stood down",
+            waiting_for=reason or "Stand-down active",
+            tone="attention",
+            refs=[_activity_ref("stand_down", stand_down.id)],
+            generated_at=generated_at,
+        )
+
+    if agent.status != AgentStatus.ACTIVE:
+        status = _activity_humanize_token(agent.status.value)
+        return _activity_summary(
+            headline=f"{status} agent",
+            working_on=status,
+            waiting_for="Clear",
+            tone="offline" if agent.status == AgentStatus.ARCHIVED else "idle",
+            refs=[_activity_ref("agent", agent.id)],
+            generated_at=generated_at,
+        )
+
+    active_dispatch_id = _activity_first_text(
+        runtime_row.get("active_dispatch_id") if runtime_row is not None else None,
+        runtime.active_dispatch_id if runtime is not None else None,
+    )
+    lease_active = bool(runtime_row.get("lease_active")) if runtime_row is not None else False
+    if active_dispatch_id or lease_active:
+        if current_task is not None:
+            refs = [_activity_ref("task", current_task.id)]
+            if active_dispatch_id:
+                refs.append(_activity_ref("dispatch", active_dispatch_id))
+            return _activity_summary(
+                headline=f"Working on {_activity_task_label(current_task)}",
+                working_on=_activity_task_label(current_task),
+                waiting_for=_activity_waiting_for_task(state, current_task) if _activity_task_waiting_or_blocked(state, current_task) else "Clear",
+                tone="working",
+                refs=refs,
+                generated_at=generated_at,
+            )
+        if inbox_items:
+            item = inbox_items[0]
+            refs = [_activity_ref("inbox", item.id)]
+            if active_dispatch_id:
+                refs.append(_activity_ref("dispatch", active_dispatch_id))
+            return _activity_summary(
+                headline=f"Handling {_activity_inbox_label(item)}",
+                working_on=_activity_inbox_label(item),
+                waiting_for="Clear",
+                tone="working",
+                refs=refs,
+                generated_at=generated_at,
+            )
+        return _activity_summary(
+            headline="Running team dispatch",
+            working_on="Team dispatch",
+            waiting_for="Clear",
+            tone="working",
+            refs=[_activity_ref("dispatch", active_dispatch_id)] if active_dispatch_id else [],
+            generated_at=generated_at,
+        )
+
+    if blocked_task is not None:
+        return _activity_summary(
+            headline=f"Blocked on {_activity_task_label(blocked_task)}",
+            working_on=_activity_task_label(blocked_task),
+            waiting_for=_activity_waiting_for_task(state, blocked_task),
+            tone="blocked",
+            refs=_activity_task_refs(state, blocked_task),
+            generated_at=generated_at,
+        )
+
+    if waiting_task is not None:
+        return _activity_summary(
+            headline=f"Waiting on {_activity_task_label(waiting_task)}",
+            working_on=_activity_task_label(waiting_task),
+            waiting_for=_activity_waiting_for_task(state, waiting_task),
+            tone="waiting",
+            refs=_activity_task_refs(state, waiting_task),
+            generated_at=generated_at,
+        )
+
+    actionable_inbox = [item for item in inbox_items if item.priority != TeamInboxPriority.LOW]
+    if actionable_inbox:
+        item = actionable_inbox[0]
+        return _activity_summary(
+            headline=f"Handling {_activity_inbox_label(item)}",
+            working_on=_activity_inbox_label(item),
+            waiting_for="Response requested" if item.response_requested else "Clear",
+            tone="attention",
+            refs=[_activity_ref("inbox", item.id)],
+            generated_at=generated_at,
+        )
+
+    if current_task is not None:
+        return _activity_summary(
+            headline=f"Working on {_activity_task_label(current_task)}",
+            working_on=_activity_task_label(current_task),
+            waiting_for="Clear",
+            tone="working",
+            refs=[_activity_ref("task", current_task.id)],
+            generated_at=generated_at,
+        )
+
+    if inbox_items:
+        item = inbox_items[0]
+        return _activity_summary(
+            headline=f"Has low-priority {_activity_inbox_label(item)}",
+            working_on=_activity_inbox_label(item),
+            waiting_for="Low priority",
+            tone="idle",
+            refs=[_activity_ref("inbox", item.id)],
+            generated_at=generated_at,
+        )
+
+    if attention_rows:
+        row = attention_rows[0]
+        title = _activity_first_text(row.get("title"), row.get("detail"), row.get("kind"), "runtime attention")
+        kind = _activity_text(row.get("kind"))
+        return _activity_summary(
+            headline=f"Needs attention: {title}",
+            working_on=title,
+            waiting_for=_activity_text(row.get("detail")) or "Runtime attention",
+            tone="blocked" if "blocked" in kind else "attention",
+            refs=_activity_row_refs(row),
+            generated_at=generated_at,
+        )
+
+    return _activity_summary(
+        headline="Idle, no open work",
+        working_on="No open work",
+        waiting_for="Clear",
+        tone="idle",
+        refs=[_activity_ref("agent", agent.id)],
+        generated_at=generated_at,
+    )
+
+
+def _activity_summary(
+    *,
+    headline: str,
+    working_on: str,
+    waiting_for: str,
+    tone: str,
+    refs: Sequence[Mapping[str, str | None]] | None,
+    generated_at: str,
+) -> dict[str, Any]:
+    return {
+        "headline": _activity_clamp(headline, _ACTIVITY_SUMMARY_HEADLINE_MAX),
+        "working_on": _activity_clamp(working_on, _ACTIVITY_SUMMARY_LINE_MAX),
+        "waiting_for": _activity_clamp(waiting_for, _ACTIVITY_SUMMARY_LINE_MAX),
+        "tone": tone,
+        "source": "derived",
+        "reason_refs": _activity_refs(refs or []),
+        "generated_at": generated_at,
+    }
+
+
+def _activity_open_tasks(state: TeamState, agent_id: str) -> list[AgentTask]:
+    terminal_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+    }
+    return [
+        task
+        for task in state.ordered_tasks_for_agent(agent_id)
+        if task.state not in terminal_states
+    ]
+
+
+def _activity_current_task(state: TeamState, tasks: Sequence[AgentTask]) -> AgentTask | None:
+    return next((task for task in tasks if not _activity_task_waiting_or_blocked(state, task)), None) or (tasks[0] if tasks else None)
+
+
+def _activity_pending_inbox_items(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
+    priority_order = {
+        TeamInboxPriority.HIGH: 0,
+        TeamInboxPriority.NORMAL: 1,
+        TeamInboxPriority.LOW: 2,
+    }
+    return sorted(
+        [
+            item
+            for item in state.inbox.values()
+            if item.recipient_agent_id == agent_id and item.state == TeamInboxItemState.PENDING
+        ],
+        key=lambda item: (priority_order.get(item.priority, 9), item.created_at, item.id),
+    )
+
+
+def _activity_task_waiting_or_blocked(state: TeamState, task: AgentTask) -> bool:
+    return _activity_task_blocked(state, task) or _activity_task_waiting(state, task)
+
+
+def _activity_task_blocked(state: TeamState, task: AgentTask) -> bool:
+    return task.state == TeamTaskState.BLOCKED or state.dependency_status(task.id) == "blocked"
+
+
+def _activity_task_waiting(state: TeamState, task: AgentTask) -> bool:
+    return (
+        task.state == TeamTaskState.WAITING_FOR_REVIEW
+        or state.dependency_status(task.id) == "waiting"
+        or bool(state.blocked_by_task_ids(task.id))
+    )
+
+
+def _activity_waiting_for_task(state: TeamState, task: AgentTask) -> str:
+    blocked_by = state.blocked_by_task_ids(task.id)
+    dependency_status = state.dependency_status(task.id)
+    if task.state == TeamTaskState.WAITING_FOR_REVIEW:
+        return "Review"
+    if blocked_by:
+        return f"Task {blocked_by[0]}"
+    if dependency_status == "blocked":
+        return "Blocked dependencies"
+    if dependency_status == "waiting":
+        return "Dependencies"
+    if task.state == TeamTaskState.BLOCKED:
+        return "Blocked task state"
+    return "Clear"
+
+
+def _activity_task_refs(state: TeamState, task: AgentTask) -> list[dict[str, str]]:
+    refs = [_activity_ref("task", task.id)]
+    refs.extend(_activity_ref("task", task_id) for task_id in state.blocked_by_task_ids(task.id))
+    return _activity_refs(refs)
+
+
+def _activity_task_label(task: AgentTask) -> str:
+    return _activity_text(task.title) or task.id
+
+
+def _activity_inbox_label(item: AgentInboxItem) -> str:
+    item_type = _activity_humanize_token(item.item_type.value).lower()
+    detail = _activity_inbox_detail(item)
+    return f"{item_type}: {detail}" if detail else item_type
+
+
+def _activity_inbox_detail(item: AgentInboxItem) -> str:
+    for key in ("title", "question", "message", "summary", "description"):
+        value = _activity_text(item.payload.get(key))
+        if value:
+            return value
+    return item.task_id or item.id
+
+
+def _activity_session_issue(
+    agent: PersistentAgent,
+    runtime_row: Mapping[str, Any] | None,
+    session_health_row: Mapping[str, Any] | None,
+) -> str | None:
+    rows = [row for row in (runtime_row, session_health_row) if row is not None]
+    if any(bool(row.get("session_is_expired") or row.get("is_expired")) for row in rows):
+        return "Session expired"
+    if any(_activity_text(row.get("status") or row.get("session_status")) == "expired" for row in rows):
+        return "Session expired"
+    if any(row.get("session_present") is False for row in rows):
+        return f"Session {agent.session_id} not found"
+    return None
+
+
+def _activity_active_stand_down_for_agent(state: TeamState, agent_id: str) -> AgentStandDown | None:
+    candidates = [
+        stand_down
+        for stand_down in state.stand_downs.values()
+        if stand_down.active
+        and (
+            stand_down.agent_id == agent_id
+            or _activity_agent_reports_under(state, agent_id, stand_down.agent_id)
+        )
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda stand_down: stand_down.set_at)[-1]
+
+
+def _activity_agent_reports_under(state: TeamState, agent_id: str, ancestor_agent_id: str) -> bool:
+    seen: set[str] = set()
+    current = state.agents.get(agent_id)
+    while current is not None and current.reports_to_agent_id:
+        parent_id = current.reports_to_agent_id
+        if parent_id == ancestor_agent_id:
+            return True
+        if parent_id in seen:
+            return False
+        seen.add(parent_id)
+        current = state.agents.get(parent_id)
+    return False
+
+
+def _activity_rows_by_agent(rows: object) -> dict[str, Mapping[str, Any]]:
+    result: dict[str, Mapping[str, Any]] = {}
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return result
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        agent_id = _activity_first_text(row.get("agent_id"), row.get("id"))
+        if agent_id:
+            result[agent_id] = row
+    return result
+
+
+def _activity_attention_rows_by_agent(rows: object) -> dict[str, list[Mapping[str, Any]]]:
+    result: dict[str, list[Mapping[str, Any]]] = {}
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return result
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        agent_id = _activity_text(row.get("agent_id"))
+        if agent_id:
+            result.setdefault(agent_id, []).append(row)
+    return result
+
+
+def _activity_row_refs(row: Mapping[str, Any]) -> list[dict[str, str]]:
+    refs = []
+    for ref_type, key in (
+        ("task", "task_id"),
+        ("deliverable", "deliverable_id"),
+        ("inbox", "inbox_item_id"),
+        ("action", "action_record_id"),
+        ("assignment", "assignment_id"),
+        ("promotion", "promotion_id"),
+        ("release", "release_package_id"),
+        ("dispatch", "dispatch_id"),
+        ("session", "session_id"),
+    ):
+        refs.append(_activity_ref(ref_type, row.get(key)))
+    return _activity_refs(refs)
+
+
+def _activity_ref(ref_type: str, ref_id: object) -> dict[str, str]:
+    return {"type": ref_type, "id": _activity_text(ref_id)}
+
+
+def _activity_refs(refs: Sequence[Mapping[str, str | None]]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for ref in refs:
+        ref_type = _activity_text(ref.get("type"))
+        ref_id = _activity_text(ref.get("id"))
+        if not ref_type or not ref_id:
+            continue
+        key = (ref_type, ref_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"type": ref_type, "id": ref_id})
+        if len(result) >= _ACTIVITY_SUMMARY_REF_MAX:
+            break
+    return result
+
+
+def _activity_first_text(*values: object) -> str:
+    for value in values:
+        text = _activity_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _activity_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _activity_clamp(value: object, max_length: int) -> str:
+    text = _activity_text(value)
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3].rstrip()}..."
+
+
+def _activity_humanize_token(value: object) -> str:
+    return _activity_text(value).replace("_", " ").title()
+
+
 def team_state_payload(
     state: TeamState,
     *,
@@ -2346,12 +3089,118 @@ def team_state_payload(
         task_id: task_payload_with_derived(state, task)
         for task_id, task in state.tasks.items()
     }
+    payload["release_packages"] = {
+        release_id: release_package_payload_with_derived(state, release)
+        for release_id, release in state.release_packages.items()
+    }
     payload["runtime_operations"] = runtime_operations_payload(
         state,
         now=now,
         session_records=session_records,
     )
+    payload["agent_activity_summaries"] = agent_activity_summaries_payload(
+        state,
+        runtime_operations=payload["runtime_operations"],
+        now=now,
+    )
+    for agent_id, summary in payload["agent_activity_summaries"].items():
+        agent_payload = payload["agents"].get(agent_id)
+        if isinstance(agent_payload, dict):
+            agent_payload["activity_summary"] = summary
     return payload
+
+
+def release_package_payload_with_derived(
+    state: TeamState,
+    release: ReleasePackage,
+) -> dict[str, Any]:
+    payload = release.model_dump(mode="json")
+    next_action_hint = _release_next_action_hint(state, release)
+    if next_action_hint is not None:
+        payload["next_action"] = "resolve_blocked_release"
+        payload["next_action_hint"] = next_action_hint
+    return payload
+
+
+def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str | None:
+    if release.state != TeamRecordState.BLOCKED and not release.error:
+        return None
+    failed_promotion = _release_blocking_promotion(state, release)
+    parts = [
+        f"Resolve existing release package {release.id}; do not create another "
+        "git_release_requests item with this id."
+    ]
+    if failed_promotion is not None:
+        parts.append(
+            f"Failed {failed_promotion.promotion_kind} promotion "
+            f"{failed_promotion.id}: {failed_promotion.source_branch} -> "
+            f"{failed_promotion.target_branch}."
+        )
+        if failed_promotion.promotion_kind == "release":
+            parts.append(
+                "Assign semantic conflicts to the owning coder, have the resolved "
+                "commit pushed to an agents/... ref, then submit "
+                "git_release_recoveries for this package with the resolved commit_sha."
+            )
+            parts.append(
+                f"Resolve and commit on promotion target branch "
+                f"{failed_promotion.target_branch}."
+            )
+        else:
+            parts.append(
+                f"This blocker is a failed {failed_promotion.promotion_kind} "
+                "promotion, not a release promotion; do not submit "
+                "git_release_recoveries. Resolve and commit on failed promotion "
+                f"target branch {failed_promotion.target_branch}, or escalate "
+                "for operator/orchestrator retry."
+            )
+    if release.error:
+        parts.append(f"Current blocker: {release.error}")
+    if release.error and "merge conflict" in release.error.casefold():
+        if failed_promotion is not None and failed_promotion.promotion_kind == "release":
+            parts.append(
+                "Resolve the merge conflict on the failed promotion target branch, "
+                "push the resolved commit to an agents/... ref, then recover the "
+                "existing release package with git_release_recoveries."
+            )
+        else:
+            parts.append(
+                "Resolve the merge conflict on the failed promotion target branch; "
+                "git_release_recoveries only applies to failed release promotions."
+            )
+    if failed_promotion is None:
+        parts.append(
+            "Inspect the package's git_promotion_record_ids and current Git state "
+            "to find the blocked promotion target before retrying or finalizing."
+        )
+    return " ".join(parts)
+
+
+def _release_blocking_promotion(
+    state: TeamState,
+    release: ReleasePackage,
+) -> GitPromotionRecord | None:
+    release_promotion_ids = set(release.git_promotion_record_ids)
+    failed_promotions = [
+        promotion
+        for promotion in state.git_promotions.values()
+        if promotion.state == "failed"
+        and (
+            promotion.id in release_promotion_ids
+            or promotion.release_package_id == release.id
+        )
+    ]
+    if not failed_promotions:
+        return None
+    failed_promotions.sort(
+        key=lambda promotion: (
+            promotion.updated_at,
+            promotion.created_at,
+            promotion.id,
+        ),
+        reverse=True,
+    )
+    return failed_promotions[0]
 
 
 def _agent_payload_with_role(
@@ -2933,6 +3782,7 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     for release in sorted(state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)):
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
+        next_action_hint = _release_next_action_hint(state, release)
         rows.append(
             _runtime_row(
                 id=release.id,
@@ -2946,6 +3796,8 @@ def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
                 deliverable_ids=list(release.deliverable_ids),
                 artifact_refs=list(release.artifact_refs),
                 error=release.error,
+                next_action="resolve_blocked_release" if next_action_hint else None,
+                next_action_hint=next_action_hint,
             )
         )
     return rows

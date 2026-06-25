@@ -4,23 +4,64 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, TypeVar
+from uuid import uuid4
 
 from agent_sandbox.addons import addon_storage_path
 from agent_sandbox.models import utc_now
 from agent_sandbox.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
 
-from .models import SCHEMA_VERSION, TeamState
+from .models import (
+    SCHEMA_VERSION,
+    TeamDispatchActivity,
+    TeamIdempotencyRecord,
+    TeamOutboxRecord,
+    TeamOutboxStatus,
+    TeamState,
+)
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 16
+SQLITE_SCHEMA_VERSION = 18
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
+
+
+class TeamIdempotencyConflictError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        tool_name: str,
+        caller_identity: str,
+        scope_kind: str,
+        scope_id: str,
+        request_id: str,
+        existing_digest: str,
+        attempted_digest: str,
+    ) -> None:
+        super().__init__(
+            "idempotency key reused with a different normalized payload digest: "
+            f"tool={tool_name!r}, caller={caller_identity!r}, "
+            f"scope={scope_kind!r}:{scope_id!r}, request_id={request_id!r}"
+        )
+        self.tool_name = tool_name
+        self.caller_identity = caller_identity
+        self.scope_kind = scope_kind
+        self.scope_id = scope_id
+        self.request_id = request_id
+        self.existing_digest = existing_digest
+        self.attempted_digest = attempted_digest
+
+
+def normalized_payload_digest(payload: Mapping[str, Any]) -> str:
+    normalized = _json_normalize(dict(payload))
+    return hashlib.sha256(_json_dumps(normalized).encode("utf-8")).hexdigest()
 
 
 class TeamStateSqliteStore:
@@ -58,6 +99,709 @@ class TeamStateSqliteStore:
                 state = TeamState.model_validate(payload)
                 self._write_state(connection, state)
                 return result
+
+    def update_object_with_command_transaction(
+        self,
+        updater: Callable[[dict[str, Any], TeamStateSqliteCommandTransaction], T],
+    ) -> T:
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                payload = self._read_payload(connection)
+                result = updater(
+                    payload,
+                    TeamStateSqliteCommandTransaction(self, connection),
+                )
+                state = TeamState.model_validate(payload)
+                self._write_state(connection, state)
+                return result
+
+    def append_dispatch_activity(
+        self,
+        activity: TeamDispatchActivity | Mapping[str, Any],
+    ) -> TeamDispatchActivity:
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                return self._insert_dispatch_activity(connection, activity)
+
+    def list_dispatch_activity(
+        self,
+        *,
+        dispatch_id: str | None = None,
+        caller_session_id: str | None = None,
+        caller_identity: str | None = None,
+        agent_id: str | None = None,
+        governance_group_id: str | None = None,
+        assignment_id: str | None = None,
+        tool_name: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamDispatchActivity]:
+        with self._lock:
+            with self._connect() as connection:
+                return self._list_dispatch_activity(
+                    connection,
+                    dispatch_id=dispatch_id,
+                    caller_session_id=caller_session_id,
+                    caller_identity=caller_identity,
+                    agent_id=agent_id,
+                    governance_group_id=governance_group_id,
+                    assignment_id=assignment_id,
+                    tool_name=tool_name,
+                    request_id=request_id,
+                    limit=limit,
+                )
+
+    @classmethod
+    def _list_dispatch_activity(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        dispatch_id: str | None = None,
+        caller_session_id: str | None = None,
+        caller_identity: str | None = None,
+        agent_id: str | None = None,
+        governance_group_id: str | None = None,
+        assignment_id: str | None = None,
+        tool_name: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamDispatchActivity]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("dispatch_id", dispatch_id),
+            ("caller_session_id", caller_session_id),
+            ("caller_identity", caller_identity),
+            ("agent_id", agent_id),
+            ("governance_group_id", governance_group_id),
+            ("assignment_id", assignment_id),
+            ("tool_name", tool_name),
+            ("request_id", request_id),
+        ):
+            if value is None:
+                continue
+            clauses.append(f"{column} = ?")
+            params.append(_required_text(value, column))
+        query = "SELECT * FROM team_dispatch_activity"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at, id"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(0, int(limit)))
+        return [
+            cls._dispatch_activity_from_row(row)
+            for row in connection.execute(query, params)
+        ]
+
+    def check_idempotency_replay(
+        self,
+        *,
+        tool_name: str,
+        caller_identity: str,
+        scope_kind: str,
+        scope_id: str,
+        request_id: str,
+        normalized_payload_digest: str,
+    ) -> TeamIdempotencyRecord | None:
+        key = _idempotency_key_values(
+            tool_name=tool_name,
+            caller_identity=caller_identity,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            request_id=request_id,
+        )
+        digest = _required_text(
+            normalized_payload_digest,
+            "normalized_payload_digest",
+        )
+        with self._lock:
+            with self._connect() as connection:
+                record = self._lookup_idempotency_record(connection, **key)
+        if record is None:
+            return None
+        if record.normalized_payload_digest != digest:
+            _raise_idempotency_conflict(
+                **key,
+                existing_digest=record.normalized_payload_digest,
+                attempted_digest=digest,
+            )
+        return record
+
+    def store_idempotency_record(
+        self,
+        record: TeamIdempotencyRecord | Mapping[str, Any],
+    ) -> TeamIdempotencyRecord:
+        stored = TeamIdempotencyRecord.model_validate(record)
+        key = _idempotency_key_values(
+            tool_name=stored.tool_name,
+            caller_identity=stored.caller_identity,
+            scope_kind=stored.scope_kind,
+            scope_id=stored.scope_id,
+            request_id=stored.request_id,
+        )
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                return self._insert_idempotency_record(connection, stored, key=key)
+
+    def get_idempotency_record(
+        self,
+        *,
+        tool_name: str,
+        caller_identity: str,
+        scope_kind: str,
+        scope_id: str,
+        request_id: str,
+    ) -> TeamIdempotencyRecord | None:
+        key = _idempotency_key_values(
+            tool_name=tool_name,
+            caller_identity=caller_identity,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            request_id=request_id,
+        )
+        with self._lock:
+            with self._connect() as connection:
+                return self._lookup_idempotency_record(connection, **key)
+
+    def enqueue_outbox_record(
+        self,
+        record: TeamOutboxRecord | Mapping[str, Any],
+    ) -> TeamOutboxRecord:
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                return self._insert_outbox_record(connection, record)
+
+    def list_outbox_records(
+        self,
+        *,
+        status: TeamOutboxStatus | str | None = None,
+        intent_type: str | None = None,
+        aggregate_type: str | None = None,
+        aggregate_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamOutboxRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(_outbox_status_value(status))
+        for column, value in (
+            ("intent_type", intent_type),
+            ("aggregate_type", aggregate_type),
+            ("aggregate_id", aggregate_id),
+        ):
+            if value is None:
+                continue
+            clauses.append(f"{column} = ?")
+            params.append(_required_text(value, column))
+        query = "SELECT * FROM team_outbox"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY available_at, created_at, id"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(0, int(limit)))
+        with self._lock:
+            with self._connect() as connection:
+                return [
+                    self._outbox_record_from_row(row)
+                    for row in connection.execute(query, params)
+                ]
+
+    def claim_outbox_records(
+        self,
+        *,
+        worker_id: str,
+        limit: int = 1,
+        intent_types: Sequence[str] | None = None,
+        claim_token: str | None = None,
+        claim_ttl_seconds: int = 300,
+        now: datetime | None = None,
+    ) -> list[TeamOutboxRecord]:
+        if limit <= 0:
+            return []
+        normalized_worker_id = _required_text(worker_id, "worker_id")
+        normalized_claim_token = _optional_text(claim_token) or f"claim-{uuid4().hex}"
+        effective_now = now or utc_now()
+        now_text = _datetime_text(effective_now)
+        expires_at = effective_now + timedelta(seconds=max(1, int(claim_ttl_seconds)))
+        expires_at_text = _datetime_text(expires_at)
+        normalized_intent_types = [
+            _required_text(intent_type, "intent_type")
+            for intent_type in (intent_types or [])
+        ]
+
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if claim_token is not None:
+                    existing = self._claimed_outbox_by_token(
+                        connection,
+                        claim_token=normalized_claim_token,
+                        limit=limit,
+                    )
+                    if existing:
+                        return existing
+
+                clauses = [
+                    "available_at <= ?",
+                    """
+                    (
+                        status = ?
+                        OR (
+                            status = ?
+                            AND claim_expires_at IS NOT NULL
+                            AND claim_expires_at <= ?
+                        )
+                    )
+                    """,
+                ]
+                params: list[Any] = [
+                    now_text,
+                    TeamOutboxStatus.PENDING.value,
+                    TeamOutboxStatus.CLAIMED.value,
+                    now_text,
+                ]
+                if normalized_intent_types:
+                    placeholders = ", ".join("?" for _ in normalized_intent_types)
+                    clauses.append(f"intent_type IN ({placeholders})")
+                    params.extend(normalized_intent_types)
+                ids = [
+                    str(row["id"])
+                    for row in connection.execute(
+                        f"""
+                        SELECT id
+                        FROM team_outbox
+                        WHERE {" AND ".join(clauses)}
+                        ORDER BY available_at, created_at, id
+                        LIMIT ?
+                        """,
+                        [*params, limit],
+                    )
+                ]
+                claimed: list[TeamOutboxRecord] = []
+                for record_id in ids:
+                    connection.execute(
+                        """
+                        UPDATE team_outbox
+                        SET status = ?,
+                            claimed_at = ?,
+                            claimed_by = ?,
+                            claim_token = ?,
+                            claim_expires_at = ?,
+                            attempt_count = attempt_count + 1,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            TeamOutboxStatus.CLAIMED.value,
+                            now_text,
+                            normalized_worker_id,
+                            normalized_claim_token,
+                            expires_at_text,
+                            now_text,
+                            record_id,
+                        ),
+                    )
+                    row = connection.execute(
+                        "SELECT * FROM team_outbox WHERE id = ?",
+                        (record_id,),
+                    ).fetchone()
+                    if row is not None:
+                        claimed.append(self._outbox_record_from_row(row))
+                return claimed
+
+    def complete_outbox_record(
+        self,
+        *,
+        record_id: str,
+        claim_token: str | None = None,
+        now: datetime | None = None,
+    ) -> TeamOutboxRecord:
+        normalized_record_id = _required_text(record_id, "record_id")
+        normalized_claim_token = _optional_text(claim_token)
+        now_text = _datetime_text(now or utc_now())
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                clauses = ["id = ?"]
+                params: list[Any] = [normalized_record_id]
+                if normalized_claim_token is not None:
+                    clauses.append("claim_token = ?")
+                    params.append(normalized_claim_token)
+                cursor = connection.execute(
+                    f"""
+                    UPDATE team_outbox
+                    SET status = ?,
+                        completed_at = ?,
+                        updated_at = ?
+                    WHERE {" AND ".join(clauses)}
+                    """,
+                    [TeamOutboxStatus.COMPLETED.value, now_text, now_text, *params],
+                )
+                if cursor.rowcount == 0:
+                    raise ValueError(f"outbox record {normalized_record_id} was not claimed")
+                return self._require_outbox_record(connection, normalized_record_id)
+
+    def fail_outbox_record(
+        self,
+        *,
+        record_id: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        claim_token: str | None = None,
+        retry_after_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> TeamOutboxRecord:
+        normalized_record_id = _required_text(record_id, "record_id")
+        normalized_claim_token = _optional_text(claim_token)
+        now_value = now or utc_now()
+        now_text = _datetime_text(now_value)
+        next_status = TeamOutboxStatus.FAILED
+        available_at: str | None = None
+        if retry_after_seconds is not None:
+            next_status = TeamOutboxStatus.PENDING
+            available_at = _datetime_text(
+                now_value + timedelta(seconds=max(0, int(retry_after_seconds)))
+            )
+
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                clauses = ["id = ?"]
+                params: list[Any] = [normalized_record_id]
+                if normalized_claim_token is not None:
+                    clauses.append("claim_token = ?")
+                    params.append(normalized_claim_token)
+                cursor = connection.execute(
+                    f"""
+                    UPDATE team_outbox
+                    SET status = ?,
+                        available_at = COALESCE(?, available_at),
+                        claimed_at = NULL,
+                        claimed_by = NULL,
+                        claim_token = NULL,
+                        claim_expires_at = NULL,
+                        completed_at = NULL,
+                        last_error_code = ?,
+                        last_error_message = ?,
+                        updated_at = ?
+                    WHERE {" AND ".join(clauses)}
+                    """,
+                    [
+                        next_status.value,
+                        available_at,
+                        _optional_text(error_code),
+                        _optional_text(error_message),
+                        now_text,
+                        *params,
+                    ],
+                )
+                if cursor.rowcount == 0:
+                    raise ValueError(f"outbox record {normalized_record_id} was not claimed")
+                return self._require_outbox_record(connection, normalized_record_id)
+
+    @staticmethod
+    def _insert_dispatch_activity(
+        connection: sqlite3.Connection,
+        activity: TeamDispatchActivity | Mapping[str, Any],
+    ) -> TeamDispatchActivity:
+        record = TeamDispatchActivity.model_validate(activity)
+        payload = record.model_dump(mode="json")
+        connection.execute(
+            """
+            INSERT INTO team_dispatch_activity(
+                id, tool_name, caller_session_id, caller_identity,
+                agent_id, governance_group_id, assignment_id, dispatch_id,
+                request_id, correlation_id, causation_id, status,
+                progress_classification, action_record_id, audit_record_id,
+                error_code, error_message, correction_context_summary,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["tool_name"],
+                payload["caller_session_id"],
+                payload["caller_identity"],
+                payload.get("agent_id"),
+                payload.get("governance_group_id"),
+                payload.get("assignment_id"),
+                payload.get("dispatch_id"),
+                payload.get("request_id"),
+                payload.get("correlation_id"),
+                payload.get("causation_id"),
+                payload["status"],
+                payload["progress_classification"],
+                payload.get("action_record_id"),
+                payload.get("audit_record_id"),
+                payload.get("error_code"),
+                payload.get("error_message"),
+                payload.get("correction_context_summary"),
+                payload["created_at"],
+                payload["updated_at"],
+            ),
+        )
+        return record
+
+    @classmethod
+    def _insert_idempotency_record(
+        cls,
+        connection: sqlite3.Connection,
+        record: TeamIdempotencyRecord | Mapping[str, Any],
+        *,
+        key: dict[str, str] | None = None,
+    ) -> TeamIdempotencyRecord:
+        stored = TeamIdempotencyRecord.model_validate(record)
+        effective_key = key or _idempotency_key_values(
+            tool_name=stored.tool_name,
+            caller_identity=stored.caller_identity,
+            scope_kind=stored.scope_kind,
+            scope_id=stored.scope_id,
+            request_id=stored.request_id,
+        )
+        payload = stored.model_dump(mode="json")
+        existing = cls._lookup_idempotency_record(connection, **effective_key)
+        if existing is not None:
+            if existing.normalized_payload_digest != stored.normalized_payload_digest:
+                _raise_idempotency_conflict(
+                    **effective_key,
+                    existing_digest=existing.normalized_payload_digest,
+                    attempted_digest=stored.normalized_payload_digest,
+                )
+            return existing
+        connection.execute(
+            """
+            INSERT INTO team_idempotency_records(
+                id, tool_name, caller_identity, scope_kind, scope_id,
+                request_id, normalized_payload_digest, response_payload_json,
+                created_domain_ids_json, created_event_ids_json, status,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["tool_name"],
+                payload["caller_identity"],
+                payload["scope_kind"],
+                payload["scope_id"],
+                payload["request_id"],
+                payload["normalized_payload_digest"],
+                _json_dumps(payload["response_payload"]),
+                _json_dumps(payload["created_domain_ids"]),
+                _json_dumps(payload["created_event_ids"]),
+                payload["status"],
+                payload["created_at"],
+                payload["updated_at"],
+            ),
+        )
+        return stored
+
+    @classmethod
+    def _insert_outbox_record(
+        cls,
+        connection: sqlite3.Connection,
+        record: TeamOutboxRecord | Mapping[str, Any],
+    ) -> TeamOutboxRecord:
+        stored = TeamOutboxRecord.model_validate(record)
+        payload = stored.model_dump(mode="json")
+        if stored.idempotency_key is not None:
+            existing = cls._lookup_outbox_by_idempotency_key(
+                connection,
+                stored.idempotency_key,
+            )
+            if existing is not None:
+                return existing
+        connection.execute(
+            """
+            INSERT INTO team_outbox(
+                id, intent_type, aggregate_type, aggregate_id,
+                idempotency_key, payload_json, status, available_at,
+                attempt_count, claimed_at, claimed_by, claim_token,
+                claim_expires_at, completed_at, last_error_code,
+                last_error_message, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["intent_type"],
+                payload.get("aggregate_type"),
+                payload.get("aggregate_id"),
+                payload.get("idempotency_key"),
+                _json_dumps(payload["payload"]),
+                payload["status"],
+                payload["available_at"],
+                payload["attempt_count"],
+                payload.get("claimed_at"),
+                payload.get("claimed_by"),
+                payload.get("claim_token"),
+                payload.get("claim_expires_at"),
+                payload.get("completed_at"),
+                payload.get("last_error_code"),
+                payload.get("last_error_message"),
+                payload["created_at"],
+                payload["updated_at"],
+            ),
+        )
+        return stored
+
+    @staticmethod
+    def _dispatch_activity_from_row(row: sqlite3.Row) -> TeamDispatchActivity:
+        return TeamDispatchActivity.model_validate(
+            {
+                "id": row["id"],
+                "tool_name": row["tool_name"],
+                "caller_session_id": row["caller_session_id"],
+                "caller_identity": row["caller_identity"],
+                "agent_id": row["agent_id"],
+                "governance_group_id": row["governance_group_id"],
+                "assignment_id": row["assignment_id"],
+                "dispatch_id": row["dispatch_id"],
+                "request_id": row["request_id"],
+                "correlation_id": row["correlation_id"],
+                "causation_id": row["causation_id"],
+                "status": row["status"],
+                "progress_classification": row["progress_classification"],
+                "action_record_id": row["action_record_id"],
+                "audit_record_id": row["audit_record_id"],
+                "error_code": row["error_code"],
+                "error_message": row["error_message"],
+                "correction_context_summary": row["correction_context_summary"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+
+    @staticmethod
+    def _idempotency_record_from_row(row: sqlite3.Row) -> TeamIdempotencyRecord:
+        return TeamIdempotencyRecord.model_validate(
+            {
+                "id": row["id"],
+                "tool_name": row["tool_name"],
+                "caller_identity": row["caller_identity"],
+                "scope_kind": row["scope_kind"],
+                "scope_id": row["scope_id"],
+                "request_id": row["request_id"],
+                "normalized_payload_digest": row["normalized_payload_digest"],
+                "response_payload": _json_loads(row["response_payload_json"]),
+                "created_domain_ids": _json_loads(row["created_domain_ids_json"]),
+                "created_event_ids": _json_loads(row["created_event_ids_json"]),
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+
+    @classmethod
+    def _outbox_record_from_row(cls, row: sqlite3.Row) -> TeamOutboxRecord:
+        return TeamOutboxRecord.model_validate(
+            {
+                "id": row["id"],
+                "intent_type": row["intent_type"],
+                "aggregate_type": row["aggregate_type"],
+                "aggregate_id": row["aggregate_id"],
+                "idempotency_key": row["idempotency_key"],
+                "payload": _json_loads(row["payload_json"]),
+                "status": row["status"],
+                "available_at": row["available_at"],
+                "attempt_count": row["attempt_count"],
+                "claimed_at": row["claimed_at"],
+                "claimed_by": row["claimed_by"],
+                "claim_token": row["claim_token"],
+                "claim_expires_at": row["claim_expires_at"],
+                "completed_at": row["completed_at"],
+                "last_error_code": row["last_error_code"],
+                "last_error_message": row["last_error_message"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+
+    @classmethod
+    def _lookup_idempotency_record(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        tool_name: str,
+        caller_identity: str,
+        scope_kind: str,
+        scope_id: str,
+        request_id: str,
+    ) -> TeamIdempotencyRecord | None:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM team_idempotency_records
+            WHERE tool_name = ?
+              AND caller_identity = ?
+              AND scope_kind = ?
+              AND scope_id = ?
+              AND request_id = ?
+            """,
+            (tool_name, caller_identity, scope_kind, scope_id, request_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return cls._idempotency_record_from_row(row)
+
+    @classmethod
+    def _lookup_outbox_by_idempotency_key(
+        cls,
+        connection: sqlite3.Connection,
+        idempotency_key: str,
+    ) -> TeamOutboxRecord | None:
+        row = connection.execute(
+            "SELECT * FROM team_outbox WHERE idempotency_key = ?",
+            (_required_text(idempotency_key, "idempotency_key"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return cls._outbox_record_from_row(row)
+
+    @classmethod
+    def _claimed_outbox_by_token(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        claim_token: str,
+        limit: int,
+    ) -> list[TeamOutboxRecord]:
+        return [
+            cls._outbox_record_from_row(row)
+            for row in connection.execute(
+                """
+                SELECT *
+                FROM team_outbox
+                WHERE status = ?
+                  AND claim_token = ?
+                ORDER BY claimed_at, id
+                LIMIT ?
+                """,
+                (TeamOutboxStatus.CLAIMED.value, claim_token, limit),
+            )
+        ]
+
+    @classmethod
+    def _require_outbox_record(
+        cls,
+        connection: sqlite3.Connection,
+        record_id: str,
+    ) -> TeamOutboxRecord:
+        row = connection.execute(
+            "SELECT * FROM team_outbox WHERE id = ?",
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"outbox record {record_id} does not exist")
+        return cls._outbox_record_from_row(row)
 
     def ensure_schema(self) -> None:
         with self._lock:
@@ -167,6 +911,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_tasks",
+                    column_name="case_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_deliverables",
                     column_name="supersedes_deliverable_id",
                     definition="TEXT",
@@ -271,6 +1021,7 @@ class TeamStateSqliteStore:
             "agents": {},
             "project_assignments": {},
             "agent_runtimes": {},
+            "cases": {},
             "tasks": {},
             "deliverables": {},
             "review_requests": {},
@@ -294,6 +1045,7 @@ class TeamStateSqliteStore:
         self._read_project_assignments(connection, payload)
         self._read_stand_downs(connection, payload)
         self._read_agent_runtimes(connection, payload)
+        self._read_cases(connection, payload)
         self._read_tasks(connection, payload)
         self._read_deliverables(connection, payload)
         self._read_review_profiles(connection, payload)
@@ -320,6 +1072,7 @@ class TeamStateSqliteStore:
         self._write_project_assignments(connection, payload["project_assignments"])
         self._write_stand_downs(connection, payload["stand_downs"])
         self._write_agent_runtimes(connection, payload["agent_runtimes"])
+        self._write_cases(connection, payload["cases"])
         self._write_tasks(connection, payload["tasks"])
         self._write_deliverables(connection, payload["deliverables"])
         self._write_review_profiles(connection, payload["review_profiles"])
@@ -941,6 +1694,60 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_cases(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute("SELECT * FROM team_cases ORDER BY id"):
+            payload["cases"][row["id"]] = {
+                "id": row["id"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "title": row["title"],
+                "description": row["description"],
+                "status": row["status"],
+                "priority": row["priority"],
+                "owner_agent_id": row["owner_agent_id"],
+                "source": row["source"],
+                "source_ref": row["source_ref"],
+                "tags": _json_loads(row["tags_json"]),
+                "metadata": _json_loads(row["metadata_json"]),
+                "task_ids": _json_loads(row["task_ids_json"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "closed_at": row["closed_at"],
+            }
+
+    @staticmethod
+    def _write_cases(connection: sqlite3.Connection, cases: dict[str, Any]) -> None:
+        for case in cases.values():
+            connection.execute(
+                """
+                INSERT INTO team_cases(
+                    id, team_id, project_id, title, description, status, priority,
+                    owner_agent_id, source, source_ref, tags_json, metadata_json,
+                    task_ids_json, created_at, updated_at, closed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case["id"],
+                    case["team_id"],
+                    case.get("project_id"),
+                    case["title"],
+                    case.get("description", ""),
+                    case.get("status", "open"),
+                    case.get("priority", "normal"),
+                    case.get("owner_agent_id"),
+                    case.get("source"),
+                    case.get("source_ref"),
+                    _json_dumps(case.get("tags", [])),
+                    _json_dumps(case.get("metadata", {})),
+                    _json_dumps(case.get("task_ids", [])),
+                    case["created_at"],
+                    case["updated_at"],
+                    case.get("closed_at"),
+                ),
+            )
+
+    @staticmethod
     def _read_tasks(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         dependencies = _grouped_values(
             connection,
@@ -955,6 +1762,7 @@ class TeamStateSqliteStore:
                 "id": row["id"],
                 "owner_agent_id": row["owner_agent_id"],
                 "project_id": row["project_id"],
+                "case_id": row["case_id"],
                 "priority": row["priority"],
                 "state": row["state"],
                 "state_entered_at": row["state_entered_at"] or row["updated_at"] or row["created_at"],
@@ -975,16 +1783,17 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_tasks(
-                    id, owner_agent_id, project_id, priority, state, title, description,
+                    id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
                     task["owner_agent_id"],
                     task["project_id"],
+                    task.get("case_id"),
                     int(task["priority"]),
                     task.get("state", "pending"),
                     task["title"],
@@ -1722,6 +2531,78 @@ class TeamStateSqliteStore:
             )
 
 
+class TeamStateSqliteCommandTransaction:
+    def __init__(
+        self,
+        store: TeamStateSqliteStore,
+        connection: sqlite3.Connection,
+    ) -> None:
+        self._store = store
+        self._connection = connection
+
+    def get_idempotency_record(
+        self,
+        *,
+        tool_name: str,
+        caller_identity: str,
+        scope_kind: str,
+        scope_id: str,
+        request_id: str,
+    ) -> TeamIdempotencyRecord | None:
+        key = _idempotency_key_values(
+            tool_name=tool_name,
+            caller_identity=caller_identity,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            request_id=request_id,
+        )
+        return self._store._lookup_idempotency_record(self._connection, **key)
+
+    def store_idempotency_record(
+        self,
+        record: TeamIdempotencyRecord | Mapping[str, Any],
+    ) -> TeamIdempotencyRecord:
+        return self._store._insert_idempotency_record(self._connection, record)
+
+    def append_dispatch_activity(
+        self,
+        activity: TeamDispatchActivity | Mapping[str, Any],
+    ) -> TeamDispatchActivity:
+        return self._store._insert_dispatch_activity(self._connection, activity)
+
+    def list_dispatch_activity(
+        self,
+        *,
+        dispatch_id: str | None = None,
+        caller_session_id: str | None = None,
+        caller_identity: str | None = None,
+        agent_id: str | None = None,
+        governance_group_id: str | None = None,
+        assignment_id: str | None = None,
+        tool_name: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamDispatchActivity]:
+        return self._store._list_dispatch_activity(
+            self._connection,
+            dispatch_id=dispatch_id,
+            caller_session_id=caller_session_id,
+            caller_identity=caller_identity,
+            agent_id=agent_id,
+            governance_group_id=governance_group_id,
+            assignment_id=assignment_id,
+            tool_name=tool_name,
+            request_id=request_id,
+            limit=limit,
+        )
+
+    def enqueue_outbox_record(
+        self,
+        record: TeamOutboxRecord | Mapping[str, Any],
+    ) -> TeamOutboxRecord:
+        return self._store._insert_outbox_record(self._connection, record)
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -1732,6 +2613,20 @@ def _json_loads(value: str | None) -> Any:
     return json.loads(value)
 
 
+def _json_normalize(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_normalize(item) for key, item in sorted(value.items())}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_normalize(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return _json_normalize(value.model_dump(mode="json"))
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
 def _bool(value: Any) -> bool:
     return bool(int(value or 0))
 
@@ -1740,10 +2635,66 @@ def _int_bool(value: Any) -> int:
     return 1 if bool(value) else 0
 
 
+def _required_text(value: Any, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return text
+
+
 def _optional_text(value: Any) -> str | None:
     if value is None:
         return None
-    return str(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _datetime_text(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _idempotency_key_values(
+    *,
+    tool_name: str,
+    caller_identity: str,
+    scope_kind: str,
+    scope_id: str,
+    request_id: str,
+) -> dict[str, str]:
+    return {
+        "tool_name": _required_text(tool_name, "tool_name"),
+        "caller_identity": _required_text(caller_identity, "caller_identity"),
+        "scope_kind": _required_text(scope_kind, "scope_kind"),
+        "scope_id": _required_text(scope_id, "scope_id"),
+        "request_id": _required_text(request_id, "request_id"),
+    }
+
+
+def _raise_idempotency_conflict(
+    *,
+    tool_name: str,
+    caller_identity: str,
+    scope_kind: str,
+    scope_id: str,
+    request_id: str,
+    existing_digest: str,
+    attempted_digest: str,
+) -> None:
+    raise TeamIdempotencyConflictError(
+        tool_name=tool_name,
+        caller_identity=caller_identity,
+        scope_kind=scope_kind,
+        scope_id=scope_id,
+        request_id=request_id,
+        existing_digest=existing_digest,
+        attempted_digest=attempted_digest,
+    )
+
+
+def _outbox_status_value(status: TeamOutboxStatus | str) -> str:
+    if isinstance(status, TeamOutboxStatus):
+        return status.value
+    return TeamOutboxStatus(_required_text(status, "status")).value
 
 
 def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> None:
@@ -2089,6 +3040,7 @@ _STATE_TABLES = (
     "team_review_requests",
     "team_review_profiles",
     "team_deliverables",
+    "team_cases",
     "team_tasks",
     "team_agent_stand_downs",
     "team_agent_runtimes",
@@ -2310,10 +3262,37 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake
     ON team_agent_runtimes(wake_leased_until, next_wake_at, active_dispatch_id);
 
+CREATE TABLE IF NOT EXISTS team_cases (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    owner_agent_id TEXT,
+    source TEXT,
+    source_ref TEXT,
+    tags_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    task_ids_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_team_cases_team_status
+    ON team_cases(team_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_project_status
+    ON team_cases(project_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_owner_status
+    ON team_cases(owner_agent_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_source ON team_cases(source, source_ref, id);
+
 CREATE TABLE IF NOT EXISTS team_tasks (
     id TEXT PRIMARY KEY,
     owner_agent_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
+    case_id TEXT,
     priority INTEGER NOT NULL,
     state TEXT NOT NULL,
     state_entered_at TEXT NOT NULL,
@@ -2627,11 +3606,93 @@ CREATE INDEX IF NOT EXISTS idx_team_git_promotions_deliverable
     ON team_git_promotions(deliverable_id, promotion_kind, state, id);
 CREATE INDEX IF NOT EXISTS idx_team_git_promotions_release
     ON team_git_promotions(release_package_id, promotion_kind, state, id);
+
+CREATE TABLE IF NOT EXISTS team_dispatch_activity (
+    id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    caller_session_id TEXT NOT NULL,
+    caller_identity TEXT NOT NULL,
+    agent_id TEXT,
+    governance_group_id TEXT,
+    assignment_id TEXT,
+    dispatch_id TEXT,
+    request_id TEXT,
+    correlation_id TEXT,
+    causation_id TEXT,
+    status TEXT NOT NULL,
+    progress_classification TEXT NOT NULL,
+    action_record_id TEXT,
+    audit_record_id TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    correction_context_summary TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_dispatch_activity_dispatch
+    ON team_dispatch_activity(dispatch_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_dispatch_activity_caller
+    ON team_dispatch_activity(caller_identity, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_dispatch_activity_session
+    ON team_dispatch_activity(caller_session_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_dispatch_activity_request
+    ON team_dispatch_activity(tool_name, caller_identity, dispatch_id, request_id);
+
+CREATE TABLE IF NOT EXISTS team_idempotency_records (
+    id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    caller_identity TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    normalized_payload_digest TEXT NOT NULL,
+    response_payload_json TEXT NOT NULL,
+    created_domain_ids_json TEXT NOT NULL,
+    created_event_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(tool_name, caller_identity, scope_kind, scope_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_idempotency_records_scope
+    ON team_idempotency_records(tool_name, caller_identity, scope_kind, scope_id, request_id);
+
+CREATE TABLE IF NOT EXISTS team_outbox (
+    id TEXT PRIMARY KEY,
+    intent_type TEXT NOT NULL,
+    aggregate_type TEXT,
+    aggregate_id TEXT,
+    idempotency_key TEXT,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    available_at TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
+    claimed_by TEXT,
+    claim_token TEXT,
+    claim_expires_at TEXT,
+    completed_at TEXT,
+    last_error_code TEXT,
+    last_error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_outbox_idempotency_key
+    ON team_outbox(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_team_outbox_claimable
+    ON team_outbox(status, available_at, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_outbox_claim_token
+    ON team_outbox(claim_token, status, id);
+CREATE INDEX IF NOT EXISTS idx_team_outbox_aggregate
+    ON team_outbox(aggregate_type, aggregate_id, id);
 """
 
 
 __all__ = [
     "LEGACY_STATE_FILE",
     "STATE_DB_FILE",
+    "TeamIdempotencyConflictError",
     "TeamStateSqliteStore",
+    "normalized_payload_digest",
 ]

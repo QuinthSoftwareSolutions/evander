@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from truman_team_addon.models import RolePermission, TeamState
+from evander_team_addon.models import RolePermission, TeamState
 
 
 def _load_migrate_payload():

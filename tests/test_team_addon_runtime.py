@@ -1,34 +1,40 @@
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
-import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.artifact_spaces import ArtifactSpaceStore
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
-from truman_team_addon.mcp import (
+from evander_team_addon.mcp import (
+    GOVERNANCE_TEAM_MCP_TOOL_NAMES,
+    ORDINARY_TEAM_MCP_TOOL_NAMES,
+    TEAM_CREATE_CASE_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+    TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentAvatar,
     AgentContextClearingPolicy,
     AgentInboxItem,
     AgentProjectAssignment,
     AgentRuntime,
+    AgentStatus,
     AgentTask,
     AgentVoiceProfile,
     Deliverable,
@@ -42,52 +48,56 @@ from truman_team_addon.models import (
     ReleasePackage,
     ReviewRequest,
     Team,
+    TeamCase,
+    TeamCaseStatus,
     TeamConversation,
     TeamConversationMessage,
+    TeamDispatchActivity,
+    TeamDispatchActivityStatus,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamInboxPriority,
+    TeamRecordState,
     TeamRole,
     TeamState,
     TeamTaskState,
 )
-from truman_team_addon.provider_schemas import (
-    TeamAgentActionArtifactQueryDefinition,
-    TeamApplyAgentActionEffectDefinition,
-    TeamApplyEphemeralActionEffectDefinition,
+from evander_team_addon.provider_schemas import (
+    TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
+    TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamSessionRoutingQueryDefinition,
     TeamStateQueryDefinition,
+    TeamUpdateCaseEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
 )
-from truman_team_addon.providers import (
-    ACTION_CONTRACT_HELPER_PATH,
-    ACTION_CONTRACT_SCHEMA_VERSION,
+from evander_team_addon.providers import (
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
     TEAM_AGENT_GUIDANCE_VERSION,
     TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
     TEAM_GOVERNANCE_GUIDANCE_VERSION,
-    TeamAgentActionArtifactQueryProvider,
-    TeamApplyAgentActionEffectProvider,
-    TeamApplyEphemeralActionEffectProvider,
+    TeamCreateCaseEffectProvider,
     TeamCreateOperatorDirectiveEffectProvider,
+    TeamFinalizeAgentDispatchEffectProvider,
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamSessionRoutingQueryProvider,
     TeamStateQueryProvider,
+    TeamUpdateCaseEffectProvider,
     TeamWakeDueAgentsEffectProvider,
     TeamWakeGovernanceManagersEffectProvider,
     _build_prompt,
     _publish_deliverable_artifact_bundle,
 )
-from truman_team_addon.repository import (
-    MISSING_ACTION_RECOVERY_MARKER,
+from evander_team_addon.repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     TeamStateRepository,
 )
-from truman_team_addon.workflow_packs import team_runtime_v1
+from evander_team_addon.workflow_packs import team_runtime_v1
 
 
 def _team_runtime_sections() -> dict[str, list[dict[str, object]]]:
@@ -169,7 +179,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
                 "runtime_dir": str(tmp_path / "runtime"),
                 "workflow_packs": ["team-runtime.v1.json"],
                 "addon_loader": {
-                    "modules": ["truman_team_addon"],
+                    "modules": ["evander_team_addon"],
                     "enabled_entry_points": False,
                     "enabled_addon_ids": ["team-addon"],
                 },
@@ -186,14 +196,18 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert _node_ids(config.triggers) == [
         "team-cron",
         "team-agent-run-completed",
+        "team-chat-message-queued",
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
+        "team-git-release-recovery-requested",
         "system.chat_assistant",
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
+    assert "team-wake-queued-chat-message" in _node_ids(config.effects)
     assert "team-notify-operator" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
+    assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
 
     service = AdminService(tmp_path / "runtime")
     document = service.read_workflow_editor_document()
@@ -204,7 +218,11 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-route-completed-session"]["ignored"] == {
         "type": "boolean"
     }
-    assert document.output_schemas["team-read-persistent-action"]["valid"] == {
+    assert "team-read-persistent-action" not in document.output_schemas
+    assert document.output_schemas["team-finalize-persistent-dispatch"]["finalized"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-finalize-persistent-dispatch"]["progress_made"] == {
         "type": "boolean"
     }
     assert document.output_schemas["team-wake-due-agents"]["prepared_project_repos"] == {
@@ -212,6 +230,12 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     }
     assert document.output_schemas["team-wake-due-agents"][
         "failed_project_repo_preparations"
+    ] == {"type": "array"}
+    assert document.output_schemas["team-wake-due-agents"][
+        "review_artifact_imports"
+    ] == {"type": "array"}
+    assert document.output_schemas["team-wake-due-agents"][
+        "review_artifact_import_errors"
     ] == {"type": "array"}
     assert document.output_schemas["team-wake-due-agents"][
         "cost_guard_blocked_team_ids"
@@ -376,6 +400,15 @@ def _deep_merge(base: dict[str, object], update: object) -> dict[str, object]:
     return merged
 
 
+def _team_context_from_prompt(prompt: str) -> dict[str, object]:
+    return json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split(
+            "\n\nMCP action surface",
+            1,
+        )[0]
+    )
+
+
 def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
     repo.create_team(
@@ -422,6 +455,107 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def _add_luke_reviewer(
+    repo: TeamStateRepository,
+    *,
+    with_review_profile: bool = True,
+) -> None:
+    repo.create_role(
+        role_id="project__reviewer",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+        description="Review deliverables; do not own implementation work.",
+        expected_revision=repo.read().revision,
+    )
+    repo.register_agent(
+        agent_id="luke",
+        team_id="team",
+        project_id="project",
+        role_id="project__reviewer",
+        session_id="session-luke",
+        display_name="Luke",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+    if with_review_profile:
+        repo.create_review_profile(
+            profile_id="project-review-profile",
+            team_id="team",
+            project_id="project",
+            name="Project review",
+            description="Default review checks for project deliverables.",
+            applicable_role_ids=["project__reviewer"],
+            expected_revision=repo.read().revision,
+        )
+
+
+def _seed_manager_review_stall(
+    repo: TeamStateRepository,
+    *,
+    deliverable_id: str = "deliverable-stalled",
+    review_id: str = "review-manager",
+) -> None:
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": deliverable_id,
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": review_id,
+                    "deliverable_id": deliverable_id,
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+
+
+def _lease_manager_fallback(
+    repo: TeamStateRepository,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    _state, leases = repo.lease_due_agents(now=now or datetime(2026, 1, 1, tzinfo=UTC))
+    return next(lease for lease in leases if lease["agent"]["id"] == "manager")
+
+
+def _set_manager_fallback_runtime(repo: TeamStateRepository) -> str:
+    dispatch_id = "team-dispatch-manager-fallback"
+
+    def _mark_manager_fallback(state: TeamState) -> TeamState:
+        state.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            active_dispatch_id=dispatch_id,
+            wake_reason="manager_fallback",
+            wake_leased_until=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_mark_manager_fallback)
+    return dispatch_id
 
 
 def _add_task(
@@ -539,6 +673,40 @@ def test_repository_leases_due_agents_and_applies_action(tmp_path: Path) -> None
     assert next(iter(state.inbox.values())).recipient_agent_id == "lead"
 
 
+def test_manager_fallback_not_leased_while_team_member_is_awake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _mark_backend_awake(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="team-dispatch-backend",
+            wake_reason="scheduled",
+            wake_leased_until=now + timedelta(minutes=15),
+            next_wake_at=now + timedelta(minutes=15),
+        )
+        return state
+
+    repo.update(_mark_backend_awake)
+
+    state, leases = repo.lease_due_agents(now=now)
+
+    assert leases == []
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-dispatch-backend"
+    manager_runtime = state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+    assert manager_runtime is None or manager_runtime.wake_reason is None
+
+    scoped_state, scoped_leases = repo.lease_due_agents(now=now, agent_id="manager")
+
+    assert scoped_leases == []
+    manager_runtime = scoped_state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+    assert manager_runtime is None or manager_runtime.wake_reason is None
+
+
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     # A pending dependency owned by another agent keeps "task" waiting.
@@ -592,11 +760,21 @@ def test_parent_owner_with_open_child_remains_leaseable_while_waiting(
 
 def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+    repo.create_case(
+        case_id="case",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        task_ids=["task"],
+        expected_revision=repo.read().revision,
+    )
 
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
 
     backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
     task_payload = backend_lease["tasks"][0]
+    assert backend_lease["cases"][0]["id"] == "case"
+    assert task_payload["case_id"] == "case"
     assert task_payload["dependency_status"] == "satisfied"
     assert task_payload["child_task_ids"] == []
     assert task_payload["blocked_by_task_ids"] == []
@@ -682,8 +860,8 @@ def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) ->
         created_at=base_time,
         success=False,
         error=(
-            "deliverable deliverable has neither a feature branch nor artifact refs; "
-            "Git release requests require feature-promoted deliverables"
+            "deliverable deliverable has neither a feature branch, review branch, "
+            "agent branch, nor artifact refs"
         ),
         action={"git_release_requests": [{"project_id": "project"}]},
     )
@@ -694,8 +872,70 @@ def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) ->
     assert backend_lease["reason"] == "action_feedback"
     feedback = backend_lease["recent_action_feedback"][0]
     assert feedback["action_fields"] == ["git_release_requests"]
-    assert any("git_feature_updates" in hint for hint in feedback["correction_hints"])
-    assert any("git_refs.feature_branch" in hint for hint in feedback["correction_hints"])
+    assert any("review branch" in hint for hint in feedback["correction_hints"])
+    assert any("git_refs.agent_branch" in hint for hint in feedback["correction_hints"])
+
+
+def test_combined_git_release_feedback_points_to_two_step_sequence(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _add_action_record(
+        repo,
+        action_id="action-combined",
+        dispatch_id="dispatch-combined",
+        created_at=base_time,
+        success=False,
+        error=(
+            "cannot combine git_feature_updates and git_release_requests in one "
+            "Team action"
+        ),
+        action={
+            "git_feature_updates": [{"task_id": "task"}],
+            "git_release_requests": [{"project_id": "project"}],
+        },
+    )
+
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=1))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    feedback = backend_lease["recent_action_feedback"][0]
+    assert feedback["action_fields"] == ["git_feature_updates", "git_release_requests"]
+    assert any("git_release_requests alone" in hint for hint in feedback["correction_hints"])
+
+
+def test_duplicate_release_package_feedback_points_to_existing_package(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _add_action_record(
+        repo,
+        action_id="action-duplicate-release",
+        dispatch_id="dispatch-duplicate-release",
+        created_at=base_time,
+        success=False,
+        error=(
+            "release package rel-1 already exists; state blocked; "
+            "release_branch team/team/releases/rel-1"
+        ),
+        action={"git_release_requests": [{"id": "rel-1", "project_id": "project"}]},
+    )
+
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=1))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    feedback = backend_lease["recent_action_feedback"][0]
+    assert feedback["action_fields"] == ["git_release_requests"]
+    assert any(
+        "existing or blocked package" in hint
+        and "release_branch/error" in hint
+        and "next_action_hint" in hint
+        and "failed release promotion" in hint
+        and "do not reuse the same id" in hint
+        for hint in feedback["correction_hints"]
+    )
 
 
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
@@ -755,14 +995,9 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
 
     assert result["success"] is True
     assert result["leased_count"] == 1
-    assert len(file_copier.calls) == 2
+    assert len(file_copier.calls) == 1
     copied_files = file_copier.calls[0]["files"]
-    assert [file["destination_path"] for file in copied_files] == [
-        "/artifacts/team-action.schema.json",
-        "/artifacts/team-action.example.json",
-        ACTION_CONTRACT_HELPER_PATH,
-    ]
-    guidance_files = file_copier.calls[1]["files"]
+    guidance_files = copied_files
     assert guidance_files == [
         {
             "source_path": None,
@@ -781,120 +1016,46 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "non-lead roles" not in guidance
     assert 'Persistent agent id: "backend"' in guidance
     assert "Current display name: not configured; use your agent id" in guidance
+    assert "Use the Team MCP tools granted to your session" in guidance
+    assert TEAM_CREATE_CASE_TOOL in guidance
+    assert "action schema" not in guidance
+    assert "helper scripts" in guidance
     assert "task creation mandate in your wake prompt" in guidance
-    assert "Action surface guide:" in guidance
-    assert "Do not accept or reject someone else's task with task_updates" in guidance
-    assert "Use review_decisions only for review requests assigned to you" in guidance
-    assert "Raw agent or review branches are not release sources" in guidance
+    assert "Core MCP surface:" in guidance
+    assert "Do not accept or reject someone else's task" in guidance
+    assert "Use team_decide_review only for review requests assigned to you" in guidance
+    assert "idle profile-eligible reviewer" in guidance
+    assert "override_routing_gap_reason" in guidance
+    assert "Release requests stand alone" in guidance
+    assert "git_refs.review_branch or git_refs.agent_branch" in guidance
+    assert "failed release promotion" in guidance
+    assert "allowed agents/... ref" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
     assert "response_requested is false" in guidance
     assert "no-op replies" in guidance
     assert "priority low, normal, or high" in guidance
     assert "Do not start tasks" in guidance
-    assert "creating child tasks via task_creations with parent_task_id" in guidance
-    schema = json.loads(str(copied_files[0]["content"]))
-    assert schema["properties"]["task_updates"]["items"]["required"] == ["task_id"]
-    assert "task_id" in schema["properties"]["task_creations"]["items"]["properties"]
-    artifact_paths_schema = schema["properties"]["deliverables"]["items"]["properties"][
-        "artifact_paths"
-    ]
-    assert artifact_paths_schema["minItems"] == 1
-    assert "default" not in artifact_paths_schema
-    assert (
-        "supersedes_deliverable_id"
-        in schema["properties"]["deliverables"]["items"]["properties"]
-    )
-    assert "instructions" in schema["properties"]["review_requests"]["items"]["properties"]
-    assert schema["properties"]["stand_downs"]["items"]["required"] == [
-        "agent_id",
-        "reason",
-    ]
-    assert schema["properties"]["stand_down_revocations"]["items"]["required"] == [
-        "agent_id"
-    ]
-    assert schema["properties"]["review_decisions"]["items"]["properties"]["state"]["enum"] == [
-        "accepted",
-        "rejected",
-        "blocked",
-    ]
-    review_promotion_shapes = schema["properties"]["git_review_promotions"]["items"]["oneOf"]
-    assert review_promotion_shapes[0]["required"] == ["assignment_id"]
-    assert review_promotion_shapes[1]["required"] == ["deliverable_id"]
-    assert "commit_sha" in review_promotion_shapes[1]["properties"]
-    assert "source_branch" in review_promotion_shapes[1]["properties"]
-    release_request_property = schema["properties"]["git_release_requests"]
-    assert "git_refs.feature_branch" in release_request_property["description"]
-    release_request_schema = schema["properties"]["git_release_requests"]["items"]
-    assert release_request_schema["additionalProperties"] is False
-    assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
-    assert set(release_request_schema["properties"]) == {
-        "id",
-        "project_id",
-        "deliverable_ids",
-        "release_branch",
-        "canonical_branch",
-        "summary",
+    assert "team_create_case" in guidance
+    assert "team_create_tasks" in guidance
+    assert "team_submit_deliverable" in guidance
+    assert "team_submit_deliverable_for_review" in guidance
+    assert "team_record_note" in guidance
+    assert "not a completion ritual" in guidance
+    assert "team-action.json" not in guidance
+    assert "team-finish" not in guidance
+    assert "schema_version" not in guidance
+    assert result["dispatches"][0]["team_mcp_tools"] == {
+        "session_id": "session-backend",
+        "requested_tools": list(ORDINARY_TEAM_MCP_TOOL_NAMES),
+        "already_allowed_tools": [],
+        "granted_tools": list(ORDINARY_TEAM_MCP_TOOL_NAMES),
+        "removed_tools": [],
+        "error": None,
     }
-    assert (
-        schema["properties"]["status_requests"]["items"]["properties"][
-            "response_requested"
-        ]["type"]
-        == "boolean"
+    assert session_store.sessions["session-backend"].allowed_tools == list(
+        ORDINARY_TEAM_MCP_TOOL_NAMES
     )
-    assert schema["properties"]["status_requests"]["items"]["properties"]["priority"][
-        "enum"
-    ] == ["low", "normal", "high"]
-    assert (
-        schema["properties"]["questions"]["items"]["properties"]["response_requested"][
-            "type"
-        ]
-        == "boolean"
-    )
-    assert schema["properties"]["questions"]["items"]["properties"]["priority"]["enum"] == [
-        "low",
-        "normal",
-        "high",
-    ]
-    assert (
-        schema["properties"]["status_reports"]["items"]["properties"][
-            "response_requested"
-        ]["type"]
-        == "boolean"
-    )
-    assert schema["properties"]["status_reports"]["items"]["properties"]["priority"][
-        "enum"
-    ] == ["low", "normal", "high"]
-    assert schema["properties"]["chat_replies"]["items"]["required"] == [
-        "conversation_id",
-        "message_id",
-        "body",
-    ]
-    assert schema["properties"]["operator_chat_messages"]["items"]["required"] == [
-        "recipient_operator_user_id",
-        "body",
-    ]
-    example = json.loads(str(copied_files[1]["content"]))
-    assert example["schema_version"] == ACTION_CONTRACT_SCHEMA_VERSION
-    assert example["chat_replies"][0]["body"]
-    assert example["operator_chat_messages"][0]["recipient_operator_user_id"]
-    assert example["status_requests"][0]["response_requested"] is True
-    assert example["status_requests"][0]["priority"] == "normal"
-    assert example["questions"][0]["response_requested"] is True
-    assert example["questions"][0]["priority"] == "normal"
-    assert example["status_reports"][0]["response_requested"] is False
-    assert example["status_reports"][0]["priority"] == "low"
-    assert example["stand_downs"] == []
-    assert example["stand_down_revocations"] == []
-    assert example["review_requests"][0]["instructions"]
-    assert example["review_decisions"][0]["state"] == "accepted"
-    assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
-    assert "commit_sha" in example["git_review_promotions"][0]
-    helper = str(copied_files[2]["content"])
-    assert f'"agent_id": "backend"' in helper
-    assert str(result["dispatches"][0]["dispatch_id"]) in helper
-    assert str(copied_files[2]["mode"]) == "0755"
-    assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
     usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
@@ -910,59 +1071,40 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert '"avatar"' not in prompt
     assert "private runtime voice direction" not in prompt
     assert '"voice_profile"' not in prompt
-    assert "team-action.json" in prompt
-    assert "team-action.schema.json" in prompt
-    assert "team-action.example.json" in prompt
-    assert ACTION_CONTRACT_HELPER_PATH in prompt
-    assert "pipe a JSON object to it" in prompt
-    assert '"schema_version":' in prompt
-    assert "Deliverable mechanics for this dispatch" in prompt
-    assert "Valid owned task_id values for deliverables are: task" in prompt
+    for forbidden in (
+        "team-action.json",
+        "team-action.schema.json",
+        "team-action.example.json",
+        "team-finish",
+        "schema_version",
+        '"agent_id"',
+        '"dispatch_id"',
+    ):
+        assert forbidden not in prompt
+    assert "MCP action surface" in prompt
+    assert "Deliverable mechanics for this wake" in prompt
+    assert "Git release sequencing" in prompt
+    assert "Do not combine team_update_feature_branch" in prompt
+    assert "Valid owned task_id values for deliverable tools are: task" in prompt
     assert "/artifacts/team-deliverables/task/report.md" in prompt
     assert "team-deliverables/task/report.md" in prompt
     assert TEAM_AGENT_GUIDANCE_PATH in prompt
     assert TEAM_AGENT_GUIDANCE_SECTION_ID in prompt
-    assert "Task creation mandate for this dispatch" in prompt
+    assert "Task creation mandate for this wake" in prompt
     assert "do not have create_root_task" in prompt
     assert "You may NOT create top-level tasks" in prompt
-    assert "Every task_creations item you submit must set parent_task_id" in prompt
-    assert "Your previous Team dispatch had validation errors" not in prompt
-    assert "Do not accept or reject someone else's task with task_updates" not in prompt
-    assert "Action surface guide:" not in prompt
+    assert "Every team_create_task or team_create_tasks call must set parent_task_id" in prompt
+    assert "A previous Team operation had validation errors" not in prompt
     for field_name in (
-        "task_creations",
-        "status_requests",
-        "operator_chat_messages",
-        "operator_escalations",
-        "stand_downs",
-        "stand_down_revocations",
-        "review_requests",
-        "review_decisions",
-        "goal_updates",
-        "git_review_promotions",
-        "git_feature_updates",
-        "git_release_requests",
-        "ephemeral_requests",
-        "ephemeral_acceptances",
         "dependency_status",
         "child_task_ids",
         "subtask_counts",
     ):
         assert field_name in prompt
-    assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
-        "seeded": True,
-        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-        "schema_path": "/artifacts/team-action.schema.json",
-        "example_path": "/artifacts/team-action.example.json",
-        "action_artifact_path": "/artifacts/team-action.json",
-        "helper_path": ACTION_CONTRACT_HELPER_PATH,
-        "copied_paths": [
-            "/artifacts/team-action.schema.json",
-            "/artifacts/team-action.example.json",
-            ACTION_CONTRACT_HELPER_PATH,
-        ],
-    }
-    assert session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"] == {
+    assert "Release requests create new release packages only" in prompt
+    assert "next_action_hint" in prompt
+    assert "team_recover_release" in prompt
+    assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"] == {
         "seeded": True,
         "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
         "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
@@ -973,7 +1115,673 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "inactive_reason": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
-    assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_preserves_active_governance_tools(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="backend",
+        member_team_ids=["team"],
+        goals=[{"id": "goal", "description": "Watch Team health"}],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review Team health",
+        summary="Check the implementation team.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    _state, governance_leases = repo.lease_due_governance_managers(limit=1)
+    assert len(governance_leases) == 1
+
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].allowed_tools = list(
+        GOVERNANCE_TEAM_MCP_TOOL_NAMES
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert result["dispatches"][0]["agent_id"] == "backend"
+    team_tools = result["dispatches"][0]["team_mcp_tools"]
+    assert team_tools["requested_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert team_tools["granted_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert team_tools["removed_tools"] == []
+    assert session_store.sessions["session-backend"].allowed_tools == [
+        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *GOVERNANCE_TEAM_MCP_TOOL_NAMES,
+    ]
+
+
+def test_wake_due_agents_provider_imports_review_artifact_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_space_path = "/teams/team/projects/project/deliverables/deliverable-1"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_key = "team/team/project/deliverable-1/dispatch-backend/bundle"
+    artifact_record = PublishedArtifactStore(tmp_path).publish_single_file(
+        key=artifact_key,
+        session_id="session-backend",
+        filename="report.md",
+        artifact_path="report.md",
+        content=b"review me\n",
+    )
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        metadata={
+            "team_id": "team",
+            "project_id": "project",
+            "deliverable_id": "deliverable-1",
+            "source": "team_addon",
+        },
+        subject="team-agent:backend",
+    )
+    artifact_state = artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject="team-agent:backend",
+    )
+    artifact_version = artifact_state.latest_versions_for_space(
+        artifact_space_path,
+        artifact_id="bundle",
+    )[0]
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": [artifact_ref],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-1",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
+    expected_destination = (
+        "team-review-inputs/review-luke/deliverable-1/"
+        f"bundle/ref-{ref_hash}-{artifact_version.id}"
+    )
+    exec_commands: list[str] = []
+
+    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del resolved_config
+        effect = self.effect_definition
+        exec_commands.append(str(effect.command))  # type: ignore[attr-defined]
+        return {
+            "success": True,
+            "session_id": "session-luke",
+            "vm_name": "vm-luke",
+            "execution_backend": "libvirt_vm",
+            "stdout": json.dumps(
+                {
+                    "success": True,
+                    "artifacts_root": "/artifacts",
+                    "destination_path": expected_destination,
+                    "imported_file_count": 1,
+                    "imported_paths": [f"{expected_destination}/report.md"],
+                    "source_byte_count": len("review me\n"),
+                    "overwrite": True,
+                }
+            ),
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert len(result["review_artifact_imports"]) == 1
+    review_import = result["review_artifact_imports"][0]
+    assert review_import == result["dispatches"][0]["review_artifact_imports"][0]
+    assert review_import["review_request_id"] == "review-luke"
+    assert review_import["deliverable_id"] == "deliverable-1"
+    assert review_import["artifact_ref"] == artifact_ref
+    assert review_import["artifact_space_path"] == artifact_space_path
+    assert review_import["artifact_key"] == artifact_key
+    assert review_import["destination_path"] == expected_destination
+    assert review_import["artifact_path"] == f"/artifacts/{expected_destination}"
+    assert review_import["imported_paths"] == [f"{expected_destination}/report.md"]
+    assert review_import["imported_file_count"] == 1
+    assert result["review_artifact_import_errors"] == []
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Review artifact access for this wake" in prompt
+    assert "instead of trying to open artifact-space refs directly" in prompt
+    prompt_context = _team_context_from_prompt(prompt)
+    assert prompt_context["review_artifact_imports"] == result[
+        "review_artifact_imports"
+    ]
+    assert "review_artifact_import_errors" not in prompt_context
+    assert expected_destination in exec_commands[0]
+    artifact_copy = file_copier.calls[-1]["files"][0]
+    assert artifact_copy["source_path"] == str(
+        PublishedArtifactStore(tmp_path).get(artifact_key).blob_path
+    )
+    assert str(artifact_copy["destination_path"]).endswith(
+        f"{artifact_record.storage_id}.tar.gz"
+    )
+
+
+def test_wake_due_agents_provider_respects_review_artifact_space_read_grants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_space_path = "/teams/team/projects/project/deliverables/restricted"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_key = "team/team/project/restricted/dispatch-backend/bundle"
+    PublishedArtifactStore(tmp_path).publish_single_file(
+        key=artifact_key,
+        session_id="session-backend",
+        filename="secret.md",
+        artifact_path="secret.md",
+        content=b"secret\n",
+    )
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        grants={
+            "read_subjects": ["team-agent:lead"],
+            "write_subjects": ["team-agent:backend"],
+            "manage_subjects": ["team-agent:lead"],
+        },
+        subject="team-agent:lead",
+    )
+    artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject="team-agent:backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": [artifact_ref],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-1",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("unreadable artifact-space version should not import")
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["review_artifact_imports"] == []
+    assert len(result["review_artifact_import_errors"]) == 1
+    import_error = result["review_artifact_import_errors"][0]
+    assert import_error["review_request_id"] == "review-luke"
+    assert import_error["artifact_ref"] == artifact_ref
+    assert import_error["artifact_space_path"] == artifact_space_path
+    assert "team-agent:luke cannot read artifact space" in import_error["error"]
+    assert "artifact_key" not in import_error
+    prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
+    assert prompt_context["review_artifact_import_errors"] == result[
+        "review_artifact_import_errors"
+    ]
+
+
+def test_wake_due_agents_provider_isolates_multiple_review_artifact_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    refs: list[str] = []
+    keys: list[str] = []
+    for index in (1, 2):
+        artifact_space_path = (
+            f"/teams/team/projects/project/deliverables/deliverable-{index}"
+        )
+        artifact_key = f"team/team/project/deliverable-{index}/dispatch-backend/bundle"
+        PublishedArtifactStore(tmp_path).publish_single_file(
+            key=artifact_key,
+            session_id="session-backend",
+            filename=f"report-{index}.md",
+            artifact_path="report.md",
+            content=f"review {index}\n".encode("utf-8"),
+        )
+        artifact_store.ensure_space(
+            path=artifact_space_path,
+            metadata={
+                "team_id": "team",
+                "project_id": "project",
+                "deliverable_id": f"deliverable-{index}",
+                "source": "team_addon",
+            },
+            subject="team-agent:backend",
+        )
+        artifact_store.publish_version(
+            space_path=artifact_space_path,
+            artifact_id="bundle",
+            artifact_key=artifact_key,
+            created_by_subject="team-agent:backend",
+        )
+        refs.append(f"artifact-space:{artifact_space_path}")
+        keys.append(artifact_key)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": refs,
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-1",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        return {
+            "success": True,
+            "session_id": "session-luke",
+            "vm_name": "vm-luke",
+            "execution_backend": "libvirt_vm",
+            "stdout": json.dumps(
+                {
+                    "success": True,
+                    "artifacts_root": "/artifacts",
+                    "destination_path": "ignored",
+                    "imported_file_count": 1,
+                    "imported_paths": ["ignored/report.md"],
+                    "source_byte_count": len("review 1\n"),
+                    "overwrite": True,
+                }
+            ),
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["review_artifact_import_errors"] == []
+    assert len(result["review_artifact_imports"]) == 2
+    destinations = [
+        record["destination_path"] for record in result["review_artifact_imports"]
+    ]
+    assert len(set(destinations)) == 2
+    assert all(
+        destination.startswith("team-review-inputs/review-luke/deliverable-1/bundle/ref-")
+        for destination in destinations
+    )
+    assert {record["artifact_key"] for record in result["review_artifact_imports"]} == set(
+        keys
+    )
+
+
+def test_wake_due_agents_provider_reports_review_artifact_import_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_space_path = "/teams/team/projects/project/deliverables/missing"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": [artifact_ref],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-1",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("missing artifact-space version should not import")
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert result["review_artifact_imports"] == []
+    assert len(result["review_artifact_import_errors"]) == 1
+    import_error = result["review_artifact_import_errors"][0]
+    assert import_error["review_request_id"] == "review-luke"
+    assert import_error["deliverable_id"] == "deliverable-1"
+    assert import_error["artifact_ref"] == artifact_ref
+    assert import_error["artifact_space_path"] == artifact_space_path
+    assert "artifact space does not exist" in import_error["error"]
+    assert "session_id" not in import_error
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Review artifact access for this wake" in prompt
+    assert "treat the review artifact as unavailable" in prompt
+    prompt_context = _team_context_from_prompt(prompt)
+    assert prompt_context["review_artifact_import_errors"] == result[
+        "review_artifact_import_errors"
+    ]
+    assert "review_artifact_imports" not in prompt_context
+
+
+def test_wake_due_agents_provider_does_not_import_review_artifacts_from_status_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    artifact_space_path = "/teams/team/projects/project/deliverables/deliverable-1"
+    artifact_ref = f"artifact-space:{artifact_space_path}"
+    artifact_key = "team/team/project/deliverable-1/dispatch-backend/bundle"
+    PublishedArtifactStore(tmp_path).publish_single_file(
+        key=artifact_key,
+        session_id="session-backend",
+        filename="report.md",
+        artifact_path="report.md",
+        content=b"review me\n",
+    )
+    artifact_store = ArtifactSpaceStore(tmp_path)
+    artifact_store.ensure_space(
+        path=artifact_space_path,
+        metadata={
+            "team_id": "team",
+            "project_id": "project",
+            "deliverable_id": "deliverable-1",
+            "source": "team_addon",
+        },
+        subject="team-agent:backend",
+    )
+    artifact_store.publish_version(
+        space_path=artifact_space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject="team-agent:backend",
+    )
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-1",
+                    "task_id": "task",
+                    "summary": "Backend work is ready.",
+                    "artifact_refs": [artifact_ref],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "status_requests": [
+                {
+                    "recipient_agent_id": "luke",
+                    "question": (
+                        "Please inspect /artifacts/team-review-inputs/review-luke/"
+                        f"deliverable-1/bundle/ref-example/report.md for {artifact_ref}."
+                    ),
+                    "response_requested": True,
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del self, resolved_config
+        raise AssertionError("status requests must not import review artifacts")
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    session_store.sessions["session-luke"] = SimpleNamespace(
+        session_id="session-luke",
+        vm_id="vm-luke",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="luke",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert result["review_artifact_imports"] == []
+    assert result["review_artifact_import_errors"] == []
+    prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
+    assert "review_artifact_imports" not in prompt_context
+    assert "review_artifact_import_errors" not in prompt_context
+    guidance_files = [
+        file
+        for call in file_copier.calls
+        for file in call.get("files") or []
+        if file.get("destination_path") == "/home/agent/AGENTS.md"
+    ]
+    assert guidance_files
+    assert "Review artifact handoff is through team_request_review" in str(
+        guidance_files[-1]["content"]
+    )
+    assert "do not pass local artifact paths through communication tools" in str(
+        guidance_files[-1]["content"]
+    )
 
 
 def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
@@ -1045,16 +1853,94 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     chat_dispatch = result["chat_dispatches"][0]
     assert chat_dispatch["dispatch_id"] == dispatch_id
     assert chat_dispatch["message_id"] == message.id
+    assert chat_dispatch["team_chat_mcp_tools"] == {
+        "session_id": "session-backend",
+        "requested_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_MCP_TOOL_NAMES],
+        "already_allowed_tools": [],
+        "granted_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_MCP_TOOL_NAMES],
+        "removed_tools": [],
+        "error": None,
+    }
+    assert session_store.sessions["session-backend"].allowed_tools == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+    ]
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == dispatch_id
     prompt = str(resumer.calls[0]["prompt"])
     assert "Team Add-on Chat tab" in prompt
     assert f"Human operator message ID: {message.id}" in prompt
+    assert f"Reply with the {TEAM_REPLY_TO_CHAT_TOOL} MCP tool" in prompt
+    assert "ordinary Team MCP tools granted to this chat wake" in prompt
+    assert "team-action.json" not in prompt
+    assert "schema_version" not in prompt
+    assert "dispatch_id" not in prompt
     assert "Please answer this after your current wake finishes." in prompt
     reread = TeamStateRepository(tmp_path).read()
     assert reread.conversation_messages[message.id].status == "running"
     assert reread.agent_runtimes["backend"].active_dispatch_id == dispatch_id
     assert reread.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
+def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disabled(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please just reply.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+
+    def _disable_mutation(state: TeamState) -> TeamState:
+        state.conversation_messages[message.id].metadata["allow_team_mutations"] = False
+        return state
+
+    repo.update(_disable_mutation)
+    dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(message_id=message.id, dispatch_id=dispatch_id)
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].allowed_tools = list(
+        ORDINARY_TEAM_MCP_TOOL_NAMES
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    chat_tools = result["chat_dispatches"][0]["team_chat_mcp_tools"]
+    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["granted_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["removed_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert session_store.sessions["session-backend"].allowed_tools == [
+        TEAM_REPLY_TO_CHAT_TOOL
+    ]
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "reply-only" in prompt
+    assert "ordinary Team MCP tools granted to this chat wake" not in prompt
 
 
 def test_wake_due_agents_provider_limit_zero_dispatches_no_queued_chat(
@@ -1190,13 +2076,15 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     inactive_guidance = str(guidance_files[0]["content"])
     assert "not currently assigned to a Team" in inactive_guidance
     assert "Normal Team-agent task" in inactive_guidance
-    assert "/artifacts/team-action.json instructions do not apply" in inactive_guidance
+    assert "Inactive or teamless sessions must not use ordinary Team action tools" in inactive_guidance
+    assert "team-action.json" not in inactive_guidance
     guidance = str(guidance_files[1]["content"])
     assert 'Persistent agent id: "portfolio-manager"' in guidance
     assert "has no team_id" in guidance
     assert "Member teams remain separate execution units" in guidance
     assert "Do not take ownership of member-team project tasks" in guidance
-    assert "/artifacts/team-action.json" in guidance
+    assert "Governance wakes grant governance MCP tools only" in guidance
+    assert "team-action.json" not in guidance
     assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in guidance
     assert len(resumer.calls) == 1
     assert resumer.calls[0]["target"] == "session-portfolio-manager"
@@ -1205,6 +2093,8 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         resumer.calls[0]["prompt"]
     )
     assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in str(resumer.calls[0]["prompt"])
+    assert "team_update_task" not in str(resumer.calls[0]["prompt"])
+    assert "team_submit_deliverable" not in str(resumer.calls[0]["prompt"])
     assert result["dispatches"][0]["governance_agent_guidance"] == {
         "seeded": True,
         "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,
@@ -1217,21 +2107,15 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     }
     assert result["dispatches"][0]["governance_mcp_tools"] == {
         "session_id": "session-portfolio-manager",
-        "requested_tools": [
-            TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
-            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
-        ],
+        "requested_tools": list(GOVERNANCE_TEAM_MCP_TOOL_NAMES),
         "already_allowed_tools": [],
-        "granted_tools": [
-            TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
-            TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
-        ],
+        "granted_tools": list(GOVERNANCE_TEAM_MCP_TOOL_NAMES),
+        "removed_tools": [],
         "error": None,
     }
-    assert session_store.sessions["session-portfolio-manager"].allowed_tools == [
-        TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
-        TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
-    ]
+    assert session_store.sessions["session-portfolio-manager"].allowed_tools == list(
+        GOVERNANCE_TEAM_MCP_TOOL_NAMES
+    )
     usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
         result["dispatches"][0]["dispatch_id"]
     )
@@ -1271,10 +2155,10 @@ def test_build_prompt_allows_root_tasks_for_create_root_task_permission(
     lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
     lease["agent"] = {**lease["agent"], "effective_role_permissions": ["create_root_task"]}
 
-    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
+    prompt = _build_prompt(lease)
 
     assert "effective permissions include create_root_task" in prompt
-    assert "You may create top-level tasks by omitting parent_task_id" in prompt
+    assert "You may create top-level tasks with team_create_task or team_create_tasks" in prompt
     assert "You may NOT create top-level tasks" not in prompt
 
 
@@ -1302,10 +2186,10 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
 
     _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
     lease = next(lease for lease in leases if lease["agent"]["id"] == "lead")
-    prompt = _build_prompt(lease, action_artifact_path="team-action.json")
-    context = json.loads(prompt.split("Team context JSON:\n", 1)[1].split("\n\nTeam action contract", 1)[0])
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
 
-    assert context["subordinate_agent_ids"] == ["backend", "reviewer"]
+    assert context["subordinate_ids"] == ["backend", "reviewer"]
     subordinates = {item["id"]: item for item in context["subordinates"]}
     assert subordinates["backend"]["role_name"] == "Backend"
     assert subordinates["backend"]["project_ids"] == ["project"]
@@ -1316,7 +2200,689 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
         == "Review code for correctness; do not own implementation work."
     )
     assert "Role-aware delegation" in prompt
-    assert "Reviewer roles should generally receive review_requests" in prompt
+    assert "Reviewer roles should generally receive team_request_review calls" in prompt
+
+
+def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _add_blocked_release(state: TeamState) -> TeamState:
+        state.release_packages["rel-1"] = ReleasePackage(
+            id="rel-1",
+            project_id="project",
+            deliverable_ids=[],
+            release_branch="team/team/releases/rel-1",
+            git_promotion_record_ids=["promotion-release"],
+            state=TeamRecordState.BLOCKED,
+            error="merge conflict while merging feature into team/team/releases/rel-1",
+        )
+        state.git_promotions["promotion-release"] = GitPromotionRecord(
+            id="promotion-release",
+            project_id="project",
+            release_package_id="rel-1",
+            actor_agent_id="lead",
+            source_branch="team/team/features/task",
+            target_branch="team/team/releases/rel-1",
+            promotion_kind="release",
+            state="failed",
+            error="merge conflict",
+        )
+        return state
+
+    repo.update(_add_blocked_release)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+
+    assert set(context["release_packages"]) == {"rel-1"}
+    assert context["release_packages"]["rel-1"]["next_action"] == (
+        "resolve_blocked_release"
+    )
+    assert "do not create another git_release_requests" in context[
+        "release_packages"
+    ]["rel-1"]["next_action_hint"]
+    assert "git_release_recoveries" in context["release_packages"]["rel-1"][
+        "next_action_hint"
+    ]
+    assert any(
+        row["kind"] == "blocked_release_package"
+        and row["release_package_id"] == "rel-1"
+        and "promotion target branch team/team/releases/rel-1" in row["next_action_hint"]
+        for row in context["runtime_attention"]
+    )
+
+
+def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                    "artifact_refs": [
+                        "artifact-space:/teams/team/projects/project/backend.tar.gz"
+                    ],
+                    "git_refs": {
+                        "agent_branch": "agents/session-backend/review",
+                        "commit_sha": "abc123",
+                    },
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "manager",
+                    "instructions": "Review the stalled backend slice.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.review_requests["review-manager"].state.value == "pending"
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+
+    assert lease["reason"] == "manager_fallback"
+    assert lease["tasks"] == []
+    assert lease["inbox"] == []
+
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "Manager fallback wake" in prompt
+    assert (
+        "Do not return a no-op merely because your own tasks and inbox arrays are empty"
+        in prompt
+    )
+    assert "reviewer_without_assigned_review_work gaps" in prompt
+    assert "never reuse the existing review request id" in prompt
+    assert "override_routing_gap_reason" in prompt
+    assert "manager_fallback_context" not in context
+    assert "runtime_operations" not in fallback_summary
+    assert "action_records" not in fallback_summary
+    assert fallback_summary["summary_counts"]["open_task_count"] == 1
+    assert fallback_summary["summary_counts"]["pending_review_request_count"] == 1
+    work = {item["id"]: item for item in fallback_summary["open_work"]}
+    assert work["task"]["state"] == "waiting_for_review"
+    assert work["task"]["deliverable_ids"] == ["deliverable-stalled"]
+    deliverables = {
+        item["id"]: item for item in fallback_summary["deliverables"]
+    }
+    assert deliverables["deliverable-stalled"]["task_id"] == "task"
+    assert deliverables["deliverable-stalled"]["artifact_refs"] == [
+        "artifact-space:/teams/team/projects/project/backend.tar.gz"
+    ]
+    assert deliverables["deliverable-stalled"]["git_refs"] == {
+        "agent_branch": "agents/session-backend/review",
+        "commit_sha": "abc123",
+    }
+    reviews = {item["id"]: item for item in fallback_summary["review_requests"]}
+    assert reviews["review-manager"]["reviewer_id"] == "manager"
+    assert reviews["review-manager"]["state"] == "pending"
+    agents = {item["id"]: item for item in fallback_summary["agents"]}
+    assert agents["luke"]["display_name"] == "Luke"
+    assert agents["luke"]["active_task_count"] == 0
+    assert agents["luke"]["pending_review_request_count"] == 0
+    assert agents["luke"]["pending_inbox_count"] == 0
+    assert fallback_summary["pending_inbox"] == []
+    assert any(
+        item["kind"] == "reviewer_without_assigned_review_work"
+        and item["agent"] == "luke"
+        and item["deliverable_ids"] == ["deliverable-stalled"]
+        and item["existing_reviewer_ids"] == ["manager"]
+        for item in fallback_summary["routing_gaps"]
+    )
+    assert len(prompt.encode("utf-8")) < 32_000
+
+
+def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-feature",
+                    "task_id": "task",
+                    "summary": "Feature branch is ready for release review.",
+                    "git_refs": {
+                        "feature_branch": "team/team/features/task-backend",
+                        "commit_sha": "feedface",
+                    },
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _make_task_terminal_without_review(state: TeamState) -> TeamState:
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        state.deliverables["deliverable-feature"].git_refs.feature_branch = (
+            "team/team/features/task-backend"
+        )
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_make_task_terminal_without_review)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    lease = leases[0]
+    assert lease["reason"] == "manager_fallback"
+
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+    fallback_summary = context["manager_fallback_summary"]
+    assert fallback_summary["summary_counts"]["open_task_count"] == 1
+    assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
+    work = {item["id"]: item for item in fallback_summary["open_work"]}
+    assert work["task"]["state"] == "accepted"
+    deliverables = {
+        item["id"]: item for item in fallback_summary["deliverables"]
+    }
+    assert deliverables["deliverable-feature"]["state"] == "pending"
+    assert deliverables["deliverable-feature"]["git_refs"] == {
+        "feature_branch": "team/team/features/task-backend",
+        "commit_sha": "feedface",
+    }
+    assert any(
+        item["kind"] == "reviewer_without_assigned_review_work"
+        and item["agent"] == "luke"
+        and item["deliverable_ids"] == ["deliverable-feature"]
+        for item in fallback_summary["routing_gaps"]
+    )
+    assert "deliverable-feature" in prompt
+
+
+@pytest.mark.parametrize("blocker", ["paused", "stand_down"])
+def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
+    tmp_path: Path,
+    blocker: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+    if blocker == "paused":
+        repo.update_agent(
+            agent_id="luke",
+            status=AgentStatus.PAUSED,
+            expected_revision=repo.read().revision,
+        )
+    else:
+        repo.stand_down_agent(
+            agent_id="luke",
+            reason="Reviewer temporarily unavailable.",
+            set_by="operator:test",
+            expected_revision=repo.read().revision,
+        )
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "luke" not in fallback_summary["reviewer_candidate_ids"]
+    assert not any(
+        item["agent"] == "luke"
+        for item in fallback_summary["routing_gaps"]
+    )
+
+
+def test_manager_fallback_not_leased_while_reviewer_is_awake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    def _lease_luke(state: TeamState) -> TeamState:
+        state.agent_runtimes["luke"] = AgentRuntime(
+            agent_id="luke",
+            active_dispatch_id="team-dispatch-luke",
+            wake_leased_until=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_lease_luke)
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert not any(lease["agent"]["id"] == "manager" for lease in leases)
+
+
+def test_manager_fallback_requires_review_profile_for_reviewer_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo, with_review_profile=False)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "luke" not in fallback_summary["reviewer_candidate_ids"]
+    assert not any(
+        item["agent"] == "luke"
+        for item in fallback_summary["routing_gaps"]
+    )
+
+
+def test_manager_fallback_blank_review_profile_filter_allows_reviewer_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo, with_review_profile=False)
+    repo.create_review_profile(
+        profile_id="project-review-profile",
+        team_id="team",
+        project_id="project",
+        name="Project review",
+        description="Default review checks for project deliverables.",
+        applicable_role_ids=[],
+        expected_revision=repo.read().revision,
+    )
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert "luke" in fallback_summary["reviewer_candidate_ids"]
+    assert any(
+        item["kind"] == "reviewer_without_assigned_review_work"
+        and item["agent"] == "luke"
+        and item["deliverable_ids"] == ["deliverable-stalled"]
+        for item in fallback_summary["routing_gaps"]
+    )
+
+
+def test_manager_fallback_blocks_self_review_when_idle_profile_reviewer_exists(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
+
+
+def test_manager_fallback_blocks_self_review_for_terminal_task_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    def _mark_task_terminal(state: TeamState) -> TeamState:
+        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        return state
+
+    repo.update(_mark_task_terminal)
+    dispatch_id = _set_manager_fallback_runtime(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": dispatch_id,
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "idle profile-eligible reviewer Luke (luke)" in result["errors"][0]
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.PENDING
+
+
+def test_manager_fallback_allows_self_review_when_reviewer_busy_elsewhere(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+    repo.create_or_reprioritize_task(
+        task_id="luke-review-task",
+        owner_agent_id="luke",
+        project_id="project",
+        priority=10,
+        title="Independent review task",
+        description="Keep Luke busy on unrelated review work.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+    dispatch_id = _set_manager_fallback_runtime(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": dispatch_id,
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
+
+
+def test_manager_fallback_allows_self_review_when_reviewer_already_reviewed_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-luke",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "luke",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-luke",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _handle_luke_review_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_luke_review_inbox)
+
+    dispatch_id = _set_manager_fallback_runtime(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": dispatch_id,
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
+    assert reread.review_requests["review-luke"].state == TeamRecordState.ACCEPTED
+
+
+def test_manager_fallback_allows_self_review_with_override_reason(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_decisions": [
+                {
+                    "review_request_id": "review-manager",
+                    "state": "accepted",
+                    "override_routing_gap_reason": "Urgent manager review required.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    reread = repo.read()
+    assert reread.review_requests["review-manager"].state == TeamRecordState.ACCEPTED
+
+
+def test_manager_fallback_creates_fresh_review_for_idle_profile_reviewer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "luke",
+                    "instructions": "Review the stalled backend slice.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert len(result["created_review_request_ids"]) == 1
+    review_id = result["created_review_request_ids"][0]
+    reread = repo.read()
+    assert reread.review_requests[review_id].reviewer_agent_id == "luke"
+    assert any(
+        item.recipient_agent_id == "luke"
+        and item.payload.get("review_request_id") == review_id
+        for item in reread.inbox.values()
+    )
+
+
+def test_review_handoff_duplicate_id_feedback_is_not_prompted(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    _seed_manager_review_stall(repo)
+
+    lease = _lease_manager_fallback(repo)
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "dispatch_id": lease["dispatch_id"],
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "luke",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert "review request review-manager already exists" in result["errors"][0]
+
+    next_lease = _lease_manager_fallback(
+        repo,
+        now=datetime(2026, 1, 1, 0, 15, tzinfo=UTC),
+    )
+    prompt = _build_prompt(next_lease)
+
+    assert "Most recent Team action feedback" not in prompt
+    assert "Do not repeat these mistakes" not in prompt
+    assert "review request review-manager already exists" not in prompt
+
+
+def test_manager_fallback_prompt_caps_large_history(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-stalled",
+                    "task_id": "task",
+                    "summary": "Backend slice ready for review.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-manager",
+                    "deliverable_id": "deliverable-stalled",
+                    "reviewer_agent_id": "manager",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+
+    def _add_large_history(state: TeamState) -> TeamState:
+        history_start = datetime(2026, 1, 1, tzinfo=UTC)
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        for index in range(80):
+            state.inbox[f"handled-{index:03d}"] = AgentInboxItem(
+                id=f"handled-{index:03d}",
+                recipient_agent_id="manager",
+                sender_agent_id="lead",
+                task_id="task",
+                item_type=TeamInboxItemType.PROGRESS_REPORT,
+                payload={"summary": "handled history " + ("x" * 4000)},
+                state=TeamInboxItemState.HANDLED,
+                created_at=history_start + timedelta(minutes=index),
+            )
+            state.action_records[f"failed-{index:03d}"] = AgentActionRecord(
+                id=f"failed-{index:03d}",
+                agent_id="backend",
+                dispatch_id=f"dispatch-{index:03d}",
+                success=False,
+                error="validation failed " + ("y" * 4000),
+                created_at=history_start + timedelta(minutes=index),
+            )
+        return state
+
+    repo.update(_add_large_history)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+    fallback_summary = context["manager_fallback_summary"]
+
+    assert len(prompt.encode("utf-8")) < 32_000
+    assert "handled-079" not in prompt
+    assert fallback_summary["summary_counts"]["failed_action_count"] == 80
+    assert "latest_failed_actions" not in fallback_summary
+    assert "validation failed" not in prompt
+    assert fallback_summary["omitted_counts"]["latest_failed_actions"] == 77
 
 
 def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
@@ -1360,15 +2926,10 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
 
     assert result["success"] is True
     prompt = str(resumer.calls[0]["prompt"])
-    context = json.loads(
-        prompt.split("Team context JSON:\n", 1)[1].split(
-            "\n\nTeam action contract",
-            1,
-        )[0]
-    )
+    context = _team_context_from_prompt(prompt)
     assert context["session_health"] == [
         {
-            "agent_id": "backend",
+            "agent": "backend",
             "team_id": "team",
             "project_ids": ["project"],
             "lead_project_ids": [],
@@ -1380,7 +2941,7 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
             "status": "expired",
         },
         {
-            "agent_id": "lead",
+            "agent": "lead",
             "team_id": "team",
             "project_ids": ["project"],
             "lead_project_ids": ["project"],
@@ -1394,7 +2955,7 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
     ]
 
 
-def test_wake_due_agents_provider_prompts_with_latest_action_feedback_once(
+def test_wake_due_agents_provider_does_not_prompt_latest_action_feedback(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -1430,16 +2991,14 @@ def test_wake_due_agents_provider_prompts_with_latest_action_feedback_once(
 
     assert result["success"] is True
     prompt = str(resumer.calls[0]["prompt"])
-    assert "Most recent Team action feedback (one-shot)" in prompt
-    assert "Your previous Team dispatch had validation errors" in prompt
-    assert "action-feedback" in prompt
-    assert "Only the task owner can create deliverables for that task." in prompt
+    assert "Most recent Team action feedback" not in prompt
+    assert "previous Team dispatch had validation errors" not in prompt
+    assert "action-feedback" not in prompt
+    assert "Only the task owner can create deliverables for that task." not in prompt
     reread = TeamStateRepository(tmp_path).read()
     record = reread.action_records["action-feedback"]
-    assert record.feedback_delivered_at is not None
-    assert record.feedback_delivered_by_dispatch_id == result["dispatches"][0][
-        "dispatch_id"
-    ]
+    assert record.feedback_delivered_at is None
+    assert record.feedback_delivered_by_dispatch_id is None
 
 
 def test_wake_due_agents_provider_rotates_context_when_pending(
@@ -1910,11 +3469,11 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert '"project_repo"' in prompt
     assert "/home/agent/Truman" in prompt
     assert "The project host checkout is not mounted in the guest" in prompt
-    assert session_store.calls[2]["metadata"]["team_addon"]["project_repo"] == project_repo
-    assert session_store.calls[3]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
+    assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
-def test_wake_due_agents_provider_reseeds_action_contract_every_wake_without_stale_ip(
+def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -1922,14 +3481,7 @@ def test_wake_due_agents_provider_reseeds_action_contract_every_wake_without_sta
     session_store.sessions["session-backend"].metadata = {
         "last_known_vm_ip": "192.0.2.44",
         "team_addon": {
-            "action_contract": {
-                "seeded": True,
-                "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-                "schema_path": "/artifacts/team-action.schema.json",
-                "example_path": "/artifacts/team-action.example.json",
-                "action_artifact_path": "/artifacts/team-action.json",
-                "vm_ip": "192.0.2.44",
-            },
+            "action_contract": {"seeded": True, "legacy": True},
             "agent_guidance": {
                 "seeded": True,
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
@@ -1960,67 +3512,12 @@ def test_wake_due_agents_provider_reseeds_action_contract_every_wake_without_sta
     result = provider.execute()
 
     assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is True
-    assert result["dispatches"][0]["action_contract"]["schema_version"] == (
-        ACTION_CONTRACT_SCHEMA_VERSION
+    assert "action_contract" not in result["dispatches"][0]
+    assert result["dispatches"][0]["team_mcp_tools"]["requested_tools"] == list(
+        ORDINARY_TEAM_MCP_TOOL_NAMES
     )
-    assert len(file_copier.calls) == 1
-    assert "vm_ip" not in file_copier.calls[0]
+    assert file_copier.calls == []
     assert repo.read().agent_runtimes["backend"].active_dispatch_id is not None
-
-
-def test_wake_due_agents_provider_reseeds_stale_action_contract(
-    tmp_path: Path,
-) -> None:
-    _seed_team(tmp_path)
-    session_store = FakeSessionStore()
-    session_store.sessions["session-backend"].metadata = {
-        "team_addon": {
-            "action_contract": {
-                "seeded": True,
-                "schema_version": 3,
-                "schema_path": "/artifacts/team-action.schema.json",
-                "example_path": "/artifacts/team-action.example.json",
-                "action_artifact_path": "/artifacts/team-action.json",
-            },
-            "agent_guidance": {
-                "seeded": True,
-                "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
-                "guidance_path": TEAM_AGENT_GUIDANCE_PATH,
-                "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
-                "agent_id": "backend",
-                "display_name": None,
-            },
-        }
-    }
-    file_copier = FakeFileCopier()
-    provider = TeamWakeDueAgentsEffectProvider()
-    provider.initialize(
-        TeamWakeDueAgentsEffectDefinition(
-            id="wake",
-            display_name="Wake",
-            type="effect:team:wake-due-agents",
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            agent_resumer=FakeResumer(),
-            vm_file_copier=file_copier,
-            session_lookup=session_store,
-            session_metadata_updater=session_store,
-        ),
-    )
-
-    result = provider.execute()
-
-    assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is True
-    assert result["dispatches"][0]["action_contract"]["schema_version"] == (
-        ACTION_CONTRACT_SCHEMA_VERSION
-    )
-    assert len(file_copier.calls) == 1
-    assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"][
-        "schema_version"
-    ] == ACTION_CONTRACT_SCHEMA_VERSION
 
 
 def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
@@ -2030,13 +3527,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     session_store = FakeSessionStore()
     session_store.sessions["session-backend"].metadata = {
         "team_addon": {
-            "action_contract": {
-                "seeded": True,
-                "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-                "schema_path": "/artifacts/team-action.schema.json",
-                "example_path": "/artifacts/team-action.example.json",
-                "action_artifact_path": "/artifacts/team-action.json",
-            },
+            "action_contract": {"seeded": True, "legacy": True},
             "agent_guidance": {
                 "seeded": True,
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION - 1,
@@ -2067,14 +3558,14 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     result = provider.execute()
 
     assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is True
+    assert "action_contract" not in result["dispatches"][0]
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
-    assert len(file_copier.calls) == 2
-    copied_file = file_copier.calls[1]["files"][0]
+    assert len(file_copier.calls) == 1
+    copied_file = file_copier.calls[0]["files"][0]
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
-    assert session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"][
+    assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION
 
@@ -2086,13 +3577,6 @@ def test_wake_due_agents_provider_clears_inactive_agent_guidance_metadata(
     session_store = FakeSessionStore()
     session_store.sessions["session-backend"].metadata = {
         "team_addon": {
-            "action_contract": {
-                "seeded": True,
-                "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-                "schema_path": "/artifacts/team-action.schema.json",
-                "example_path": "/artifacts/team-action.example.json",
-                "action_artifact_path": "/artifacts/team-action.json",
-            },
             "agent_guidance": {
                 "seeded": True,
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
@@ -2126,8 +3610,8 @@ def test_wake_due_agents_provider_clears_inactive_agent_guidance_metadata(
 
     assert result["success"] is True
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
-    assert len(file_copier.calls) == 2
-    metadata = session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"]
+    assert len(file_copier.calls) == 1
+    metadata = session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"]
     assert metadata["inactive"] is False
     assert metadata["inactive_reason"] is None
 
@@ -2145,13 +3629,6 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     session_store = FakeSessionStore()
     session_store.sessions["session-backend"].metadata = {
         "team_addon": {
-            "action_contract": {
-                "seeded": True,
-                "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
-                "schema_path": "/artifacts/team-action.schema.json",
-                "example_path": "/artifacts/team-action.example.json",
-                "action_artifact_path": "/artifacts/team-action.json",
-            },
             "agent_guidance": {
                 "seeded": True,
                 "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
@@ -2183,11 +3660,11 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     result = provider.execute()
 
     assert result["success"] is True
-    assert result["dispatches"][0]["action_contract"]["seeded"] is True
+    assert "action_contract" not in result["dispatches"][0]
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
     assert result["dispatches"][0]["agent_guidance"]["display_name"] == "Beatrice"
-    assert len(file_copier.calls) == 2
-    copied_file = file_copier.calls[1]["files"][0]
+    assert len(file_copier.calls) == 1
+    copied_file = file_copier.calls[0]["files"][0]
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
@@ -2195,7 +3672,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     prompt = str(resumer.calls[0]["prompt"])
     assert "Beatrice" not in prompt
     assert '"display_name"' not in prompt
-    assert session_store.calls[1]["metadata"]["team_addon"]["agent_guidance"][
+    assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "display_name"
     ] == "Beatrice"
 
@@ -2234,9 +3711,9 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     assert runtime.wake_leased_until is None
     assert runtime.no_progress_count == 1
     assert [record.error for record in reread.action_records.values()] == ["vm not ready"]
-    assert len(session_store.calls) == 2
-    assert "action_contract" in session_store.calls[0]["metadata"]["team_addon"]
-    assert "agent_guidance" in session_store.calls[1]["metadata"]["team_addon"]
+    assert len(session_store.calls) == 1
+    assert "action_contract" not in session_store.calls[0]["metadata"]["team_addon"]
+    assert "agent_guidance" in session_store.calls[0]["metadata"]["team_addon"]
 
 
 def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(
@@ -2297,480 +3774,73 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
     assert [record.error for record in reread.action_records.values()] == ["repo missing"]
 
 
-def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
+def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_chat_retry(
+    tmp_path: Path,
+) -> None:
     repo = _seed_team(tmp_path)
-    repo.register_agent(
-        agent_id="reviewer",
-        team_id="team",
-        project_id="project",
-        role_id="project__backend",
-        session_id="session-reviewer",
-        reports_to_agent_id="lead",
-        expected_revision=repo.read().revision,
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = leases[0]["dispatch_id"]
+    repo.append_dispatch_activity(
+        TeamDispatchActivity(
+            id="activity-finalize-progress",
+            tool_name="team_update_task",
+            caller_session_id="session-backend",
+            caller_identity="agent:backend",
+            agent_id="backend",
+            dispatch_id=dispatch_id,
+            request_id="request-progress",
+            status=TeamDispatchActivityStatus.SUCCESS,
+            progress_classification="progress",
+        )
     )
-    _state, backend_conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = repo.create_or_get_conversation(
         agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
     )
-    _state, backend_message = repo.record_operator_chat_message(
-        conversation_id=backend_conversation.id,
-        body="Backend private chat",
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please handle this after the current wake.",
         created_by="operator:alice@example.com",
-        expected_revision=repo.read().revision,
+        expected_revision=state.revision,
     )
-    _state, reviewer_conversation, _created = repo.create_or_get_conversation(
-        agent_id="reviewer",
-        operator_user_id="bob@example.com",
-        operator_display_name="Bob",
-        expected_revision=repo.read().revision,
+    queued_dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=queued_dispatch_id,
+        reason="agent backend already has an active dispatch",
     )
-    repo.record_operator_chat_message(
-        conversation_id=reviewer_conversation.id,
-        body="Reviewer private chat",
-        created_by="operator:bob@example.com",
-        expected_revision=repo.read().revision,
-    )
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = next(
-        lease["dispatch_id"]
-        for lease in leases
-        if lease["agent"]["id"] == "backend"
-    )
-    action = {
-        "agent_id": "backend",
-        "dispatch_id": dispatch_id,
-        "deliverables": [
-            {
-                "task_id": "task",
-                "summary": "Backend work is ready.",
-                "artifact_refs": ["artifact-space:/teams/team/projects/backend/spec"],
-            }
-        ],
-    }
-    query = TeamAgentActionArtifactQueryProvider()
-    query.initialize(
-        TeamAgentActionArtifactQueryDefinition(
-            id="read",
-            display_name="Read action",
-            type="query:team:agent-action-artifact",
-            session_id="session-backend",
-        ),
-        QueryRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            session_artifact_reader=FakeArtifactReader(json.dumps(action)),
-        ),
-    )
-    parsed = query.execute()
-    assert parsed["valid"] is True
-
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
+    session_store = FakeSessionStore()
+    provider = TeamFinalizeAgentDispatchEffectProvider()
+    provider.initialize(
+        TeamFinalizeAgentDispatchEffectDefinition(
+            id="finalize",
+            display_name="Finalize",
+            type="effect:team:finalize-agent-dispatch",
             session_id="session-backend",
             dispatch_id=dispatch_id,
-            action=parsed["action"],
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
-            session_metadata_updater=FakeMetadataUpdater(),
+            session_metadata_updater=session_store,
         ),
     )
 
-    result = apply.execute()
+    result = provider.execute()
 
     assert result["success"] is True
-    assert set(result["state"]["conversations"]) == {backend_conversation.id}
-    assert set(result["state"]["conversation_messages"]) == {backend_message.id}
+    assert result["finalized"] is True
+    assert result["progress_made"] is True
+    assert result["published_event_ids"]
+    assert session_store.calls[-1]["target"] == "session-backend"
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "agent_id"
+    ] == "backend"
     reread = TeamStateRepository(tmp_path).read()
-    assert len(reread.deliverables) == 1
-    assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
-
-
-def test_apply_agent_action_publishes_declared_deliverable_artifacts(
-    tmp_path: Path, monkeypatch
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    archive = tmp_path / "payload.tar.gz"
-    report = tmp_path / "report.txt"
-    report.write_text("report\n", encoding="utf-8")
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(report, arcname="reports/report.txt")
-    archive_content = archive.read_bytes()
-    commands: list[str] = []
-
-    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
-        del resolved_config
-        effect = self.effect_definition
-        commands.append(str(effect.command))  # type: ignore[attr-defined]
-        return {
-            "success": True,
-            "session_id": "session-backend",
-            "execution_backend": "container_worker_vm",
-            "stdout": json.dumps(
-                {
-                    "success": True,
-                    "archive_format": "tar.gz",
-                    "artifacts_root": "/artifacts",
-                    "source_paths": ["reports/report.txt"],
-                    "source_file_count": 1,
-                    "source_byte_count": len("report\n"),
-                    "content_base64": base64.b64encode(archive_content).decode("ascii"),
-                }
-            ),
-        }
-
-    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            action={
-                "agent_id": "backend",
-                "dispatch_id": dispatch_id,
-                "deliverables": [
-                    {
-                        "id": "deliverable-1",
-                        "task_id": "task",
-                        "summary": "Backend work is ready.",
-                        "artifact_paths": ["reports/report.txt"],
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            session_metadata_updater=FakeMetadataUpdater(),
-        ),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is True
-    artifact_ref = "artifact-space:/teams/team/projects/project/deliverables/deliverable-1"
-    artifact_key = f"team/team/project/deliverable-1/{dispatch_id}/bundle"
-    assert result["published_deliverable_artifacts"][0]["artifact_ref"] == artifact_ref
-    assert "\"reports/report.txt\"" in commands[0]
-    reread = TeamStateRepository(tmp_path).read()
-    assert reread.deliverables["deliverable-1"].artifact_refs == [artifact_ref]
-    assert PublishedArtifactStore(tmp_path).get(artifact_key).metadata.key == artifact_key
-    latest = ArtifactSpaceStore(tmp_path).read().latest_versions_for_space(
-        "/teams/team/projects/project/deliverables/deliverable-1",
-        artifact_id="bundle",
-    )
-    assert latest[0].artifact_key == artifact_key
-    inbox = list(reread.inbox.values())[-1]
-    assert inbox.payload["artifact_refs"] == [artifact_ref]
-
-
-def test_apply_agent_action_publishes_artifacts_for_session_resolved_action(
-    tmp_path: Path, monkeypatch
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    archive = tmp_path / "payload.tar.gz"
-    report = tmp_path / "report.txt"
-    report.write_text("report\n", encoding="utf-8")
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(report, arcname="reports/report.txt")
-    archive_content = archive.read_bytes()
-
-    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
-        del self, resolved_config
-        return {
-            "success": True,
-            "session_id": "session-backend",
-            "execution_backend": "container_worker_vm",
-            "stdout": json.dumps(
-                {
-                    "success": True,
-                    "archive_format": "tar.gz",
-                    "artifacts_root": "/artifacts",
-                    "source_paths": ["reports/report.txt"],
-                    "source_file_count": 1,
-                    "source_byte_count": len("report\n"),
-                    "content_base64": base64.b64encode(archive_content).decode("ascii"),
-                }
-            ),
-        }
-
-    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            action={
-                "dispatch_id": dispatch_id,
-                "deliverables": [
-                    {
-                        "id": "deliverable-1",
-                        "task_id": "task",
-                        "summary": "Backend work is ready.",
-                        "artifact_paths": ["reports/report.txt"],
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            session_metadata_updater=FakeMetadataUpdater(),
-        ),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is True
-    artifact_ref = "artifact-space:/teams/team/projects/project/deliverables/deliverable-1"
-    assert result["published_deliverable_artifacts"][0]["artifact_ref"] == artifact_ref
-    reread = TeamStateRepository(tmp_path).read()
-    assert reread.deliverables["deliverable-1"].producer_agent_id == "backend"
-    assert reread.deliverables["deliverable-1"].artifact_refs == [artifact_ref]
-
-
-def test_apply_agent_action_treats_empty_artifact_paths_as_omitted(
-    tmp_path: Path, monkeypatch
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-
-    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
-        del self, resolved_config
-        raise AssertionError("empty artifact_paths should not publish artifacts")
-
-    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            action={
-                "agent_id": "backend",
-                "dispatch_id": dispatch_id,
-                "deliverables": [
-                    {
-                        "id": "deliverable-1",
-                        "task_id": "task",
-                        "summary": "Backend work is ready.",
-                        "artifact_paths": [],
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            session_metadata_updater=FakeMetadataUpdater(),
-        ),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is True
-    assert "published_deliverable_artifacts" not in result
-    reread = TeamStateRepository(tmp_path).read()
-    assert reread.deliverables["deliverable-1"].artifact_refs == []
-    records = list(reread.action_records.values())
-    assert records[0].success is True
-    assert "artifact_paths" not in records[0].action["deliverables"][0]
-
-
-def test_apply_agent_action_records_deliverable_artifact_publish_failure(
-    tmp_path: Path, monkeypatch
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-
-    def fail_execute(self: AgentExecEffectProvider, *, resolved_config=None):
-        del self, resolved_config
-        raise RuntimeError("artifact file not found: reports/missing.txt")
-
-    monkeypatch.setattr(AgentExecEffectProvider, "execute", fail_execute)
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            action={
-                "agent_id": "backend",
-                "dispatch_id": dispatch_id,
-                "deliverables": [
-                    {
-                        "id": "deliverable-1",
-                        "task_id": "task",
-                        "summary": "Backend work is ready.",
-                        "artifact_paths": ["reports/missing.txt"],
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is False
-    assert result["applied"] is False
-    assert "failed to publish artifact_paths" in result["errors"][0]
-    reread = TeamStateRepository(tmp_path).read()
-    assert reread.deliverables == {}
-    records = list(reread.action_records.values())
-    assert len(records) == 1
-    assert records[0].success is False
-    assert records[0].dispatch_id == dispatch_id
-    assert "failed to publish artifact_paths" in (records[0].error or "")
-    assert records[0].action["deliverables"][0]["artifact_paths"] == ["reports/missing.txt"]
     assert reread.agent_runtimes["backend"].active_dispatch_id is None
-
-
-def test_apply_agent_action_encodes_unsafe_ids_for_deliverable_artifact_spaces(
-    tmp_path: Path, monkeypatch
-) -> None:
-    repo = TeamStateRepository(tmp_path)
-    repo.create_team(
-        team_id="Team A",
-        name="Team A",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-        expected_revision=0,
-    )
-    repo.create_project(
-        project_id="Project A",
-        team_id="Team A",
-        name="Project A",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-        goals=[ProjectGoal(id="goal", description="Ship work")],
-        expected_revision=1,
-    )
-    repo.create_role(
-        role_id="project-backend",
-        team_id="Team A",
-        project_id="Project A",
-        name="Backend",
-        expected_revision=2,
-    )
-    repo.register_agent(
-        agent_id="backend",
-        team_id="Team A",
-        project_id="Project A",
-        role_id="project-backend",
-        session_id="session-backend",
-        reports_to_agent_id="lead",
-        expected_revision=3,
-    )
-    repo.create_or_reprioritize_task(
-        task_id="task",
-        owner_agent_id="backend",
-        project_id="Project A",
-        priority=1,
-        title="Build backend",
-        description="Implement backend work.",
-        created_by_agent_id="lead",
-        expected_revision=4,
-    )
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    archive = tmp_path / "payload.tar.gz"
-    report = tmp_path / "report.txt"
-    report.write_text("report\n", encoding="utf-8")
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(report, arcname="reports/report.txt")
-    archive_content = archive.read_bytes()
-
-    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
-        del self, resolved_config
-        return {
-            "success": True,
-            "session_id": "session-backend",
-            "execution_backend": "container_worker_vm",
-            "stdout": json.dumps(
-                {
-                    "success": True,
-                    "archive_format": "tar.gz",
-                    "artifacts_root": "/artifacts",
-                    "source_paths": ["reports/report.txt"],
-                    "source_file_count": 1,
-                    "source_byte_count": len("report\n"),
-                    "content_base64": base64.b64encode(archive_content).decode("ascii"),
-                }
-            ),
-        }
-
-    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            action={
-                "agent_id": "backend",
-                "dispatch_id": dispatch_id,
-                "deliverables": [
-                    {
-                        "id": "deliverable 1",
-                        "task_id": "task",
-                        "summary": "Backend work is ready.",
-                        "artifact_paths": ["reports/report.txt"],
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is True
-    artifact_record = result["published_deliverable_artifacts"][0]
-    artifact_space_path = artifact_record["artifact_space_path"]
-    assert "Team A" not in artifact_space_path
-    assert "Project A" not in artifact_space_path
-    assert "deliverable 1" not in artifact_space_path
-    assert artifact_record["artifact_ref"] == f"artifact-space:{artifact_space_path}"
-    assert PublishedArtifactStore(tmp_path).get(artifact_record["artifact_key"]).metadata.key == (
-        artifact_record["artifact_key"]
-    )
-    artifact_state = ArtifactSpaceStore(tmp_path).read()
-    assert artifact_state.spaces[artifact_space_path].metadata == {
-        "team_id": "Team A",
-        "project_id": "Project A",
-        "deliverable_id": "deliverable 1",
-        "source": "team_addon",
-    }
-    latest = artifact_state.latest_versions_for_space(
-        artifact_space_path,
-        artifact_id="bundle",
-    )
-    assert latest[0].artifact_key == artifact_record["artifact_key"]
-    reread = TeamStateRepository(tmp_path).read()
-    assert reread.deliverables["deliverable 1"].artifact_refs == [
-        artifact_record["artifact_ref"]
-    ]
+    assert reread.agent_runtimes["backend"].no_progress_count == 0
+    assert reread.conversation_messages[message.id].status == "queued"
 
 
 def test_deliverable_artifact_publish_reuses_existing_key_without_duplicate_version(
@@ -2853,6 +3923,158 @@ def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
     assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
     assert item.payload["message"] == "Ask the lead for a status report."
     assert reread.agent_runtimes["manager"].next_wake_at is None
+
+
+def test_create_case_effect_links_existing_tasks(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    provider = TeamCreateCaseEffectProvider()
+    provider.initialize(
+        TeamCreateCaseEffectDefinition(
+            id="create-case",
+            display_name="Create case",
+            type="effect:team:create-case",
+            case_id="case",
+            team_id="team",
+            project_id="project",
+            title="Customer ticket",
+            description="Investigate the accounting ticket.",
+            status="triage",
+            priority="high",
+            owner_agent_id="backend",
+            source="zendesk",
+            source_ref="ZD-42",
+            tags=["accounting", "vat"],
+            metadata={"external_url": "https://tickets.example/ZD-42"},
+            task_ids=["task"],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case_id"] == "case"
+    assert result["team_id"] == "team"
+    assert result["project_id"] == "project"
+    assert result["task_ids"] == ["task"]
+    assert result["case"]["source_ref"] == "ZD-42"
+    reread = TeamStateRepository(tmp_path).read()
+    case = reread.cases["case"]
+    assert case.status == TeamCaseStatus.TRIAGE
+    assert case.priority == TeamInboxPriority.HIGH
+    assert case.task_ids == ["task"]
+    assert reread.tasks["task"].case_id == "case"
+
+
+def test_create_case_effect_returns_generated_id_when_other_case_is_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_team(tmp_path)
+
+    class RacingCaseRepository(TeamStateRepository):
+        injected = False
+
+        def create_case_with_id(self, **kwargs) -> tuple[TeamState, str]:
+            if not self.__class__.injected:
+                self.__class__.injected = True
+                super().create_case(
+                    case_id="external-case",
+                    team_id="team",
+                    title="External intake",
+                )
+            return super().create_case_with_id(**kwargs)
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.TeamStateRepository",
+        RacingCaseRepository,
+    )
+    provider = TeamCreateCaseEffectProvider()
+    provider.initialize(
+        TeamCreateCaseEffectDefinition(
+            id="create-case",
+            display_name="Create case",
+            type="effect:team:create-case",
+            team_id="team",
+            title="Generated intake",
+            source="email",
+            source_ref="message-42",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case_id"]
+    assert result["case_id"] != "external-case"
+    assert result["case"]["title"] == "Generated intake"
+    reread = TeamStateRepository(tmp_path).read()
+    assert "external-case" in reread.cases
+    assert result["case_id"] in reread.cases
+
+
+def test_update_case_effect_clears_optional_fields_and_task_links(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_case(
+        case_id="case",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        description="Initial details",
+        owner_agent_id="backend",
+        source="zendesk",
+        source_ref="ZD-42",
+        tags=["accounting"],
+        metadata={"external_url": "https://tickets.example/ZD-42"},
+        task_ids=["task"],
+        expected_revision=repo.read().revision,
+    )
+    provider = TeamUpdateCaseEffectProvider()
+    provider.initialize(
+        TeamUpdateCaseEffectDefinition(
+            id="update-case",
+            display_name="Update case",
+            type="effect:team:update-case",
+            case_id="case",
+            title="Accounting ticket",
+            description="",
+            project_id=None,
+            status="waiting",
+            priority="low",
+            owner_agent_id=None,
+            source_ref=None,
+            tags=[],
+            metadata={},
+            task_ids=[],
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case_id"] == "case"
+    assert result["project_id"] is None
+    assert result["task_ids"] == []
+    reread = TeamStateRepository(tmp_path).read()
+    case = reread.cases["case"]
+    assert case.title == "Accounting ticket"
+    assert case.description == ""
+    assert case.project_id is None
+    assert case.status == TeamCaseStatus.WAITING
+    assert case.priority == TeamInboxPriority.LOW
+    assert case.owner_agent_id is None
+    assert case.source == "zendesk"
+    assert case.source_ref is None
+    assert case.tags == []
+    assert case.metadata == {}
+    assert case.task_ids == []
+    assert reread.tasks["task"].case_id is None
 
 
 def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(
@@ -2941,464 +4163,6 @@ def test_session_routing_accepts_active_team_dispatch_for_persistent_agent(
     assert result["expected_dispatch_id"] == team_dispatch_id
 
 
-def test_invalid_action_artifact_increments_no_progress(tmp_path: Path) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    query = TeamAgentActionArtifactQueryProvider()
-    query.initialize(
-        TeamAgentActionArtifactQueryDefinition(
-            id="read",
-            display_name="Read action",
-            type="query:team:agent-action-artifact",
-            session_id="session-backend",
-        ),
-        QueryRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            session_artifact_reader=FakeArtifactReader("not json"),
-        ),
-    )
-    parsed = query.execute()
-    assert parsed["valid"] is False
-
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            valid=False,
-            error=parsed["error"],
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is False
-    reread = TeamStateRepository(tmp_path).read()
-    assert reread.agent_runtimes["backend"].no_progress_count == 1
-
-
-def test_missing_persistent_action_artifact_dispatches_one_shot_recovery(
-    tmp_path: Path,
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    resumer = FakeResumer()
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            valid=False,
-            error="artifact file not found: team-action.json",
-            action_artifact_path="team-action.json",
-            expected_revision=TeamStateRepository(tmp_path).read().revision,
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            agent_resumer=resumer,
-        ),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is True
-    assert result["applied"] is False
-    assert result["recovery_dispatched"] is True
-    assert result["recovery_action_record_id"]
-    assert len(resumer.calls) == 1
-    assert resumer.calls[0]["target"] == "session-backend"
-    assert resumer.calls[0]["dispatch_id"] == dispatch_id
-    assert resumer.calls[0]["resume_mode"] == "same_context"
-    prompt = str(resumer.calls[0]["prompt"])
-    assert "Do not continue implementation work" in prompt
-    assert "/artifacts/team-action.json" in prompt
-    assert '"dispatch_id":' in prompt
-    reread = TeamStateRepository(tmp_path).read()
-    runtime = reread.agent_runtimes["backend"]
-    assert runtime.active_dispatch_id == dispatch_id
-    assert runtime.no_progress_count == 0
-    records = list(reread.action_records.values())
-    assert len(records) == 1
-    assert records[0].dispatch_id == dispatch_id
-    assert records[0].success is False
-    assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
-
-
-def test_missing_persistent_action_artifact_records_failure_when_recovery_resume_fails(
-    tmp_path: Path,
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    expected_revision = repo.read().revision
-    resumer = FakeResumer(result={"success": False, "error": "resume_agent failed"})
-    apply = TeamApplyAgentActionEffectProvider()
-    apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            valid=False,
-            error="artifact file not found: team-action.json",
-            action_artifact_path="team-action.json",
-            expected_revision=expected_revision,
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            agent_resumer=resumer,
-        ),
-    )
-
-    result = apply.execute()
-
-    assert result["success"] is False
-    assert result["recovery_dispatched"] is False
-    assert result["recovery_action_record_id"]
-    assert result["recovery_result"] == {
-        "success": False,
-        "error": "resume_agent failed",
-    }
-    assert len(resumer.calls) == 1
-    reread = TeamStateRepository(tmp_path).read()
-    runtime = reread.agent_runtimes["backend"]
-    assert runtime.active_dispatch_id is None
-    assert runtime.no_progress_count == 1
-    records = sorted(reread.action_records.values(), key=lambda record: record.created_at)
-    assert len(records) == 2
-    assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
-    assert records[1].dispatch_id == dispatch_id
-    assert records[1].error == "artifact file not found: team-action.json"
-
-
-def test_missing_persistent_action_artifact_fails_after_recovery_was_prompted(
-    tmp_path: Path,
-) -> None:
-    repo = _seed_team(tmp_path)
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    resumer = FakeResumer()
-    first_apply = TeamApplyAgentActionEffectProvider()
-    first_apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply-1",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            valid=False,
-            error="artifact file not found: team-action.json",
-            action_artifact_path="team-action.json",
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            agent_resumer=resumer,
-        ),
-    )
-    assert first_apply.execute()["recovery_dispatched"] is True
-
-    second_apply = TeamApplyAgentActionEffectProvider()
-    second_apply.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply-2",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            valid=False,
-            error="artifact file not found: team-action.json",
-            action_artifact_path="team-action.json",
-            expected_revision=TeamStateRepository(tmp_path).read().revision,
-        ),
-        EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
-            agent_resumer=resumer,
-        ),
-    )
-
-    result = second_apply.execute()
-
-    assert result["success"] is False
-    assert result["recovery_dispatched"] is False
-    assert len(resumer.calls) == 1
-    reread = TeamStateRepository(tmp_path).read()
-    runtime = reread.agent_runtimes["backend"]
-    assert runtime.active_dispatch_id is None
-    assert runtime.no_progress_count == 1
-    records = sorted(reread.action_records.values(), key=lambda record: record.created_at)
-    assert len(records) == 2
-    assert MISSING_ACTION_RECOVERY_MARKER in str(records[0].error)
-    assert records[1].error == "artifact file not found: team-action.json"
-
-
-def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
-    tmp_path: Path,
-) -> None:
-    repo = _seed_team(tmp_path, max_ephemeral=1)
-    repo.set_agent_avatar(
-        agent_id="backend",
-        avatar=AgentAvatar(
-            asset_id="av_ephemeralprivate0000000000000001",
-            source="generated",
-            mime_type="image/webp",
-            sha256="c" * 64,
-            style_preset="professional",
-            prompt_note="ephemeral private note",
-            model="gpt-image-2",
-            preview_id="av_previewephemeral000000000001",
-        ),
-        expected_revision=repo.read().revision,
-    )
-    repo.update_agent(
-        agent_id="backend",
-        voice_profile=AgentVoiceProfile(
-            voice="sage",
-            speaking_style="ephemeral private voice direction",
-        ),
-        set_voice_profile=True,
-        expected_revision=repo.read().revision,
-    )
-    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
-    dispatch_id = leases[0]["dispatch_id"]
-    provider = TeamApplyAgentActionEffectProvider()
-    provider.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            dispatch_id=dispatch_id,
-            action={
-                "agent_id": "backend",
-                "dispatch_id": dispatch_id,
-                "ephemeral_requests": [
-                    {
-                        "id": "ephemeral-1",
-                        "task_id": "task",
-                        "title": "Draft implementation",
-                        "prompt": "Implement a narrow backend slice.",
-                        "execution_backend": "container_worker_vm",
-                        "metadata": {"purpose": "unit-test"},
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = provider.execute()
-
-    assert result["success"] is True
-    assert result["created_ephemeral_assignment_ids"] == ["ephemeral-1"]
-    reread = TeamStateRepository(tmp_path).read()
-    assignment = reread.ephemeral_assignments["ephemeral-1"]
-    assert assignment.parent_agent_id == "backend"
-    assert assignment.session_id.startswith("team-eph-")
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
-    assert len(events) == 1
-    assert events[0].event_type == "team.ephemeral.requested"
-    assert events[0].payload["assignment_id"] == "ephemeral-1"
-    assert events[0].payload["metadata"]["team_addon"]["ephemeral_assignment_id"] == "ephemeral-1"
-    prompt = str(events[0].payload["prompt"])
-    assert "ephemeralprivate" not in prompt
-    assert "ephemeral private note" not in prompt
-    assert '"avatar"' not in prompt
-    assert "ephemeral private voice direction" not in prompt
-    assert '"voice_profile"' not in prompt
-
-
-def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) -> None:
-    repo = _seed_team(tmp_path)
-
-    def _set_target(state):
-        state.teams["team"].operator_communication_target_id = "operator:ops-channel"
-        return state
-
-    repo.update(_set_target)
-
-    provider = TeamApplyAgentActionEffectProvider()
-    provider.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-manager",
-            action={
-                "agent_id": "manager",
-                "operator_escalations": [
-                    {
-                        "title": "Need a decision",
-                        "message": "Operator input required.",
-                        "urgency": "high",
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = provider.execute()
-
-    assert result["success"] is True
-    assert len(result["operator_escalation_event_ids"]) == 1
-    assert len(result["published_event_ids"]) == 1
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
-    assert len(events) == 1
-    assert events[0].event_type == "team.operator.escalation_requested"
-    assert events[0].payload == {
-        "team_id": "team",
-        "manager_agent_id": "manager",
-        "communication_target_id": "operator:ops-channel",
-        "title": "Need a decision",
-        "message": "Operator input required.",
-        "urgency": "high",
-    }
-
-
-def test_apply_agent_action_routes_manager_escalation_to_governance(tmp_path: Path) -> None:
-    repo = _seed_team(tmp_path)
-    repo.create_governance_group(
-        governance_group_id="portfolio",
-        name="Portfolio",
-        manager_agent_id="manager",
-        member_team_ids=["team"],
-        goals=[{"id": "cost", "description": "Keep teams within budget"}],
-        expected_revision=repo.read().revision,
-    )
-    repo.update_team(
-        team_id="team",
-        escalate_to_governance=True,
-        expected_revision=repo.read().revision,
-    )
-
-    provider = TeamApplyAgentActionEffectProvider()
-    provider.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-manager",
-            action={
-                "agent_id": "manager",
-                "operator_escalations": [
-                    {
-                        "title": "Need policy guidance",
-                        "message": "Team needs a new staffing policy.",
-                        "urgency": "normal",
-                    }
-                ],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = provider.execute()
-
-    assert result["success"] is True
-    assert result["applied"] is True
-    assert len(result["created_governance_agenda_item_ids"]) == 1
-    assert result["operator_escalation_event_ids"] == []
-    assert result.get("created_inbox_item_ids") == []
-    assert "published_event_ids" not in result
-
-    state = TeamStateRepository(tmp_path).read()
-    agenda_id = result["created_governance_agenda_item_ids"][0]
-    agenda_item = state.governance_agenda[agenda_id]
-    assert agenda_item.item_type == "team_escalation"
-    assert agenda_item.title == "Need policy guidance"
-    assert agenda_item.summary == "Team needs a new staffing policy."
-    assert agenda_item.team_id == "team"
-    assert agenda_item.payload["escalation_id"].startswith("escalation-")
-    assert agenda_item.payload["governance_group_id"] == "portfolio"
-    assert state.governance_runtimes["portfolio"].next_wake_at is None
-
-    _state, leases = TeamStateRepository(tmp_path).lease_due_governance_managers(
-        now=agenda_item.created_at,
-    )
-
-    assert len(leases) == 1
-    assert leases[0]["reason"] == "team_escalation"
-    assert leases[0]["agenda"][0]["id"] == agenda_id
-
-
-def test_apply_agent_action_publishes_git_promotion_event(tmp_path: Path) -> None:
-    repo = _seed_team(tmp_path, max_ephemeral=1)
-
-    def _set_git(state):
-        from truman_team_addon.models import ProjectGitConfig
-
-        state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
-        )
-        return state
-
-    repo.update(_set_git)
-    repo.request_ephemeral_assignments(
-        parent_agent_id="backend",
-        requests=[
-            {
-                "id": "ephemeral-1",
-                "task_id": "task",
-                "session_id": "eph-1",
-                "title": "Slice",
-                "prompt": "Implement a slice.",
-            }
-        ],
-    )
-    repo.apply_ephemeral_action(
-        session_id="eph-1",
-        action={
-            "ephemeral_assignment_id": "ephemeral-1",
-            "summary": "Done.",
-            "agent_branch": "agents/eph-1/ephemeral-1",
-            "commit_sha": "abc1234",
-        },
-    )
-
-    provider = TeamApplyAgentActionEffectProvider()
-    provider.initialize(
-        TeamApplyAgentActionEffectDefinition(
-            id="apply",
-            display_name="Apply",
-            type="effect:team:apply-agent-action",
-            session_id="session-backend",
-            action={
-                "agent_id": "backend",
-                "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-
-    result = provider.execute()
-
-    assert result["success"] is True
-    assert len(result["git_promotion_event_ids"]) == 1
-    assert len(result["published_event_ids"]) == 1
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
-    git_events = [
-        event for event in events if event.event_type == "team.git.promotion_requested"
-    ]
-    assert len(git_events) == 1
-    payload = git_events[0].payload
-    assert payload["promotion_kind"] == "review"
-    assert payload["source_branch"] == "agents/eph-1/ephemeral-1"
-    assert payload["target_branch"] == "team/team/reviews/ephemeral-1"
-    assert payload["host_repo_path"] == "/opt/repos/Truman"
-    assert payload["bare_repo_name"] == "Truman.git"
-
-
 def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     tmp_path: Path,
 ) -> None:
@@ -3443,22 +4207,13 @@ def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     )
     assert routing.execute()["assignment_id"] == assignment.id
 
-    apply = TeamApplyEphemeralActionEffectProvider()
-    apply.initialize(
-        TeamApplyEphemeralActionEffectDefinition(
-            id="apply-ephemeral",
-            display_name="Apply Ephemeral",
-            type="effect:team:apply-ephemeral-action",
-            session_id=assignment.session_id,
-            action={
-                "ephemeral_assignment_id": assignment.id,
-                "summary": "Ephemeral work is ready.",
-                "artifact_refs": ["artifact-space:/teams/team/ephemeral/result"],
-            },
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    _state, result = repo.report_ephemeral_result_command(
+        session_id=assignment.session_id,
+        assignment_id=assignment.id,
+        summary="Ephemeral work is ready.",
+        artifact_refs=["artifact-space:/teams/team/ephemeral/result"],
+        request_id="request-ephemeral-result",
     )
-    result = apply.execute()
     assert result["success"] is True
     assert result["state"] == "completed"
 
@@ -3467,8 +4222,12 @@ def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     inbox_items = list(reread.inbox.values())
     assert inbox_items[-1].recipient_agent_id == "backend"
     assert inbox_items[-1].payload["ephemeral_assignment_id"] == assignment.id
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
-    assert any(event.event_type == "team.ephemeral.completed" for event in events)
+    completed_outbox = repo.list_outbox_records(
+        intent_type="team.ephemeral.completed",
+        aggregate_type="ephemeral_assignment",
+        aggregate_id=assignment.id,
+    )
+    assert len(completed_outbox) == 1
 
     cleanup = TeamMarkEphemeralCleanedUpEffectProvider()
     cleanup.initialize(
@@ -3484,16 +4243,19 @@ def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     )
     assert cleanup.execute()["state"] == "cleaned_up"
 
-    _state, acceptance = repo.apply_agent_action(
-        session_id="session-backend",
-        action={
-            "agent_id": "backend",
-            "ephemeral_acceptances": [
-                {"assignment_id": assignment.id, "deliverable_id": "deliverable-ephemeral"}
-            ],
-        },
+    _state, parent_leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2099, 1, 1, tzinfo=UTC),
     )
-    assert acceptance["accepted_ephemeral_assignment_ids"] == [assignment.id]
+    assert parent_leases
+    _state, acceptance = repo.accept_ephemeral_result_command(
+        session_id="session-backend",
+        assignment_id=assignment.id,
+        deliverable_id="deliverable-ephemeral",
+        request_id="request-ephemeral-accept",
+    )
+    assert acceptance["success"] is True
+    assert acceptance["assignment_id"] == assignment.id
     final = TeamStateRepository(tmp_path).read()
     assert final.deliverables["deliverable-ephemeral"].producer_agent_id == "backend"
 
@@ -3542,6 +4304,26 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         voice="cedar",
         speaking_style="agent-visible state should not include this",
     )
+    state.cases["alpha-case"] = TeamCase(
+        id="alpha-case",
+        team_id="alpha-team",
+        project_id="alpha-project",
+        title="Alpha case",
+        owner_agent_id="alpha-dev",
+        source="github",
+        source_ref="issue-1",
+        task_ids=["alpha-task"],
+    )
+    state.tasks["alpha-task"].case_id = "alpha-case"
+    state.cases["beta-case"] = TeamCase(
+        id="beta-case",
+        team_id="beta-team",
+        project_id="beta-project",
+        title="Beta case",
+        owner_agent_id="beta-dev",
+        task_ids=["beta-task"],
+    )
+    state.tasks["beta-task"].case_id = "beta-case"
     repo.store.write_object(state.model_dump(mode="json"))
     session_lookup = SimpleNamespace(
         read_all_sessions=lambda: {
@@ -3576,7 +4358,9 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["agents"]) == {"alpha-lead", "alpha-dev", "alpha-reviewer"}
     assert "voice_profile" not in project_state["agents"]["alpha-dev"]
     assert set(project_state["agent_runtimes"]) == {"alpha-dev"}
+    assert set(project_state["cases"]) == {"alpha-case"}
     assert set(project_state["tasks"]) == {"alpha-task", "alpha-helper"}
+    assert project_state["tasks"]["alpha-task"]["case_id"] == "alpha-case"
     # Parent/dependency stay intact when both tasks are within scope.
     assert project_state["tasks"]["alpha-task"]["parent_task_id"] == "alpha-helper"
     assert project_state["tasks"]["alpha-task"]["dependency_task_ids"] == ["alpha-helper"]
@@ -3680,10 +4464,12 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["agents"]) == {"alpha-dev"}
     assert "voice_profile" not in agent_state["agents"]["alpha-dev"]
     assert set(agent_state["agent_runtimes"]) == {"alpha-dev"}
+    assert set(agent_state["cases"]) == {"alpha-case"}
     assert set(agent_state["tasks"]) == {"alpha-task"}
     # alpha-helper is out of this agent's scope, so its edges are filtered out,
     # but dependency_status still reflects global truth (alpha-helper is pending).
     scoped_task = agent_state["tasks"]["alpha-task"]
+    assert scoped_task["case_id"] == "alpha-case"
     assert scoped_task["parent_task_id"] is None
     assert scoped_task["dependency_task_ids"] == []
     assert scoped_task["blocked_by_task_ids"] == []
@@ -3821,9 +4607,17 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     )
     assert effects["team-prompt-ephemeral-agent"]["type"] == "effect:agent:prompt"
     assert effects["team-destroy-ephemeral-agent"]["type"] == "effect:agent:destroy"
+    assert effects["team-destroy-ephemeral-agent"]["session_id"] == (
+        "${{team-route-completed-session.session_id}}"
+    )
     assert effects["team-mark-ephemeral-cleaned-up"]["type"] == (
         "effect:team:mark-ephemeral-cleaned-up"
     )
+    assert effects["team-mark-ephemeral-cleaned-up"]["session_id"] == (
+        "${{team-route-completed-session.session_id}}"
+    )
+    assert "team-read-ephemeral-action" not in queries
+    assert "team-apply-ephemeral-action" not in effects
     assert queries["team-route-completed-session"]["type"] == "query:team:session-routing"
     assert queries["team-route-completed-session"]["dispatch_id"] == (
         "${{team-agent-run-completed.dispatch_id ?? null}}"
@@ -3841,7 +4635,8 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-mark-ephemeral-spawned", "team-ephemeral-spawned") in edges
     assert ("team-ephemeral-spawned", "team-prompt-ephemeral-agent") in edges
     assert ("team-mark-ephemeral-spawned", "team-prompt-ephemeral-agent") not in edges
-    assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") in edges
+    assert ("team-completed-ephemeral", "team-destroy-ephemeral-agent") in edges
+    assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") not in edges
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
 
 
@@ -3855,6 +4650,17 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert triggers["team-operator-escalation"]["event_type"] == (
         "team.operator.escalation_requested"
     )
+    assert triggers["team-chat-message-queued"]["type"] == "trigger:event"
+    assert triggers["team-chat-message-queued"]["event_type"] == (
+        "team.chat.message_queued"
+    )
+    assert effects["team-wake-queued-chat-message"]["type"] == (
+        "effect:team:wake-due-agents"
+    )
+    assert effects["team-wake-queued-chat-message"]["agent_id"] == (
+        "${{team-chat-message-queued.payload.agent_id}}"
+    )
+    assert effects["team-wake-queued-chat-message"]["limit"] == 1
 
     notify = effects["team-notify-operator"]
     assert notify["type"] == "effect:communication:send-message"
@@ -3865,6 +4671,7 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.message}}" in notify["message"]
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
     assert ("team-operator-escalation", "team-notify-operator") in edges
+    assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
@@ -3934,6 +4741,32 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     )
     assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
     assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
+
+    # release recovery -> promote agent ref -> record release promotion
+    recovery_promote = effects["team-promote-release-recovery-branch"]
+    assert recovery_promote["type"] == "effect:git:promote-agent-branch"
+    assert recovery_promote["agent_branch"] == (
+        "${{team-git-release-recovery-requested.payload.agent_branch}}"
+    )
+    assert recovery_promote["target_branch"] == (
+        "${{team-git-release-recovery-requested.payload.target_branch}}"
+    )
+    assert recovery_promote["expected_commit_sha"] == (
+        "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+    )
+    recovery_record = effects["team-record-release-recovery-promotion"]
+    assert recovery_record["type"] == "effect:team:record-git-promotion"
+    assert recovery_record["promotion_id"] == (
+        "${{team-git-release-recovery-requested.payload.promotion_id}}"
+    )
+    assert recovery_record["success"] == (
+        "${{team-promote-release-recovery-branch.success}}"
+    )
+    assert ("team-git-release-recovery-requested", "team-promote-release-recovery-branch") in edges
+    assert (
+        "team-promote-release-recovery-branch",
+        "team-record-release-recovery-promotion",
+    ) in edges
 
     # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]

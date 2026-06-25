@@ -38,15 +38,15 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
-    assert addon_entry_points["team"] == "truman_team_addon:register_addon"
-    assert package_data["truman_team_addon"] == ["ui_static/*"]
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/index.html").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.js").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.css").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-org-flow.js").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-org-flow.css").is_file()
+    assert addon_entry_points["team"] == "evander_team_addon:register_addon"
+    assert package_data["evander_team_addon"] == ["ui_static/*"]
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.css").is_file()
 
-    addon = importlib.import_module("truman_team_addon").register_addon()
+    addon = importlib.import_module("evander_team_addon").register_addon()
     assert addon.mcp_tools is not None
 
 
@@ -277,27 +277,39 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
         include_entry_points=False,
         include_builtin=False,
         addon_loader=AddonLoaderConfig(
-            modules=["truman_team_addon"],
+            modules=["evander_team_addon"],
             enabled_addon_ids=["team-addon"],
         ),
     )
 
     assert "addon:team-addon" in enabled.loaded_plugins
     assert "effect:team:wake-due-agents" in enabled.effect_providers
-    assert "effect:team:apply-agent-action" in enabled.effect_providers
+    assert "effect:team:apply-agent-action" not in enabled.effect_providers
+    assert "effect:team:apply-ephemeral-action" not in enabled.effect_providers
+    assert "effect:team:finalize-agent-dispatch" in enabled.effect_providers
+    assert "effect:team:create-case" in enabled.effect_providers
+    assert "effect:team:update-case" in enabled.effect_providers
     assert "effect:team:mark-ephemeral-cleaned-up" in enabled.effect_providers
     assert "effect:team:record-git-promotion" in enabled.effect_providers
     assert "effect:team:mark-release-published" in enabled.effect_providers
     assert "effect:team:consolidate-git-branches" in enabled.effect_providers
+    assert "effect:team:create-case" in enabled.node_definition_resolvers
+    assert "effect:team:finalize-agent-dispatch" in enabled.node_definition_resolvers
     assert "effect:team:record-git-promotion" in enabled.node_definition_resolvers
-    assert "query:team:agent-action-artifact" in enabled.query_providers
+    assert "query:team:agent-action-artifact" not in enabled.query_providers
     assert "query:team:session-routing" in enabled.query_providers
     assert "effect:team:wake-due-agents" in enabled.node_definition_resolvers
     catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
     assert "effect:team:wake-due-agents" in catalog_entries
-    assert "effect:team:apply-agent-action" in catalog_entries
+    assert "effect:team:apply-agent-action" not in catalog_entries
+    assert "effect:team:apply-ephemeral-action" not in catalog_entries
+    assert "effect:team:finalize-agent-dispatch" in catalog_entries
+    assert "effect:team:create-case" in catalog_entries
+    assert "effect:team:update-case" in catalog_entries
+    assert "query:team:agent-action-artifact" not in catalog_entries
     assert "query:team:state" in catalog_entries
     assert catalog_entries["effect:team:wake-due-agents"].label == "Wake Team agents"
+    assert catalog_entries["effect:team:create-case"].label == "Create Team case"
     assert catalog_entries["effect:team:wake-due-agents"].description
     assert all(
         field.description

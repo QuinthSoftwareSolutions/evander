@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     EphemeralAgentPolicy,
     ProjectGoal,
     ReviewProfileCriterion,
@@ -494,6 +494,293 @@ _AUTO_DEV_SQUAD_TEMPLATE = {
 }
 
 
+_ACCOUNTING_DEPARTMENT_TEMPLATE = {
+    "id": "accounting-department",
+    "name": "Accounting Department",
+    "description": (
+        "Department template for bookkeeping operations that coordinates Bokio and "
+        "Skatteverket-assisted accounting work without storing ledger state in Team."
+    ),
+    "root_role_key": "manager",
+    "required_role_keys": [
+        "manager",
+        "project_lead",
+        "bookkeeping_clerk",
+        "invoice_reviewer",
+        "payment_preparer",
+        "tax_compliance_reviewer",
+    ],
+    "roles": [
+        {
+            "key": "manager",
+            "label": "Accounting Manager",
+            "description": "Owns accounting priorities, operator communication, and policy escalation.",
+            "permissions": ["create_root_task"],
+            "ephemeral_policy": {"max_concurrent": 0},
+        },
+        {
+            "key": "project_lead",
+            "label": "Bookkeeping Lead",
+            "description": "Plans bookkeeping operations and routes work across accounting specialists.",
+            "reports_to_role_key": "manager",
+            "permissions": ["create_root_task", "prepare_bookkeeping_action"],
+            "ephemeral_policy": {"max_concurrent": 1},
+        },
+        {
+            "key": "bookkeeping_clerk",
+            "label": "Bookkeeping Clerk",
+            "description": "Inspects receipts, Bokio records, invoices, and prepares draft bookkeeping actions.",
+            "reports_to_role_key": "project_lead",
+            "permissions": ["prepare_bookkeeping_action"],
+            "ephemeral_policy": {"max_concurrent": 1},
+        },
+        {
+            "key": "invoice_reviewer",
+            "label": "Invoice Reviewer",
+            "description": "Reviews supplier invoices, invoice categorization, and prepared journal entries.",
+            "reports_to_role_key": "project_lead",
+            "permissions": ["review_bookkeeping_action"],
+            "ephemeral_policy": {"max_concurrent": 1},
+        },
+        {
+            "key": "payment_preparer",
+            "label": "Payment Preparer",
+            "description": "Prepares Bokio bank-payment drafts for human approval and BankID signing.",
+            "reports_to_role_key": "project_lead",
+            "permissions": ["prepare_bookkeeping_action", "request_payment_preparation"],
+            "ephemeral_policy": {"max_concurrent": 1},
+        },
+        {
+            "key": "tax_compliance_reviewer",
+            "label": "Tax Compliance Reviewer",
+            "description": "Reviews VAT, tax-account, and filing-sensitive accounting questions.",
+            "reports_to_role_key": "project_lead",
+            "permissions": ["review_bookkeeping_action"],
+            "ephemeral_policy": {"max_concurrent": 1},
+        },
+    ],
+    "required_fields": [
+        {
+            "path": "team.id",
+            "label": "Team ID",
+            "description": "Stable identifier for the accounting team.",
+            "example": "team-accounting",
+        },
+        {
+            "path": "team.name",
+            "label": "Team Name",
+            "description": "Human-readable accounting department name.",
+            "example": "Accounting Department",
+        },
+        {
+            "path": "team.operator_communication_target_id",
+            "label": "Operator Communication Target",
+            "description": "Optional target for manager escalations about missing approvals or policy questions.",
+            "required": False,
+            "example": "teams://accounting-ops",
+        },
+        {
+            "path": "team.escalate_to_governance",
+            "label": "Escalate to Governance",
+            "description": "Route manager escalations to governance agenda instead of operator escalation.",
+            "required": False,
+            "example": "false",
+        },
+        {
+            "path": "project.id",
+            "label": "Project ID",
+            "description": "Stable workstream identifier.",
+            "example": "project-bookkeeping-operations",
+        },
+        {
+            "path": "project.name",
+            "label": "Project Name",
+            "description": "Human-readable accounting workstream name.",
+            "example": "Bookkeeping Operations",
+        },
+        {
+            "path": "manager.agent_id",
+            "label": "Accounting Manager Agent ID",
+            "description": "Persistent accounting manager agent identifier.",
+            "example": "manager-accounting",
+        },
+        {
+            "path": "manager.session_id",
+            "label": "Accounting Manager Session ID",
+            "description": "Persistent accounting manager session identifier.",
+            "example": "session-manager-accounting",
+        },
+        {
+            "path": "project_lead.agent_id",
+            "label": "Bookkeeping Lead Agent ID",
+            "description": "Persistent bookkeeping lead agent identifier.",
+            "example": "bookkeeping-lead-accounting",
+        },
+        {
+            "path": "project_lead.session_id",
+            "label": "Bookkeeping Lead Session ID",
+            "description": "Persistent bookkeeping lead session identifier.",
+            "example": "session-bookkeeping-lead-accounting",
+        },
+        {
+            "path": "bookkeeping_clerk.agent_id",
+            "label": "Bookkeeping Clerk Agent ID",
+            "description": "Persistent bookkeeping clerk agent identifier.",
+            "example": "bookkeeping-clerk-accounting",
+        },
+        {
+            "path": "bookkeeping_clerk.session_id",
+            "label": "Bookkeeping Clerk Session ID",
+            "description": "Persistent bookkeeping clerk session identifier.",
+            "example": "session-bookkeeping-clerk-accounting",
+        },
+        {
+            "path": "invoice_reviewer.agent_id",
+            "label": "Invoice Reviewer Agent ID",
+            "description": "Persistent invoice reviewer agent identifier.",
+            "example": "invoice-reviewer-accounting",
+        },
+        {
+            "path": "invoice_reviewer.session_id",
+            "label": "Invoice Reviewer Session ID",
+            "description": "Persistent invoice reviewer session identifier.",
+            "example": "session-invoice-reviewer-accounting",
+        },
+        {
+            "path": "payment_preparer.agent_id",
+            "label": "Payment Preparer Agent ID",
+            "description": "Persistent payment preparer agent identifier.",
+            "example": "payment-preparer-accounting",
+        },
+        {
+            "path": "payment_preparer.session_id",
+            "label": "Payment Preparer Session ID",
+            "description": "Persistent payment preparer session identifier.",
+            "example": "session-payment-preparer-accounting",
+        },
+        {
+            "path": "tax_compliance_reviewer.agent_id",
+            "label": "Tax Compliance Reviewer Agent ID",
+            "description": "Persistent tax compliance reviewer agent identifier.",
+            "example": "tax-compliance-reviewer-accounting",
+        },
+        {
+            "path": "tax_compliance_reviewer.session_id",
+            "label": "Tax Compliance Reviewer Session ID",
+            "description": "Persistent tax compliance reviewer session identifier.",
+            "example": "session-tax-compliance-reviewer-accounting",
+        },
+    ],
+    "project_goals": [
+        {
+            "id": "bookkeeping-operations",
+            "description": (
+                "Process receipts, supplier invoices, and bookkeeping actions through "
+                "review and human approval."
+            ),
+            "state": "pending",
+        }
+    ],
+    "tasks": [
+        {
+            "id": "process-inbox-receipts",
+            "title": "Process inbox receipts",
+            "description": (
+                "Review newly received documents, match them to Bokio records where possible, "
+                "and prepare draft bookkeeping actions for review."
+            ),
+            "owner_role_key": "bookkeeping_clerk",
+            "created_by_role_key": "project_lead",
+            "priority": 10,
+        },
+        {
+            "id": "reconcile-supplier-invoices",
+            "title": "Reconcile supplier invoices",
+            "description": (
+                "Check supplier invoices against Bokio data, flag missing information, "
+                "and prepare supplier-invoice drafts when safe."
+            ),
+            "owner_role_key": "bookkeeping_clerk",
+            "created_by_role_key": "project_lead",
+            "priority": 20,
+        },
+        {
+            "id": "review-prepared-bookkeeping-actions",
+            "title": "Review prepared bookkeeping actions",
+            "description": (
+                "Review prepared journal entries, supplier invoices, and supporting artifacts "
+                "before human approval executes them in Bokio."
+            ),
+            "owner_role_key": "invoice_reviewer",
+            "created_by_role_key": "project_lead",
+            "priority": 30,
+            "dependency_task_ids": ["process-inbox-receipts"],
+        },
+        {
+            "id": "prepare-bank-payments",
+            "title": "Prepare bank payments",
+            "description": (
+                "Prepare Bokio bank-payment actions for approved payable items; final signing "
+                "remains a human BankID step in Bokio."
+            ),
+            "owner_role_key": "payment_preparer",
+            "created_by_role_key": "project_lead",
+            "priority": 40,
+            "dependency_task_ids": ["reconcile-supplier-invoices"],
+        },
+        {
+            "id": "review-tax-compliance-items",
+            "title": "Review tax and compliance items",
+            "description": (
+                "Review VAT, tax-account, and filing-sensitive questions and escalate any "
+                "uncertain accounting policy decisions."
+            ),
+            "owner_role_key": "tax_compliance_reviewer",
+            "created_by_role_key": "project_lead",
+            "priority": 50,
+        },
+    ],
+    "review_profiles": [
+        {
+            "id": "bookkeeping-action-review",
+            "name": "Bookkeeping Action Review",
+            "description": (
+                "Checks Bokio-ready prepared actions for support, account mapping, tax treatment, "
+                "and explicit human approval requirements."
+            ),
+            "project_scoped": True,
+            "applicable_role_keys": ["invoice_reviewer", "tax_compliance_reviewer"],
+            "criteria": [
+                {
+                    "id": "supporting_documentation",
+                    "label": "Supporting Documentation",
+                    "description": "Receipts, invoices, or other source records are linked or called out.",
+                    "required": True,
+                },
+                {
+                    "id": "bokio_mapping",
+                    "label": "Bokio Mapping",
+                    "description": "Accounts, counterparties, amounts, and dates are consistent with Bokio data.",
+                    "required": True,
+                },
+                {
+                    "id": "tax_treatment",
+                    "label": "Tax Treatment",
+                    "description": "VAT and filing-sensitive treatment is checked or explicitly escalated.",
+                    "required": True,
+                },
+                {
+                    "id": "approval_boundary",
+                    "label": "Approval Boundary",
+                    "description": "The action stays prepared-only until a human approval or BankID signing step.",
+                    "required": True,
+                },
+            ],
+        }
+    ],
+}
+
+
 def template_catalog() -> tuple[TeamTemplate, ...]:
     return tuple(template.model_copy(deep=True) for template in _TEMPLATE_CATALOG)
 
@@ -539,7 +826,10 @@ def _unique_text_list(value: object, field_name: str) -> list[str]:
     return items
 
 
-_TEMPLATE_DEFINITIONS = (_AUTO_DEV_SQUAD_TEMPLATE,)
+_TEMPLATE_DEFINITIONS = (
+    _AUTO_DEV_SQUAD_TEMPLATE,
+    _ACCOUNTING_DEPARTMENT_TEMPLATE,
+)
 _TEMPLATE_CATALOG = _build_template_catalog()
 
 

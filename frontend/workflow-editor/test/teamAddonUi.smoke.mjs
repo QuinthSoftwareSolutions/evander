@@ -8,7 +8,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 
 const staticRoot = path.resolve(
-  fileURLToPath(new URL("../../../src/truman_team_addon/ui_static", import.meta.url)),
+  fileURLToPath(new URL("../../../src/evander_team_addon/ui_static", import.meta.url)),
 );
 const teamViewStorageKey = "team-addon:active-view";
 
@@ -31,6 +31,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /Handoff summary/);
   assert.match(script, /data-team-view/);
   assert.match(script, /team-addon:active-view/);
+  assert.doesNotMatch(markup, /data-team-view="setup"/);
+  assert.doesNotMatch(markup, /team-setup-page/);
   assert.match(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
@@ -38,6 +40,12 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-task-board-team/);
   assert.match(script, /renderTaskBoard/);
   assert.match(script, /taskBoardLanes/);
+  assert.match(markup, /data-team-view="projects"/);
+  assert.match(markup, /id="team-projects-page"/);
+  assert.match(markup, /id="create-project-from-projects-form"/);
+  assert.match(script, /renderProjectFocus/);
+  assert.match(script, /projectReviewRoleOptionsForProject/);
+  assert.match(script, /create-review-profile-for-project-form/);
   assert.match(script, /data-select-agent-id/);
   assert.match(script, /data-select-project-id/);
   assert.match(script, /data-select-role-id/);
@@ -54,6 +62,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
+  assert.match(stylesheet, /\.projects-workbench/);
+  assert.match(stylesheet, /\.projects-focus-row/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.criteria-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
@@ -63,8 +73,21 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /data-review-profile-criteria-editor/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
+  assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
   assert.match(script, /data-chat-scroll-conversation-id/);
   assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
+  assert.match(
+    stylesheet,
+    /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-new-picker\s*\{[\s\S]*?overflow:\s*hidden;/,
+  );
+  assert.match(
+    stylesheet,
+    /\.chat-agent-picker\s*\{[\s\S]*?max-height:\s*min\(18rem, 45vh\);[\s\S]*?overflow-y:\s*auto;/,
+  );
   assert.match(script, /renderTeamProjectDetail/);
   assert.match(script, /renderTeamRoleDetail/);
   assert.match(script, /peopleViewTeams/);
@@ -97,8 +120,13 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
   assert.doesNotMatch(markup, /content-panel people-agents-panel/);
   assert.match(markup, /data-governance-create-toggle/);
+  assert.match(markup, /show-handled-governance-agenda-toggle/);
   assert.match(markup, /id="governance-create-panel"[\s\S]*id="create-governance-group-form"/);
   assert.doesNotMatch(markup, /<summary>Create governance group<\/summary>/);
+  assert.match(script, /showHandledGovernanceAgenda/);
+  assert.match(script, /bindGovernanceAgendaVisibilityToggle/);
+  assert.match(stylesheet, /\.governance-goals-subsection/);
+  assert.match(stylesheet, /\.governance-goal-list li\s*{[\s\S]*linear-gradient/);
   assert.match(
     stylesheet,
     /button\.people-agent-select\s*{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);/,
@@ -1068,23 +1096,31 @@ function chatConversationPayload(state, conversation, { includeMessages = false,
   return payload;
 }
 
-function chatCollectionPayload(state, { selectedConversationId = null } = {}) {
+function chatCollectionPayload(state, { selectedConversationId = null, includeSelectedMessages = false } = {}) {
   const conversations = Object.values(state.conversations || {}).sort((left, right) => {
     return (
       String(right.last_interaction_at || "").localeCompare(String(left.last_interaction_at || "")) ||
       String(right.id || "").localeCompare(String(left.id || ""))
     );
   });
+  let resolvedSelectedConversationId = selectedConversationId;
+  if (
+    !conversations.some((conversation) => conversation.id === resolvedSelectedConversationId)
+  ) {
+    resolvedSelectedConversationId = includeSelectedMessages ? conversations[0]?.id || null : selectedConversationId;
+  }
   const eligibleAgents = Object.values(state.agents || {})
     .filter((agent) => (agent.status || "active") !== "archived")
     .sort((left, right) => String(left.display_name || left.id).localeCompare(String(right.display_name || right.id)))
     .map((agent) => chatAgentPayload(state, agent.id));
   return {
     revision: state.revision,
-    selected_conversation_id: selectedConversationId,
+    selected_conversation_id: resolvedSelectedConversationId,
     eligible_agents: eligibleAgents,
     conversations: conversations.map((conversation) =>
-      chatConversationPayload(state, conversation, { includeMessages: false }),
+      chatConversationPayload(state, conversation, {
+        includeMessages: includeSelectedMessages && conversation.id === resolvedSelectedConversationId,
+      }),
     ),
   };
 }
@@ -1116,6 +1152,7 @@ async function createTeamAddonServer(
   t,
   {
     conflictOnFirstTeamCreate = false,
+    conversationsBeforeResponse = null,
     costsBeforeResponse = null,
     costsDelayMs = 0,
     costsPayload = null,
@@ -1127,6 +1164,7 @@ async function createTeamAddonServer(
   const requests = [];
   const costResponses = [];
   const timelineRequests = [];
+  const chatRequests = [];
   const openChatStreams = new Set();
   let conflictSent = false;
   const template = autoDevSquadTemplate();
@@ -1188,12 +1226,17 @@ async function createTeamAddonServer(
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/conversations") {
-        jsonResponse(response, {
-          revision: state.revision,
-          selected_conversation_id: null,
-          eligible_agents: [],
-          conversations: [],
-        });
+        chatRequests.push({ method: request.method, pathname, search: url.search });
+        if (conversationsBeforeResponse) {
+          await conversationsBeforeResponse({ request, url, chatRequests });
+        }
+        jsonResponse(
+          response,
+          chatCollectionPayload(state, {
+            selectedConversationId: queryText(url.searchParams, "selected_conversation_id"),
+            includeSelectedMessages: queryBool(url.searchParams, "include_selected_messages") === true,
+          }),
+        );
         return;
       }
       if (
@@ -1425,7 +1468,7 @@ async function createTeamAddonServer(
   });
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
-  return { port: address.port, requests, state, timelineRequests, costResponses };
+  return { port: address.port, requests, state, timelineRequests, costResponses, chatRequests };
 }
 
 function materializationDuplicateError(state, payload, template) {
@@ -1939,7 +1982,13 @@ async function waitForCondition(predicate, message, { timeoutMs = 2000, interval
   throw new Error(message);
 }
 
+async function openWorkspace(page) {
+  await page.getByRole("tab", { name: "Workspace" }).click();
+  await page.locator("#team-workspace-page").waitFor({ state: "visible" });
+}
+
 async function openDetails(page, name) {
+  await openWorkspace(page);
   const details = page
     .locator("details", { has: page.locator("summary", { hasText: name }) })
     .first();
@@ -1984,6 +2033,23 @@ test("team add-on remembers the selected top-level view across refresh", async (
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
 });
 
+test("team add-on normalizes deprecated Setup view storage to Teams", async (t) => {
+  const { port } = await createTeamAddonServer(t);
+  const page = await openBrowserPage(t, port);
+
+  await page.evaluate((storageKey) => window.localStorage.setItem(storageKey, "setup"), teamViewStorageKey);
+  await page.reload({ waitUntil: "domcontentloaded" });
+
+  await page.locator('#team-view-people-tab[aria-selected="true"]').waitFor({ state: "visible" });
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
+  assert.equal(await page.getByRole("tab", { name: "Setup" }).count(), 0);
+  assert.equal(
+    await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), teamViewStorageKey),
+    "people",
+  );
+});
+
 test("team add-on Teams tab creates teams from the top-level action", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
@@ -1992,7 +2058,7 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
 
-  await page.locator("#team-people-page").getByRole("button", { name: "Create team" }).click();
+  await page.locator("#team-tab-create-team-action").click();
   const teamForm = page.locator("#create-team-from-teams-form");
   await teamForm.waitFor({ state: "visible" });
   await page.waitForFunction(() =>
@@ -2129,6 +2195,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   const deliverableId =
     "deliverable-task-project-team-team-project-build-backend-backend-task-is-ready";
 
+  await openWorkspace(page);
   await page
     .locator("#hierarchy-view")
     .getByText("No teams registered.")
@@ -2191,9 +2258,9 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await agentForm.locator('[name="max_concurrent"]').fill("2");
   await agentForm.getByRole("button", { name: "Register agent" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
-  await page.getByText("Team Manager").first().waitFor({ state: "visible" });
-  await page.getByText("Project Lead").first().waitFor({ state: "visible" });
-  await page.getByText("Backend Agent").first().waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Team Manager" }).waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Project Lead" }).waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Backend Agent" }).waitFor({ state: "visible" });
 
   await openDetails(page, "Create task");
   await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', backendId);
@@ -2265,6 +2332,8 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
   const generatedTeamId = "team-auto-dev-squad";
   const generatedProjectId = "project-team-auto-dev-squad-reviewed-auto-dev-delivery";
 
+  await openWorkspace(page);
+  await openDetails(page, "Setup from template");
   await page.locator("#hierarchy-view").getByText("No teams registered.").waitFor({
     state: "visible",
   });
@@ -2383,6 +2452,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 8);
+  await openWorkspace(page);
 
   assert.equal(await page.locator(".hierarchy-team").count(), 1);
   assert.equal(await page.locator(".hierarchy-children").count(), 3);
@@ -2440,7 +2510,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     .waitFor({ state: "visible" });
   await backendCard
     .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
-    .getByText("backend")
+    .getByText("backend", { exact: true })
     .waitFor({ state: "visible" });
   const backendDetails = backendCard.locator(".hierarchy-node-details");
   await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
@@ -2748,6 +2818,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 8);
+  await openWorkspace(page);
   await page.locator("#hierarchy-view").getByText("No active team.").waitFor({
     state: "visible",
   });
@@ -2798,6 +2869,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 3);
+  await openWorkspace(page);
 
   await page.getByText("Missing manager ghost-manager").waitFor({ state: "visible" });
   await page.getByText("Cycle detected at alpha").waitFor({ state: "visible" });
@@ -2806,7 +2878,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
 });
 
 test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
-  const { port } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
+  const { port, requests } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
 
   await openDetails(page, "Create team");
@@ -2819,6 +2891,16 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   assert.equal(await teamForm.locator('[name="name"]').inputValue(), "Team");
   assert.equal(await teamForm.locator('[name="manager_session_id"]').inputValue(), "session-manager");
   await page.locator(".hierarchy-team h3", { hasText: "Existing" }).waitFor({ state: "visible" });
+
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await waitForRevision(page, 2);
+  await page.locator(".hierarchy-team h3", { hasText: "Team" }).waitFor({ state: "visible" });
+  const createRequests = requests.filter((request) => request.pathname === "/api/addons/team-addon/teams");
+  assert.equal(createRequests.length, 2);
+  assert.equal(createRequests[1].payload.name, "Team");
+  assert.equal(createRequests[1].payload.manager_session_id, "session-manager");
+  assert.equal(createRequests[1].payload.expected_revision, 1);
+  assert.equal(createRequests[1].payload.conflict_policy, "target_unchanged");
 });
 
 test("team add-on Governance tab creates governance groups from the top-level button", async (t) => {
@@ -2850,7 +2932,7 @@ test("team add-on Governance tab creates governance groups from the top-level bu
 
   await waitForRevision(page, 5);
   await page.locator("#governance-create-panel").waitFor({ state: "hidden" });
-  await page.locator(".governance-item", { hasText: "Platform Oversight" }).waitFor({
+  await page.locator(".governance-item", { hasText: "governance-group-platform-oversight" }).waitFor({
     state: "visible",
   });
 
@@ -2871,6 +2953,65 @@ test("team add-on Governance tab creates governance groups from the top-level bu
       state: "pending",
     },
   ]);
+});
+
+test("team add-on Governance tab hides handled agenda by default and emphasizes goals", async (t) => {
+  const initialState = seededGitState();
+  initialState.governance_groups["platform-oversight"].goals = [
+    {
+      id: "spend",
+      description: "Keep platform spend inside the agreed guardrails",
+      state: "pending",
+    },
+  ];
+  initialState.governance_agenda["platform-handled-agenda"] = {
+    id: "platform-handled-agenda",
+    governance_group_id: "platform-oversight",
+    item_type: "cost_cap_warning",
+    priority: "normal",
+    team_id: "team-beta",
+    project_id: null,
+    agent_id: null,
+    title: "Retired cost review",
+    summary: "Already handled.",
+    payload: {},
+    state: "handled",
+    created_at: "2026-06-08T00:00:00Z",
+    updated_at: "2026-06-08T00:00:00Z",
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Governance" }).click();
+  await page.locator("#team-governance-page").waitFor({ state: "visible" });
+  await page.locator("#show-handled-governance-agenda-toggle").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#show-handled-governance-agenda-toggle").isChecked(), false);
+
+  await page.locator("#team-governance-page").getByText("Review Alpha blockers").waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-governance-page").getByText("Retired cost review").count(), 0);
+
+  const subsectionHeadings = await page
+    .locator("#team-governance-page .governance-subsection > .meta-line")
+    .evaluateAll((nodes) => nodes.map((node) => node.textContent.trim()));
+  assert.deepEqual(subsectionHeadings.slice(0, 3), ["Goals", "Member teams", "Agenda - 1 pending"]);
+  await page.locator("#team-governance-page .governance-goals-subsection .governance-goal-list").waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await page
+      .locator("#team-governance-page .governance-goals-subsection .governance-goal-list")
+      .getByText("pending", { exact: true })
+      .count(),
+    0,
+  );
+
+  await page.locator("#show-handled-governance-agenda-toggle").check();
+  await page.locator("#team-governance-page").getByText("Retired cost review").waitFor({
+    state: "visible",
+  });
 });
 
 function seededGitState() {
@@ -3615,8 +3756,8 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
       state: "visible",
     });
 
-  await page.locator('#team-people-page [data-team-record-tab="role"]').click();
-  const alphaLeadRoleCard = page.locator('#team-people-page [data-role-id="alpha-project__project-lead"]');
+  await alphaGroup.locator('[data-team-record-tab="role"]').click();
+  const alphaLeadRoleCard = alphaGroup.locator('[data-role-id="alpha-project__project-lead"]');
   await alphaLeadRoleCard.getByRole("button").click();
   await alphaLeadRoleCard.locator('.team-record-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -3628,8 +3769,8 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     state: "visible",
   });
 
-  await page.locator('#team-people-page [data-team-record-tab="agent"]').click();
-  const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  await alphaGroup.locator('[data-team-record-tab="agent"]').click();
+  const alphaLeadCard = alphaGroup.locator('[data-agent-id="alpha-lead"]');
   await alphaLeadCard.getByRole("button").click();
   await alphaLeadCard.locator('.people-agent-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -3703,34 +3844,133 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   await inlineProjectForm.waitFor({ state: "visible" });
   assert.equal(await inlineProjectForm.locator('select[name="team_id"]').count(), 0);
   assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 1);
+  await inlineProjectForm.locator("summary", { hasText: "Git config" }).click();
+  assert.equal(await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).count(), 1);
+  await inlineProjectForm.locator('[name="host_repo_path"]').fill("/srv/repos/second-project");
+  await inlineProjectForm.locator('[name="bare_repo"]').fill("second-project.git");
+  await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).click();
+  await page
+    .locator("#status-message", {
+      hasText: "Imported Git repo. Review the populated Git fields, then save.",
+    })
+    .waitFor({ state: "visible" });
+  assert.equal(await inlineProjectForm.locator('[name="base_branch"]').inputValue(), "main");
+  assert.equal(
+    await inlineProjectForm.locator('[name="canonical_origin_url"]').inputValue(),
+    "git@github.com:Example/imported-project.git",
+  );
+  assert.equal(await inlineProjectForm.locator('[name="provider"]').inputValue(), "github");
   await inlineProjectForm.locator('[name="name"]').fill("Second Project");
   await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-manager");
   await inlineProjectForm.locator('[name="goal_description"]').fill("Ship beta follow-up");
   await inlineProjectForm.getByRole("button", { name: "Create project" }).click();
   await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
+  const mutationRequests = requests.filter(
+    (request) => request.pathname !== "/api/addons/team-addon/projects/git/import",
+  );
   assert.deepEqual(
-    requests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
+    mutationRequests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
     [
       ["POST", "/api/addons/team-addon/agents", 4],
       ["POST", "/api/addons/team-addon/roles", 5],
       ["POST", "/api/addons/team-addon/projects", 6],
     ],
   );
-  assert.equal(requests[0].payload.team_id, "team-beta");
-  assert.equal(requests[0].payload.display_name, "Beta Ops");
-  assert.equal(requests[1].payload.team_id, "team-beta");
-  assert.equal(requests[1].payload.project_id, "beta-project");
-  assert.deepEqual(requests[1].payload.permissions, ["request_release"]);
-  assert.equal(requests[2].payload.team_id, "team-beta");
-  assert.equal(requests[2].payload.lead_agent_id, "beta-manager");
-  assert.deepEqual(requests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
+  const inlineImportRequest = requests.find(
+    (request) =>
+      request.pathname === "/api/addons/team-addon/projects/git/import" &&
+      request.payload.repo_source === "/srv/repos/second-project",
+  );
+  assert.ok(inlineImportRequest);
+  assert.deepEqual(inlineImportRequest.payload, {
+    repo_source: "/srv/repos/second-project",
+    bare_repo_name: "second-project.git",
+  });
+  assert.equal(mutationRequests[0].payload.team_id, "team-beta");
+  assert.equal(mutationRequests[0].payload.display_name, "Beta Ops");
+  assert.equal(mutationRequests[1].payload.team_id, "team-beta");
+  assert.equal(mutationRequests[1].payload.project_id, "beta-project");
+  assert.deepEqual(mutationRequests[1].payload.permissions, ["request_release"]);
+  assert.equal(mutationRequests[2].payload.team_id, "team-beta");
+  assert.equal(mutationRequests[2].payload.lead_agent_id, "beta-manager");
+  assert.deepEqual(mutationRequests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
+  assert.deepEqual(mutationRequests[2].payload.git, {
+    host_repo_path: "/srv/repos/second-project",
+    bare_repo_name: "second-project.git",
+    base_branch: "main",
+    canonical_origin_url: "git@github.com:Example/imported-project.git",
+    provider: "github",
+  });
+});
+
+test("team add-on agent edit scopes project, role, and superior choices to the selected team", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+
+  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  await alphaGroup.waitFor({ state: "visible" });
+  if (!(await alphaGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await alphaGroup.locator(".team-record-group-header").click();
+  }
+  await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await alphaGroup.locator('[data-agent-id="alpha-lead"]').getByRole("button").click();
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "alpha-lead" }).waitFor({
+    state: "visible",
+  });
+  await page.locator('#people-agent-detail-view [data-edit-type="agent"][data-edit-id="alpha-lead"]').click();
+  await page.locator("#edit-modal-title", { hasText: "Edit agent alpha-lead" }).waitFor({
+    state: "visible",
+  });
+
+  const form = page.locator("#edit-record-form");
+  assert.equal(await form.locator('select[name="project_id"] option[value="alpha-project"]').count(), 1);
+  assert.equal(await form.locator('select[name="project_id"] option[value="beta-project"]').count(), 0);
+  assert.equal(await form.locator('select[name="role_id"] option[value="alpha-project__project-lead"]').count(), 1);
+  assert.equal(await form.locator('select[name="role_id"] option[value="beta-project__project-lead"]').count(), 0);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-manager"]').count(), 1);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-lead"]').count(), 0);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="beta-manager"]').count(), 0);
+
+  await form.locator('select[name="team_id"]').selectOption("team-beta");
+  await waitForSelectOption(page, '#edit-record-form select[name="project_id"]', "beta-project");
+  await waitForSelectOption(page, '#edit-record-form select[name="role_id"]', "beta-project__project-lead");
+  await waitForSelectOption(page, '#edit-record-form select[name="reports_to_agent_id"]', "beta-manager");
+
+  assert.equal(await form.locator('select[name="project_id"] option[value="alpha-project"]').count(), 0);
+  assert.equal(await form.locator('select[name="role_id"] option[value="alpha-project__project-lead"]').count(), 0);
+  assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-manager"]').count(), 0);
+  assert.equal(await form.locator('select[name="project_id"]').inputValue(), "");
+  assert.equal(await form.locator('select[name="role_id"]').inputValue(), "");
+  assert.equal(await form.locator('select[name="reports_to_agent_id"]').inputValue(), "");
 });
 
 function seededLongChatState(messageCount = 120) {
   const state = seededGitState();
   state.revision = 9;
   state.agents["alpha-lead"].display_name = "Ada";
+  for (let index = 1; index <= 30; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    state.agents[`scroll-agent-${suffix}`] = {
+      id: `scroll-agent-${suffix}`,
+      team_id: "team-alpha",
+      project_id: "alpha-project",
+      role_id: "alpha-project__implementer",
+      display_name: `Scrollable Agent ${suffix}`,
+      session_id: `session-scroll-agent-${suffix}`,
+      reports_to_agent_id: "alpha-lead",
+      subordinate_agent_ids: [],
+      ephemeral_policy: { max_concurrent: 0 },
+      status: "active",
+    };
+  }
   state.conversations = {
     "conversation-alpha-lead": {
       id: "conversation-alpha-lead",
@@ -3764,8 +4004,41 @@ function seededLongChatState(messageCount = 120) {
   return state;
 }
 
-test("team add-on Chat panel stays bounded and loads older messages on upward scroll", async (t) => {
-  const { port, requests } = await createTeamAddonServer(t, {
+function seededTwoConversationChatState() {
+  const state = seededLongChatState(80);
+  state.agents["beta-lead"].display_name = "Bea";
+  state.conversations["conversation-beta-lead"] = {
+    id: "conversation-beta-lead",
+    agent_id: "beta-lead",
+    created_by: "operator",
+    last_message_preview: "Beta message 019",
+    created_at: "2026-06-09T00:00:00Z",
+    updated_at: "2026-06-09T01:00:00Z",
+    last_interaction_at: "2026-06-09T01:00:00Z",
+  };
+  for (let index = 0; index < 20; index += 1) {
+    const timestamp = new Date(Date.UTC(2026, 5, 9, 0, index, 30)).toISOString();
+    state.conversation_messages[`beta-msg-${String(index).padStart(3, "0")}`] = {
+      id: `beta-msg-${String(index).padStart(3, "0")}`,
+      conversation_id: "conversation-beta-lead",
+      sender: index % 2 === 0 ? "operator" : "agent",
+      message_type: "text",
+      body: `Beta message ${String(index).padStart(3, "0")}`,
+      status: "sent",
+      dispatch_id: null,
+      voice_session_id: null,
+      source_message_id: null,
+      error: null,
+      metadata: {},
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+  }
+  return state;
+}
+
+test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
+  const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
   const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
@@ -3778,6 +4051,24 @@ test("team add-on Chat panel stays bounded and loads older messages on upward sc
   await messageList.getByText("Message 119").waitFor({ state: "visible" });
   assert.equal(await page.locator(".chat-message").count(), 50);
   assert.equal(await messageList.getByText("Message 000").count(), 0);
+  assert.ok(
+    chatRequests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/conversations" &&
+        String(request.search || "").includes("include_selected_messages=1"),
+    ),
+    "expected initial chat load to request selected conversation messages in the collection payload",
+  );
+  assert.equal(
+    requests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead",
+    ),
+    false,
+    "expected initial usable chat view to skip the redundant conversation detail request",
+  );
 
   await page.waitForFunction(() => {
     const list = document.querySelector(".chat-message-list");
@@ -3862,6 +4153,94 @@ test("team add-on Chat panel stays bounded and loads older messages on upward sc
   assert.ok(
     afterScrollMetrics.scrollTop > 0,
     `expected scroll position to be preserved after prepend: ${JSON.stringify(afterScrollMetrics)}`,
+  );
+
+  await page.getByRole("button", { name: "New chat" }).click();
+  const picker = page.locator(".chat-agent-picker");
+  await picker.waitFor({ state: "visible" });
+  const pickerMetrics = await picker.evaluate((element) => {
+    const sidebar = document.querySelector(".chat-sidebar");
+    if (!(sidebar instanceof HTMLElement)) {
+      return null;
+    }
+    const pickerBox = element.getBoundingClientRect();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    return {
+      clientHeight: element.clientHeight,
+      overflowY: getComputedStyle(element).overflowY,
+      pickerBottom: pickerBox.bottom,
+      scrollHeight: element.scrollHeight,
+      sidebarBottom: sidebarBox.bottom,
+    };
+  });
+  assert.ok(pickerMetrics, "expected chat picker metrics");
+  assert.match(pickerMetrics.overflowY, /auto|scroll/);
+  assert.ok(
+    pickerMetrics.scrollHeight > pickerMetrics.clientHeight,
+    `expected long agent picker to scroll internally: ${JSON.stringify(pickerMetrics)}`,
+  );
+  assert.ok(
+    pickerMetrics.pickerBottom <= pickerMetrics.sidebarBottom + 2,
+    `expected picker to stay inside sidebar: ${JSON.stringify(pickerMetrics)}`,
+  );
+  const lateAgent = page.locator('[data-chat-agent-id="scroll-agent-30"]');
+  await lateAgent.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  await lateAgent.click();
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "scroll-agent-30",
+      ),
+    "expected selecting a late-list chat agent to create or focus that chat",
+  );
+});
+
+test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", async (t) => {
+  let holdConversationList = false;
+  let releaseRefreshResponse = null;
+  let refreshRequestStarted = null;
+  const refreshStarted = new Promise((resolve) => {
+    refreshRequestStarted = resolve;
+  });
+  const refreshRelease = new Promise((resolve) => {
+    releaseRefreshResponse = resolve;
+  });
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededTwoConversationChatState(),
+    conversationsBeforeResponse: async () => {
+      if (!holdConversationList) {
+        return;
+      }
+      holdConversationList = false;
+      refreshRequestStarted?.();
+      await refreshRelease;
+    },
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+
+  holdConversationList = true;
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await refreshStarted;
+  await page.locator('[data-chat-conversation-id="conversation-beta-lead"]').click();
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+
+  releaseRefreshResponse?.();
+  await page.waitForFunction(() => {
+    const selected = document.querySelector(".chat-conversation-row.is-selected");
+    return selected?.dataset?.chatConversationId === "conversation-beta-lead";
+  });
+  await page.locator(".chat-thread-title").getByText("Bea").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".chat-thread-title").getByText("Ada").count(),
+    0,
+    "expected delayed conversation-list response not to restore the stale selection",
   );
 });
 
@@ -4212,17 +4591,17 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Teams",
     "Governance",
     "Planning",
-    "Setup",
     "Timeline",
     "Org chart",
   ]) {
     await page.getByRole("tab", { name: tabName }).waitFor({ state: "visible" });
   }
+  assert.equal(await page.getByRole("tab", { name: "Setup" }).count(), 0);
 
   await page.getByRole("tab", { name: "Overview" }).click();
   await page.locator("#team-overview-page").waitFor({ state: "visible" });
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
-  assert.equal(await page.locator(".metric").count(), 8);
+  assert.equal(await page.locator("#team-overview-page .metric").count(), 9);
   await page.locator("#team-overview-page").getByText("Pending reviews").waitFor({
     state: "visible",
   });
@@ -4302,14 +4681,16 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 4);
   assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-group.is-collapsed").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-section").count(), 0);
-  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').getByRole("heading", { name: "Alpha Team" }).waitFor({
+  assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 0);
+  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  await alphaGroup.locator(".team-record-group-title strong", { hasText: "Alpha Team" }).waitFor({
     state: "visible",
   });
-  await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').getByRole("heading", { name: "Beta Team" }).waitFor({
+  await betaGroup.locator(".team-record-group-title strong", { hasText: "Beta Team" }).waitFor({
     state: "visible",
   });
   assert.equal(await page.locator("#team-people-page .hierarchy-view").count(), 0);
@@ -4321,7 +4702,13 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     }),
     2,
   );
-  const peopleIdentityRects = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-people-page .team-record-group.is-expanded").count(), 1);
+  assert.equal(await alphaGroup.locator("[data-agent-id]").count(), 2);
+  assert.equal(await betaGroup.locator("[data-agent-id]").count(), 0);
+
+  const peopleIdentityRects = await alphaGroup.locator(".people-agent-select").evaluateAll((buttons) => {
     return buttons
       .map((button) => {
         const avatar = button.querySelector(".agent-avatar")?.getBoundingClientRect();
@@ -4346,45 +4733,14 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     const avatarGap = rect.identityLeft - rect.avatarRight;
     assert.ok(avatarGap >= 0 && avatarGap <= 16, `expected People identity to start near avatar, got ${avatarGap}px`);
   }
-  const peopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
+  const peopleLabels = await alphaGroup.locator(".people-agent-select").evaluateAll((buttons) => {
     return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
   });
-  assert.deepEqual(peopleLabels, ["Ada Manager", "Grace Lead", "Beta Lead", "Zed Manager"]);
-  await page.locator('#team-people-page [data-people-team-id="all"][aria-selected="true"]').waitFor({
-    state: "visible",
-  });
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "10");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "5");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "5");
-  await page.locator('#team-people-page [data-people-team-id="team-beta"]').click();
-  await page.locator('#team-people-page [data-people-team-id="team-beta"][aria-selected="true"]').waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').count(), 1);
-  const betaPeopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
-    return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
-  });
-  assert.deepEqual(betaPeopleLabels, ["Beta Lead", "Zed Manager"]);
-  assert.equal(await page.locator('#team-people-page [data-agent-id="alpha-lead"]').count(), 0);
-  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 1);
-  await page.locator('#team-people-page [data-people-team-id="team-alpha"]').click();
-  await page.locator('#team-people-page [data-people-team-id="team-alpha"][aria-selected="true"]').waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator("#team-people-page .team-record-group").count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').count(), 1);
-  const alphaPeopleLabels = await page.locator("#team-people-page .people-agent-select").evaluateAll((buttons) => {
-    return buttons.map((button) => button.querySelector(".compact-record-main strong")?.textContent?.trim());
-  });
-  assert.deepEqual(alphaPeopleLabels, ["Ada Manager", "Grace Lead"]);
-  assert.equal(await page.locator("#team-people-page .people-agent-select .agent-summary-meta").count(), 0);
-  await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
-    state: "visible",
-  });
-  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
-  const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
+  assert.deepEqual(peopleLabels, ["Ada Manager", "Grace Lead"]);
+  assert.equal(await alphaGroup.locator(".people-agent-select .agent-summary-meta").count(), 0);
+
+  await alphaGroup.locator('[data-team-record-tab="project"]').click();
+  const alphaProjectRecord = alphaGroup.locator('[data-project-id="alpha-project"]');
   await alphaProjectRecord.getByRole("button").click();
   await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -4422,7 +4778,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Grace Lead" }).waitFor({
     state: "visible",
   });
-  await page.locator("#people-agent-detail-view").getByText("session-alpha-lead").waitFor({
+  await page.locator("#people-agent-detail-view .agent-detail-value", { hasText: "session-alpha-lead" }).waitFor({
     state: "visible",
   });
   await page
@@ -4481,10 +4837,6 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
 
-  await page.getByRole("tab", { name: "Setup" }).click();
-  await page.locator("#team-setup-page #setup-template-form").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 0);
-
   await page.getByRole("tab", { name: "Timeline" }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
@@ -4531,8 +4883,9 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Workspace" }).click();
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
-  await page.locator("#team-workspace-page #setup-template-form").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-setup-page #setup-template-form").count(), 0);
+  await page.locator("#team-workspace-page .template-setup summary", { hasText: "Setup from template" }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 1);
+  assert.equal(await page.locator("#team-setup-page").count(), 0);
   await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
 });
 
@@ -4605,6 +4958,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
+  await openWorkspace(page);
   await page
     .getByLabel("Workspace", { exact: true })
     .getByText("Derived from the current TeamState snapshot, not a persisted audit log.")

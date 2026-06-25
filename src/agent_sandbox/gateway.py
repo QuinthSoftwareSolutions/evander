@@ -5128,7 +5128,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """Build the JSON data block for templates/daily-status-report.html from ADO."""
+        """Build the JSON data block for templates/daily-status-report.html from ADO.
+
+        Leave elapsed_sprint_percent unset unless elapsed_time_mode is manual_override.
+        """
         session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
         )

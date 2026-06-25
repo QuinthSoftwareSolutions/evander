@@ -50,23 +50,46 @@ from .models import (
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
+    TeamCaseStatus,
     TeamRecordState,
     TeamInboxPriority,
     TeamTaskState,
     TeamState,
     agent_project_assignment_payloads,
     agent_project_ids,
+    project_assignments_for_agent,
     effective_role_permissions,
     team_state_payload,
 )
 from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
-from .repository import TeamStateConflictError, TeamStateRepository
+from .repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    TeamStateConflictError,
+    TeamStateRepository,
+)
 from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
+TEAM_RESOURCE_TOKEN_COLLECTIONS = (
+    "teams",
+    "governance_groups",
+    "governance_agenda",
+    "projects",
+    "roles",
+    "agents",
+    "cases",
+    "tasks",
+    "deliverables",
+    "review_requests",
+    "review_profiles",
+    "inbox",
+    "action_records",
+    "release_packages",
+    "stand_downs",
+)
 
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
@@ -82,6 +105,46 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 _session_repository_from_context(context)
             ),
         )
+
+    def _state_response(
+        request: Request,
+        state: TeamState,
+        *,
+        status_code: int = 200,
+        rebased_from_revision: int | None = None,
+    ) -> JSONResponse:
+        response_payload = _state_payload(request, state)
+        if rebased_from_revision is not None:
+            response_payload["rebased_from_revision"] = rebased_from_revision
+        return JSONResponse(response_payload, status_code=status_code)
+
+    def _run_ui_rebasable_mutation(
+        payload: Mapping[str, Any],
+        mutate: Any,
+        *,
+        target_collection: str | None = None,
+        target_id: str | None = None,
+        create_collection: str | None = None,
+        create_id: str | None = None,
+    ) -> tuple[TeamState, int | None]:
+        expected_revision = _expected_revision(payload)
+        try:
+            return mutate(expected_revision), None
+        except TeamStateConflictError:
+            current = repository.read()
+            if not _can_rebase_ui_mutation(
+                payload,
+                current,
+                target_collection=target_collection,
+                target_id=target_id,
+                create_collection=create_collection,
+                create_id=create_id,
+            ):
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision,
+                    current_revision=current.revision,
+                )
+            return mutate(current.revision), expected_revision
 
     async def get_state(request: Request) -> JSONResponse:
         return JSONResponse(_state_payload(request, repository.read()))
@@ -165,55 +228,84 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.create_team(
-            team_id=_optional(payload, "id") or _optional(payload, "team_id"),
-            name=_required(payload, "name"),
-            manager_agent_id=_optional(payload, "manager_agent_id"),
-            manager_session_id=_required(payload, "manager_session_id"),
-            manager_display_name=_optional(payload, "manager_display_name"),
-            manager_role_id=_optional(payload, "manager_role_id"),
-            manager_role_name=_optional(payload, "manager_role_name"),
-            operator_communication_target_id=_optional(
-                payload, "operator_communication_target_id"
+        team_id = _optional(payload, "id") or _optional(payload, "team_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_team(
+                team_id=team_id,
+                name=_required(payload, "name"),
+                manager_agent_id=_optional(payload, "manager_agent_id"),
+                manager_session_id=_required(payload, "manager_session_id"),
+                manager_display_name=_optional(payload, "manager_display_name"),
+                manager_role_id=_optional(payload, "manager_role_id"),
+                manager_role_name=_optional(payload, "manager_role_name"),
+                operator_communication_target_id=_optional(
+                    payload, "operator_communication_target_id"
+                ),
+                escalate_to_governance=bool(_optional_bool(payload, "escalate_to_governance") or False),
+                max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+                expected_revision=expected_revision,
             ),
-            escalate_to_governance=bool(_optional_bool(payload, "escalate_to_governance") or False),
-            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
-            expected_revision=_expected_revision(payload),
+            create_collection="teams",
+            create_id=team_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_archived = payload.get("archived")
-        state = repository.update_team(
-            team_id=request.path_params["team_id"],
-            name=_optional(payload, "name"),
-            manager_agent_id=_optional(payload, "manager_agent_id"),
-            operator_communication_target_id=_optional(
-                payload, "operator_communication_target_id"
+        team_id = request.path_params["team_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_team(
+                team_id=team_id,
+                name=_optional(payload, "name"),
+                manager_agent_id=_optional(payload, "manager_agent_id"),
+                operator_communication_target_id=_optional(
+                    payload, "operator_communication_target_id"
+                ),
+                set_operator_communication_target_id="operator_communication_target_id" in payload,
+                escalate_to_governance=_optional_bool(payload, "escalate_to_governance"),
+                max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+                set_max_cost_usd="max_cost_usd" in payload,
+                archived=raw_archived if isinstance(raw_archived, bool) else None,
+                expected_revision=expected_revision,
             ),
-            set_operator_communication_target_id="operator_communication_target_id" in payload,
-            escalate_to_governance=_optional_bool(payload, "escalate_to_governance"),
-            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
-            set_max_cost_usd="max_cost_usd" in payload,
-            archived=raw_archived if isinstance(raw_archived, bool) else None,
-            expected_revision=_expected_revision(payload),
+            target_collection="teams",
+            target_id=team_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.create_governance_group(
-            governance_group_id=_optional(payload, "id")
-            or _optional(payload, "governance_group_id"),
-            name=_required(payload, "name"),
-            manager_agent_id=_required(payload, "manager_agent_id"),
-            member_team_ids=list(_optional_list(payload, "member_team_ids")),
-            goals=list(_optional_list(payload, "goals")),
-            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
-            expected_revision=_expected_revision(payload),
+        governance_group_id = _optional(payload, "id") or _optional(
+            payload, "governance_group_id"
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_governance_group(
+                governance_group_id=governance_group_id,
+                name=_required(payload, "name"),
+                manager_agent_id=_required(payload, "manager_agent_id"),
+                member_team_ids=list(_optional_list(payload, "member_team_ids")),
+                goals=list(_optional_list(payload, "goals")),
+                max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+                expected_revision=expected_revision,
+            ),
+            create_collection="governance_groups",
+            create_id=governance_group_id,
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -223,45 +315,68 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             if "goals" in payload
             else None
         )
-        state = repository.update_governance_group(
-            governance_group_id=request.path_params["governance_group_id"],
-            name=_optional(payload, "name"),
-            manager_agent_id=_optional(payload, "manager_agent_id"),
-            member_team_ids=list(_optional_list(payload, "member_team_ids")),
-            set_member_team_ids="member_team_ids" in payload,
-            goals=goals,
-            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
-            set_max_cost_usd="max_cost_usd" in payload,
-            archived=raw_archived if isinstance(raw_archived, bool) else None,
-            expected_revision=_expected_revision(payload),
+        governance_group_id = request.path_params["governance_group_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_governance_group(
+                governance_group_id=governance_group_id,
+                name=_optional(payload, "name"),
+                manager_agent_id=_optional(payload, "manager_agent_id"),
+                member_team_ids=list(_optional_list(payload, "member_team_ids")),
+                set_member_team_ids="member_team_ids" in payload,
+                goals=goals,
+                max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+                set_max_cost_usd="max_cost_usd" in payload,
+                archived=raw_archived if isinstance(raw_archived, bool) else None,
+                expected_revision=expected_revision,
+            ),
+            target_collection="governance_groups",
+            target_id=governance_group_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_governance_agenda_item(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_priority = _optional(payload, "priority") or TeamInboxPriority.NORMAL.value
-        state = repository.create_governance_agenda_item(
-            agenda_item_id=_optional(payload, "id") or _optional(payload, "agenda_item_id"),
-            governance_group_id=_required(payload, "governance_group_id"),
-            item_type=GovernanceAgendaItemType(_required(payload, "item_type")),
-            title=_required(payload, "title"),
-            summary=_required(payload, "summary"),
-            team_id=_optional(payload, "team_id"),
-            project_id=_optional(payload, "project_id"),
-            agent_id=_optional(payload, "agent_id"),
-            payload=payload.get("payload") if isinstance(payload.get("payload"), Mapping) else None,
-            priority=TeamInboxPriority(raw_priority),
-            expected_revision=_expected_revision(payload),
+        agenda_item_id = _optional(payload, "id") or _optional(payload, "agenda_item_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_governance_agenda_item(
+                agenda_item_id=agenda_item_id,
+                governance_group_id=_required(payload, "governance_group_id"),
+                item_type=GovernanceAgendaItemType(_required(payload, "item_type")),
+                title=_required(payload, "title"),
+                summary=_required(payload, "summary"),
+                team_id=_optional(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                agent_id=_optional(payload, "agent_id"),
+                payload=payload.get("payload") if isinstance(payload.get("payload"), Mapping) else None,
+                priority=TeamInboxPriority(raw_priority),
+                expected_revision=expected_revision,
+            ),
+            create_collection="governance_agenda",
+            create_id=agenda_item_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def handle_governance_agenda_item(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.mark_governance_agenda_handled(
-            agenda_item_id=request.path_params["agenda_item_id"],
-            expected_revision=_expected_revision(payload),
+        agenda_item_id = request.path_params["agenda_item_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.mark_governance_agenda_handled(
+                agenda_item_id=agenda_item_id,
+                expected_revision=expected_revision,
+            ),
+            target_collection="governance_agenda",
+            target_id=agenda_item_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -270,20 +385,31 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         lead_session_id = _optional(payload, "lead_session_id")
         if lead_session_id is None:
             lead_agent_id = _required(payload, "lead_agent_id")
-        state = repository.create_project(
-            project_id=_optional(payload, "id") or _optional(payload, "project_id"),
-            team_id=_required(payload, "team_id"),
-            name=_required(payload, "name"),
-            lead_agent_id=lead_agent_id,
-            lead_session_id=lead_session_id,
-            lead_display_name=_optional(payload, "lead_display_name"),
-            lead_role_id=_optional(payload, "lead_role_id"),
-            lead_role_name=_optional(payload, "lead_role_name"),
-            goals=goals,
-            git=_optional_git_config(payload),
-            expected_revision=_expected_revision(payload),
+        project_id = _optional(payload, "id") or _optional(payload, "project_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_project(
+                project_id=project_id,
+                team_id=_required(payload, "team_id"),
+                name=_required(payload, "name"),
+                lead_agent_id=lead_agent_id,
+                lead_session_id=lead_session_id,
+                lead_display_name=_optional(payload, "lead_display_name"),
+                lead_role_id=_optional(payload, "lead_role_id"),
+                lead_role_name=_optional(payload, "lead_role_name"),
+                goals=goals,
+                git=_optional_git_config(payload),
+                expected_revision=expected_revision,
+            ),
+            create_collection="projects",
+            create_id=project_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -295,16 +421,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             else None
         )
         raw_status = _optional(payload, "status")
-        state = repository.update_project(
-            project_id=request.path_params["project_id"],
-            name=_optional(payload, "name"),
-            git=_optional_git_config(payload),
-            set_git=has_git,
-            goals=goals,
-            status=ProjectStatus(raw_status) if raw_status else None,
-            expected_revision=_expected_revision(payload),
+        project_id = request.path_params["project_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_project(
+                project_id=project_id,
+                name=_optional(payload, "name"),
+                git=_optional_git_config(payload),
+                set_git=has_git,
+                goals=goals,
+                status=ProjectStatus(raw_status) if raw_status else None,
+                expected_revision=expected_revision,
+            ),
+            target_collection="projects",
+            target_id=project_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def import_project_git_repo(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -338,47 +470,64 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_role(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
-        state = repository.create_role(
-            role_id=_optional(payload, "id") or _optional(payload, "role_id"),
-            team_id=_required(payload, "team_id"),
-            project_id=_optional(payload, "project_id"),
-            name=_required(payload, "name"),
-            description=_optional(payload, "description"),
-            permissions=_optional_string_list(payload, "permissions"),
-            ephemeral_policy=(
-                EphemeralAgentPolicy.model_validate(ephemeral_policy)
-                if ephemeral_policy is not None
-                else None
+        role_id = _optional(payload, "id") or _optional(payload, "role_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_role(
+                role_id=role_id,
+                team_id=_required(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                name=_required(payload, "name"),
+                description=_optional(payload, "description"),
+                permissions=_optional_string_list(payload, "permissions"),
+                ephemeral_policy=(
+                    EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                    if ephemeral_policy is not None
+                    else None
+                ),
+                expected_revision=expected_revision,
             ),
-            expected_revision=_expected_revision(payload),
+            create_collection="roles",
+            create_id=role_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_role(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
         raw_archived = payload.get("archived")
-        state = repository.update_role(
-            role_id=request.path_params["role_id"],
-            name=_optional(payload, "name"),
-            project_id=_optional(payload, "project_id"),
-            set_project_id="project_id" in payload,
-            description=_optional_present_text(payload, "description"),
-            set_description="description" in payload,
-            permissions=(
-                _optional_string_list(payload, "permissions")
-                if "permissions" in payload
-                else None
+        role_id = request.path_params["role_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_role(
+                role_id=role_id,
+                name=_optional(payload, "name"),
+                project_id=_optional(payload, "project_id"),
+                set_project_id="project_id" in payload,
+                description=_optional_present_text(payload, "description"),
+                set_description="description" in payload,
+                permissions=(
+                    _optional_string_list(payload, "permissions")
+                    if "permissions" in payload
+                    else None
+                ),
+                ephemeral_policy=(
+                    EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                    if ephemeral_policy is not None
+                    else None
+                ),
+                archived=raw_archived if isinstance(raw_archived, bool) else None,
+                expected_revision=expected_revision,
             ),
-            ephemeral_policy=(
-                EphemeralAgentPolicy.model_validate(ephemeral_policy)
-                if ephemeral_policy is not None
-                else None
-            ),
-            archived=raw_archived if isinstance(raw_archived, bool) else None,
-            expected_revision=_expected_revision(payload),
+            target_collection="roles",
+            target_id=role_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def list_roles(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -399,65 +548,82 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def register_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
-        state = repository.register_agent(
-            agent_id=_optional(payload, "id") or _optional(payload, "agent_id"),
-            team_id=_optional(payload, "team_id"),
-            project_id=_optional(payload, "project_id"),
-            role_id=_optional(payload, "role_id"),
-            session_id=_required(payload, "session_id"),
-            reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
-            display_name=_optional(payload, "display_name"),
-            ephemeral_policy=(
-                EphemeralAgentPolicy.model_validate(ephemeral_policy)
-                if ephemeral_policy is not None
-                else None
+        agent_id = _optional(payload, "id") or _optional(payload, "agent_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.register_agent(
+                agent_id=agent_id,
+                team_id=_optional(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                role_id=_optional(payload, "role_id"),
+                session_id=_required(payload, "session_id"),
+                reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
+                display_name=_optional(payload, "display_name"),
+                ephemeral_policy=(
+                    EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                    if ephemeral_policy is not None
+                    else None
+                ),
+                expected_revision=expected_revision,
             ),
-            expected_revision=_expected_revision(payload),
+            create_collection="agents",
+            create_id=agent_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
         raw_voice_profile = payload.get("voice_profile")
         raw_status = _optional(payload, "status")
-        state = repository.update_agent(
-            agent_id=request.path_params["agent_id"],
-            team_id=_optional(payload, "team_id"),
-            set_team_id="team_id" in payload,
-            project_id=_optional(payload, "project_id"),
-            set_project_id="project_id" in payload,
-            role_id=_optional(payload, "role_id"),
-            set_role_id="role_id" in payload,
-            session_id=_optional(payload, "session_id"),
-            reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
-            set_reports_to_agent_id="reports_to_agent_id" in payload,
-            display_name=_optional(payload, "display_name"),
-            set_display_name="display_name" in payload,
-            ephemeral_policy=(
-                EphemeralAgentPolicy.model_validate(ephemeral_policy)
-                if ephemeral_policy is not None
-                else None
+        agent_id = request.path_params["agent_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_agent(
+                agent_id=agent_id,
+                team_id=_optional(payload, "team_id"),
+                set_team_id="team_id" in payload,
+                project_id=_optional(payload, "project_id"),
+                set_project_id="project_id" in payload,
+                role_id=_optional(payload, "role_id"),
+                set_role_id="role_id" in payload,
+                session_id=_optional(payload, "session_id"),
+                reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
+                set_reports_to_agent_id="reports_to_agent_id" in payload,
+                display_name=_optional(payload, "display_name"),
+                set_display_name="display_name" in payload,
+                ephemeral_policy=(
+                    EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                    if ephemeral_policy is not None
+                    else None
+                ),
+                status=AgentStatus(raw_status) if raw_status else None,
+                voice_profile=(
+                    AgentVoiceProfile.model_validate(raw_voice_profile)
+                    if raw_voice_profile is not None
+                    else None
+                ),
+                set_voice_profile="voice_profile" in payload,
+                context_clearing_policy=_optional(payload, "context_clearing_policy"),
+                set_context_clearing_policy="context_clearing_policy" in payload,
+                auto_context_clearing_enabled=_optional_bool(
+                    payload,
+                    "auto_context_clearing_enabled",
+                ),
+                set_auto_context_clearing_enabled=(
+                    "auto_context_clearing_enabled" in payload
+                ),
+                expected_revision=expected_revision,
             ),
-            status=AgentStatus(raw_status) if raw_status else None,
-            voice_profile=(
-                AgentVoiceProfile.model_validate(raw_voice_profile)
-                if raw_voice_profile is not None
-                else None
-            ),
-            set_voice_profile="voice_profile" in payload,
-            context_clearing_policy=_optional(payload, "context_clearing_policy"),
-            set_context_clearing_policy="context_clearing_policy" in payload,
-            auto_context_clearing_enabled=_optional_bool(
-                payload,
-                "auto_context_clearing_enabled",
-            ),
-            set_auto_context_clearing_enabled=(
-                "auto_context_clearing_enabled" in payload
-            ),
-            expected_revision=_expected_revision(payload),
+            target_collection="agents",
+            target_id=agent_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_avatar_preview(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -572,7 +738,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def list_conversations(request: Request) -> JSONResponse:
         state = repository.read()
         scope = _chat_list_scope(context.auth, request, state)
-        return JSONResponse(_conversation_collection_payload(state, scope=scope))
+        return JSONResponse(
+            _conversation_collection_payload(
+                state,
+                scope=scope,
+                selected_conversation_id=_query_text(request, "selected_conversation_id"),
+                include_selected_messages=bool(_query_bool(request, "include_selected_messages")),
+            )
+        )
 
     async def create_conversation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -589,6 +762,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state,
             scope=scope,
             selected_conversation_id=conversation.id,
+            include_selected_messages=True,
         )
         response_payload["created"] = created
         return JSONResponse(response_payload, status_code=201 if created else 200)
@@ -702,6 +876,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "message": "Chat message queued for asynchronous agent dispatch.",
         }
         conversation = state.conversations[conversation_id]
+        agent = state.agents[conversation.agent_id]
+        published_event_ids = _publish_team_events(
+            context,
+            [
+                {
+                    "event_type": CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+                    "correlation_key": dispatch_id,
+                    "idempotency_key": f"team-chat-message-queued:{message.id}",
+                    "payload": {
+                        "team_id": agent.team_id,
+                        "agent_id": agent.id,
+                        "session_id": agent.session_id,
+                        "conversation_id": conversation.id,
+                        "message_id": message.id,
+                        "dispatch_id": dispatch_id,
+                    },
+                }
+            ],
+        )
         return JSONResponse(
             {
                 "revision": state.revision,
@@ -723,6 +916,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 ),
                 "message": _conversation_message_payload(message),
                 "dispatch": dispatch_payload,
+                "published_event_ids": published_event_ids,
             },
             status_code=202,
         )
@@ -1169,121 +1363,266 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def request_agent_context_rotation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.request_agent_context_rotation(
-            agent_id=request.path_params["agent_id"],
-            requested_by=_optional(payload, "requested_by")
-            or _operator_actor_from_request(context.auth, request),
-            request_note=_optional(payload, "reason"),
-            expected_revision=_expected_revision(payload),
+        agent_id = request.path_params["agent_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.request_agent_context_rotation(
+                agent_id=agent_id,
+                requested_by=_optional(payload, "requested_by")
+                or _operator_actor_from_request(context.auth, request),
+                request_note=_optional(payload, "reason"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="agents",
+            target_id=agent_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def stand_down_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.stand_down_agent(
-            agent_id=request.path_params["agent_id"],
-            reason=_required(payload, "reason"),
-            set_by=_optional(payload, "set_by")
-            or _operator_actor_from_request(context.auth, request),
-            expected_revision=_expected_revision(payload),
+        agent_id = request.path_params["agent_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.stand_down_agent(
+                agent_id=agent_id,
+                reason=_required(payload, "reason"),
+                set_by=_optional(payload, "set_by")
+                or _operator_actor_from_request(context.auth, request),
+                expected_revision=expected_revision,
+            ),
+            target_collection="agents",
+            target_id=agent_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def revoke_agent_stand_down(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.revoke_operator_stand_downs(
-            agent_id=request.path_params["agent_id"],
-            revoked_by=_optional(payload, "revoked_by")
-            or _operator_actor_from_request(context.auth, request),
-            expected_revision=_expected_revision(payload),
+        agent_id = request.path_params["agent_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.revoke_operator_stand_downs(
+                agent_id=agent_id,
+                revoked_by=_optional(payload, "revoked_by")
+                or _operator_actor_from_request(context.auth, request),
+                expected_revision=expected_revision,
+            ),
+            target_collection="agents",
+            target_id=agent_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def create_case(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        case_id = _optional(payload, "id") or _optional(payload, "case_id")
+        raw_status = _optional(payload, "status")
+        raw_priority = _optional(payload, "priority")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_case(
+                case_id=case_id,
+                team_id=_required(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                title=_required(payload, "title"),
+                description=_optional(payload, "description") or "",
+                status=TeamCaseStatus(raw_status) if raw_status else TeamCaseStatus.OPEN,
+                priority=(
+                    TeamInboxPriority(raw_priority)
+                    if raw_priority
+                    else TeamInboxPriority.NORMAL
+                ),
+                owner_agent_id=_optional(payload, "owner_agent_id"),
+                source=_optional(payload, "source"),
+                source_ref=_optional(payload, "source_ref"),
+                tags=_optional_string_list(payload, "tags") or [],
+                metadata=_optional_object(payload, "metadata") or {},
+                task_ids=_optional_string_list(payload, "task_ids") or [],
+                expected_revision=expected_revision,
+            ),
+            create_collection="cases",
+            create_id=case_id,
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
+
+    async def patch_case(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        case_id = request.path_params["case_id"]
+        raw_status = _optional(payload, "status")
+        raw_priority = _optional(payload, "priority")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_case(
+                case_id=case_id,
+                title=_optional(payload, "title"),
+                description=_optional_present_text(payload, "description"),
+                set_description="description" in payload,
+                project_id=_optional_present_text(payload, "project_id"),
+                set_project_id="project_id" in payload,
+                status=TeamCaseStatus(raw_status) if raw_status else None,
+                priority=TeamInboxPriority(raw_priority) if raw_priority else None,
+                owner_agent_id=_optional_present_text(payload, "owner_agent_id"),
+                set_owner_agent_id="owner_agent_id" in payload,
+                source=_optional_present_text(payload, "source"),
+                set_source="source" in payload,
+                source_ref=_optional_present_text(payload, "source_ref"),
+                set_source_ref="source_ref" in payload,
+                tags=_optional_string_list(payload, "tags"),
+                metadata=(
+                    _optional_object(payload, "metadata") if "metadata" in payload else None
+                ),
+                task_ids=_optional_string_list(payload, "task_ids"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="cases",
+            target_id=case_id,
+        )
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
         created_by_agent_id = _optional(payload, "created_by_agent_id")
-        state = repository.create_or_reprioritize_task(
-            task_id=_optional(payload, "id") or _optional(payload, "task_id"),
-            owner_agent_id=_required(payload, "owner_agent_id"),
-            project_id=_required(payload, "project_id"),
-            priority=_required_int(payload, "priority"),
-            title=_required(payload, "title"),
-            description=_required(payload, "description"),
-            created_by_agent_id=created_by_agent_id,
-            created_by_actor=(
-                None
-                if created_by_agent_id is not None
-                else _operator_actor_from_request(context.auth, request)
+        task_id = _optional(payload, "id") or _optional(payload, "task_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_or_reprioritize_task(
+                task_id=task_id,
+                owner_agent_id=_required(payload, "owner_agent_id"),
+                project_id=_required(payload, "project_id"),
+                case_id=_optional(payload, "case_id"),
+                set_case_id="case_id" in payload,
+                priority=_required_int(payload, "priority"),
+                title=_required(payload, "title"),
+                description=_required(payload, "description"),
+                created_by_agent_id=created_by_agent_id,
+                created_by_actor=(
+                    None
+                    if created_by_agent_id is not None
+                    else _operator_actor_from_request(context.auth, request)
+                ),
+                state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
+                parent_task_id=_optional(payload, "parent_task_id"),
+                set_parent_task_id="parent_task_id" in payload,
+                dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
+                expected_revision=expected_revision,
             ),
-            state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
-            parent_task_id=_optional(payload, "parent_task_id"),
-            set_parent_task_id="parent_task_id" in payload,
-            dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
-            expected_revision=_expected_revision(payload),
+            create_collection="tasks",
+            create_id=task_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
-        state = repository.update_task(
-            task_id=request.path_params["task_id"],
-            priority=_optional_int(payload, "priority"),
-            state=TeamTaskState(raw_state) if raw_state else None,
-            title=_optional(payload, "title"),
-            description=_optional(payload, "description"),
-            parent_task_id=_optional(payload, "parent_task_id"),
-            set_parent_task_id="parent_task_id" in payload,
-            dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
-            expected_revision=_expected_revision(payload),
+        task_id = request.path_params["task_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_task(
+                task_id=task_id,
+                priority=_optional_int(payload, "priority"),
+                state=TeamTaskState(raw_state) if raw_state else None,
+                title=_optional(payload, "title"),
+                description=_optional(payload, "description"),
+                case_id=_optional_present_text(payload, "case_id"),
+                set_case_id="case_id" in payload,
+                parent_task_id=_optional(payload, "parent_task_id"),
+                set_parent_task_id="parent_task_id" in payload,
+                dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="tasks",
+            target_id=task_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def record_deliverable(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
-        state = repository.record_deliverable(
-            deliverable_id=_optional(payload, "id") or _optional(payload, "deliverable_id"),
-            task_id=_required(payload, "task_id"),
-            producer_agent_id=_required(payload, "producer_agent_id"),
-            summary=_required(payload, "summary"),
-            artifact_refs=_optional_string_list(payload, "artifact_refs"),
-            state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
-            expected_revision=_expected_revision(payload),
+        deliverable_id = _optional(payload, "id") or _optional(payload, "deliverable_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.record_deliverable(
+                deliverable_id=deliverable_id,
+                task_id=_required(payload, "task_id"),
+                producer_agent_id=_required(payload, "producer_agent_id"),
+                summary=_required(payload, "summary"),
+                artifact_refs=_optional_string_list(payload, "artifact_refs"),
+                state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
+                expected_revision=expected_revision,
+            ),
+            create_collection="deliverables",
+            create_id=deliverable_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def record_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
         raw_decision_at = _optional(payload, "decision_at")
-        state = repository.record_review_request(
-            review_request_id=_optional(payload, "id") or _optional(payload, "review_request_id"),
-            deliverable_id=_required(payload, "deliverable_id"),
-            reviewer_agent_id=_required(payload, "reviewer_agent_id"),
-            state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
-            findings=_optional_string_list(payload, "findings"),
-            review_profile_id=_optional(payload, "review_profile_id"),
-            instructions=_optional(payload, "instructions"),
-            decision_at=datetime.fromisoformat(raw_decision_at) if raw_decision_at else None,
-            expected_revision=_expected_revision(payload),
+        review_request_id = _optional(payload, "id") or _optional(
+            payload, "review_request_id"
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.record_review_request(
+                review_request_id=review_request_id,
+                deliverable_id=_required(payload, "deliverable_id"),
+                reviewer_agent_id=_required(payload, "reviewer_agent_id"),
+                state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
+                findings=_optional_string_list(payload, "findings"),
+                review_profile_id=_optional(payload, "review_profile_id"),
+                instructions=_optional(payload, "instructions"),
+                decision_at=datetime.fromisoformat(raw_decision_at) if raw_decision_at else None,
+                expected_revision=expected_revision,
+            ),
+            create_collection="review_requests",
+            create_id=review_request_id,
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def decide_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         criteria = (
             _optional_list(payload, "criteria") if payload.get("criteria") is not None else None
         )
-        state = repository.record_review_decision(
-            review_request_id=request.path_params["review_request_id"],
-            state=TeamRecordState(_required(payload, "state")),
-            findings=_optional_string_list(payload, "findings"),
-            criteria=criteria,
-            expected_revision=_expected_revision(payload),
+        review_request_id = request.path_params["review_request_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.record_review_decision(
+                review_request_id=review_request_id,
+                state=TeamRecordState(_required(payload, "state")),
+                findings=_optional_string_list(payload, "findings"),
+                criteria=criteria,
+                expected_revision=expected_revision,
+            ),
+            target_collection="review_requests",
+            target_id=review_request_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_operator_directive(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1310,13 +1649,19 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def dismiss_action_record(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.dismiss_action_record_attention(
-            action_record_id=request.path_params["action_record_id"],
-            dismissed_by=_optional(payload, "dismissed_by"),
-            dismissed_reason=_optional(payload, "dismissed_reason"),
-            expected_revision=_expected_revision(payload),
+        action_record_id = request.path_params["action_record_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.dismiss_action_record_attention(
+                action_record_id=action_record_id,
+                dismissed_by=_optional(payload, "dismissed_by"),
+                dismissed_reason=_optional(payload, "dismissed_reason"),
+                expected_revision=expected_revision,
+            ),
+            target_collection="action_records",
+            target_id=action_record_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def create_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1324,17 +1669,28 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             ReviewProfileCriterion.model_validate(item)
             for item in _optional_list(payload, "criteria")
         ]
-        state = repository.create_review_profile(
-            profile_id=_optional(payload, "id") or _optional(payload, "review_profile_id"),
-            team_id=_required(payload, "team_id"),
-            project_id=_optional(payload, "project_id"),
-            name=_required(payload, "name"),
-            description=_optional(payload, "description") or "",
-            applicable_role_ids=_optional_string_list(payload, "applicable_role_ids"),
-            criteria=criteria,
-            expected_revision=_expected_revision(payload),
+        profile_id = _optional(payload, "id") or _optional(payload, "review_profile_id")
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.create_review_profile(
+                profile_id=profile_id,
+                team_id=_required(payload, "team_id"),
+                project_id=_optional(payload, "project_id"),
+                name=_required(payload, "name"),
+                description=_optional(payload, "description") or "",
+                applicable_role_ids=_optional_string_list(payload, "applicable_role_ids"),
+                criteria=criteria,
+                expected_revision=expected_revision,
+            ),
+            create_collection="review_profiles",
+            create_id=profile_id,
         )
-        return JSONResponse(_state_payload(request, state), status_code=201)
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            rebased_from_revision=rebased_from_revision,
+        )
 
     async def patch_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1349,22 +1705,28 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             else None
         )
         raw_archived = payload.get("archived")
-        state = repository.update_review_profile(
-            profile_id=request.path_params["review_profile_id"],
-            name=_optional(payload, "name"),
-            description=_optional_present_text(payload, "description"),
-            applicable_role_ids=(
-                _optional_string_list(payload, "applicable_role_ids")
-                if "applicable_role_ids" in payload
-                else None
+        profile_id = request.path_params["review_profile_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: repository.update_review_profile(
+                profile_id=profile_id,
+                name=_optional(payload, "name"),
+                description=_optional_present_text(payload, "description"),
+                applicable_role_ids=(
+                    _optional_string_list(payload, "applicable_role_ids")
+                    if "applicable_role_ids" in payload
+                    else None
+                ),
+                criteria=criteria,
+                archived=raw_archived if isinstance(raw_archived, bool) else None,
+                project_id=_optional(payload, "project_id"),
+                set_project_id=has_project,
+                expected_revision=expected_revision,
             ),
-            criteria=criteria,
-            archived=raw_archived if isinstance(raw_archived, bool) else None,
-            project_id=_optional(payload, "project_id"),
-            set_project_id=has_project,
-            expected_revision=_expected_revision(payload),
+            target_collection="review_profiles",
+            target_id=profile_id,
         )
-        return JSONResponse(_state_payload(request, state))
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
     async def list_review_profiles(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -1583,6 +1945,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             _with_errors(revoke_agent_stand_down),
             methods=["POST"],
         ),
+        Route("/cases", _with_errors(create_case), methods=["POST"]),
+        Route("/cases/{case_id}", _with_errors(patch_case), methods=["PATCH"]),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),
         Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
         Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
@@ -1678,6 +2042,7 @@ def _team_state_payload_for_request(
     session_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = team_state_payload(state, session_records=session_records)
+    _add_team_resource_tokens(payload, state)
     if _can_view_all_team_chats(auth, request):
         return payload
     identity = _operator_identity_from_request(auth, request)
@@ -1698,6 +2063,121 @@ def _team_state_payload_for_request(
         and message_payload.get("conversation_id") in allowed_conversation_ids
     }
     return payload
+
+
+def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None:
+    tokens = _team_resource_tokens(state)
+    payload["resource_tokens"] = tokens
+    for collection, collection_tokens in tokens.items():
+        rows = payload.get(collection)
+        if not isinstance(rows, dict):
+            continue
+        for item_id, token in collection_tokens.items():
+            row = rows.get(item_id)
+            if isinstance(row, dict):
+                row["resource_token"] = token
+
+
+def _team_resource_tokens(state: TeamState) -> dict[str, dict[str, str]]:
+    return {
+        collection: {
+            item_id: _team_resource_token(
+                _team_resource_value_for_token(state, collection, item_id, item)
+            )
+            for item_id, item in _team_state_collection(state, collection).items()
+        }
+        for collection in TEAM_RESOURCE_TOKEN_COLLECTIONS
+    }
+
+
+def _team_resource_value_for_token(
+    state: TeamState,
+    collection: str,
+    item_id: str,
+    item: Any,
+) -> Any:
+    if collection != "agents":
+        return item
+    runtime = state.agent_runtimes.get(item_id)
+    return {
+        "agent": item.model_dump(mode="json") if hasattr(item, "model_dump") else item,
+        "project_assignments": [
+            assignment.model_dump(mode="json")
+            for assignment in project_assignments_for_agent(state, item_id)
+        ],
+        "runtime": (
+            {
+                "context_clearing_policy": getattr(
+                    runtime.context_clearing_policy,
+                    "value",
+                    runtime.context_clearing_policy,
+                ),
+                "auto_context_clearing_enabled": runtime.auto_context_clearing_enabled,
+            }
+            if runtime is not None
+            else None
+        ),
+    }
+
+
+def _team_resource_token(value: Any) -> str:
+    if hasattr(value, "model_dump"):
+        serializable = value.model_dump(mode="json")
+    else:
+        serializable = value
+    encoded = json.dumps(
+        serializable,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _team_resource_token_for(
+    state: TeamState,
+    collection: str | None,
+    item_id: str | None,
+) -> str | None:
+    if not collection or not item_id:
+        return None
+    item = _team_state_collection(state, collection).get(item_id)
+    if item is None:
+        return None
+    return _team_resource_token(
+        _team_resource_value_for_token(state, collection, item_id, item)
+    )
+
+
+def _team_state_collection(state: TeamState, collection: str) -> Mapping[str, Any]:
+    if collection not in TEAM_RESOURCE_TOKEN_COLLECTIONS:
+        return {}
+    value = getattr(state, collection, {})
+    return value if isinstance(value, Mapping) else {}
+
+
+def _can_rebase_ui_mutation(
+    payload: Mapping[str, Any],
+    current: TeamState,
+    *,
+    target_collection: str | None = None,
+    target_id: str | None = None,
+    create_collection: str | None = None,
+    create_id: str | None = None,
+) -> bool:
+    if str(payload.get("conflict_policy") or "").strip() != "target_unchanged":
+        return False
+    if target_collection and target_id:
+        base_token = str(payload.get("base_resource_token") or "").strip()
+        if not base_token:
+            return False
+        return _team_resource_token_for(current, target_collection, target_id) == base_token
+    if create_collection:
+        return bool(create_id) and create_id not in _team_state_collection(
+            current,
+            create_collection,
+        )
+    return False
 
 
 def _chat_list_scope(
@@ -1906,6 +2386,7 @@ def _conversation_collection_payload(
     *,
     scope: Mapping[str, Any],
     selected_conversation_id: str | None = None,
+    include_selected_messages: bool = False,
 ) -> dict[str, Any]:
     selected_operator = scope["selected_operator"]
     selected_operator_user_id = str(selected_operator["user_id"])
@@ -1922,9 +2403,18 @@ def _conversation_collection_payload(
         ),
         reverse=True,
     )
+    selected_id = (
+        selected_conversation_id
+        if selected_conversation_id
+        and any(conversation.id == selected_conversation_id for conversation in conversations)
+        else None
+    )
+    if selected_id is None and include_selected_messages and conversations:
+        selected_id = conversations[0].id
+    messages_by_conversation = _conversation_messages_by_conversation(state)
     return {
         "revision": state.revision,
-        "selected_conversation_id": selected_conversation_id,
+        "selected_conversation_id": selected_id,
         **_chat_scope_payload(state, scope),
         "eligible_agents": [
             _chat_agent_payload(agent)
@@ -1935,7 +2425,8 @@ def _conversation_collection_payload(
             _conversation_payload(
                 state,
                 conversation,
-                include_messages=False,
+                include_messages=include_selected_messages and conversation.id == selected_id,
+                messages_by_conversation=messages_by_conversation,
                 current_operator_user_id=current_operator_user_id,
             )
             for conversation in conversations
@@ -1949,9 +2440,14 @@ def _conversation_payload(
     *,
     include_messages: bool,
     message_limit: int = DEFAULT_CHAT_MESSAGE_LIMIT,
+    messages_by_conversation: Mapping[str, Sequence[Any]] | None = None,
     current_operator_user_id: str | None = None,
 ) -> dict[str, Any]:
-    messages = _conversation_messages(state, conversation.id)
+    messages = _conversation_messages(
+        state,
+        conversation.id,
+        messages_by_conversation=messages_by_conversation,
+    )
     payload = {
         "id": conversation.id,
         "agent_id": conversation.agent_id,
@@ -1979,7 +2475,23 @@ def _conversation_payload(
     return payload
 
 
-def _conversation_messages(state: TeamState, conversation_id: str) -> list[Any]:
+def _conversation_messages_by_conversation(state: TeamState) -> dict[str, list[Any]]:
+    messages_by_conversation: dict[str, list[Any]] = {}
+    for message in state.conversation_messages.values():
+        messages_by_conversation.setdefault(message.conversation_id, []).append(message)
+    for messages in messages_by_conversation.values():
+        messages.sort(key=lambda message: (message.created_at, message.id))
+    return messages_by_conversation
+
+
+def _conversation_messages(
+    state: TeamState,
+    conversation_id: str,
+    *,
+    messages_by_conversation: Mapping[str, Sequence[Any]] | None = None,
+) -> list[Any]:
+    if messages_by_conversation is not None:
+        return list(messages_by_conversation.get(conversation_id, ()))
     messages = [
         message
         for message in state.conversation_messages.values()
@@ -2744,6 +3256,15 @@ def _optional_list(payload: Mapping[str, Any], field_name: str) -> list[Any]:
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be a list")
     return value
+
+
+def _optional_object(payload: Mapping[str, Any], field_name: str) -> dict[str, Any] | None:
+    if field_name not in payload or payload.get(field_name) is None:
+        return None
+    value = payload[field_name]
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return dict(value)
 
 
 def _optional_string_list(payload: Mapping[str, Any], field_name: str) -> list[str] | None:

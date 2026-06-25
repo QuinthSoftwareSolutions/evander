@@ -9,6 +9,14 @@ const taskStates = [
   "accepted",
   "rejected",
 ];
+const caseStatuses = [
+  "open",
+  "triage",
+  "in_progress",
+  "waiting",
+  "resolved",
+  "closed",
+];
 const taskBoardLanes = [
   { id: "planned", label: "Planned", states: ["pending"] },
   { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
@@ -69,7 +77,7 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
-const defaultTeamView = "workspace";
+const defaultTeamView = "people";
 const teamViewStorageKey = "team-addon:active-view";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
@@ -78,12 +86,13 @@ const teamViewIds = new Set([
   "overview",
   "operations",
   "delivery",
+  "projects",
   "task-board",
+  "cases",
   "people",
   "chat",
   "governance",
   "planning",
-  "setup",
   "timeline",
   "org",
 ]);
@@ -108,9 +117,11 @@ let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
 let showArchived = false;
+let showHandledGovernanceAgenda = false;
 let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
+let selectedProjectFocusId = null;
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -123,6 +134,8 @@ let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
 let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
+const formDraftRegistry = new Map();
+let pendingConflictRetry = null;
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -150,6 +163,7 @@ const timelinePageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
 const chatBottomStickinessPx = 96;
+const teamRequestTimeoutMs = 60000;
 let pendingChatScroll = null;
 const chatOlderMessageLoads = new Set();
 
@@ -168,6 +182,8 @@ const elements = {
   releasesView: document.querySelector("#releases-view"),
   templateSelect: document.querySelector("#template-select"),
   templatePreview: document.querySelector("#template-preview"),
+  templateRoleFields: document.querySelector("[data-template-role-fields]"),
+  templateGitFields: document.querySelector("[data-template-git-fields]"),
   timelineSummary: document.querySelector("#timeline-summary"),
   timelineStatus: document.querySelector("#timeline-status"),
   timelineView: document.querySelector("#timeline-view"),
@@ -177,7 +193,10 @@ const elements = {
   timelineTypeFilter: document.querySelector("#timeline-type-filter"),
   timelineStatusFilter: document.querySelector("#timeline-status-filter"),
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
+  projectsFocusList: document.querySelector("[data-projects-focus-list]"),
+  projectsFocusDetail: document.querySelector("[data-projects-focus-detail]"),
   showArchivedToggle: document.querySelector("#show-archived-toggle"),
+  showHandledGovernanceAgendaToggle: document.querySelector("#show-handled-governance-agenda-toggle"),
   teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
   teamViewActionButtons: Array.from(document.querySelectorAll("[data-team-view-action]")),
@@ -188,9 +207,6 @@ const elements = {
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
   chatOperatorView: document.querySelector("#chat-operator-view"),
-  setupFormsPanel: document.querySelector("#setup-forms-panel"),
-  workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
-  focusedSetupMount: document.querySelector("#focused-setup-mount"),
   teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
   teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
   governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
@@ -224,26 +240,21 @@ let tooltipCounter = 0;
 
 const rolePermissionTooltips = {
   create_root_task: "Allows this role to create top-level project tasks instead of only subtasks inside existing work.",
+  prepare_bookkeeping_action: "Allows this role to prepare local Bokio bookkeeping actions for review and human approval.",
+  request_payment_preparation: "Allows this role to prepare payment work for human approval and BankID signing in Bokio.",
   request_release: "Allows a same-project role holder to request Team release packages from accepted deliverables. Project leads and managers can already do this through authority.",
+  review_bookkeeping_action: "Allows this role to review prepared bookkeeping actions before a human approval executes them.",
 };
 
 const fieldTooltips = {
   "setup-template-form:template_id": "Template blueprint used to create the team, project, roles, starter tasks, and review profile.",
   "setup-template-form:team_name": "Human-readable name shown in hierarchy, filters, and timeline rows.",
-  "setup-template-form:manager_existing_agent_id": "Copy session defaults from an existing agent for the new manager.",
-  "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
+  "setup-template-form:template_existing_agent_id": "Copy session defaults from an existing agent for this template role.",
+  "setup-template-form:template_session_id": "Session ID used when this template-created agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
   "setup-template-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
   "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
-  "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
-  "setup-template-form:project_lead_session_id": "Session ID used when the project lead agent is woken or resumed.",
-  "setup-template-form:implementer_existing_agent_id": "Copy defaults from an existing implementer for the template-created implementer.",
-  "setup-template-form:implementer_session_id": "Session ID used when the implementer agent is woken or resumed.",
-  "setup-template-form:reviewer_existing_agent_id": "Copy defaults from an existing reviewer for the template-created reviewer.",
-  "setup-template-form:reviewer_session_id": "Session ID used when the reviewer agent is woken or resumed.",
-  "setup-template-form:release_operator_existing_agent_id": "Copy defaults from an existing release operator for the release handoff role.",
-  "setup-template-form:release_operator_session_id": "Session ID used when the release operator agent is woken or resumed.",
 
   "create-team-form:name": "Human-readable team name shown throughout the Team Add-on UI.",
   "create-team-form:manager_existing_agent_id": "Copy session and display defaults from an existing agent without reusing that agent.",
@@ -271,6 +282,18 @@ const fieldTooltips = {
   "create-project-form:lead_agent_id": "Existing same-team agent that will lead this project. The team manager may also be selected.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
+  "create-case-form:team_id": "Team that owns this case.",
+  "create-case-form:project_id": "Optional project scope. Linked tasks must belong to this project when it is set.",
+  "create-case-form:owner_agent_id": "Optional same-team agent responsible for triage or lifecycle follow-up.",
+  "create-case-form:status": "Current case lifecycle state. Blank creates an open case.",
+  "create-case-form:priority": "Case triage priority used in wake context ordering.",
+  "create-case-form:title": "Short case title shown in case lists and agent wake context.",
+  "create-case-form:description": "Intake details, ticket summary, or lifecycle context.",
+  "create-case-form:source": "Optional external system name such as github, jira, or zendesk.",
+  "create-case-form:source_ref": "Optional external ticket, issue, or conversation id.",
+  "create-case-form:tags": "Optional tags, one per line or comma-separated.",
+  "create-case-form:task_ids": "Optional linked task IDs, one per line or comma-separated.",
+
   "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions for the new agent.",
   "register-agent-form:team_id": "Team this persistent agent belongs to.",
   "register-agent-form:project_id": "Project this agent works in. Project agents must belong to the selected team.",
@@ -286,6 +309,7 @@ const fieldTooltips = {
 
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
   "create-task-form:project_id": "Project that owns this task and constrains parent and dependency links.",
+  "create-task-form:case_id": "Optional intake case this execution task belongs to.",
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
@@ -296,6 +320,7 @@ const fieldTooltips = {
 
   "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
   "update-task-form:state": "New task state. Leave blank to keep the current state.",
+  "update-task-form:case_id": "Case link to set or clear for this task.",
   "update-task-form:priority": "New priority. Lower numbers sort earlier.",
   "update-task-form:title": "New title. Leave blank to keep the current title.",
   "update-task-form:description": "New description. Leave blank to keep the current description.",
@@ -352,7 +377,18 @@ const fieldTooltips = {
   "edit:agent:reports_to_agent_id": "Supervisor in the same team. The backend rejects reporting cycles.",
   "edit:agent:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at once.",
   "edit:agent:status": "Active agents can receive work; paused or archived agents remain in state for audit context.",
+  "edit:case:project_id": "Optional project scope. Existing linked tasks that no longer match are unlinked.",
+  "edit:case:owner_agent_id": "Optional same-team owner responsible for triage or lifecycle follow-up.",
+  "edit:case:status": "Case lifecycle state.",
+  "edit:case:priority": "Case triage priority used in wake context ordering.",
+  "edit:case:title": "Rename the case without changing its immutable ID.",
+  "edit:case:description": "Update case intake or ticket context.",
+  "edit:case:source": "External system name such as github, jira, or zendesk. Clear to remove.",
+  "edit:case:source_ref": "External ticket, issue, or conversation id. Clear to remove.",
+  "edit:case:tags": "Replacement tags, one per line or comma-separated.",
+  "edit:case:task_ids": "Replacement linked task IDs, one per line or comma-separated.",
   "edit:task:state": "Task state to save.",
+  "edit:task:case_id": "Case link to set or clear for this task.",
   "edit:task:priority": "Lower numbers sort earlier in each agent's task queue.",
   "edit:task:title": "Rename the task without changing its immutable ID.",
   "edit:task:description": "Update the instructions for the owning agent.",
@@ -388,22 +424,23 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRecordEditing();
   bindExistingAgentPickers();
   bindProjectLeadSelects();
+  bindAgentEditTeamScopedSelects();
   bindRuntimeFilters();
   bindDeliveryFilters();
   bindPlanningFilters();
+  bindProjectFocus();
   bindTaskBoardSelectors();
   bindOrgFocusTabs();
   bindOrgFlowEvents();
   bindArchivedVisibilityToggle();
+  bindGovernanceAgendaVisibilityToggle();
   bindInboxPopoverPositioning();
   elements.templateSelect?.addEventListener("change", () => {
-    renderTemplatePreview();
+    renderTemplateSetupFields();
   });
   bindTimelineFilters();
   bindTimelinePagination();
-  window.addEventListener("beforeunload", () => {
-    closeChatStream();
-  });
+  bindPageLifecycle();
   decorateFieldTooltips(document);
   void loadState();
 });
@@ -419,6 +456,7 @@ function emptyState() {
     roles: {},
     agents: {},
     agent_runtimes: {},
+    cases: {},
     tasks: {},
     deliverables: {},
     review_requests: {},
@@ -433,6 +471,7 @@ function emptyState() {
       agents: [],
       attention: [],
     },
+    resource_tokens: {},
     available_role_permissions: [],
   };
 }
@@ -505,10 +544,13 @@ const timelineTypeOrder = [
 ];
 
 function bindTopLevelTabs() {
-  elements.teamViewButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      setTeamView(button.dataset.teamView || "workspace");
-    });
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-team-view]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    setTeamView(button.dataset.teamView || defaultTeamView);
   });
   updateTeamViewTabs();
 }
@@ -519,7 +561,12 @@ function normalizedTeamView(view) {
 
 function readStoredTeamView() {
   try {
-    return normalizedTeamView(window.localStorage.getItem(teamViewStorageKey));
+    const storedView = window.localStorage.getItem(teamViewStorageKey);
+    const normalizedView = normalizedTeamView(storedView);
+    if (storedView && storedView !== normalizedView) {
+      window.localStorage.setItem(teamViewStorageKey, normalizedView);
+    }
+    return normalizedView;
   } catch {
     return defaultTeamView;
   }
@@ -533,29 +580,59 @@ function storeTeamView(view) {
   }
 }
 
+function bindPageLifecycle() {
+  window.addEventListener("beforeunload", () => {
+    closeChatStream();
+  });
+  window.addEventListener("pagehide", () => {
+    closeChatStream();
+  });
+  window.addEventListener("pageshow", () => {
+    syncChatStreamForActiveView({ refresh: true });
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      closeChatStream();
+      return;
+    }
+    syncChatStreamForActiveView({ refresh: true });
+  });
+}
+
 function setTeamView(view) {
   const nextView = normalizedTeamView(view);
   if (nextView === "people" && activeTeamView !== "people") {
     clearSelectedTeamRecord();
   }
   const enteringChat = activeTeamView !== "chat" && nextView === "chat";
+  const leavingChat = activeTeamView === "chat" && nextView !== "chat";
   activeTeamView = nextView;
   storeTeamView(activeTeamView);
   if (enteringChat && selectedChatConversationId) {
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   render();
+  if (leavingChat) {
+    closeChatStream();
+  }
+  if (enteringChat) {
+    if (selectedChatConversationId) {
+      syncChatStreamForActiveView({ refresh: true });
+    } else {
+      void loadConversations({ preserveSelection: true });
+    }
+  }
 }
 
 function updateTeamViewTabs() {
-  elements.teamViewButtons.forEach((button) => {
-    const active = (button.dataset.teamView || "workspace") === activeTeamView;
+  document.querySelectorAll("[data-team-view]").forEach((button) => {
+    const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
     button.tabIndex = active ? 0 : -1;
   });
-  elements.teamViewPanels.forEach((panel) => {
-    const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
+  document.querySelectorAll("[data-team-view-panel]").forEach((panel) => {
+    const active = (panel.dataset.teamViewPanel || defaultTeamView) === activeTeamView;
     panel.hidden = !active;
   });
   syncTeamViewActions();
@@ -643,20 +720,6 @@ function clampInboxPopoverToViewport(indicator, popover) {
   popover.style.setProperty("--agent-inbox-popover-offset-x", offsetValue);
 }
 
-function placeSetupFormsPanel() {
-  const panel = elements.setupFormsPanel;
-  if (!panel) {
-    return;
-  }
-  if (activeTeamView === "setup" && elements.focusedSetupMount) {
-    elements.focusedSetupMount.appendChild(panel);
-    return;
-  }
-  if (elements.workspaceSetupAnchor && elements.workspaceSetupAnchor.parentNode) {
-    elements.workspaceSetupAnchor.after(panel);
-  }
-}
-
 function openTeamsCreateTeamPanel() {
   teamsCreateTeamPanelOpen = true;
   syncTeamsCreateTeamPanel();
@@ -714,6 +777,9 @@ function syncGovernanceCreateGroupPanel() {
 }
 
 function bindForms() {
+  document.addEventListener("input", rememberFormDraftFromEvent);
+  document.addEventListener("change", rememberFormDraftFromEvent);
+
   document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -747,6 +813,15 @@ function bindForms() {
 
   document.addEventListener("submit", (event) => {
     const form = event.target?.closest?.("form[data-team-inline-create-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    void submitCreateForm(form);
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("form[data-delegated-create-form]");
     if (!form) {
       return;
     }
@@ -1106,11 +1181,37 @@ function applyExistingAgentDefaults(select) {
 
 function bindProjectLeadSelects() {
   document.addEventListener("change", (event) => {
-    const teamSelect = event.target?.closest?.("#create-project-form [name='team_id']");
+    const teamSelect = event.target?.closest?.('form [name="team_id"]');
     if (!teamSelect) {
       return;
     }
+    if (formSemanticIdentifier(teamSelect.form) !== "create-project-form") {
+      return;
+    }
     refreshProjectLeadSelect(teamSelect.form);
+  });
+}
+
+function bindAgentEditTeamScopedSelects() {
+  document.addEventListener("change", (event) => {
+    const teamSelect = event.target?.closest?.('select[name="team_id"]');
+    if (!teamSelect || teamSelect.form !== elements.editForm) {
+      return;
+    }
+    if (text(elements.editForm?.dataset.editType) !== "agent") {
+      return;
+    }
+    refreshAgentEditTeamScopedSelects(teamSelect.form);
+  });
+}
+
+function refreshAgentEditTeamScopedSelects(form) {
+  if (!form || text(form.dataset.editType) !== "agent") {
+    return;
+  }
+  const options = buildSelectOptionSets();
+  form.querySelectorAll('select[data-options^="agent-edit-"]').forEach((select) => {
+    fillSelect(select, optionsForSelect(select, options));
   });
 }
 
@@ -1146,6 +1247,7 @@ function tooltipForField(label, field) {
   const formId = formSemanticIdentifier(form);
   const aliasedFormId = formId === "create-team-from-teams-form" ? "create-team-form" : "";
   const fieldName = text(field.name);
+  const tooltipKey = text(field.dataset.tooltipKey);
   const editType = text(form?.dataset?.editType);
   const keys = [];
   if (editType) {
@@ -1153,11 +1255,20 @@ function tooltipForField(label, field) {
   }
   if (formId) {
     keys.push(`${formId}:${fieldName}`);
+    if (tooltipKey) {
+      keys.push(`${formId}:${tooltipKey}`);
+    }
   }
   if (aliasedFormId) {
     keys.push(`${aliasedFormId}:${fieldName}`);
+    if (tooltipKey) {
+      keys.push(`${aliasedFormId}:${tooltipKey}`);
+    }
   }
   keys.push(fieldName);
+  if (tooltipKey) {
+    keys.push(tooltipKey);
+  }
   const labelText = text(label.textContent);
   if (labelText) {
     keys.push(labelText.toLowerCase());
@@ -1255,6 +1366,18 @@ function bindPlanningFilters() {
   updatePlanningFilterControls();
 }
 
+function bindProjectFocus() {
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-project-focus-id]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    selectedProjectFocusId = text(button.dataset.projectFocusId) || null;
+    renderProjectFocus();
+  });
+}
+
 function bindTaskBoardSelectors() {
   const teamSelect = document.querySelector("[data-task-board-team]");
   const projectSelect = document.querySelector("[data-task-board-project]");
@@ -1307,10 +1430,10 @@ async function loadState({ preserveForms = false } = {}) {
   timelineLoading = true;
   try {
     const [stateResponse, templatesResponse] = await Promise.all([
-      fetch(`${API_BASE}/state`, {
+      teamFetch(`${API_BASE}/state`, {
         headers: { Accept: "application/json" },
       }),
-      fetch(`${API_BASE}/templates`, {
+      teamFetch(`${API_BASE}/templates`, {
         headers: { Accept: "application/json" },
       }),
     ]);
@@ -1341,7 +1464,7 @@ async function loadState({ preserveForms = false } = {}) {
 async function loadCosts() {
   const requestId = ++costsRequestId;
   try {
-    const response = await fetch(`${API_BASE}/costs`, {
+    const response = await teamFetch(`${API_BASE}/costs`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1475,10 +1598,15 @@ function chatScopeFields(payload) {
 
 async function loadConversations({ selectedConversationId = null, preserveSelection = true } = {}) {
   const requestId = ++chatRequestId;
+  const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
   chatState = { ...chatState, loading: true, error: null };
   renderChat();
   try {
-    const response = await fetch(chatApiUrl("/conversations"), {
+    const query = new URLSearchParams({ include_selected_messages: "1" });
+    if (candidateId) {
+      query.set("selected_conversation_id", candidateId);
+    }
+    const response = await teamFetch(chatApiUrl("/conversations", query), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1490,12 +1618,25 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
     }
     chatState = normalizeChat(payload);
     selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
-    const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
-    selectedChatConversationId = selectExistingConversationId(candidateId) || firstConversationId();
+    const responseCandidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
+    selectedChatConversationId =
+      selectExistingConversationId(responseCandidateId) ||
+      selectExistingConversationId(text(payload.selected_conversation_id) || candidateId) ||
+      firstConversationId();
+    const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
+    if (selectedMessagesLoaded) {
+      scheduleChatScrollToBottom(selectedChatConversationId);
+    }
     renderChat();
     if (selectedChatConversationId) {
-      ensureChatStream(selectedChatConversationId);
-      void loadConversationDetail(selectedChatConversationId, requestId);
+      if (chatStreamShouldBeOpen()) {
+        ensureChatStream(selectedChatConversationId);
+        if (!selectedMessagesLoaded) {
+          void loadConversationDetail(selectedChatConversationId, requestId);
+        }
+      } else {
+        closeChatStream();
+      }
     } else {
       closeChatStream();
     }
@@ -1518,7 +1659,7 @@ async function loadConversationDetail(conversationId, requestId = chatRequestId)
     return;
   }
   try {
-    const response = await fetch(chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}`), {
+    const response = await teamFetch(chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}`), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -1564,7 +1705,7 @@ async function loadOlderChatMessages(conversationId) {
       before: beforeMessageId,
       limit: String(chatMessagePageSize),
     });
-    const response = await fetch(
+    const response = await teamFetch(
       chatApiUrl(`/conversations/${encodeURIComponent(normalizedConversationId)}/messages`, query),
       { headers: { Accept: "application/json" } },
     );
@@ -1605,6 +1746,11 @@ function firstConversationId() {
   return text(chatState.conversations[0]?.id) || null;
 }
 
+function chatConversationHasLoadedMessages(conversationId) {
+  const conversation = chatConversationById(conversationId);
+  return conversation?.messages_loaded === true;
+}
+
 function replaceChatConversation(conversation) {
   if (!conversation?.id) {
     return;
@@ -1617,9 +1763,31 @@ function replaceChatConversation(conversation) {
   chatState = { ...chatState, conversations: nextConversations };
 }
 
+function chatStreamShouldBeOpen() {
+  return activeTeamView === "chat" && document.visibilityState !== "hidden";
+}
+
+function syncChatStreamForActiveView({ refresh = false } = {}) {
+  if (!chatStreamShouldBeOpen()) {
+    closeChatStream();
+    return;
+  }
+  if (!selectedChatConversationId) {
+    return;
+  }
+  ensureChatStream(selectedChatConversationId);
+  if (refresh) {
+    void loadConversationDetail(selectedChatConversationId);
+  }
+}
+
 function ensureChatStream(conversationId) {
   const normalizedConversationId = text(conversationId);
   if (!normalizedConversationId || typeof EventSource === "undefined") {
+    return;
+  }
+  if (!chatStreamShouldBeOpen()) {
+    closeChatStream();
     return;
   }
   if (chatStream && chatStreamConversationId === normalizedConversationId) {
@@ -1699,7 +1867,7 @@ async function createOrFocusChat(agentId) {
   }
   setStatus("Opening chat.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/conversations`, {
+    const response = await teamFetch(`${API_BASE}/conversations`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -1719,10 +1887,16 @@ async function createOrFocusChat(agentId) {
     selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
     chatNewPickerOpen = false;
+    const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
+    if (selectedMessagesLoaded) {
+      scheduleChatScrollToBottom(selectedChatConversationId);
+    }
     renderChat();
     if (selectedChatConversationId) {
       ensureChatStream(selectedChatConversationId);
-      await loadConversationDetail(selectedChatConversationId);
+      if (!selectedMessagesLoaded) {
+        await loadConversationDetail(selectedChatConversationId);
+      }
     }
     setStatus("", "");
   } catch (error) {
@@ -1750,7 +1924,7 @@ async function submitChatMessage(form) {
   setStatus("Sending chat message.", "loading");
   try {
     const conversationId = text(conversation.id);
-    const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
+    const response = await teamFetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -1785,9 +1959,7 @@ async function submitChatMessage(form) {
         activeComposer.value = "";
       }
     }
-    if (payload.dispatch?.queued) {
-      setStatus(payload.dispatch.message || "Chat message queued until the agent finishes current work.", "warning");
-    } else if (payload.dispatch?.success === false) {
+    if (payload.dispatch?.success === false && !payload.dispatch?.queued) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
     } else {
       setStatus("", "");
@@ -1806,8 +1978,8 @@ async function submitChatMessage(form) {
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   updateArchivedVisibilityToggle();
+  updateGovernanceAgendaVisibilityToggle();
   updateTeamViewTabs();
-  placeSetupFormsPanel();
   renderSummary();
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
@@ -1819,7 +1991,9 @@ function render() {
   renderChat();
   renderRoles();
   renderProjects();
+  renderProjectFocus();
   renderTaskBoard();
+  renderCases();
   renderReviewProfiles();
   renderReleases();
   renderTemplateSetup();
@@ -1827,7 +2001,6 @@ function render() {
   renderTimeline();
   decorateFieldTooltips(document);
   updateTeamViewTabs();
-  placeSetupFormsPanel();
   syncTeamsCreateTeamPanel();
   syncGovernanceCreateGroupPanel();
 }
@@ -1908,6 +2081,7 @@ function renderSummary() {
   const visibleAgents = values(state.agents).filter(isVisibleAgent);
   const visibleGovernanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup);
   const tasks = values(state.tasks);
+  const cases = values(state.cases);
   const deliverables = values(state.deliverables);
   const reviews = values(state.review_requests);
   const reviewProfiles = values(state.review_profiles);
@@ -1919,6 +2093,7 @@ function renderSummary() {
     ["Governance groups", visibleGovernanceGroups.length],
     ["Projects", visibleProjects.length],
     ["Agents", visibleAgents.length],
+    ["Open cases", cases.filter((item) => item.status !== "closed").length],
     ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
     ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
     ["Review profiles", visibleReviewProfiles.length],
@@ -2007,6 +2182,9 @@ function renderGovernanceGroup(group) {
     .filter(Boolean);
   const agenda = governanceAgendaForGroup(group.id);
   const pendingAgenda = agenda.filter((item) => item.state === "pending");
+  const visibleAgenda = showHandledGovernanceAgenda
+    ? agenda
+    : agenda.filter((item) => item.state !== "handled");
   const cost = governanceCostForGroup(group.id);
   const capReached = cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length > 0;
   return `
@@ -2021,9 +2199,9 @@ function renderGovernanceGroup(group) {
       </div>
       <div class="meta-line">${escapeHtml(group.id)} - manager ${escapeHtml(manager ? agentLabel(manager) : group.manager_agent_id)}</div>
       ${cost ? renderCostCounter(cost, { label: "Estimated group cost", compact: true }) : ""}
-      ${renderGovernanceMemberTeams(memberTeams, cost)}
       ${renderGovernanceGoals(group.goals || [])}
-      ${renderGovernanceAgenda(group, agenda, pendingAgenda)}
+      ${renderGovernanceMemberTeams(memberTeams, cost)}
+      ${renderGovernanceAgenda(group, visibleAgenda, pendingAgenda)}
     </li>
   `;
 }
@@ -2054,11 +2232,11 @@ function renderGovernanceGoals(goals) {
     return "";
   }
   return `
-    <div class="governance-subsection">
+    <div class="governance-subsection governance-goals-subsection">
       <div class="meta-line">Goals</div>
-      <ul class="compact-record-list">
+      <ul class="compact-record-list governance-goal-list">
         ${goals
-          .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong> <span>${escapeHtml(goal.state || "pending")}</span></li>`)
+          .map((goal) => `<li><strong>${escapeHtml(goal.description)}</strong></li>`)
           .join("")}
       </ul>
     </div>
@@ -2067,7 +2245,12 @@ function renderGovernanceGoals(goals) {
 
 function renderGovernanceAgenda(group, agenda, pendingAgenda) {
   if (!agenda.length) {
-    return `<p class="empty-state">No governance agenda items.</p>`;
+    return `
+      <div class="governance-subsection">
+        <div class="meta-line">Agenda - ${escapeHtml(pendingAgenda.length)} pending</div>
+        <p class="empty-state">No active governance agenda items.</p>
+      </div>
+    `;
   }
   return `
     <div class="governance-subsection">
@@ -2226,6 +2409,21 @@ function updateArchivedVisibilityToggle() {
   }
 }
 
+function bindGovernanceAgendaVisibilityToggle() {
+  elements.showHandledGovernanceAgendaToggle?.addEventListener("change", () => {
+    const drafts = captureFormDrafts();
+    showHandledGovernanceAgenda = Boolean(elements.showHandledGovernanceAgendaToggle?.checked);
+    render();
+    restoreFormDrafts(drafts);
+  });
+}
+
+function updateGovernanceAgendaVisibilityToggle() {
+  if (elements.showHandledGovernanceAgendaToggle) {
+    elements.showHandledGovernanceAgendaToggle.checked = showHandledGovernanceAgenda;
+  }
+}
+
 function isArchivedTeam(team) {
   return Boolean(team?.archived);
 }
@@ -2272,6 +2470,12 @@ function isVisibleRole(role) {
 
 function isVisibleReviewProfile(profile) {
   return showArchived || !isArchivedReviewProfile(profile);
+}
+
+function isVisibleCase(item) {
+  const team = item?.team_id ? state.teams[item.team_id] : null;
+  const project = item?.project_id ? state.projects[item.project_id] : null;
+  return (!team || isVisibleTeam(team)) && (!project || isVisibleProject(project));
 }
 
 function isVisibleRuntimeRow(row) {
@@ -2340,6 +2544,9 @@ function renderRuntimeAttentionRow(row) {
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
   const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
+  const nextActionLine = row.next_action_hint
+    ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
+    : "";
   const actions =
     row.kind === "failed_action_record" && row.action_record_id
       ? `
@@ -2365,6 +2572,7 @@ function renderRuntimeAttentionRow(row) {
           ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
           : ""
       }
+      ${nextActionLine}
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
       ${actions}
     </li>
@@ -2375,6 +2583,9 @@ function renderCompactRuntimeAttentionRow(row) {
   const refs = runtimeReferenceParts(row);
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
+  const nextActionLine = row.next_action_hint
+    ? `<div class="meta-line">Next action: ${escapeHtml(row.next_action_hint)}</div>`
+    : "";
   const action =
     row.kind === "failed_action_record" && row.action_record_id
       ? `
@@ -2413,6 +2624,7 @@ function renderCompactRuntimeAttentionRow(row) {
               ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
               : ""
           }
+          ${nextActionLine}
           ${refs ? `<div class="meta-line">${refs}</div>` : ""}
           ${action}
         </div>
@@ -3103,10 +3315,12 @@ function orgHierarchyNodeData(node) {
 function orgAgentNodeData(agentData) {
   const awake = agentAwakeState(agentData);
   const work = orgNodeWorkSummaryData(agentData);
+  const activityTone = activityToneClass(agentData.activitySummary?.tone);
   const cardClasses = [
     "hierarchy-node-card",
     "org-focus-node-card",
     `org-focus-node-card--${awake.kind}`,
+    activityTone ? `org-focus-node-card--activity-${activityTone}` : "",
     agentData.taskStats.blockedWaitingCount || agentData.inboxCount ? "org-focus-node-card--attention" : "",
   ]
     .filter(Boolean)
@@ -3289,6 +3503,9 @@ function renderHierarchyNode(node, options = {}) {
       "hierarchy-node-card",
       focused ? "org-focus-node-card" : "",
       focused ? `org-focus-node-card--${agentAwakeState(node.agentData).kind}` : "",
+      focused && activityToneClass(node.agentData.activitySummary?.tone)
+        ? `org-focus-node-card--activity-${activityToneClass(node.agentData.activitySummary?.tone)}`
+        : "",
       node.agentData.taskStats.blockedWaitingCount || node.agentData.inboxCount ? "org-focus-node-card--attention" : "",
     ]
       .filter(Boolean)
@@ -3635,6 +3852,7 @@ function renderTeamInlineProjectForm(teamId) {
         <div class="team-inline-create-fields">
           <label>Host repo path <input name="host_repo_path" /></label>
           <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+          ${gitImportControls()}
           <label>Base branch <input name="base_branch" placeholder="main" /></label>
           <label>Canonical origin URL <input name="canonical_origin_url" /></label>
           <label>Provider <select name="provider">${renderSelectOptions(gitProviders, { placeholder: "Default" })}</select></label>
@@ -4599,10 +4817,12 @@ function mergeChatConversation(existing, incoming) {
 }
 
 function normalizeChatConversation(conversation) {
+  const messagesLoaded = Array.isArray(conversation?.messages) || conversation?.messages_loaded === true;
   const messages = conversationMessages(conversation);
   return {
     ...conversation,
     messages,
+    messages_loaded: messagesLoaded,
     has_older: Boolean(conversation?.has_older),
     oldest_message_id: text(messages[0]?.id) || text(conversation?.oldest_message_id) || null,
     newest_message_id: text(messages[messages.length - 1]?.id) || text(conversation?.newest_message_id) || null,
@@ -5131,6 +5351,9 @@ function agentCardData(agent) {
     status_request: inboxItems.filter((item) => text(item.item_type) === "status_request"),
     progress_report: inboxItems.filter((item) => text(item.item_type) === "progress_report"),
   };
+  const activitySummary = normalizeActivitySummary(
+    agent?.activity_summary || state.agent_activity_summaries?.[text(agent?.id)],
+  );
 
   return {
     id: text(agent?.id),
@@ -5151,11 +5374,40 @@ function agentCardData(agent) {
     inboxIndicatorItems,
     runtime,
     sessionHealth: agentSessionHealth(agent.id),
+    activitySummary,
     effectiveStandDowns: standDowns,
     standDownActive: Boolean(agent?.stand_down_active) || standDowns.length > 0,
     ephemeralCapacity: ephemeralCapacity(agent),
     ephemeralCurrentCount,
   };
+}
+
+function normalizeActivitySummary(summary) {
+  if (!summary || typeof summary !== "object") {
+    return null;
+  }
+  const headline = text(summary.headline);
+  const workingOn = text(summary.working_on);
+  const waitingFor = text(summary.waiting_for);
+  if (!headline && !workingOn && !waitingFor) {
+    return null;
+  }
+  return {
+    headline,
+    working_on: workingOn,
+    waiting_for: waitingFor,
+    tone: activityToneClass(summary.tone),
+    source: text(summary.source) || "derived",
+    generated_at: text(summary.generated_at),
+    reason_refs: Array.isArray(summary.reason_refs) ? summary.reason_refs : [],
+  };
+}
+
+function activityToneClass(tone) {
+  const normalized = text(tone).toLowerCase();
+  return ["working", "waiting", "blocked", "idle", "attention", "offline"].includes(normalized)
+    ? normalized
+    : "";
 }
 
 function effectiveStandDowns(record) {
@@ -5502,22 +5754,30 @@ function renderAgentInboxBubble(item) {
 }
 
 function agentWorkSnapshot(agentData) {
+  const activitySummary = agentData.activitySummary || null;
   const openTasks = agentData.taskStats.openTasks || [];
   const waitingTasks = openTasks.filter(isTaskWaitingOrBlocked);
   const currentTask = openTasks.find((task) => !isTaskWaitingOrBlocked(task)) || openTasks[0] || null;
   const inboxItems = pendingInboxForAgent(agentData.id);
   const runtimeAttention = agentRuntimeAttentionRows(agentData.id);
   const activeAssignments = activeEphemeralAssignmentsForAgent(agentData.id);
-  const primary = currentTask
+  const primary = text(activitySummary?.headline) || text(activitySummary?.working_on) || (currentTask
     ? `${currentTask.title} (${humanizeToken(currentTask.state)})`
     : inboxItems[0]
       ? `${inboxItemLabels[inboxItems[0].item_type] || inboxItems[0].item_type}: ${inboxItemDetail(inboxItems[0]) || inboxItems[0].id}`
       : activeAssignments[0]
         ? `${activeAssignments[0].title || activeAssignments[0].id} (${humanizeToken(activeAssignments[0].state)})`
-        : "No open work";
+        : "No open work");
   const waiting = [];
+  const summaryWaiting = text(activitySummary?.waiting_for);
+  if (summaryWaiting && summaryWaiting.toLowerCase() !== "clear") {
+    waiting.push(summaryWaiting);
+  }
   waitingTasks.slice(0, 2).forEach((task) => {
-    waiting.push(`${task.title} (${humanizeToken(task.state)})`);
+    const label = `${task.title} (${humanizeToken(task.state)})`;
+    if (!waiting.includes(label)) {
+      waiting.push(label);
+    }
   });
   runtimeAttention.slice(0, 2).forEach((row) => {
     const label = row.title || row.id;
@@ -5584,6 +5844,9 @@ function hierarchyDetailLines(agentData, { focused = false } = {}) {
   const snapshot = agentWorkSnapshot(agentData);
 
   if (focused) {
+    if (agentData.activitySummary?.source) {
+      lines.push(`Activity summary ${agentData.activitySummary.source} - ${agentData.activitySummary.tone || "unknown"}`);
+    }
     lines.push(`Awake status ${awake.label} - ${awake.detail}`);
     lines.push(`Current work ${snapshot.primary}`);
     if (snapshot.waiting.length) {
@@ -5923,6 +6186,404 @@ function renderProjects() {
       })
       .join(""),
   );
+}
+
+function renderProjectFocus() {
+  if (!document.querySelector("[data-projects-focus-list]")) {
+    return;
+  }
+  const allProjects = values(state.projects).sort(compareTeamProjects);
+  const projects = allProjects.filter(isVisibleProject);
+  if (!projects.some((project) => project.id === selectedProjectFocusId)) {
+    selectedProjectFocusId = projects[0]?.id || null;
+  }
+  const selectedProject = selectedProjectFocusId ? state.projects[selectedProjectFocusId] : null;
+
+  document.querySelectorAll("[data-projects-focus-list]").forEach((target) => {
+    if (!allProjects.length) {
+      target.innerHTML = `<p class="empty-state">No projects registered.</p>`;
+      return;
+    }
+    if (!projects.length) {
+      target.innerHTML = `<p class="empty-state">No visible projects.</p>`;
+      return;
+    }
+    target.innerHTML = `
+      <div class="projects-focus-list-header">
+        <span>${projects.length} visible project${projects.length === 1 ? "" : "s"}</span>
+        ${showArchived ? `<span>Archived included</span>` : ""}
+      </div>
+      <div class="projects-focus-list-items">
+        ${projects.map((project) => renderProjectFocusListItem(project)).join("")}
+      </div>
+    `;
+  });
+
+  document.querySelectorAll("[data-projects-focus-detail]").forEach((target) => {
+    target.innerHTML = selectedProject
+      ? renderProjectFocusDetail(selectedProject)
+      : `<p class="empty-state">Select or create a project.</p>`;
+    fillSelectsIn(target);
+    decorateFieldTooltips(target);
+  });
+}
+
+function renderProjectFocusListItem(project) {
+  const active = project.id === selectedProjectFocusId;
+  const team = state.teams[project.team_id];
+  const tasks = values(state.tasks).filter((task) => task.project_id === project.id);
+  const reviewProfiles = projectSpecificReviewProfiles(project);
+  return `
+    <button
+      type="button"
+      class="projects-focus-row${active ? " active" : ""}"
+      data-project-focus-id="${escapeAttr(project.id)}"
+      aria-pressed="${active ? "true" : "false"}"
+    >
+      <span class="projects-focus-row-main">
+        <strong>${escapeHtml(project.name)}</strong>
+        <span>${escapeHtml(team ? `${team.name} (${team.id})` : project.team_id)}</span>
+      </span>
+      <span class="projects-focus-row-meta">
+        <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+        <span>${tasks.length} tasks</span>
+        <span>${reviewProfiles.length} profiles</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderProjectFocusDetail(project) {
+  const team = state.teams[project.team_id];
+  const leadAgent = state.agents[project.lead_agent_id];
+  const tasks = values(state.tasks)
+    .filter((task) => task.project_id === project.id)
+    .sort(byPriority);
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const deliverables = values(state.deliverables)
+    .filter((deliverable) => taskIds.has(deliverable.task_id))
+    .sort(byId);
+  const releases = values(state.release_packages)
+    .filter((release) => release.project_id === project.id)
+    .sort(byId);
+  const projectProfiles = projectSpecificReviewProfiles(project);
+  const teamProfiles = teamWideReviewProfilesForProject(project);
+  const projectAgents = values(state.agents)
+    .filter(isVisibleAgent)
+    .filter((agent) => agentProjectIds(agent).includes(project.id))
+    .sort(comparePeopleAgents);
+  const projectRoles = values(state.roles)
+    .filter(isVisibleRole)
+    .filter((role) => role.project_id === project.id)
+    .sort(compareTeamRoles);
+
+  return `
+    <div class="projects-detail-header">
+      <div>
+        <p class="section-label">Selected project</p>
+        <h2>${escapeHtml(project.name)}</h2>
+        <div class="meta-line">${escapeHtml(project.id)} - ${escapeHtml(team ? `${team.name} (${team.id})` : project.team_id)}</div>
+      </div>
+      <div class="record-actions">
+        <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+        ${editButton("project", project.id)}
+      </div>
+    </div>
+    <div class="project-focus-metrics">
+      ${renderProjectFocusMetric("Lead", leadAgent ? agentLabel(leadAgent) : project.lead_agent_id)}
+      ${renderProjectFocusMetric("Tasks", tasks.length)}
+      ${renderProjectFocusMetric("Deliverables", deliverables.length)}
+      ${renderProjectFocusMetric("Review profiles", projectProfiles.length)}
+      ${renderProjectFocusMetric("Agents", projectAgents.length)}
+      ${renderProjectFocusMetric("Releases", releases.length)}
+    </div>
+    ${renderProjectCostCounter(project.id)}
+    ${renderProjectGit(project.git)}
+    <div class="projects-detail-grid">
+      <section>
+        <h3>Goals</h3>
+        ${renderGoals(project.goals || [], { compact: true })}
+      </section>
+      <section>
+        <h3>Project roles</h3>
+        ${renderProjectFocusRoles(projectRoles)}
+      </section>
+      <section>
+        <h3>Project agents</h3>
+        ${renderProjectFocusAgents(projectAgents)}
+      </section>
+      <section>
+        <h3>Tasks</h3>
+        ${renderTasks(tasks, { compact: true })}
+      </section>
+      <section>
+        <h3>Deliverables</h3>
+        ${renderDeliverables(deliverables, { compact: true })}
+      </section>
+      <section>
+        <h3>Releases</h3>
+        ${releases.length ? `<ul class="release-list compact-record-list">${releases.map(renderCompactRelease).join("")}</ul>` : `<p class="empty-state">No release packages.</p>`}
+      </section>
+    </div>
+    <section class="project-review-profile-panel">
+      <div class="projects-detail-section-header">
+        <div>
+          <p class="section-label">Review profile</p>
+          <h3>Project review profiles</h3>
+        </div>
+      </div>
+      ${renderProjectReviewProfileCreateForm(project)}
+      ${renderProjectReviewProfiles(projectProfiles, teamProfiles)}
+    </section>
+  `;
+}
+
+function renderProjectFocusMetric(label, value) {
+  return `
+    <div class="project-focus-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderProjectFocusRoles(roles) {
+  if (!roles.length) {
+    return `<p class="empty-state">No project-specific roles.</p>`;
+  }
+  return `
+    <ul class="compact-record-list">
+      ${roles
+        .map((role) => `
+          <li class="record-item compact-record-card">
+            <div class="record-line">
+              <strong>${escapeHtml(role.name)}</strong>
+              <div class="record-actions">${editButton("role", role.id)}</div>
+            </div>
+            <div class="meta-line">${escapeHtml(role.id)}</div>
+            ${role.description ? `<div class="meta-line">${escapeHtml(role.description)}</div>` : ""}
+          </li>
+        `)
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderProjectFocusAgents(agents) {
+  if (!agents.length) {
+    return `<p class="empty-state">No project agents.</p>`;
+  }
+  return `
+    <ul class="compact-record-list">
+      ${agents
+        .map((agent) => `
+          <li class="record-item compact-record-card">
+            <div class="record-line">
+              <strong>${escapeHtml(agentLabel(agent))}</strong>
+              <div class="record-actions">${editButton("agent", agent.id)}</div>
+            </div>
+            <div class="meta-line">${escapeHtml(agent.id)} - ${escapeHtml(agentRoleLabel(agent))}</div>
+          </li>
+        `)
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderCases() {
+  const allCases = values(state.cases).sort(compareCases);
+  const visibleCases = allCases.filter(isVisibleCase);
+  if (!allCases.length) {
+    renderIntoActiveTargets("[data-cases-view]", `<p class="empty-state">No cases registered.</p>`);
+    return;
+  }
+  if (!visibleCases.length) {
+    renderIntoActiveTargets("[data-cases-view]", `<p class="empty-state">No visible cases.</p>`);
+    return;
+  }
+  const grouped = groupCasesByTeam(visibleCases);
+  renderIntoActiveTargets(
+    "[data-cases-view]",
+    grouped.map(renderCaseTeamGroup).join(""),
+  );
+}
+
+function groupCasesByTeam(items) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const teamId = text(item.team_id) || "";
+    if (!groups.has(teamId)) {
+      groups.set(teamId, []);
+    }
+    groups.get(teamId).push(item);
+  });
+  return [...groups.entries()]
+    .map(([teamId, cases]) => ({ teamId, team: state.teams[teamId] || null, cases }))
+    .sort((left, right) => {
+      const leftLabel = left.team?.name || left.teamId;
+      const rightLabel = right.team?.name || right.teamId;
+      return leftLabel.localeCompare(rightLabel) || left.teamId.localeCompare(right.teamId);
+    });
+}
+
+function renderCaseTeamGroup(group) {
+  const openCount = group.cases.filter((item) => text(item.status) !== "closed").length;
+  return `
+    <article class="project-block">
+      <div class="project-header">
+        <div>
+          <strong>${escapeHtml(group.team?.name || group.teamId || "Unknown team")}</strong>
+          <div class="meta-line">${escapeHtml(group.teamId || "team missing")} - ${openCount} open case${openCount === 1 ? "" : "s"}</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        ${group.cases.map(renderCaseItem).join("")}
+      </ul>
+    </article>
+  `;
+}
+
+function renderCaseItem(item) {
+  const project = item.project_id ? state.projects[item.project_id] : null;
+  const owner = item.owner_agent_id ? state.agents[item.owner_agent_id] : null;
+  const metaParts = [
+    item.id,
+    item.priority ? `${humanizeToken(item.priority)} priority` : "",
+    project ? project.name : item.project_id ? `project ${item.project_id}` : "Team-wide",
+    owner ? `owner ${agentLabel(owner)}` : item.owner_agent_id ? `owner ${item.owner_agent_id}` : "No owner",
+  ].filter(Boolean);
+  const source = [item.source, item.source_ref].filter(Boolean).join(" ");
+  return `
+    <li class="task-item">
+      <div class="task-line">
+        <strong>${escapeHtml(item.title)}</strong>
+        <div class="record-actions">
+          <span class="state-pill ${escapeHtml(item.status || "open")}">${escapeHtml(humanizeToken(item.status || "open"))}</span>
+          ${editButton("case", item.id)}
+        </div>
+      </div>
+      <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
+      ${source ? `<div class="meta-line">Source ${escapeHtml(source)}</div>` : ""}
+      ${renderCaseTags(item)}
+      ${renderCaseTaskLinks(item)}
+      ${item.description ? `<div class="meta-line">${escapeHtml(item.description)}</div>` : ""}
+    </li>
+  `;
+}
+
+function renderCaseTags(item) {
+  const tags = uniqueTextList(item.tags);
+  if (!tags.length) {
+    return "";
+  }
+  return `
+    <ul class="inline-list">
+      ${tags.map((tag) => `<li><span class="state-pill neutral">${escapeHtml(tag)}</span></li>`).join("")}
+    </ul>
+  `;
+}
+
+function renderCaseTaskLinks(item) {
+  const taskIds = uniqueTextList(item.task_ids);
+  if (!taskIds.length) {
+    return "";
+  }
+  const labels = taskIds.map((taskId) => {
+    const task = state.tasks[taskId];
+    return task ? `${task.title} (${task.id}, ${humanizeToken(task.state)})` : taskId;
+  });
+  return `<div class="meta-line">Tasks ${escapeHtml(labels.join(" - "))}</div>`;
+}
+
+function caseLabel(item) {
+  const team = item?.team_id ? state.teams[item.team_id] : null;
+  const project = item?.project_id ? state.projects[item.project_id] : null;
+  const parts = [
+    item?.title || item?.id,
+    item?.id,
+    item?.status ? humanizeToken(item.status) : "",
+    team?.name || item?.team_id,
+    project?.name || item?.project_id,
+  ].filter(Boolean);
+  return parts.join(" - ");
+}
+
+function compareCases(left, right) {
+  return (
+    caseStatusRank(left.status) - caseStatusRank(right.status) ||
+    prioritySortValue(left.priority) - prioritySortValue(right.priority) ||
+    String(right.updated_at || "").localeCompare(String(left.updated_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function caseStatusRank(status) {
+  const order = {
+    triage: 0,
+    open: 1,
+    in_progress: 2,
+    waiting: 3,
+    resolved: 4,
+    closed: 5,
+  };
+  return order[text(status)] ?? 99;
+}
+
+function renderProjectReviewProfileCreateForm(project) {
+  return `
+    <form
+      id="create-review-profile-for-project-form"
+      class="project-review-profile-form"
+      data-form-id="create-review-profile-form"
+      data-endpoint="/review-profiles"
+      data-method="POST"
+      data-delegated-create-form
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(project.team_id)}" />
+      <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
+      <div class="project-review-profile-fields">
+        <label>Name <input name="name" required /></label>
+        <label>Description <textarea name="description" rows="2"></textarea></label>
+        <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="project-review-roles"></select></label>
+      </div>
+      ${renderReviewProfileCriteriaEditor()}
+      <button type="submit">Create profile</button>
+    </form>
+  `;
+}
+
+function renderProjectReviewProfiles(projectProfiles, teamProfiles) {
+  const projectList = projectProfiles.length
+    ? `<ul class="review-list compact-record-list">${projectProfiles.map(renderCompactReviewProfile).join("")}</ul>`
+    : `<p class="empty-state">No project-specific review profiles.</p>`;
+  const teamList = teamProfiles.length
+    ? `
+      <details class="team-wide-review-profiles">
+        <summary>Team-wide profiles available to this project</summary>
+        <ul class="review-list compact-record-list">${teamProfiles.map(renderCompactReviewProfile).join("")}</ul>
+      </details>
+    `
+    : "";
+  return `
+    <div class="project-review-profile-list">
+      ${projectList}
+      ${teamList}
+    </div>
+  `;
+}
+
+function projectSpecificReviewProfiles(project) {
+  return values(state.review_profiles)
+    .filter(isVisibleReviewProfile)
+    .filter((profile) => profile.project_id === project.id)
+    .sort(byId);
+}
+
+function teamWideReviewProfilesForProject(project) {
+  return values(state.review_profiles)
+    .filter(isVisibleReviewProfile)
+    .filter((profile) => !profile.project_id && profile.team_id === project.team_id)
+    .sort(byId);
 }
 
 function renderTaskBoard() {
@@ -6334,6 +6995,10 @@ function renderTasks(tasks, { compact = false } = {}) {
 
 function renderTaskGraph(task) {
   const lines = [];
+  if (task.case_id) {
+    const item = state.cases[task.case_id];
+    lines.push(`case ${item ? item.title : task.case_id}`);
+  }
   if (task.parent_task_id) {
     lines.push(`parent ${task.parent_task_id}`);
   }
@@ -6868,7 +7533,7 @@ function renderCompactRelease(release) {
 
 function renderTemplateSetup() {
   fillTemplateSelect();
-  renderTemplatePreview();
+  renderTemplateSetupFields();
 }
 
 function fillTemplateSelect() {
@@ -6890,6 +7555,74 @@ function fillTemplateSelect() {
   } else if (options.length) {
     elements.templateSelect.value = options[0][0];
   }
+}
+
+function renderTemplateSetupFields({ preserveValues = true } = {}) {
+  const form = document.querySelector("#setup-template-form");
+  const template = selectedTemplate();
+  const previousValues = preserveValues && form ? formData(form) : {};
+  renderTemplateRoleFields(template, previousValues);
+  renderTemplateGitFields(template);
+  if (elements.templateRoleFields) {
+    fillSelectsIn(elements.templateRoleFields);
+    decorateFieldTooltips(elements.templateRoleFields);
+  }
+  renderTemplatePreview();
+}
+
+function renderTemplateRoleFields(template, previousValues = {}) {
+  if (!elements.templateRoleFields) {
+    return;
+  }
+  if (!template) {
+    elements.templateRoleFields.innerHTML = "";
+    return;
+  }
+
+  elements.templateRoleFields.innerHTML = `
+    <p class="subheading">Roles</p>
+    ${template.roles.map((role) => renderTemplateRoleSessionFields(role, previousValues)).join("")}
+  `;
+}
+
+function renderTemplateRoleSessionFields(role, previousValues) {
+  const roleKey = text(role.key);
+  const existingAgentField = `${roleKey}_existing_agent_id`;
+  const sessionField = `${roleKey}_session_id`;
+  const sessionValue = text(previousValues[sessionField]);
+  const existingAgentValue = text(previousValues[existingAgentField]);
+  const roleLabel = text(role.label) || humanizeToken(roleKey);
+  const suggestedRole = roleKey.replaceAll("_", "-");
+  return `
+    <fieldset class="template-role-fieldset" data-template-role-key="${escapeAttr(roleKey)}">
+      <legend>${escapeHtml(roleLabel)}</legend>
+      <label>
+        Existing agent
+        <select
+          name="${escapeAttr(existingAgentField)}"
+          data-options="agents"
+          data-placeholder="Select existing agent"
+          data-agent-source-picker
+          data-session-field="${escapeAttr(sessionField)}"
+          data-suggested-role="${escapeAttr(suggestedRole)}"
+          data-current-value="${escapeAttr(existingAgentValue)}"
+          data-tooltip-key="template_existing_agent_id"
+        ></select>
+      </label>
+      <label>Session ID <input name="${escapeAttr(sessionField)}" value="${escapeAttr(sessionValue)}" required data-template-session-field data-tooltip-key="template_session_id" /></label>
+    </fieldset>
+  `;
+}
+
+function renderTemplateGitFields(template) {
+  if (!elements.templateGitFields) {
+    return;
+  }
+  elements.templateGitFields.hidden = !templateUsesGit(template);
+}
+
+function templateUsesGit(template) {
+  return (template?.required_fields || []).some((field) => text(field.path).startsWith("project.git."));
 }
 
 function renderTemplatePreview() {
@@ -7028,11 +7761,15 @@ function renderTemplatePreview() {
       </ul>
     </section>
 
-      <section class="template-preview-section">
-        <h3>Git config</h3>
-        <div class="meta-line">Git is optional. If used, provide a host repo path and a bare repo value.</div>
-        <div class="meta-line">Bare repo values that start with / are treated as paths; other values are treated as names.</div>
-      </section>
+      ${
+        templateUsesGit(template)
+          ? `<section class="template-preview-section">
+              <h3>Git config</h3>
+              <div class="meta-line">Git is optional. If used, provide a host repo path and a bare repo value.</div>
+              <div class="meta-line">Bare repo values that start with / are treated as paths; other values are treated as names.</div>
+            </section>`
+          : ""
+      }
     `;
 }
 
@@ -7122,7 +7859,7 @@ async function loadTimeline() {
   setTimelineStatus("Loading derived timeline.", "loading");
 
   try {
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
       {
         headers: { Accept: "application/json" },
@@ -7884,6 +8621,7 @@ function buildSelectOptionSets() {
     .map((agent) => [agent.id, text(agent.display_name) || text(agent.id)])
     .sort((left, right) => text(left[1]).localeCompare(text(right[1])) || text(left[0]).localeCompare(text(right[0])));
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
+  const cases = values(state.cases).filter(isVisibleCase).sort(compareCases).map((item) => [item.id, caseLabel(item)]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
     .sort(byId)
@@ -7900,8 +8638,10 @@ function buildSelectOptionSets() {
     teams,
     projects,
     roles,
+    "project-review-roles": projectReviewRoleOptionsForProject(selectedProjectFocusId),
     agents,
     "agents-by-display-name": agentsByDisplayName,
+    cases,
     tasks,
     deliverables,
     "review-profiles": reviewProfiles,
@@ -7910,6 +8650,7 @@ function buildSelectOptionSets() {
     "governance-groups": governanceGroups,
     "governance-agenda-types": governanceAgendaTypes.map((item) => [item, humanizeToken(item)]),
     "inbox-priorities": inboxPriorities.map((item) => [item, humanizeToken(item)]),
+    "case-statuses": caseStatuses.map((item) => [item, humanizeToken(item)]),
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
@@ -7935,7 +8676,40 @@ function optionsForSelect(select, optionSets) {
   if (select.dataset.options === "project-lead-agents") {
     return projectLeadAgentOptions(select);
   }
+  if (select.dataset.options === "agent-edit-projects") {
+    return agentEditProjectOptions(select);
+  }
+  if (select.dataset.options === "agent-edit-roles") {
+    return agentEditRoleOptions(select);
+  }
+  if (select.dataset.options === "agent-edit-superiors") {
+    return agentEditSuperiorOptions(select);
+  }
   return optionSets[select.dataset.options] || [];
+}
+
+function agentEditTeamId(select) {
+  const teamId = text(select.form?.elements?.team_id?.value);
+  return teamId === noTeamRecordId ? "" : teamId;
+}
+
+function agentEditProjectOptions(select) {
+  const teamId = agentEditTeamId(select);
+  return teamId ? teamProjectOptions(teamId) : [];
+}
+
+function agentEditRoleOptions(select) {
+  const teamId = agentEditTeamId(select);
+  return teamId ? teamRoleOptions(teamId) : [];
+}
+
+function agentEditSuperiorOptions(select) {
+  const teamId = agentEditTeamId(select);
+  if (!teamId) {
+    return [];
+  }
+  const editedAgentId = text(select.form?.dataset?.editId);
+  return teamAgentOptions(teamId).filter(([agentId]) => text(agentId) !== editedAgentId);
 }
 
 function projectLeadAgentOptions(select) {
@@ -7954,6 +8728,24 @@ function projectLeadAgentOptionsForTeam(teamId) {
     .filter((agent) => text(agent.team_id) === normalizedTeamId)
     .sort(byId)
     .map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
+}
+
+function projectReviewRoleOptionsForProject(projectId) {
+  const project = state.projects?.[text(projectId)];
+  if (!project) {
+    return [];
+  }
+  return values(state.roles)
+    .filter(isVisibleRole)
+    .filter((role) => {
+      if (text(role.team_id) !== text(project.team_id)) {
+        return false;
+      }
+      const roleProjectId = text(role.project_id);
+      return !roleProjectId || roleProjectId === text(project.id);
+    })
+    .sort(compareTeamRoles)
+    .map((role) => [role.id, `${role.name} (${role.id})`]);
 }
 
 function fillSelect(select, options) {
@@ -7982,6 +8774,45 @@ function fillSelect(select, options) {
   delete select.dataset.currentValue;
 }
 
+function teamFetch(input, init = {}, { timeoutMs = teamRequestTimeoutMs } = {}) {
+  const timeout = Number(timeoutMs);
+  if (!Number.isFinite(timeout) || timeout <= 0 || typeof AbortController === "undefined") {
+    return window.fetch(input, init);
+  }
+
+  const controller = new AbortController();
+  const upstreamSignal = init?.signal || null;
+  let timedOut = false;
+  const abortFromUpstream = () => {
+    controller.abort(upstreamSignal?.reason);
+  };
+
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      controller.abort(upstreamSignal.reason);
+    } else {
+      upstreamSignal.addEventListener("abort", abortFromUpstream, { once: true });
+    }
+  }
+
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeout);
+
+  return window.fetch(input, { ...init, signal: controller.signal })
+    .catch((error) => {
+      if (timedOut && error?.name === "AbortError") {
+        throw new Error(`Request timed out after ${Math.round(timeout / 1000)}s.`);
+      }
+      throw error;
+    })
+    .finally(() => {
+      window.clearTimeout(timer);
+      upstreamSignal?.removeEventListener?.("abort", abortFromUpstream);
+    });
+}
+
 function fillSelectsIn(root) {
   const options = buildSelectOptionSets();
   root.querySelectorAll("select[data-options]").forEach((select) => {
@@ -7996,9 +8827,25 @@ async function submitCreateForm(form) {
   if (!endpoint) {
     return;
   }
+  const formId = formSemanticIdentifier(form);
+  const existingProjectIds =
+    formId === "create-project-form"
+      ? new Set(values(state.projects).map((project) => project.id))
+      : null;
   const payload = payloadForForm(form, data);
   const saved = await submitMutation(form, endpoint, method, payload);
-  const formId = formSemanticIdentifier(form);
+  if (saved && existingProjectIds) {
+    const createdProjects = values(state.projects)
+      .filter((project) => !existingProjectIds.has(project.id))
+      .sort((left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) || byId(left, right),
+      );
+    if (createdProjects.length) {
+      selectedProjectFocusId = createdProjects[0].id;
+      renderProjectFocus();
+      refreshSelects();
+    }
+  }
   if (saved && formId === "create-team-from-teams-form") {
     closeTeamsCreateTeamPanel({ reset: true });
     renderAgents();
@@ -8023,8 +8870,10 @@ async function submitTaskUpdate(form) {
   const priority = text(data.priority);
   const title = text(data.title);
   const description = text(data.description);
+  const caseId = text(data.case_id);
   const parentTaskId = text(data.parent_task_id);
   if (stateValue) payload.state = stateValue;
+  payload.case_id = caseId || null;
   if (priority) payload.priority = Number(priority);
   if (title) payload.title = title;
   if (description) payload.description = description;
@@ -8061,7 +8910,7 @@ async function importGitRepoForForm(form, button) {
   button.disabled = true;
   setStatus("Importing Git repo.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/projects/git/import`, {
+    const response = await teamFetch(`${API_BASE}/projects/git/import`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -8119,12 +8968,14 @@ function setGitImportStatus(element, message) {
 }
 
 async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true } = {}) {
+  rememberFormDraft(form);
   const drafts = captureFormDrafts();
-  const body = { ...payload, expected_revision: state.revision };
+  const body = mutationBodyWithConflictMetadata(endpoint, method, payload);
+  const retryDraftKey = formDraftKey(form);
   setFormBusy(form, true);
   setStatus("Saving.", "loading");
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
       method,
       headers: {
         Accept: "application/json",
@@ -8133,33 +8984,215 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
       body: JSON.stringify(body),
     });
 
-      if (response.status === 409) {
-        const conflict = await response.json().catch(() => ({}));
-        await loadState();
-        restoreFormDrafts(drafts);
-        const current = conflict.current_revision ?? state.revision;
-        setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
-        return false;
-      }
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      showRevisionConflictRecoveryStatus({
+        form,
+        draftKey: retryDraftKey,
+        endpoint,
+        method,
+        payload,
+        options: { resetOnSuccess },
+        currentRevision: current,
+      });
+      return false;
+    }
 
     if (!response.ok) {
       throw new Error(await responseText(response));
     }
 
-    state = normalizeState(await response.json());
+    const result = await response.json();
+    const rebasedFromRevision = result.rebased_from_revision;
+    state = normalizeState(result);
     if (resetOnSuccess) {
+      clearFormDraft(form);
       form.reset();
     }
-      render();
-      void loadTimeline();
+    render();
+    void loadTimeline();
+    if (rebasedFromRevision !== undefined && rebasedFromRevision !== null) {
+      setStatus(
+        `Saved revision ${state.revision} after reloading from revision ${rebasedFromRevision}.`,
+        "ok",
+      );
+    } else {
       setStatus(`Saved revision ${state.revision}.`, "ok");
-      return true;
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Save failed.", "error");
-      return false;
-    } finally {
-      setFormBusy(form, false);
     }
+    return true;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Save failed.", "error");
+    return false;
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+function mutationBodyWithConflictMetadata(endpoint, method, payload) {
+  const body = { ...payload, expected_revision: state.revision };
+  const context = mutationResourceContext(endpoint, method, payload);
+  if (!context) {
+    return body;
+  }
+  if (context.kind === "create") {
+    body.conflict_policy = "target_unchanged";
+    return body;
+  }
+  const token = resourceToken(context.collection, context.id);
+  if (token) {
+    body.conflict_policy = "target_unchanged";
+    body.base_resource_token = token;
+  }
+  return body;
+}
+
+function mutationResourceContext(endpoint, method, payload = {}) {
+  const normalizedMethod = text(method).toUpperCase();
+  const path = text(endpoint).split("?")[0];
+  const directTargets = [
+    [/^\/teams\/([^/]+)$/, "teams"],
+    [/^\/governance-groups\/([^/]+)$/, "governance_groups"],
+    [/^\/governance-agenda\/([^/]+)\/handle$/, "governance_agenda"],
+    [/^\/projects\/([^/]+)$/, "projects"],
+    [/^\/roles\/([^/]+)$/, "roles"],
+    [/^\/agents\/([^/]+)$/, "agents"],
+    [/^\/agents\/([^/]+)\/context-rotation$/, "agents"],
+    [/^\/agents\/([^/]+)\/stand-down$/, "agents"],
+    [/^\/agents\/([^/]+)\/stand-down\/revoke$/, "agents"],
+    [/^\/agents\/([^/]+)\/avatar(?:\/accept-preview)?$/, "agents"],
+    [/^\/cases\/([^/]+)$/, "cases"],
+    [/^\/tasks\/([^/]+)$/, "tasks"],
+    [/^\/review-requests\/([^/]+)\/decision$/, "review_requests"],
+    [/^\/action-records\/([^/]+)\/dismiss$/, "action_records"],
+    [/^\/review-profiles\/([^/]+)$/, "review_profiles"],
+  ];
+  for (const [pattern, collection] of directTargets) {
+    const match = path.match(pattern);
+    if (match) {
+      return { kind: "target", collection, id: decodeURIComponent(match[1]) };
+    }
+  }
+  if (normalizedMethod !== "POST") {
+    return null;
+  }
+  const createCollections = {
+    "/teams": ["teams", payload.id || payload.team_id],
+    "/governance-groups": ["governance_groups", payload.id || payload.governance_group_id],
+    "/governance-agenda": ["governance_agenda", payload.id || payload.agenda_item_id],
+    "/projects": ["projects", payload.id || payload.project_id],
+    "/roles": ["roles", payload.id || payload.role_id],
+    "/agents": ["agents", payload.id || payload.agent_id],
+    "/cases": ["cases", payload.id || payload.case_id],
+    "/tasks": ["tasks", payload.id || payload.task_id],
+    "/deliverables": ["deliverables", payload.id || payload.deliverable_id],
+    "/review-requests": ["review_requests", payload.id || payload.review_request_id],
+    "/review-profiles": ["review_profiles", payload.id || payload.review_profile_id],
+  };
+  const create = createCollections[path];
+  if (!create) {
+    return null;
+  }
+  return { kind: "create", collection: create[0], id: text(create[1]) };
+}
+
+function resourceToken(collection, id) {
+  const normalizedCollection = text(collection);
+  const normalizedId = text(id);
+  if (!normalizedCollection || !normalizedId) {
+    return "";
+  }
+  return text(
+    state.resource_tokens?.[normalizedCollection]?.[normalizedId]
+      || state[normalizedCollection]?.[normalizedId]?.resource_token,
+  );
+}
+
+function resourceExists(collection, id) {
+  const normalizedCollection = text(collection);
+  const normalizedId = text(id);
+  return Boolean(normalizedCollection && normalizedId && state[normalizedCollection]?.[normalizedId]);
+}
+
+function showRevisionConflictRecoveryStatus({
+  form,
+  draftKey,
+  endpoint,
+  method,
+  payload,
+  options,
+  currentRevision,
+}) {
+  const context = mutationResourceContext(endpoint, method, payload);
+  pendingConflictRetry = {
+    draftKey,
+    endpoint,
+    method,
+    options,
+    mode: retryModeForForm(form),
+    editType: text(form?.dataset?.editType),
+    editId: text(form?.dataset?.editId),
+  };
+  if (context?.kind === "target" && !resourceExists(context.collection, context.id)) {
+    pendingConflictRetry = null;
+    setStatus(
+      `Revision conflict. Draft preserved, but the target record is no longer available at revision ${currentRevision}.`,
+      "warning",
+    );
+    return;
+  }
+  setStatus(
+    `Revision conflict. Draft preserved and revision ${currentRevision} loaded; review and retry save.`,
+    "warning",
+    { label: "Retry save", onClick: () => void retryPendingConflictSave() },
+  );
+}
+
+function retryModeForForm(form) {
+  if (form === elements.editForm || text(form?.dataset?.editType)) {
+    return "edit";
+  }
+  const formId = formIdentifier(form);
+  if (formId === "update-task-form") {
+    return "task-update";
+  }
+  if (formId === "decide-review-form" || form?.hasAttribute?.("data-review-decision-form")) {
+    return "review-decision";
+  }
+  return "create";
+}
+
+async function retryPendingConflictSave() {
+  const retry = pendingConflictRetry;
+  if (!retry) {
+    setStatus("No preserved save is available to retry.", "error");
+    return;
+  }
+  let form = findFormByDraftKey(retry.draftKey);
+  if (!form && retry.mode === "edit" && retry.editType && retry.editId) {
+    openEditDialog(retry.editType, retry.editId);
+    form = findFormByDraftKey(retry.draftKey) || elements.editForm;
+    const draft = formDraftRegistry.get(retry.draftKey);
+    if (draft) {
+      restoreFormDrafts({ [retry.draftKey]: draft });
+    }
+  }
+  if (!form) {
+    setStatus("The preserved draft form is no longer open.", "error");
+    return;
+  }
+  pendingConflictRetry = null;
+  if (retry.mode === "edit") {
+    await submitEditForm(form);
+  } else if (retry.mode === "task-update") {
+    await submitTaskUpdate(form);
+  } else if (retry.mode === "review-decision") {
+    await submitReviewDecision(form);
+  } else {
+    await submitCreateForm(form);
+  }
 }
 
 async function uploadAgentAvatar(button) {
@@ -8187,7 +9220,7 @@ async function generateAvatarPreview(button) {
   setFormBusy(form, true);
   setStatus("Generating avatar preview.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/avatar/previews`, {
+    const response = await teamFetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/avatar/previews`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -8263,7 +9296,7 @@ async function submitAvatarFormData(form, endpoint, body) {
   setFormBusy(form, true);
   setStatus("Saving avatar.", "loading");
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
       method: "POST",
       headers: { Accept: "application/json" },
       body,
@@ -8317,18 +9350,18 @@ async function requestContextRotation(button, agentId) {
   button.disabled = true;
   setStatus("Requesting context clearing.", "loading");
   try {
-    const response = await fetch(
-      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/context-rotation`,
+    const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/context-rotation`;
+    const response = await teamFetch(
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason: "manual operator request",
-        }),
+        })),
       },
     );
 
@@ -8412,7 +9445,7 @@ async function startAgentVoiceCall(button, agentId) {
       return;
     }
     call.startupPhase = "session";
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/voice-sessions`,
       {
         method: "POST",
@@ -8524,7 +9557,7 @@ async function connectBrowserRealtimeVoice(call) {
   });
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
-  const response = await fetch(call.callsUrl, {
+  const response = await teamFetch(call.callsUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${call.clientSecret}`,
@@ -8554,7 +9587,7 @@ async function recordAgentVoiceEvent(voiceSessionId, payload) {
   if (!normalizedVoiceSessionId) {
     return null;
   }
-  const response = await fetch(
+  const response = await teamFetch(
     `${API_BASE}/voice-sessions/${encodeURIComponent(normalizedVoiceSessionId)}/events`,
     {
       method: "POST",
@@ -8704,7 +9737,7 @@ async function endAgentVoiceSessionOnServer(call, status, errorMessage) {
     return null;
   }
   const transcript = agentVoiceTranscriptExcerpt(call, { limit: 60 });
-  const response = await fetch(endpoint, {
+  const response = await teamFetch(endpoint, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -8895,7 +9928,7 @@ function parseRealtimeFunctionArguments(value) {
 }
 
 async function createAgentVoiceQuery(call, { question, reason, functionCallId }) {
-  const response = await fetch(
+  const response = await teamFetch(
     `${API_BASE}/voice-sessions/${encodeURIComponent(call.voiceSessionId)}/queries`,
     {
       method: "POST",
@@ -8925,7 +9958,7 @@ async function waitForAgentVoiceQuery(voiceSessionId, queryId) {
   const startedAt = Date.now();
   const timeoutMs = 90000;
   while (Date.now() - startedAt < timeoutMs) {
-    const response = await fetch(
+    const response = await teamFetch(
       `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}`,
       { headers: { Accept: "application/json" } },
     );
@@ -8938,7 +9971,7 @@ async function waitForAgentVoiceQuery(voiceSessionId, queryId) {
     }
     await delay(1200);
   }
-  const timeoutResponse = await fetch(
+  const timeoutResponse = await teamFetch(
     `${API_BASE}/voice-sessions/${encodeURIComponent(voiceSessionId)}/queries/${encodeURIComponent(queryId)}/timeout`,
     {
       method: "POST",
@@ -8994,18 +10027,18 @@ async function requestAgentStandDown(button, agentId) {
   button.disabled = true;
   setStatus("Standing down agent subtree.", "loading");
   try {
-    const response = await fetch(
-      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`,
+    const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`;
+    const response = await teamFetch(
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason,
-        }),
+        })),
       },
     );
 
@@ -9046,17 +10079,16 @@ async function revokeAgentStandDown(button, agentId) {
   button.disabled = true;
   setStatus("Revoking stand-down.", "loading");
   try {
-    const response = await fetch(
-      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`,
+    const endpoint = `/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`;
+    const response = await teamFetch(
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
-        }),
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {})),
       },
     );
 
@@ -9096,18 +10128,18 @@ async function dismissActionRecordAttention(button, actionRecordId) {
   button.disabled = true;
   setStatus("Dismissing failed action.", "loading");
   try {
-    const response = await fetch(
-      `${API_BASE}/action-records/${encodeURIComponent(actionRecordId)}/dismiss`,
+    const endpoint = `/action-records/${encodeURIComponent(actionRecordId)}/dismiss`;
+    const response = await teamFetch(
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           dismissed_by: "operator",
-        }),
+        })),
       },
     );
 
@@ -9147,17 +10179,16 @@ async function markGovernanceAgendaHandled(button, agendaItemId) {
   button.disabled = true;
   setStatus("Marking governance agenda item handled.", "loading");
   try {
-    const response = await fetch(
-      `${API_BASE}/governance-agenda/${encodeURIComponent(agendaItemId)}/handle`,
+    const endpoint = `/governance-agenda/${encodeURIComponent(agendaItemId)}/handle`;
+    const response = await teamFetch(
+      `${API_BASE}${endpoint}`,
       {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          expected_revision: state.revision,
-        }),
+        body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {})),
       },
     );
 
@@ -9203,26 +10234,25 @@ function endpointForForm(form, data) {
 function payloadForForm(form, data = formData(form)) {
   const formId = formSemanticIdentifier(form);
   if (formId === "setup-template-form") {
+    const template = selectedTemplate();
+    const roles = {};
+    (template?.roles || []).forEach((role) => {
+      const roleKey = text(role.key);
+      if (!roleKey) {
+        return;
+      }
+      roles[roleKey] = {
+        session_id: text(data[`${roleKey}_session_id`]),
+      };
+    });
     const payload = {
       team: {
         name: text(data.team_name),
-        manager_session_id: text(data.manager_session_id),
       },
       project: {
         name: text(data.project_name),
-        lead_session_id: text(data.project_lead_session_id),
       },
-      agents: {
-        implementer: {
-          session_id: text(data.implementer_session_id),
-        },
-        reviewer: {
-          session_id: text(data.reviewer_session_id),
-        },
-        release_operator: {
-          session_id: text(data.release_operator_session_id),
-        },
-      },
+      roles,
     };
     const operatorTarget = text(data.operator_communication_target_id);
     if (operatorTarget) {
@@ -9235,9 +10265,11 @@ function payloadForForm(form, data = formData(form)) {
     if (maxCost !== null) {
       payload.team.max_cost_usd = maxCost;
     }
-    const git = gitConfigForForm(data);
-    if (git) {
-      payload.project.git = git;
+    if (templateUsesGit(template)) {
+      const git = gitConfigForForm(data);
+      if (git) {
+        payload.project.git = git;
+      }
     }
     return payload;
   }
@@ -9272,7 +10304,7 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       member_team_ids: splitList(data.member_team_ids),
-      goals: parseGoals(data.goals),
+      goals: parseGovernanceGoals(data.goals),
     };
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
@@ -9330,6 +10362,34 @@ function payloadForForm(form, data = formData(form)) {
     }
     return payload;
   }
+  if (formId === "create-case-form") {
+    const payload = {
+      team_id: text(data.team_id),
+      title: text(data.title),
+      description: text(data.description),
+      status: text(data.status) || "open",
+      priority: text(data.priority) || "normal",
+      tags: splitList(data.tags),
+      task_ids: splitList(data.task_ids),
+    };
+    const projectId = text(data.project_id);
+    if (projectId) {
+      payload.project_id = projectId;
+    }
+    const ownerAgentId = text(data.owner_agent_id);
+    if (ownerAgentId) {
+      payload.owner_agent_id = ownerAgentId;
+    }
+    const source = text(data.source);
+    if (source) {
+      payload.source = source;
+    }
+    const sourceRef = text(data.source_ref);
+    if (sourceRef) {
+      payload.source_ref = sourceRef;
+    }
+    return payload;
+  }
   if (formId === "register-agent-form") {
     const requestedTeamId = text(data.team_id);
     const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
@@ -9356,6 +10416,10 @@ function payloadForForm(form, data = formData(form)) {
       description: text(data.description),
       created_by_agent_id: text(data.created_by_agent_id),
     };
+    const caseId = text(data.case_id);
+    if (caseId) {
+      payload.case_id = caseId;
+    }
     if (text(data.state)) {
       payload.state = text(data.state);
     }
@@ -9521,6 +10585,7 @@ async function submitEditForm(form) {
     resetOnSuccess: false,
   });
   if (saved) {
+    clearFormDraft(form);
     closeEditDialog();
   }
 }
@@ -9531,6 +10596,7 @@ function recordForEdit(type, id) {
   if (type === "project") return state.projects[id] || null;
   if (type === "role") return state.roles[id] || null;
   if (type === "agent") return state.agents[id] || null;
+  if (type === "case") return state.cases[id] || null;
   if (type === "task") return state.tasks[id] || null;
   if (type === "review-profile") return state.review_profiles[id] || null;
   return null;
@@ -9542,6 +10608,7 @@ function editEndpoint(type, id) {
   if (type === "project") return `/projects/${encodeURIComponent(id)}`;
   if (type === "role") return `/roles/${encodeURIComponent(id)}`;
   if (type === "agent") return `/agents/${encodeURIComponent(id)}`;
+  if (type === "case") return `/cases/${encodeURIComponent(id)}`;
   if (type === "task") return `/tasks/${encodeURIComponent(id)}`;
   if (type === "review-profile") return `/review-profiles/${encodeURIComponent(id)}`;
   throw new Error(`Unknown edit type ${type}`);
@@ -9554,6 +10621,7 @@ function editDialogTitle(type, record) {
     project: "project",
     role: "role",
     agent: "agent",
+    case: "case",
     task: "task",
     "review-profile": "review profile",
   };
@@ -9578,9 +10646,9 @@ function renderEditFields(type, record) {
       ${textField("Name", "name", record.name, { required: true })}
       ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
       ${multiSelectField("Member teams", "member_team_ids", "teams", record.member_team_ids || [], { size: 5 })}
-      ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
+      ${textareaField("Goals", "goals", governanceGoalsToText(record.goals || []), {
         rows: 4,
-        placeholder: "id | description | state",
+        placeholder: "id | description",
       })}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
@@ -9614,13 +10682,13 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
-      ${selectField("Project", "project_id", "projects", agentEditProjectId(record), { placeholder: "No project" })}
-      ${selectField("Role", "role_id", "roles", record.role_id || "", { placeholder: "No role" })}
+      ${selectField("Project", "project_id", "agent-edit-projects", agentEditProjectId(record), { placeholder: "No project" })}
+      ${selectField("Role", "role_id", "agent-edit-roles", record.role_id || "", { placeholder: "No role" })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
       ${renderAvatarEditControls(record)}
       ${renderVoiceProfileEditControls(record)}
-      ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
+      ${selectField("Reports to", "reports_to_agent_id", "agent-edit-superiors", record.reports_to_agent_id || "", { placeholder: "No superior" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
       ${selectField("Context clearing", "context_clearing_policy", "context-clearing-policies", contextPolicy, { required: true })}
@@ -9638,12 +10706,29 @@ function renderEditFields(type, record) {
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
+  if (type === "case") {
+    return `
+      ${readonlyField("Case ID", record.id)}
+      ${readonlyField("Team", record.team_id)}
+      ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
+      ${selectField("Owner", "owner_agent_id", "agents", record.owner_agent_id || "", { placeholder: "No owner" })}
+      ${selectField("Status", "status", "case-statuses", record.status || "open", { required: true })}
+      ${selectField("Priority", "priority", "inbox-priorities", record.priority || "normal", { required: true })}
+      ${textField("Title", "title", record.title, { required: true })}
+      ${textareaField("Description", "description", record.description || "", { rows: 3 })}
+      ${textField("Source", "source", record.source || "")}
+      ${textField("Source ref", "source_ref", record.source_ref || "")}
+      ${textareaField("Tags", "tags", (record.tags || []).join("\n"), { rows: 2 })}
+      ${textareaField("Linked tasks", "task_ids", (record.task_ids || []).join("\n"), { rows: 2 })}
+    `;
+  }
   if (type === "task") {
     return `
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
       ${readonlyField("Owner", record.owner_agent_id)}
       ${selectField("State", "state", "task-states", record.state || "pending", { required: true })}
+      ${selectField("Case", "case_id", "cases", record.case_id || "", { placeholder: "No case" })}
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
@@ -9733,7 +10818,7 @@ function editPayloadForForm(type, form) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       member_team_ids: splitList(data.member_team_ids),
-      goals: parseGoals(data.goals),
+      goals: parseGovernanceGoals(data.goals),
       max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };
@@ -9781,9 +10866,24 @@ function editPayloadForForm(type, form) {
       archived: Boolean(form.elements.archived?.checked),
     };
   }
+  if (type === "case") {
+    return {
+      project_id: text(data.project_id) || null,
+      owner_agent_id: text(data.owner_agent_id) || null,
+      status: text(data.status),
+      priority: text(data.priority) || "normal",
+      title: text(data.title),
+      description: text(data.description),
+      source: text(data.source) || null,
+      source_ref: text(data.source_ref) || null,
+      tags: splitList(data.tags),
+      task_ids: splitList(data.task_ids),
+    };
+  }
   if (type === "task") {
     return {
       state: text(data.state),
+      case_id: text(data.case_id) || null,
       priority: numberOrZero(data.priority),
       title: text(data.title),
       description: text(data.description),
@@ -9850,6 +10950,9 @@ function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
   if (!keepEditedValues || !form.elements.state.value) {
     form.elements.state.value = task.state || "";
   }
+  if (!keepEditedValues || !form.elements.case_id.value) {
+    form.elements.case_id.value = task.case_id || "";
+  }
   if (!keepEditedValues || !form.elements.priority.value) {
     form.elements.priority.value = String(task.priority ?? "");
   }
@@ -9885,23 +10988,86 @@ function formSemanticIdentifier(form) {
   return form?.dataset?.formId || formIdentifier(form);
 }
 
+function formDraftKey(form) {
+  if (!form || !shouldTrackFormDraft(form)) {
+    return "";
+  }
+  const formId = formIdentifier(form);
+  const semanticId = formSemanticIdentifier(form);
+  const parts = [formId || semanticId || "form"];
+  if (semanticId && semanticId !== formId) {
+    parts.push(`semantic:${semanticId}`);
+  }
+  const editType = text(form.dataset.editType);
+  const editId = text(form.dataset.editId);
+  if (editType || editId) {
+    parts.push(`edit:${editType || "record"}:${editId || "new"}`);
+  }
+  const groupId = text(form.dataset.teamRecordGroupId);
+  const groupKind = text(form.dataset.teamRecordKind);
+  if (groupId || groupKind) {
+    parts.push(`group:${groupKind || "record"}:${groupId || "all"}`);
+  }
+  const reviewRequestId = text(form.dataset.reviewRequestId);
+  if (reviewRequestId) {
+    parts.push(`review:${reviewRequestId}`);
+  }
+  return parts.join("|");
+}
+
+function shouldTrackFormDraft(form) {
+  return Boolean(form && formIdentifier(form) && !form.matches("[data-chat-message-form]"));
+}
+
+function rememberFormDraftFromEvent(event) {
+  const form = event.target?.closest?.("form");
+  if (form) {
+    rememberFormDraft(form);
+  }
+}
+
+function rememberFormDraft(form) {
+  const key = formDraftKey(form);
+  if (!key) {
+    return null;
+  }
+  const values = formValuesForDraft(form);
+  formDraftRegistry.set(key, values);
+  return [key, values];
+}
+
+function clearFormDraft(form) {
+  const key = formDraftKey(form);
+  if (key) {
+    formDraftRegistry.delete(key);
+  }
+}
+
+function formValuesForDraft(form) {
+  const values = formData(form);
+  form.querySelectorAll('input[type="file"][name]').forEach((field) => {
+    delete values[field.name];
+  });
+  form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
+    values[field.name] = field.checked ? "true" : "false";
+  });
+  const criteriaDraft = reviewProfileCriteriaDraftFromForm(form);
+  if (criteriaDraft) {
+    values.__review_profile_criteria = criteriaDraft;
+  }
+  return values;
+}
+
+function findFormByDraftKey(key) {
+  return Array.from(document.querySelectorAll("form")).find((form) => formDraftKey(form) === key) || null;
+}
+
 function captureFormDrafts() {
-  const drafts = {};
+  const drafts = Object.fromEntries(formDraftRegistry.entries());
   document.querySelectorAll("form").forEach((form) => {
-    const formId = formIdentifier(form);
-    if (formId) {
-      const values = formData(form);
-      form.querySelectorAll('input[type="file"][name]').forEach((field) => {
-        delete values[field.name];
-      });
-      form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
-        values[field.name] = field.checked ? "true" : "false";
-      });
-      const criteriaDraft = reviewProfileCriteriaDraftFromForm(form);
-      if (criteriaDraft) {
-        values.__review_profile_criteria = criteriaDraft;
-      }
-      drafts[formId] = values;
+    const remembered = rememberFormDraft(form);
+    if (remembered) {
+      drafts[remembered[0]] = remembered[1];
     }
   });
   return drafts;
@@ -9909,11 +11075,18 @@ function captureFormDrafts() {
 
 function restoreFormDrafts(drafts) {
   Object.entries(drafts || {}).forEach(([formId, values]) => {
-    const form = document.getElementById(formId);
+    const form = findFormByDraftKey(formId) || document.getElementById(formId);
     if (!form) {
       return;
     }
     restoreReviewProfileCriteriaDraft(form, values.__review_profile_criteria);
+    if (formSemanticIdentifier(form) === "setup-template-form") {
+      const templateField = form.elements.template_id;
+      if (templateField && values.template_id) {
+        templateField.value = text(values.template_id);
+      }
+      renderTemplateSetupFields({ preserveValues: false });
+    }
     Object.entries(values).forEach(([name, value]) => {
       if (name === "__review_profile_criteria" || name.startsWith("criterion_")) {
         return;
@@ -9931,9 +11104,22 @@ function restoreFormDrafts(drafts) {
       }
       if (field instanceof HTMLSelectElement && field.multiple) {
         const selected = new Set(Array.isArray(value) ? value.map(text) : splitList(value));
+        const available = new Set(Array.from(field.options).map((option) => option.value));
+        const missing = Array.from(selected).filter((item) => item && !available.has(item));
         Array.from(field.options).forEach((option) => {
           option.selected = selected.has(option.value);
         });
+        markUnavailableDraftSelections(field, missing);
+        return;
+      }
+      if (field instanceof HTMLSelectElement) {
+        const normalizedValue = text(value);
+        const available = new Set(Array.from(field.options).map((option) => option.value));
+        field.value = normalizedValue;
+        markUnavailableDraftSelections(
+          field,
+          normalizedValue && !available.has(normalizedValue) ? [normalizedValue] : [],
+        );
         return;
       }
       field.value = value;
@@ -9943,6 +11129,7 @@ function restoreFormDrafts(drafts) {
       leadSelect.dataset.currentValue = text(values.lead_agent_id);
       refreshProjectLeadSelect(form);
     }
+    rememberFormDraft(form);
   });
   const updateTaskForm = document.querySelector("#update-task-form");
   if (updateTaskForm) {
@@ -9951,17 +11138,37 @@ function restoreFormDrafts(drafts) {
   renderTemplatePreview();
 }
 
+function markUnavailableDraftSelections(field, missingValues) {
+  const missing = missingValues.filter(Boolean);
+  if (!missing.length) {
+    delete field.dataset.unavailableDraftValues;
+    field.removeAttribute("title");
+    return;
+  }
+  field.dataset.unavailableDraftValues = missing.join(",");
+  field.title = `Draft kept unavailable selection: ${missing.join(", ")}`;
+}
+
 function setFormBusy(form, busy) {
   form.querySelectorAll("button, input, select, textarea").forEach((field) => {
     field.disabled = busy;
   });
 }
 
-function setStatus(message, level) {
+function setStatus(message, level, action = null) {
   const normalizedMessage = text(message);
   elements.statusMessage.hidden = !normalizedMessage;
-  elements.statusMessage.textContent = normalizedMessage;
   elements.statusMessage.className = `status-message ${level || ""}`.trim();
+  elements.statusMessage.textContent = normalizedMessage;
+  if (normalizedMessage && action?.label && typeof action.onClick === "function") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "status-action";
+    button.textContent = action.label;
+    button.addEventListener("click", action.onClick);
+    elements.statusMessage.append(" ");
+    elements.statusMessage.appendChild(button);
+  }
 }
 
 function setTimelineStatus(message, level) {
@@ -10257,9 +11464,24 @@ function parseGoals(value) {
     });
 }
 
+function parseGovernanceGoals(value) {
+  return parseGoals(value);
+}
+
 function goalsToText(goals) {
   return (goals || [])
     .map((goal) => [goal.id, goal.description, goal.state || "pending"].join(" | "))
+    .join("\n");
+}
+
+function governanceGoalsToText(goals) {
+  return (goals || [])
+    .map((goal) => {
+      const state = text(goal.state);
+      return state && state !== "pending"
+        ? [goal.id, goal.description, state].join(" | ")
+        : [goal.id, goal.description].join(" | ");
+    })
     .join("\n");
 }
 

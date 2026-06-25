@@ -14,3 +14,13 @@ test("workflow run snapshot refreshes keep document load errors separate", () =>
   assert.match(runSnapshotEffect, /setRunSnapshotError\(reason instanceof Error \? reason\.message : String\(reason\)\);/);
   assert.doesNotMatch(runSnapshotEffect, /setError\(null\);/);
 });
+
+test("workflow run stream is gated by page visibility", () => {
+  assert.match(app, /function currentPageVisible\(\): boolean/);
+  assert.match(app, /globalThis\.document\.addEventListener\("visibilitychange", updateVisibility\)/);
+  assert.match(
+    app,
+    /if \(workflowRunReadLocked \|\| !pageVisible\) \{[\s\S]*setRuntimePulseNodeIds\(\(current\) => current\.size === 0 \? current : new Set<string>\(\)\);/,
+  );
+  assert.match(app, /const stream = new EventSource\("\/api\/workflow-editor\/runs\/stream"\);/);
+});

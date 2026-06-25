@@ -76,6 +76,7 @@ def _run_promote_agent_branch(
     tmp_path: Path,
     *,
     review_branch_exists: bool,
+    expected_commit_sha: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     script = Path(__file__).resolve().parents[1] / "scripts" / "promote_agent_branch.sh"
     host_repo = tmp_path / "repo"
@@ -92,13 +93,19 @@ def _run_promote_agent_branch(
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
 
-    result = subprocess.run(
+    cmd = [str(script)]
+    if expected_commit_sha is not None:
+        cmd.extend(["--expected-commit-sha", expected_commit_sha])
+    cmd.extend(
         [
-            str(script),
             str(host_repo),
             str(bare_repo),
             AGENT_BRANCH,
-        ],
+        ]
+    )
+
+    result = subprocess.run(
+        cmd,
         check=False,
         capture_output=True,
         text=True,
@@ -113,6 +120,7 @@ def test_promote_agent_branch_refreshes_existing_review_branch(tmp_path: Path) -
 
     assert result.returncode == 0, result.stderr
     assert f"Fetched {AGENT_BRANCH} from agent-dropbox-auto" in result.stdout
+    assert f"Commit: {RESOLVED_COMMIT}" in result.stdout
     assert f"Refreshed local review branch: {REVIEW_BRANCH}" in result.stdout
     assert f"fetch agent-dropbox-auto +refs/heads/{AGENT_BRANCH}:{PROMOTION_REF}" in log_text
     assert f"rev-parse --verify {PROMOTION_REF}^{{commit}}" in log_text
@@ -120,11 +128,33 @@ def test_promote_agent_branch_refreshes_existing_review_branch(tmp_path: Path) -
     assert "FETCH_HEAD" not in log_text
 
 
+def test_promote_agent_branch_checks_expected_commit_before_switch(
+    tmp_path: Path,
+) -> None:
+    result, log_text = _run_promote_agent_branch(
+        tmp_path,
+        review_branch_exists=True,
+        expected_commit_sha="badc0de",
+    )
+
+    assert result.returncode == 1
+    assert (
+        f"Fetched commit {RESOLVED_COMMIT} for {AGENT_BRANCH} does not match "
+        "expected badc0de"
+    ) in result.stderr
+    assert f"fetch agent-dropbox-auto +refs/heads/{AGENT_BRANCH}:{PROMOTION_REF}" in log_text
+    assert f"rev-parse --verify {PROMOTION_REF}^{{commit}}" in log_text
+    assert f"show-ref --verify --quiet refs/heads/{REVIEW_BRANCH}" not in log_text
+    assert f"switch -C {REVIEW_BRANCH} {RESOLVED_COMMIT}" not in log_text
+    assert f"switch -c {REVIEW_BRANCH} {RESOLVED_COMMIT}" not in log_text
+
+
 def test_promote_agent_branch_creates_new_review_branch(tmp_path: Path) -> None:
     result, log_text = _run_promote_agent_branch(tmp_path, review_branch_exists=False)
 
     assert result.returncode == 0, result.stderr
     assert f"Fetched {AGENT_BRANCH} from agent-dropbox-auto" in result.stdout
+    assert f"Commit: {RESOLVED_COMMIT}" in result.stdout
     assert f"Created local review branch: {REVIEW_BRANCH}" in result.stdout
     assert f"fetch agent-dropbox-auto +refs/heads/{AGENT_BRANCH}:{PROMOTION_REF}" in log_text
     assert f"rev-parse --verify {PROMOTION_REF}^{{commit}}" in log_text

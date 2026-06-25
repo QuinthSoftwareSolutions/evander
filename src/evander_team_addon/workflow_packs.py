@@ -15,8 +15,11 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             "directory_path": "root",
             "node_ids": [
                 "team-cron",
+                "team-chat-message-queued",
                 "team-wake-due-agents",
+                "team-wake-queued-chat-message",
                 "team-wake-governance-managers",
+                "team-publish-outbox-events",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
@@ -25,11 +28,8 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-agent-run-completed",
                 "team-route-completed-session",
                 "team-completed-persistent",
-                "team-read-persistent-action",
-                "team-apply-persistent-action",
+                "team-finalize-persistent-dispatch",
                 "team-completed-ephemeral",
-                "team-read-ephemeral-action",
-                "team-apply-ephemeral-action",
                 "team-destroy-ephemeral-agent",
                 "team-mark-ephemeral-cleaned-up",
                 "team-operator-escalation",
@@ -44,6 +44,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-git-promotion-release",
                 "team-consolidate-release-branches",
                 "team-record-release-promotion",
+                "team-git-release-recovery-requested",
+                "team-promote-release-recovery-branch",
+                "team-record-release-recovery-promotion",
                 "team-git-promotion-canonical",
                 "team-push-canonical-branch",
                 "team-record-canonical-promotion",
@@ -65,6 +68,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "type": "trigger:agent:run:completed",
             },
             {
+                "id": "team-chat-message-queued",
+                "display_name": "Team chat message queued",
+                "type": "trigger:event",
+                "event_type": "team.chat.message_queued",
+            },
+            {
                 "id": "team-ephemeral-requested",
                 "display_name": "Team ephemeral assignment requested",
                 "type": "trigger:event",
@@ -81,6 +90,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team Git promotion requested",
                 "type": "trigger:event",
                 "event_type": "team.git.promotion_requested",
+            },
+            {
+                "id": "team-git-release-recovery-requested",
+                "display_name": "Team Git release recovery requested",
+                "type": "trigger:event",
+                "event_type": "team.git.release_recovery_requested",
             },
         ],
         "gates": [
@@ -183,20 +198,6 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "type": "query:team:session-routing",
                 "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
                 "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
-            },
-            {
-                "id": "team-read-persistent-action",
-                "display_name": "Read persistent team action artifact",
-                "type": "query:team:agent-action-artifact",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                "path": "team-action.json",
-            },
-            {
-                "id": "team-read-ephemeral-action",
-                "display_name": "Read ephemeral team action artifact",
-                "type": "query:team:agent-action-artifact",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                "path": "team-action.json",
             }
         ],
         "effects": [
@@ -209,7 +210,18 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "wake_interval_seconds": 900,
                 "max_no_progress_count": 3,
                 "low_priority_wake_after_cycles": 4,
-                "action_artifact_path": "team-action.json",
+                "resume_mode": "same_context",
+            },
+            {
+                "id": "team-wake-queued-chat-message",
+                "display_name": "Wake queued chat message agent",
+                "type": "effect:team:wake-due-agents",
+                "agent_id": "${{team-chat-message-queued.payload.agent_id}}",
+                "limit": 1,
+                "lease_seconds": 900,
+                "wake_interval_seconds": 900,
+                "max_no_progress_count": 3,
+                "low_priority_wake_after_cycles": 4,
                 "resume_mode": "same_context",
             },
             {
@@ -221,6 +233,14 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "wake_interval_seconds": 3600,
                 "cost_warning_ratio": 0.8,
                 "resume_mode": "same_context",
+            },
+            {
+                "id": "team-publish-outbox-events",
+                "display_name": "Publish Team outbox events",
+                "type": "effect:team:publish-outbox-events",
+                "limit": 25,
+                "claim_ttl_seconds": 300,
+                "retry_after_seconds": 60,
             },
             {
                 "id": "team-create-ephemeral-agent",
@@ -235,6 +255,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "container_image": "${{team-ephemeral-requested.payload.container_image ?? null}}",
                 "ttl_hours": "${{team-ephemeral-requested.payload.ttl_hours ?? null}}",
                 "directory_path": "${{team-ephemeral-requested.payload.directory_path ?? null}}",
+                "allowed_tools": ["team_report_ephemeral_result"],
                 "metadata": "${{team-ephemeral-requested.payload.metadata}}",
             },
             {
@@ -259,41 +280,25 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "prompt": "${{team-ephemeral-requested.payload.prompt}}",
             },
             {
-                "id": "team-apply-persistent-action",
-                "display_name": "Apply persistent team agent action",
-                "type": "effect:team:apply-agent-action",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
-                "valid": "${{team-read-persistent-action.valid}}",
-                "error": "${{team-read-persistent-action.error}}",
-                "action": "${{team-read-persistent-action.action}}",
-                "action_artifact_path": (
-                    '${{team-read-persistent-action.path ?? "team-action.json"}}'
-                ),
-                "recover_missing_action": True,
-                "recovery_resume_mode": "same_context",
-            },
-            {
-                "id": "team-apply-ephemeral-action",
-                "display_name": "Apply ephemeral team agent action",
-                "type": "effect:team:apply-ephemeral-action",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                "valid": "${{team-read-ephemeral-action.valid}}",
-                "error": "${{team-read-ephemeral-action.error}}",
-                "action": "${{team-read-ephemeral-action.action}}",
+                "id": "team-finalize-persistent-dispatch",
+                "display_name": "Finalize persistent Team dispatch",
+                "type": "effect:team:finalize-agent-dispatch",
+                "session_id": "${{team-route-completed-session.session_id}}",
+                "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
+                "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
             },
             {
                 "id": "team-destroy-ephemeral-agent",
                 "display_name": "Destroy ephemeral team agent",
                 "type": "effect:agent:destroy",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
+                "session_id": "${{team-route-completed-session.session_id}}",
             },
             {
                 "id": "team-mark-ephemeral-cleaned-up",
                 "display_name": "Mark ephemeral team agent cleaned up",
                 "type": "effect:team:mark-ephemeral-cleaned-up",
                 "assignment_id": "${{team-route-completed-session.assignment_id}}",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
+                "session_id": "${{team-route-completed-session.session_id}}",
                 "destroy_result": {
                     "success": "${{team-destroy-ephemeral-agent.success}}",
                     "message": "${{team-destroy-ephemeral-agent.message ?? null}}",
@@ -401,6 +406,51 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 },
             },
             {
+                "id": "team-promote-release-recovery-branch",
+                "display_name": "Promote resolved release recovery branch",
+                "type": "effect:git:promote-agent-branch",
+                "host_repo_path": (
+                    "${{team-git-release-recovery-requested.payload.host_repo_path}}"
+                ),
+                "bare_repo_name": (
+                    "${{team-git-release-recovery-requested.payload.bare_repo_name ?? null}}"
+                ),
+                "bare_repo_path": (
+                    "${{team-git-release-recovery-requested.payload.bare_repo_path ?? null}}"
+                ),
+                "agent_branch": (
+                    "${{team-git-release-recovery-requested.payload.agent_branch}}"
+                ),
+                "target_branch": (
+                    "${{team-git-release-recovery-requested.payload.target_branch}}"
+                ),
+                "expected_commit_sha": (
+                    "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+                ),
+            },
+            {
+                "id": "team-record-release-recovery-promotion",
+                "display_name": "Record release recovery promotion result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": (
+                    "${{team-git-release-recovery-requested.payload.promotion_id}}"
+                ),
+                "success": "${{team-promote-release-recovery-branch.success}}",
+                "commit_sha": (
+                    "${{team-promote-release-recovery-branch.commit_sha ?? null}}"
+                ),
+                "error": "${{team-promote-release-recovery-branch.error ?? null}}",
+                "result_outputs": {
+                    "agent_branch": (
+                        "${{team-promote-release-recovery-branch.agent_branch ?? null}}"
+                    ),
+                    "target_branch": (
+                        "${{team-promote-release-recovery-branch.target_branch ?? null}}"
+                    ),
+                    "message": "${{team-promote-release-recovery-branch.message ?? null}}",
+                },
+            },
+            {
                 "id": "team-push-canonical-branch",
                 "display_name": "Push release branch to canonical remote",
                 "type": "effect:git:push-branch",
@@ -451,19 +501,21 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
         ],
         "edges": [
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
+            {
+                "source_id": "team-chat-message-queued",
+                "target_id": "team-wake-queued-chat-message",
+            },
             {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
+            {"source_id": "team-cron", "target_id": "team-publish-outbox-events"},
             {"source_id": "team-ephemeral-requested", "target_id": "team-create-ephemeral-agent"},
             {"source_id": "team-create-ephemeral-agent", "target_id": "team-mark-ephemeral-spawned"},
             {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-ephemeral-spawned"},
             {"source_id": "team-ephemeral-spawned", "target_id": "team-prompt-ephemeral-agent"},
             {"source_id": "team-agent-run-completed", "target_id": "team-route-completed-session"},
             {"source_id": "team-route-completed-session", "target_id": "team-completed-persistent"},
-            {"source_id": "team-completed-persistent", "target_id": "team-read-persistent-action"},
-            {"source_id": "team-read-persistent-action", "target_id": "team-apply-persistent-action"},
+            {"source_id": "team-completed-persistent", "target_id": "team-finalize-persistent-dispatch"},
             {"source_id": "team-route-completed-session", "target_id": "team-completed-ephemeral"},
-            {"source_id": "team-completed-ephemeral", "target_id": "team-read-ephemeral-action"},
-            {"source_id": "team-read-ephemeral-action", "target_id": "team-apply-ephemeral-action"},
-            {"source_id": "team-apply-ephemeral-action", "target_id": "team-destroy-ephemeral-agent"},
+            {"source_id": "team-completed-ephemeral", "target_id": "team-destroy-ephemeral-agent"},
             {"source_id": "team-destroy-ephemeral-agent", "target_id": "team-mark-ephemeral-cleaned-up"},
             {"source_id": "team-operator-escalation", "target_id": "team-notify-operator"},
             {"source_id": "team-git-promotion-requested", "target_id": "team-git-promotion-review"},
@@ -476,6 +528,14 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {"source_id": "team-consolidate-feature-branches", "target_id": "team-record-feature-promotion"},
             {"source_id": "team-git-promotion-release", "target_id": "team-consolidate-release-branches"},
             {"source_id": "team-consolidate-release-branches", "target_id": "team-record-release-promotion"},
+            {
+                "source_id": "team-git-release-recovery-requested",
+                "target_id": "team-promote-release-recovery-branch",
+            },
+            {
+                "source_id": "team-promote-release-recovery-branch",
+                "target_id": "team-record-release-recovery-promotion",
+            },
             {"source_id": "team-git-promotion-canonical", "target_id": "team-push-canonical-branch"},
             {"source_id": "team-push-canonical-branch", "target_id": "team-record-canonical-promotion"},
             {"source_id": "team-record-canonical-promotion", "target_id": "team-mark-release-published"},

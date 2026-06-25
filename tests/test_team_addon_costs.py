@@ -13,10 +13,10 @@ from agent_sandbox.model_usage.pricing import load_model_pricing_catalog_payload
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-import truman_team_addon.costs as costs_module
-from truman_team_addon.costs import TeamCostService
-from truman_team_addon.models import EphemeralAssignment
-from truman_team_addon.repository import TeamStateRepository
+import evander_team_addon.costs as costs_module
+from evander_team_addon.costs import TeamCostService
+from evander_team_addon.models import EphemeralAssignment
+from evander_team_addon.repository import TeamStateRepository
 
 
 def _pricing_catalog():

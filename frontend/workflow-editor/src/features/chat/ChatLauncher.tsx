@@ -21,6 +21,10 @@ import { AssistantIcon } from "../admin/PageActionIcons";
 type LauncherState = "minimized" | "expanded" | "disabled" | "error";
 const UI_KEY = "admin-web:chat:ui";
 
+function currentPageVisible() {
+  return typeof globalThis.document === "undefined" || globalThis.document.visibilityState !== "hidden";
+}
+
 function formatTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -59,6 +63,7 @@ export function ChatLauncher({
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [pageVisible, setPageVisible] = useState(currentPageVisible);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const activeThreadRef = useRef("");
 
@@ -82,6 +87,20 @@ export function ChatLauncher({
   useEffect(() => {
     activeThreadRef.current = threadId;
   }, [threadId]);
+
+  useEffect(() => {
+    if (typeof globalThis.document === "undefined") return;
+    const updateVisibility = () => setPageVisible(currentPageVisible());
+    const markHidden = () => setPageVisible(false);
+    globalThis.document.addEventListener("visibilitychange", updateVisibility);
+    window.addEventListener("pageshow", updateVisibility);
+    window.addEventListener("pagehide", markHidden);
+    return () => {
+      globalThis.document.removeEventListener("visibilitychange", updateVisibility);
+      window.removeEventListener("pageshow", updateVisibility);
+      window.removeEventListener("pagehide", markHidden);
+    };
+  }, []);
 
   useEffect(() => {
     if (!launcherAllowed) {
@@ -131,7 +150,7 @@ export function ChatLauncher({
   }, [launcherAllowed, assistantEnabled]);
 
   useEffect(() => {
-    if (!threadId || !assistantEnabled) return;
+    if (!threadId || !assistantEnabled || !pageVisible) return;
     let closed = false;
     const stream = new EventSource(`/api/chat/stream/${encodeURIComponent(threadId)}`);
     stream.addEventListener("snapshot", (event) => {
@@ -160,7 +179,7 @@ export function ChatLauncher({
       closed = true;
       stream.close();
     };
-  }, [threadId, assistantEnabled]);
+  }, [threadId, assistantEnabled, pageVisible]);
 
   useEffect(() => {
     if (!expanded) return;

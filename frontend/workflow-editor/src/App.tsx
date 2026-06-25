@@ -174,6 +174,11 @@ type GraphNodeStatusBadge = {
 type SaveState = "idle" | "saving" | "saved";
 type WorkflowGeneratorState = "idle" | "draftable" | "generating" | "ready" | "error";
 
+type WorkflowUndoEntry = {
+  document: WorkflowDocumentSurface;
+  nodeEditOrigins: Record<string, string>;
+};
+
 type WorkflowRunDetailLookupKind =
   | "auto"
   | "run_id"
@@ -532,6 +537,7 @@ const WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH = 420;
 const WORKFLOW_SIDEBAR_RESIZE_STEP = 32;
 const WORKFLOW_COMPACT_BREAKPOINT = 980;
 const WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH = 24;
+const WORKFLOW_UNDO_HISTORY_LIMIT = 50;
 const NODE_TYPE_DRAG_DATA_MIME = "application/x-agent-sandbox-workflow-node-type";
 
 type SidebarResizeState = {
@@ -1361,6 +1367,14 @@ function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
   return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
 }
 
+function cloneWorkflowDocumentSurface(document: WorkflowDocumentSurface): WorkflowDocumentSurface {
+  return JSON.parse(JSON.stringify({
+    config: document.config,
+    layout: document.layout,
+    graphs: document.graphs,
+  })) as WorkflowDocumentSurface;
+}
+
 function workflowComparableValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((entry) => workflowComparableValue(entry));
@@ -1561,6 +1575,21 @@ function mergeGeneratedDraftIntoWorkflow(
 
 function workflowEditableDocumentsEqual(left: WorkflowDocumentSurface, right: WorkflowDocumentSurface): boolean {
   return workflowValuesEqual(left, right);
+}
+
+function workflowUndoDocumentsEqual(left: WorkflowDocumentSurface, right: WorkflowDocumentSurface): boolean {
+  return workflowValuesEqual(
+    {
+      config: left.config,
+      layout: left.layout,
+      graphs: left.graphs,
+    },
+    {
+      config: right.config,
+      layout: right.layout,
+      graphs: right.graphs,
+    },
+  );
 }
 
 function dirtyWorkflowNodeIds(
@@ -2359,6 +2388,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(String(payload.error), response.status, payload);
   }
   return payload as T;
+}
+
+function currentPageVisible(): boolean {
+  return typeof globalThis.document === "undefined" || globalThis.document.visibilityState !== "hidden";
 }
 
 function workflowCatalogPath(directoryPath: string): string {
@@ -3963,6 +3996,7 @@ export default function App() {
   const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
+  const [undoHistory, setUndoHistory] = useState<WorkflowUndoEntry[]>([]);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [workflowGeneratorOpen, setWorkflowGeneratorOpen] = useState(false);
   const [workflowGeneratorDescription, setWorkflowGeneratorDescription] = useState("");
@@ -3971,6 +4005,7 @@ export default function App() {
   const [workflowGeneratorWarnings, setWorkflowGeneratorWarnings] = useState<string[]>([]);
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
+  const [pageVisible, setPageVisible] = useState(currentPageVisible);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
@@ -4064,6 +4099,7 @@ export default function App() {
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
   const workflowRunReadLocked = !canReadWorkflowRuns;
   const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
+  const canUndoWorkflowChanges = !workflowEditLocked && undoHistory.length > 0;
   useEffect(() => {
     runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
   }, [runtimePulseNodeIds]);
@@ -4374,6 +4410,20 @@ export default function App() {
   }, [hasUnsavedWorkflowChanges]);
 
   useEffect(() => {
+    if (typeof globalThis.document === "undefined") return;
+    const updateVisibility = () => setPageVisible(currentPageVisible());
+    const markHidden = () => setPageVisible(false);
+    globalThis.document.addEventListener("visibilitychange", updateVisibility);
+    window.addEventListener("pageshow", updateVisibility);
+    window.addEventListener("pagehide", markHidden);
+    return () => {
+      globalThis.document.removeEventListener("visibilitychange", updateVisibility);
+      window.removeEventListener("pageshow", updateVisibility);
+      window.removeEventListener("pagehide", markHidden);
+    };
+  }, []);
+
+  useEffect(() => {
     setRunSearchScope((current) => {
       if (current && runSearchScopeOptions.some((option) => option.value === current)) return current;
       return runSearchScopeOptions[0]?.value ?? "";
@@ -4549,6 +4599,7 @@ export default function App() {
     setValidationDiagnostics(nextBackendDiagnostics);
     setDocument(savedNormalizedDocument);
     setSavedDocument(savedNormalizedDocument);
+    setUndoHistory([]);
     setNodeEditOrigins({});
     setProgrammaticSelection([]);
     setSelectedEdgeId(null);
@@ -4771,11 +4822,12 @@ export default function App() {
   }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
 
   useEffect(() => {
-    if (workflowRunReadLocked) {
+    if (workflowRunReadLocked || !pageVisible) {
       for (const timeout of runtimePulseTimeoutsRef.current.values()) {
         clearTimeout(timeout);
       }
       runtimePulseTimeoutsRef.current.clear();
+      setRuntimePulseNodeIds((current) => current.size === 0 ? current : new Set<string>());
       return;
     }
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -4801,7 +4853,7 @@ export default function App() {
       }
       runtimePulseTimeoutsRef.current.clear();
     };
-  }, [workflowRunReadLocked]);
+  }, [workflowRunReadLocked, pageVisible]);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
     const normalizedEventId = eventId.trim();
@@ -5853,7 +5905,7 @@ export default function App() {
     nextDocument: WorkflowEditorDocument,
     selectedNodeIdsAfterPatch: string[] = [],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
-    options: { autoFit?: boolean } = {},
+    options: { autoFit?: boolean; nodeEditOrigins?: Record<string, string> } = {},
   ) {
     const normalizedDocument = normalizeWorkflowEditorDocument(nextDocument, selectedDirectoryPath);
     const validNodeIds = new Set(workflowNodeIds(normalizedDocument.config));
@@ -5867,7 +5919,11 @@ export default function App() {
     const nextDiagnostics = diagnosticsOverride
       ? workflowDiagnosticsForGraphs(diagnosticsOverride, visibleGraphsForDocument)
       : [];
-    const nextDirtyNodeIds = dirtyWorkflowNodeIds(normalizedDocument, savedDocument, nodeEditOrigins);
+    const nextDirtyNodeIds = dirtyWorkflowNodeIds(
+      normalizedDocument,
+      savedDocument,
+      options.nodeEditOrigins ?? nodeEditOrigins,
+    );
     setDocument(normalizedDocument);
     setBackendValidationDiagnostics(nextBackendDiagnostics);
     setValidationDiagnostics(nextDiagnostics);
@@ -5900,6 +5956,56 @@ export default function App() {
     }
   }
 
+  function rememberWorkflowUndoSnapshot(snapshot: WorkflowEditorDocument) {
+    const entry: WorkflowUndoEntry = {
+      document: cloneWorkflowDocumentSurface(snapshot),
+      nodeEditOrigins: { ...nodeEditOrigins },
+    };
+    setUndoHistory((current) => {
+      const lastEntry = current[current.length - 1];
+      if (
+        lastEntry &&
+        workflowUndoDocumentsEqual(lastEntry.document, entry.document) &&
+        workflowValuesEqual(lastEntry.nodeEditOrigins, entry.nodeEditOrigins)
+      ) {
+        return current;
+      }
+      return [...current, entry].slice(-WORKFLOW_UNDO_HISTORY_LIMIT);
+    });
+  }
+
+  function undoWorkflowChange() {
+    if (!canUndoWorkflowChanges || !document) return;
+    const entry = undoHistory[undoHistory.length - 1];
+    if (!entry) return;
+    const restoredDocument = normalizeWorkflowEditorDocument(
+      {
+        ...document,
+        ...cloneWorkflowDocumentSurface(entry.document),
+      },
+      selectedDirectoryPath,
+    );
+    const restoredNodeIds = new Set(workflowNodeIds(restoredDocument.config));
+    const nextSelectedNodeIds = selectedNodeIds.filter((nodeId) => restoredNodeIds.has(nodeId));
+    setUndoHistory((current) => current.slice(0, -1));
+    setNodeEditOrigins({ ...entry.nodeEditOrigins });
+    applyWorkflowDocumentState(
+      restoredDocument,
+      nextSelectedNodeIds,
+      restoredDocument.validation_diagnostics ?? [],
+      { nodeEditOrigins: entry.nodeEditOrigins },
+    );
+    setSelectedEdgeId((currentEdgeId) => (
+      currentEdgeId && restoredDocument.config.edges.some((edge) => edgeId(edge) === currentEdgeId)
+        ? currentEdgeId
+        : null
+    ));
+    setPendingConnection(null);
+    setNodeConnectionMenu(null);
+    setInspectorDraftError(null);
+    setError(null);
+  }
+
   useLayoutEffect(() => {
     const previousDirectoryPath = previousSelectedDirectoryPathRef.current;
     if (previousDirectoryPath === selectedDirectoryPath) return;
@@ -5923,6 +6029,7 @@ export default function App() {
     setSelectedEdgeId(null);
     setSelectedGraphId(null);
     setNodeEditOrigins({});
+    setUndoHistory([]);
     setInspectorDraftError(null);
 
     if (savedDocument) {
@@ -5943,6 +6050,7 @@ export default function App() {
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
     outputSchemasOverride?: WorkflowOutputSchemas,
     revisionOverride?: string,
+    options: { recordUndo?: boolean } = {},
   ) {
     if (!document) return;
     const nextDocument = normalizeWorkflowEditorDocument(
@@ -5956,6 +6064,9 @@ export default function App() {
       },
       selectedDirectoryPath,
     );
+    if (options.recordUndo !== false && !workflowUndoDocumentsEqual(document, nextDocument)) {
+      rememberWorkflowUndoSnapshot(document);
+    }
     applyWorkflowDocumentState(
       nextDocument,
       selectedNodeIdsAfterPatch ?? flowNodes.filter((node) => node.selected).map((node) => node.id),
@@ -6796,6 +6907,14 @@ export default function App() {
     }
     const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
     const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
+    const isUndo = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z";
+    if (isUndo) {
+      if (canUndoWorkflowChanges) {
+        event.preventDefault();
+        undoWorkflowChange();
+      }
+      return;
+    }
     if (isCopy) {
       if (copySelectedNodes()) event.preventDefault();
       return;
@@ -6825,10 +6944,14 @@ export default function App() {
     }
     const snappedById = new Map(snappedNodes.map((node) => [node.id, node]));
     setFlowNodes((nodes) => nodes.map((node) => snappedById.get(node.id) ?? node));
-    setDocument({
+    const nextDocument = {
       ...document,
       layout: nextLayout,
-    });
+    };
+    if (!workflowUndoDocumentsEqual(document, nextDocument)) {
+      rememberWorkflowUndoSnapshot(document);
+    }
+    setDocument(nextDocument);
     setSaveState("idle");
   }
 
@@ -7311,6 +7434,8 @@ export default function App() {
       undefined,
       validation.validation_diagnostics,
       validation.output_schemas,
+      undefined,
+      { recordUndo: false },
     );
   }
 
@@ -7349,8 +7474,10 @@ export default function App() {
         saved.validation_diagnostics,
         saved.output_schemas,
         saved.revision,
+        { recordUndo: false },
       );
       setSavedDocument(normalizedSavedDocument);
+      setUndoHistory([]);
       setNodeEditOrigins({});
       setSaveState("saved");
     } catch (reason) {
@@ -10031,6 +10158,14 @@ export default function App() {
         {modeButton("pan", "Pan")}
         {modeButton("select", "Select")}
         {modeButton("connect", "Connect")}
+        <button
+          type="button"
+          className="compact-workflow-toolbar-button"
+          onClick={undoWorkflowChange}
+          disabled={!canUndoWorkflowChanges}
+        >
+          Undo
+        </button>
         {panelButton("create", "Create", workflowEditLocked)}
         {panelButton("inspector", "Inspector")}
         {panelButton("runs", "Runs", workflowRunReadLocked)}
@@ -10193,6 +10328,9 @@ export default function App() {
         {renderWorkflowPackIdentity()}
         <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
           Validate
+        </button>
+        <button onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>
+          Undo
         </button>
         <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
           {saveState === "saving" ? "Saving..." : "Save workflow"}
@@ -11130,6 +11268,9 @@ export default function App() {
               {renderWorkflowPackIdentity()}
               <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
                 Validate
+              </button>
+              <button onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>
+                Undo
               </button>
               <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}

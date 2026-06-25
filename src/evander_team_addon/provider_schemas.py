@@ -18,7 +18,6 @@ class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
     wake_interval_seconds: ConfigValue | None = None
     max_no_progress_count: ConfigValue | None = None
     low_priority_wake_after_cycles: ConfigValue | None = None
-    action_artifact_path: ConfigValue | None = None
     resume_mode: ConfigValue | None = None
 
 
@@ -32,24 +31,28 @@ class TeamWakeGovernanceManagersEffectDefinition(EffectDefinition):
     resume_mode: ConfigValue | None = None
 
 
-class TeamApplyAgentActionEffectDefinition(EffectDefinition):
-    type: Literal["effect:team:apply-agent-action"]
-    action: ConfigValue | None = None
-    valid: ConfigValue | None = None
-    error: ConfigValue | None = None
-    session_id: ConfigValue | None = None
-    dispatch_id: ConfigValue | None = None
-    action_artifact_path: ConfigValue | None = None
-    recover_missing_action: ConfigValue | None = None
-    recovery_resume_mode: ConfigValue | None = None
-    expected_revision: ConfigValue | None = None
+class TeamPublishOutboxEventsEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:publish-outbox-events"]
+    limit: ConfigValue | None = None
+    intent_types: ConfigValue | None = None
+    claim_ttl_seconds: ConfigValue | None = None
+    retry_after_seconds: ConfigValue | None = None
+    worker_id: ConfigValue | None = None
 
-    @field_validator("action")
+    @field_validator("intent_types")
     @classmethod
-    def validate_action(cls, value: ConfigValue | None) -> ConfigValue | None:
-        if value is None or isinstance(value, (Mapping, str)):
+    def validate_intent_types(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
             return value
-        raise ValueError("effect:team:apply-agent-action action must be a JSON object")
+        raise ValueError("effect:team:publish-outbox-events intent_types must be a JSON array")
+
+
+class TeamFinalizeAgentDispatchEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:finalize-agent-dispatch"]
+    session_id: ConfigValue
+    dispatch_id: ConfigValue
+    agent_id: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
 
 
 class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
@@ -65,6 +68,69 @@ class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     created_by: ConfigValue | None = None
     requesting_session_id: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
+
+
+class TeamCreateCaseEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-case"]
+    case_id: ConfigValue | None = None
+    team_id: ConfigValue
+    title: ConfigValue
+    description: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    status: ConfigValue | None = None
+    priority: ConfigValue | None = None
+    owner_agent_id: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_ref: ConfigValue | None = None
+    tags: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+    task_ids: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("tags", "task_ids")
+    @classmethod
+    def validate_string_list(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:create-case list fields must be JSON arrays")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:team:create-case metadata must be a JSON object")
+
+
+class TeamUpdateCaseEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:update-case"]
+    case_id: ConfigValue
+    title: ConfigValue | None = None
+    description: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    status: ConfigValue | None = None
+    priority: ConfigValue | None = None
+    owner_agent_id: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_ref: ConfigValue | None = None
+    tags: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+    task_ids: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("tags", "task_ids")
+    @classmethod
+    def validate_string_list(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:update-case list fields must be JSON arrays")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:team:update-case metadata must be a JSON object")
 
 
 class TeamRequestEphemeralAgentsEffectDefinition(EffectDefinition):
@@ -95,22 +161,6 @@ class TeamMarkEphemeralSpawnedEffectDefinition(EffectDefinition):
         if value is None or isinstance(value, (Mapping, str)):
             return value
         raise ValueError("effect:team:mark-ephemeral-spawned create_result must be a JSON object")
-
-
-class TeamApplyEphemeralActionEffectDefinition(EffectDefinition):
-    type: Literal["effect:team:apply-ephemeral-action"]
-    action: ConfigValue | None = None
-    valid: ConfigValue | None = None
-    error: ConfigValue | None = None
-    session_id: ConfigValue | None = None
-    expected_revision: ConfigValue | None = None
-
-    @field_validator("action")
-    @classmethod
-    def validate_action(cls, value: ConfigValue | None) -> ConfigValue | None:
-        if value is None or isinstance(value, (Mapping, str)):
-            return value
-        raise ValueError("effect:team:apply-ephemeral-action action must be a JSON object")
 
 
 class TeamAcceptEphemeralDeliverableEffectDefinition(EffectDefinition):
@@ -213,13 +263,6 @@ class TeamStateQueryDefinition(QueryDefinition):
     include_records: ConfigValue | None = None
 
 
-class TeamAgentActionArtifactQueryDefinition(QueryDefinition):
-    type: Literal["query:team:agent-action-artifact"]
-    session_id: ConfigValue
-    path: ConfigValue | None = None
-    vm_user: ConfigValue | None = None
-
-
 class TeamSessionRoutingQueryDefinition(QueryDefinition):
     type: Literal["query:team:session-routing"]
     session_id: ConfigValue
@@ -236,6 +279,8 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "dispatches": {"type": "array"},
         "prepared_project_repos": {"type": "array"},
         "failed_project_repo_preparations": {"type": "array"},
+        "review_artifact_imports": {"type": "array"},
+        "review_artifact_import_errors": {"type": "array"},
         "cost_guard_blocked_team_ids": {"type": "array"},
         "cost_guard_blocked_teams": {"type": "array"},
         "errors": {"type": "array"},
@@ -248,32 +293,29 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "dispatches": {"type": "array"},
         "errors": {"type": "array"},
     },
-    "effect:team:apply-agent-action": {
+    "effect:team:publish-outbox-events": {
+        "success": {"type": "boolean"},
+        "claimed_count": {"type": "integer"},
+        "published_count": {"type": "integer"},
+        "published_event_ids": {"type": "array"},
+        "completed_outbox_record_ids": {"type": "array"},
+        "failed_outbox_record_ids": {"type": "array"},
+        "errors": {"type": "array"},
+    },
+    "effect:team:finalize-agent-dispatch": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "agent_id": {"type": ["string", "null"]},
+        "dispatch_id": {"type": "string"},
+        "finalized": {"type": "boolean"},
         "applied": {"type": "boolean"},
+        "progress_made": {"type": "boolean"},
+        "activity_count": {"type": "integer"},
+        "successful_activity_count": {"type": "integer"},
+        "failed_activity_count": {"type": "integer"},
+        "context_activity": {"type": "boolean"},
+        "events": {"type": "array"},
         "errors": {"type": "array"},
-        "created_inbox_item_ids": {"type": "array"},
-        "created_deliverable_ids": {"type": "array"},
-        "created_task_ids": {"type": "array"},
-        "created_status_request_ids": {"type": "array"},
-        "created_review_request_ids": {"type": "array"},
-        "decided_review_request_ids": {"type": "array"},
-        "updated_goal_ids": {"type": "array"},
-        "operator_escalation_event_ids": {"type": "array"},
-        "git_promotion_event_ids": {"type": "array"},
-        "release_package_ids": {"type": "array"},
-        "created_ephemeral_assignment_ids": {"type": "array"},
-        "ephemeral_events": {"type": "array"},
-        "published_deliverable_artifacts": {"type": "array"},
-        "accepted_ephemeral_assignment_ids": {"type": "array"},
-        "rejected_ephemeral_assignment_ids": {"type": "array"},
-        "updated_task_ids": {"type": "array"},
-        "handled_inbox_item_ids": {"type": "array"},
-        "recovery_dispatched": {"type": "boolean"},
-        "recovery_action_record_id": {"type": ["string", "null"]},
-        "recovery_result": {"type": ["object", "null"]},
     },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},
@@ -283,6 +325,26 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "team_id": {"type": ["string", "null"]},
         "project_id": {"type": ["string", "null"]},
         "task_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-case": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "case_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "task_ids": {"type": "array"},
+        "case": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:update-case": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "case_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "task_ids": {"type": "array"},
+        "case": {"type": ["object", "null"]},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:request-ephemeral-agents": {
@@ -299,15 +361,6 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "session_id": {"type": ["string", "null"]},
         "state": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
-    },
-    "effect:team:apply-ephemeral-action": {
-        "success": {"type": "boolean"},
-        "revision": {"type": "integer"},
-        "assignment_id": {"type": ["string", "null"]},
-        "session_id": {"type": ["string", "null"]},
-        "state": {"type": ["string", "null"]},
-        "error": {"type": ["string", "null"]},
-        "event": {"type": ["object", "null"]},
     },
     "effect:team:accept-ephemeral-deliverable": {
         "success": {"type": "boolean"},
@@ -371,14 +424,6 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "projects": {"type": "object"},
         "agents": {"type": "object"},
         "tasks": {"type": "object"},
-    },
-    "query:team:agent-action-artifact": {
-        "success": {"type": "boolean"},
-        "valid": {"type": "boolean"},
-        "session_id": {"type": "string"},
-        "path": {"type": "string"},
-        "action": {"type": "object"},
-        "error": {"type": ["string", "null"]},
     },
     "query:team:session-routing": {
         "success": {"type": "boolean"},

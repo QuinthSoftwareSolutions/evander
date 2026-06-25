@@ -19,12 +19,12 @@ from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from truman_team_addon import api as team_addon_api
-from truman_team_addon.api import (
+from evander_team_addon import api as team_addon_api
+from evander_team_addon.api import (
     _conversation_snapshot_events,
     _team_state_payload_for_request,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
@@ -40,7 +40,10 @@ from truman_team_addon.models import (
     TeamRecordState,
     TeamTaskState,
 )
-from truman_team_addon.repository import TeamStateRepository
+from evander_team_addon.repository import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    TeamStateRepository,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +73,7 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
             [
                 "addon_loader:",
                 "  modules:",
-                '    - "truman_team_addon"',
+                '    - "evander_team_addon"',
             ]
         )
     config_path.write_text("\n".join(lines), encoding="utf-8")
@@ -301,7 +304,9 @@ def _seed_long_chat_history(
     repo = _seed_runtime_operations_state(runtime_dir)
     _state, conversation, _created = repo.create_or_get_conversation(
         agent_id="backend",
-        created_by="operator",
+        operator_user_id="admin",
+        operator_display_name="Admin",
+        created_by="operator:admin",
         expected_revision=repo.read().revision,
     )
     conversation_id = conversation.id
@@ -405,7 +410,7 @@ def test_generated_agent_avatar_preview_wraps_transport_failures(
 ) -> None:
     _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "truman_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api.openai_avatar_generator_from_config",
         lambda _config: _FailingAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -425,7 +430,7 @@ def test_generated_agent_avatar_preview_is_accepted_with_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "truman_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -464,7 +469,7 @@ def test_agent_avatar_accept_preview_requires_current_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "truman_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -484,7 +489,7 @@ def test_agent_avatar_accept_preview_requires_current_revision(
 
 
 def test_openai_avatar_generator_wraps_http_transport_errors() -> None:
-    from truman_team_addon.avatars import OpenAIAvatarGenerator
+    from evander_team_addon.avatars import OpenAIAvatarGenerator
 
     async def _handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("dns failed")
@@ -613,6 +618,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
     assert "queued for asynchronous agent dispatch" in sent_payload["dispatch"]["message"]
+    assert len(sent_payload["published_event_ids"]) == 1
     assert copy_calls == []
     message = sent_payload["message"]
     assert message["sender"] == "operator"
@@ -621,6 +627,19 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     assert message["metadata"]["sender_kind"] == "human_operator"
     assert message["metadata"]["operator_user_id"] == "admin"
     assert resume_calls == []
+    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
+    assert events[0].correlation_key == message["dispatch_id"]
+    assert events[0].idempotency_key == f"team-chat-message-queued:{message['id']}"
+    assert events[0].payload == {
+        "team_id": "team",
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "conversation_id": conversation["id"],
+        "message_id": message["id"],
+        "dispatch_id": message["dispatch_id"],
+    }
 
     state, result = repo.apply_agent_action(
         action={
@@ -697,6 +716,7 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
     assert "queued for asynchronous agent dispatch" in sent_payload["dispatch"]["message"]
+    assert len(sent_payload["published_event_ids"]) == 1
     assert resume_calls == []
     message = sent_payload["message"]
     assert message["status"] == "queued"
@@ -759,6 +779,37 @@ def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     assert first_payload["has_older"] is False
     assert [message["id"] for message in first_payload["messages"]] == [
         f"msg-{index:03d}" for index in range(0, 5)
+    ]
+
+
+def test_team_addon_conversation_list_can_inline_selected_message_page(
+    tmp_path: Path,
+) -> None:
+    _repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    default_response = client.get("/api/addons/team-addon/conversations")
+    assert default_response.status_code == 200
+    default_conversation = default_response.json()["conversations"][0]
+    assert default_conversation["message_count"] == 75
+    assert "messages" not in default_conversation
+
+    selected_response = client.get(
+        "/api/addons/team-addon/conversations"
+        f"?include_selected_messages=1&selected_conversation_id={conversation_id}"
+    )
+    assert selected_response.status_code == 200
+    payload = selected_response.json()
+    assert payload["selected_conversation_id"] == conversation_id
+    conversation = payload["conversations"][0]
+    assert conversation["id"] == conversation_id
+    assert conversation["message_count"] == 75
+    assert conversation["messages_limit"] == 50
+    assert conversation["has_older"] is True
+    assert conversation["oldest_message_id"] == "msg-025"
+    assert conversation["newest_message_id"] == "msg-074"
+    assert [message["id"] for message in conversation["messages"]] == [
+        f"msg-{index:03d}" for index in range(25, 75)
     ]
 
 
@@ -1003,7 +1054,7 @@ def test_agent_voice_session_create_query_and_end(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -1109,7 +1160,7 @@ def test_agent_voice_session_records_chat_conversation_message(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -1195,7 +1246,7 @@ def test_agent_voice_session_can_end_by_request_id(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -1266,6 +1317,32 @@ def _auto_dev_squad_materialization_payload(
     }
 
 
+def _accounting_department_materialization_payload(
+    *,
+    expected_revision: int = 0,
+) -> dict[str, object]:
+    return {
+        "expected_revision": expected_revision,
+        "team": {
+            "name": "Accounting Department",
+            "operator_communication_target_id": "teams://accounting-ops",
+        },
+        "project": {
+            "name": "Bookkeeping Operations",
+        },
+        "roles": {
+            "manager": {"session_id": "session-manager-accounting"},
+            "project_lead": {"session_id": "session-bookkeeping-lead-accounting"},
+            "bookkeeping_clerk": {"session_id": "session-bookkeeping-clerk-accounting"},
+            "invoice_reviewer": {"session_id": "session-invoice-reviewer-accounting"},
+            "payment_preparer": {"session_id": "session-payment-preparer-accounting"},
+            "tax_compliance_reviewer": {
+                "session_id": "session-tax-compliance-reviewer-accounting"
+            },
+        },
+    }
+
+
 def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> None:
     disabled = _client(tmp_path / "disabled", enable_team_addon=False)
     enabled = _client(tmp_path / "enabled", enable_team_addon=True)
@@ -1300,7 +1377,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     catalog = enabled.get("/api/addons/team-addon/templates")
     assert catalog.status_code == 200
     assert [template["id"] for template in catalog.json()["templates"]] == [
-        "auto-dev-squad"
+        "auto-dev-squad",
+        "accounting-department",
     ]
 
     template = enabled.get("/api/addons/team-addon/templates/auto-dev-squad")
@@ -1339,6 +1417,17 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'id="create-review-profile-form"' in ui.text
     assert 'data-review-profile-criteria-editor' in ui.text
     assert 'name="criterion_label"' in ui.text
+    assert 'data-team-view="projects"' in ui.text
+    assert 'id="team-projects-page"' in ui.text
+    assert 'id="create-project-from-projects-form"' in ui.text
+    assert 'data-form-id="create-project-form"' in ui.text
+    assert "data-projects-focus-list" in ui.text
+    assert "data-projects-focus-detail" in ui.text
+    assert 'data-team-view="cases"' in ui.text
+    assert 'id="team-cases-page"' in ui.text
+    assert 'id="create-case-form"' in ui.text
+    assert 'data-options="case-statuses"' in ui.text
+    assert 'name="case_id"' in ui.text
     assert 'data-team-view="governance"' in ui.text
     assert "data-governance-create-toggle" in ui.text
     assert 'id="governance-create-panel"' in ui.text
@@ -1350,6 +1439,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-chat-conversations-view" in ui.text
     assert 'name="bare_repo"' in ui.text
     assert 'data-options="git-providers"' in ui.text
+    assert "data-template-role-fields" in ui.text
+    assert "data-template-git-fields" in ui.text
     assert "data-agent-source-picker" in ui.text
     assert "data-id-field=" not in ui.text
     assert "Team ID <input" not in ui.text
@@ -1372,7 +1463,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "due_leased_agents" in script.text
     assert "blocked_waiting_work" in script.text
     assert "ephemeral_work" in script.text
+    assert "renderTemplateRoleFields" in script.text
+    assert "const roles = {};" in script.text
     assert "dependency_task_ids" in script.text
+    assert "caseStatuses" in script.text
+    assert "renderCases" in script.text
+    assert "case_id" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
     assert "renderReviewDeliveryWorkspace" in script.text
@@ -1382,6 +1478,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-team-inline-create-toggle" in script.text
     assert "data-team-inline-create-form" in script.text
     assert "projectLeadAgentOptionsForTeam" in script.text
+    assert '"projects"' in script.text
+    assert "renderProjectFocus" in script.text
+    assert "data-project-focus-id" in script.text
+    assert "projectReviewRoleOptionsForProject" in script.text
+    assert "create-review-profile-for-project-form" in script.text
+    assert "data-delegated-create-form" in script.text
     assert "setAutogeneratedValue" not in script.text
     assert "submitEditForm" in script.text
     assert "voice_profile: agent?.voice_profile || null" in script.text
@@ -1395,7 +1497,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
-    assert 'fetch(`${API_BASE}/costs`' in script.text
+    assert 'teamFetch(`${API_BASE}/costs`' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
     assert "Blocked: estimated cost cap reached" in script.text
@@ -1432,6 +1534,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-agent-call-conversation-id" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
     assert "new EventSource" in script.text
+    assert 'document.addEventListener("visibilitychange"' in script.text
+    assert 'activeTeamView === "chat"' in script.text
+    assert "teamRequestTimeoutMs" in script.text
     assert "ensureChatStream" in script.text
     assert "/stream" in script.text
     assert "revision: state.revision,\n    conversations" in script.text
@@ -1447,6 +1552,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".edit-modal" in stylesheet.text
     assert ".record-actions" in stylesheet.text
     assert ".team-inline-create-form" in stylesheet.text
+    assert ".projects-workbench" in stylesheet.text
+    assert ".projects-focus-row" in stylesheet.text
+    assert ".project-review-profile-form" in stylesheet.text
     assert ".field-tooltip" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
@@ -1993,6 +2101,107 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     }
 
 
+def test_team_addon_admin_api_case_flow(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": 1,
+        },
+    )
+    assert response.status_code == 201
+    _post_backend_role(client, expected_revision=2)
+    response = client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": 3,
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/api/addons/team-addon/cases",
+        json={
+            "id": "case",
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Customer ticket",
+            "description": "External support ticket.",
+            "status": "triage",
+            "priority": "high",
+            "owner_agent_id": "lead",
+            "source": "github",
+            "source_ref": "issue-42",
+            "tags": ["support", "bug"],
+            "expected_revision": 4,
+        },
+    )
+    assert response.status_code == 201
+    state = response.json()
+    assert state["cases"]["case"]["status"] == "triage"
+    assert state["cases"]["case"]["source_ref"] == "issue-42"
+
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "case_id": "case",
+            "priority": 10,
+            "title": "Investigate ticket",
+            "description": "Reproduce and fix the issue.",
+            "created_by_agent_id": "lead",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 201
+    state = response.json()
+    assert state["tasks"]["task"]["case_id"] == "case"
+    assert state["cases"]["case"]["task_ids"] == ["task"]
+
+    response = client.patch(
+        "/api/addons/team-addon/cases/case",
+        json={
+            "status": "in_progress",
+            "description": "",
+            "source_ref": None,
+            "task_ids": [],
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 200
+    state = response.json()
+    assert state["cases"]["case"]["status"] == "in_progress"
+    assert state["cases"]["case"]["description"] == ""
+    assert state["cases"]["case"]["source_ref"] is None
+    assert state["cases"]["case"]["task_ids"] == []
+    assert state["tasks"]["task"]["case_id"] is None
+
+
 def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -2460,6 +2669,70 @@ def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> Non
         body["review_profiles"]["project-auto-dev-squad-auto-dev-review"]["criteria"][0]["id"]
         == "scope"
     )
+
+
+def test_team_addon_admin_api_materializes_accounting_department(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/templates/accounting-department/materialize",
+        json=_accounting_department_materialization_payload(),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    materialized = body["materialized"]
+
+    assert materialized["success"] is True
+    assert materialized["template_id"] == "accounting-department"
+    assert materialized["template_name"] == "Accounting Department"
+    assert materialized["revision"] == 1
+    assert body["revision"] == 1
+    assert set(materialized["agent_ids"]) == {
+        "manager",
+        "project_lead",
+        "bookkeeping_clerk",
+        "invoice_reviewer",
+        "payment_preparer",
+        "tax_compliance_reviewer",
+    }
+    assert len(body["agents"]) == 6
+    assert len(body["projects"]) == 1
+    assert len(body["review_profiles"]) == 1
+    assert len(body["tasks"]) == 5
+
+    project = body["projects"][materialized["project_id"]]
+    assert project["git"] is None
+    assert project["lead_agent_id"] == materialized["agent_ids"]["project_lead"]
+    assert project["goals"][0]["id"] == materialized["goal_ids"][0]
+
+    roles = body["roles"]
+    assert roles[materialized["role_ids"]["payment_preparer"]]["permissions"] == [
+        "prepare_bookkeeping_action",
+        "request_payment_preparation",
+    ]
+    assert roles[materialized["role_ids"]["tax_compliance_reviewer"]]["permissions"] == [
+        "review_bookkeeping_action"
+    ]
+
+    assert body["teams"][materialized["team_id"]]["project_ids"] == [
+        materialized["project_id"]
+    ]
+    review_profile = body["review_profiles"][materialized["review_profile_ids"][0]]
+    assert review_profile["applicable_role_ids"] == [
+        materialized["role_ids"]["invoice_reviewer"],
+        materialized["role_ids"]["tax_compliance_reviewer"],
+    ]
+    assert [criterion["id"] for criterion in review_profile["criteria"]] == [
+        "supporting_documentation",
+        "bokio_mapping",
+        "tax_treatment",
+        "approval_boundary",
+    ]
+    assert body["tasks"][
+        f"{materialized['project_id']}-prepare-bank-payments"
+    ]["owner_agent_id"] == materialized["agent_ids"]["payment_preparer"]
 
 
 def test_team_addon_admin_api_materialize_template_rejects_duplicates_and_reruns(
@@ -3463,6 +3736,316 @@ def test_team_addon_admin_api_patch_team_rejects_stale_revision(tmp_path: Path) 
 
     assert response.status_code == 409
     assert response.json()["current_revision"] == 1
+
+
+def test_team_addon_admin_api_exposes_resource_tokens(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+
+    state = client.get("/api/addons/team-addon/state").json()
+
+    token = state["resource_tokens"]["teams"]["team"]
+    assert token.startswith("sha256:")
+    assert state["teams"]["team"]["resource_token"] == token
+
+
+def _seed_rebase_backend_agent(client: TestClient) -> dict:
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert team.status_code == 201
+    project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": team.json()["revision"],
+        },
+    )
+    assert project.status_code == 201
+    role = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__backend",
+            "team_id": "team",
+            "name": "Backend",
+            "expected_revision": project.json()["revision"],
+        },
+    )
+    assert role.status_code == 201
+    agent = client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role_id": "team__backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": role.json()["revision"],
+        },
+    )
+    assert agent.status_code == 201
+    return agent.json()
+
+
+def test_team_addon_admin_api_rebases_stale_create_when_target_is_new(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    bump = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__reviewer",
+            "team_id": "team",
+            "name": "Reviewer",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert bump.status_code == 201
+
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["rebased_from_revision"] == stale_revision
+    assert payload["projects"]["project"]["name"] == "Project"
+
+
+def test_team_addon_admin_api_rejects_stale_no_id_create(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    bump = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__reviewer",
+            "team_id": "team",
+            "name": "Reviewer",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert bump.status_code == 201
+
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == bump.json()["revision"]
+
+
+def test_team_addon_admin_api_rebases_stale_patch_when_target_token_matches(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    base_token = team["resource_tokens"]["teams"]["team"]
+    bump = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "team__reviewer",
+            "team_id": "team",
+            "name": "Reviewer",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert bump.status_code == 201
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "operator_communication_target_id": "ops",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rebased_from_revision"] == stale_revision
+    assert payload["teams"]["team"]["operator_communication_target_id"] == "ops"
+
+
+def test_team_addon_admin_api_rejects_stale_patch_when_target_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    ).json()
+    stale_revision = team["revision"]
+    base_token = team["resource_tokens"]["teams"]["team"]
+    changed = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={"name": "Changed", "expected_revision": stale_revision},
+    )
+    assert changed.status_code == 200
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "operator_communication_target_id": "ops",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.json()["revision"]
+
+
+def test_team_addon_admin_api_rejects_stale_agent_patch_when_assignment_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    state = _seed_rebase_backend_agent(client)
+    stale_revision = state["revision"]
+    base_token = state["resource_tokens"]["agents"]["backend"]
+    other_project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project-2",
+            "team_id": "team",
+            "name": "Project 2",
+            "lead_agent_id": "lead-2",
+            "lead_session_id": "session-lead-2",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert other_project.status_code == 201
+    changed = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "project_id": "project-2",
+            "expected_revision": other_project.json()["revision"],
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["resource_tokens"]["agents"]["backend"] != base_token
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "display_name": "Backend 2",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.json()["revision"]
+
+
+def test_team_addon_admin_api_rejects_stale_agent_patch_when_runtime_changed(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    state = _seed_rebase_backend_agent(client)
+    stale_revision = state["revision"]
+    base_token = state["resource_tokens"]["agents"]["backend"]
+    changed = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "context_clearing_policy": "idle",
+            "expected_revision": stale_revision,
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["resource_tokens"]["agents"]["backend"] != base_token
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "display_name": "Backend 2",
+            "expected_revision": stale_revision,
+            "conflict_policy": "target_unchanged",
+            "base_resource_token": base_token,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.json()["revision"]
 
 
 def test_team_addon_admin_api_requires_expected_revision(tmp_path: Path) -> None:

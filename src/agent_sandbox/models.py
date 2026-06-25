@@ -2558,7 +2558,11 @@ class AdoDailyStatusReportRequest(BaseModel):
             return "calendar_time"
         if normalized in {"swedish_work_time", "sweden_work_time", ""}:
             return "swedish_work_time"
-        raise ValueError("elapsed_time_mode must be calendar_time or swedish_work_time")
+        if normalized in {"manual", "manual_override"}:
+            return "manual_override"
+        raise ValueError(
+            "elapsed_time_mode must be calendar_time, swedish_work_time, or manual_override"
+        )
 
     @field_validator("max_items")
     @classmethod

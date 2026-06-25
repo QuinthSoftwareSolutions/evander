@@ -137,6 +137,112 @@ Troubleshooting checklist:
    - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
      the edge wiring between nodes.
 
+## Team MCP Cutover Runbook
+
+Use this runbook when cutting a local Team Add-on deployment over from the
+legacy `/artifacts/team-action.json` action path to Team-owned MCP tools. The
+post-cutover steady state has no legacy/native action-surface flag: Team MCP
+tools are the only Team action path.
+
+1. Stop services that can lease, complete, ingest, or display Team work while
+   state is being inspected:
+
+   ```bash
+   sudo systemctl stop agent-sandbox-trigger-orchestrator.service
+   sudo systemctl stop agent-sandbox-effect-orchestrator.service
+   sudo systemctl stop agent-sandbox-admin-web.service
+   sudo systemctl stop agent-sandbox-discord-wake.service agent-sandbox-scheduled-wake.service
+   sudo systemctl stop agent-sandbox-discord-ingest.service agent-sandbox-teams-ingest.service agent-sandbox-teams-meeting-ingest.service
+   ```
+
+   Stop only the wake/ingest services enabled on the host. If Admin Web must
+   remain online for read-only operator coordination, do not use it to edit Team
+   state until the cutover is complete.
+
+2. Inspect active Team leases in `runtime/addons/team-addon/state.db` before
+   changing schema or workflow packs:
+
+   ```bash
+   sqlite3 runtime/addons/team-addon/state.db ".tables"
+   sqlite3 runtime/addons/team-addon/state.db "SELECT * FROM active_leases;"
+   ```
+
+   If the schema has a different active-lease table name in the current build,
+   inspect the table list and query the Team runtime lease table that contains
+   session, dispatch, and agent identifiers.
+
+3. Manually apply or intentionally discard any pending `team-action.json`
+   artifacts worth preserving. Prefer applying only actions whose dispatch id
+   still matches the active Team lease. Record discarded artifacts in an
+   operator note or incident log so missing state changes are intentional rather
+   than silent.
+
+4. Back up the Team state database:
+
+   ```bash
+   cp runtime/addons/team-addon/state.db \
+     "runtime/addons/team-addon/state.db.pre-team-mcp-cutover.$(date -u +%Y%m%dT%H%M%SZ)"
+   ```
+
+5. Apply the state/schema migration for the build being deployed. If the
+   migration is part of service startup, run the documented one-shot migration or
+   start the service once in a maintenance window and confirm it exits cleanly
+   before reopening wake traffic.
+
+6. Restart services with Team MCP tools as the only action path:
+
+   ```bash
+   sudo systemctl start agent-sandbox-effect-orchestrator.service
+   sudo systemctl start agent-sandbox-trigger-orchestrator.service
+   sudo systemctl start agent-sandbox-admin-web.service
+   sudo systemctl start agent-sandbox-discord-ingest.service agent-sandbox-discord-wake.service
+   sudo systemctl start agent-sandbox-scheduled-wake.service
+   sudo systemctl start agent-sandbox-teams-ingest.service agent-sandbox-teams-meeting-ingest.service
+   ```
+
+   Start only services that are configured on the host. The Team runtime workflow
+   pack should finalize persistent sessions with
+   `effect:team:finalize-agent-dispatch` using `session_id`, `dispatch_id`, and
+   `agent_id`; ephemeral worker completion should use
+   `team_report_ephemeral_result`.
+
+7. Run focused smoke checks:
+
+   ```bash
+   agent-sandbox-cli status --runtime-dir runtime --json
+   ```
+
+   Confirm the migration grep from the implementation plan shows only expected
+   migration-history, deleted-code, or removal-test references. In Admin Web,
+   confirm the Team Add-on loads, a normal persistent Team wake sees ordinary
+   Team MCP action tools, Team Chat wakes can call
+   `team_reply_to_chat`, governance wakes only see governance tools, and
+   ephemeral workers only report through `team_report_ephemeral_result`.
+
+Troubleshooting:
+
+- **Active lease mismatch** — if a completed session's dispatch does not match
+  the active Team lease, do not force it through Team finalization. Inspect the
+  active lease row, the session manifest `metadata.team_addon`, and the trigger
+  event that reported completion. Clear or repair only the stale lease after
+  preserving any useful operator context.
+- **Idempotency conflict** — `request_id` identifies one create, append,
+  message, or async-intent operation. Reusing the same key with different
+  payload is rejected without mutation. Retry with the original payload to read
+  the existing result, or issue a new `request_id` when the operator really
+  wants a distinct action.
+- **Async intent recorded but effect pending** — intent tools may commit Team
+  state before external work finishes. Inspect the matching activity/audit row,
+  outbox event, and effect-orchestrator cursor/execution logs before retrying.
+  Do not mark the Team action complete until the external effect records its
+  result.
+- **Artifact publication cleanup/orphans** — deliverable `artifact_paths` are
+  published host-side before the final Team mutation. If publication succeeds
+  but the mutation fails, replay the same idempotent request when the payload is
+  still valid; otherwise record the orphaned artifact-space ref and remove or
+  quarantine the published files according to the deployment's artifact
+  retention policy.
+
 ## Model Usage Querying
 
 Use `query:model-usage:list` in Admin Web when you need to inspect persisted
@@ -652,6 +758,9 @@ Storage layout for directory config:
   }
   ```
 - For local OpenAI-compatible Codex routing, keep `agent_provider` as `codex` and set `model_provider_mode: "local_openai"`. The relay forwards normal OpenAI-compatible HTTP requests to `local_openai_api_base_url`, sends `local_openai_api_key` as a placeholder bearer token, and records usage rows under `local_openai_provider_name`.
+- `local_openai` mode is HTTP/SSE only. The relay rejects websocket/realtime requests
+  before dialing the upstream local endpoint because the supported Ollama target does
+  not implement OpenAI websocket `/responses`.
 - Ollama is the v1 local runtime target. Pull the recommended initial model on an RTX 5090-class host:
 
   ```bash
@@ -848,11 +957,12 @@ A transport-terminated warning without client-visible failure can be expected fo
   - `team` (optional; when omitted, the helper resolves the Azure DevOps project's default team)
   - optional filters: `area_path`, `states`, `types`, `tags_any`, `text_search`
   - optional type exclusions: `exclude_types`, defaulting to `["Task"]`
-  - optional report overrides: `title`, `report_date`, `sprint_label`, `sprint_length`,
-    `elapsed_sprint_percent`
-  - optional elapsed-time options: `elapsed_time_mode` (`swedish_work_time` or
-    `calendar_time`), `workday_start`, `workday_end`, and
+  - optional report overrides: `title`, `report_date`, `sprint_label`, `sprint_length`
+  - optional elapsed-time options: `elapsed_time_mode` (`swedish_work_time`,
+    `calendar_time`, or `manual_override`), `workday_start`, `workday_end`, and
     `include_common_swedish_non_working_days`
+  - optional manual elapsed-time override: `elapsed_sprint_percent`; this is honored only
+    when `elapsed_time_mode` is `manual_override`
   - optional calculation overrides: `done_states`, `in_progress_states`, `effort_fields`,
     `max_items`
 - By default, elapsed time uses Swedish working time in `Europe/Stockholm`, counts only weekdays

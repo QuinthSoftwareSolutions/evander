@@ -1186,7 +1186,9 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "bare_repo_path": {"type": "string"},
         "agent_branch": {"type": "string"},
         "review_branch": {"type": "string"},
+        "target_branch": {"type": "string"},
         "remote_name": {"type": "string"},
+        "commit_sha": {"type": ["string", "null"]},
     },
     "effect:git:push-branch": {
         "success": {"type": "boolean"},

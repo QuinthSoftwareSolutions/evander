@@ -3,22 +3,25 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: promote_agent_branch.sh [options] <host-repo-path> <bare-repo> <agent-branch> [review-branch]
+Usage: promote_agent_branch.sh [options] <host-repo-path> <bare-repo> <agent-branch> [target-branch]
 
 Fetch a quarantined agent branch from a host-local bare remote into a trusted
-working clone and create a local review branch from it.
+working clone and create a local target branch from it.
 
 Arguments:
   host-repo-path  Path to a normal local clone of the trusted repository.
   bare-repo       Bare repo name or full path. ".git" suffix is optional.
   agent-branch    Branch name inside the bare repo, typically:
                   agents/<session-id>/<topic>
-  review-branch   Local branch name to create. Default:
+  target-branch   Local branch name to create. Default:
                   review/<session-id>/<topic>
 
 Options:
   --remote-name <name>  Remote name to use in the trusted clone.
                         Default: agent-dropbox-auto
+  --expected-commit-sha <sha>
+                        Refuse to update the target branch unless the fetched
+                        agent branch resolves to this commit.
   -h, --help            Show this help text.
 
 Configuration:
@@ -32,6 +35,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 REMOTE_NAME="agent-dropbox-auto"
+EXPECTED_COMMIT_SHA=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +50,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       REMOTE_NAME="$2"
+      shift 2
+      ;;
+    --expected-commit-sha)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --expected-commit-sha" >&2
+        exit 1
+      fi
+      EXPECTED_COMMIT_SHA="$2"
       shift 2
       ;;
     --*)
@@ -141,6 +153,11 @@ if ! FETCHED_COMMIT="$(git -C "${HOST_REPO_PATH}" rev-parse --verify "${PROMOTIO
   exit 1
 fi
 
+if [[ -n "${EXPECTED_COMMIT_SHA}" && "${FETCHED_COMMIT}" != "${EXPECTED_COMMIT_SHA}" ]]; then
+  echo "Fetched commit ${FETCHED_COMMIT} for ${AGENT_BRANCH} does not match expected ${EXPECTED_COMMIT_SHA}" >&2
+  exit 1
+fi
+
 if git -C "${HOST_REPO_PATH}" show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}"; then
   if ! git -C "${HOST_REPO_PATH}" switch -C "${REVIEW_BRANCH}" "${FETCHED_COMMIT}" >/dev/null; then
     echo "Failed to refresh local review branch: ${REVIEW_BRANCH}" >&2
@@ -156,6 +173,7 @@ else
 fi
 
 echo "Fetched ${AGENT_BRANCH} from ${REMOTE_NAME}"
+echo "Commit: ${FETCHED_COMMIT}"
 echo
 echo "Next steps:"
 echo "  cd ${HOST_REPO_PATH}"

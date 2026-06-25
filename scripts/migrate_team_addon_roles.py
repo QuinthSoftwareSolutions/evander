@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_sandbox.storage import JsonObjectStore
-from truman_team_addon.models import SCHEMA_VERSION, TeamState
+from evander_team_addon.models import SCHEMA_VERSION, TeamState
 
 
 DEFAULT_STATE_PATH = Path("runtime/addons/team-addon/state.json")

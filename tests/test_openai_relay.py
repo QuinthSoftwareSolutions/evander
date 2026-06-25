@@ -1172,6 +1172,48 @@ def test_relay_rejects_azure_websocket_requests_without_connecting_upstream(
     assert upstream.closed is False
 
 
+def test_relay_rejects_local_openai_websocket_requests_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    write_session(config, session_id="session-local")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal called
+        called = True
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    client = TestClient(relay.create_app())
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-local/responses") as websocket:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1008
+    assert (
+        exc_info.value.reason
+        == "Local OpenAI-compatible relay does not support websocket/realtime requests"
+    )
+    assert called is False
+    assert upstream.sent_messages == []
+    assert upstream.closed is False
+
+
 def test_relay_rejects_unsupported_azure_http_endpoints_without_connecting_upstream(
     tmp_path: Path,
 ) -> None:
