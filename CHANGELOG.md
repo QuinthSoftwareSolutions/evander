@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
+
+- Added a Team Add-on state stream so the UI receives revision snapshots
+  without manual refresh and restores in-progress form drafts after live
+  renders.
+- Highlighted chats with unread incoming messages, surfaced a Chat tab unread
+  count, and clears unread markers when conversations are opened.
+
 ## 2026-06-25 - Team Add-on Clean MCP Cutover
 
 - Documented the clean Team MCP cutover from Team action artifacts to
