@@ -239,7 +239,11 @@ def test_guest_ripgrep_is_seeded_by_provider_bootstraps() -> None:
     assert "guest_ripgrep_resolve_host_binary() {" in helper
     assert "HOST_RIPGREP_BIN" in helper
     assert "codex-path/rg" in helper
-    assert "scp \"${ssh_opts[@]}\" \"${host_rg}\"" in helper
+    assert 'remote_temp_name=".rg.agent-sandbox-bootstrap-$$"' in helper
+    assert '"${vm_user}@${vm_ip}:~/bin/${remote_temp_name}"' in helper
+    assert 'if "${rg_temp}" --version >/dev/null; then' in helper
+    assert 'mv -f "${rg_temp}" "${HOME}/bin/rg"' in helper
+    assert 'rm -f "${rg_temp}"' in helper
     assert "GUEST_RIPGREP_REQUIRED" in helper
     assert "Seeded rg did not run successfully in guest." in helper
     assert "Usage: bootstrap_ripgrep_vm.sh <vm-name> [vm-user]" in standalone

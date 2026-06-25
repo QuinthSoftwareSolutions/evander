@@ -46,6 +46,7 @@ guest_ripgrep_seed() {
   local vm_user="$1"
   local vm_ip="$2"
   local host_rg
+  local remote_temp_name
   shift 2
   local -a ssh_opts=("$@")
 
@@ -66,15 +67,29 @@ guest_ripgrep_seed() {
     fi
     return 0
   fi
-  if ! scp "${ssh_opts[@]}" "${host_rg}" "${vm_user}@${vm_ip}:~/bin/rg"; then
+  remote_temp_name=".rg.agent-sandbox-bootstrap-$$"
+  if ! scp "${ssh_opts[@]}" "${host_rg}" "${vm_user}@${vm_ip}:~/bin/${remote_temp_name}"; then
     echo "Could not copy host rg binary into guest." >&2
+    ssh "${ssh_opts[@]}" "${vm_user}@${vm_ip}" \
+      "rm -f \"\$HOME/bin/${remote_temp_name}\"" >/dev/null 2>&1 || true
     if [[ "${GUEST_RIPGREP_REQUIRED:-0}" == "1" ]]; then
       return 1
     fi
     return 0
   fi
   if ! ssh "${ssh_opts[@]}" "${vm_user}@${vm_ip}" \
-    'set -euo pipefail; chmod +x ~/bin/rg; ~/bin/rg --version >/dev/null'; then
+    "REMOTE_RIPGREP_TEMP_NAME='${remote_temp_name}' bash -s" <<'EOF'
+set -euo pipefail
+rg_temp="${HOME}/bin/${REMOTE_RIPGREP_TEMP_NAME}"
+chmod +x "${rg_temp}"
+if "${rg_temp}" --version >/dev/null; then
+  mv -f "${rg_temp}" "${HOME}/bin/rg"
+else
+  rm -f "${rg_temp}"
+  exit 1
+fi
+EOF
+  then
     echo "Seeded rg did not run successfully in guest." >&2
     if [[ "${GUEST_RIPGREP_REQUIRED:-0}" == "1" ]]; then
       return 1
