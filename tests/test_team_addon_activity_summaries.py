@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentInboxItem,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
@@ -22,7 +22,7 @@ from truman_team_addon.models import (
     agent_activity_summaries_payload,
     team_state_payload,
 )
-from truman_team_addon.providers import _filtered_team_state_payload
+from evander_team_addon.providers import _filtered_team_state_payload
 
 
 def _state(

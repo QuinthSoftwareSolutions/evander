@@ -6,7 +6,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from truman_team_addon.templates import TeamTemplate, get_template, template_catalog
+from evander_team_addon.templates import TeamTemplate, get_template, template_catalog
 
 
 def test_template_catalog_exposes_validated_auto_dev_squad() -> None:

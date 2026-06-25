@@ -17,6 +17,13 @@
 - Passed ephemeral assignment `allowed_tools` into the built-in
   `effect:agent:create` node so spawned workers receive the
   `team_report_ephemeral_result` MCP tool required to report completion.
+- Preserved Team MCP tools required by overlapping active governance and
+  ordinary Team dispatches that share a persistent session.
+- Fixed the Team Chat conversation-list pagination fixture so the seeded
+  conversation belongs to the default `admin` operator used by the API test.
+- Renamed the bundled Team Add-on Python package to `evander_team_addon` across
+  source, tests, docs, frontend build paths, and local add-on loader
+  configuration.
 
 ## 2026-06-25 - ADO Daily Status Elapsed Time Guard
 
@@ -1319,7 +1326,7 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-16 - Team Runtime Pack Materialization
 
-- Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
+- Made `evander_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
   workflow pack directly, so operators can write it to `config/workflow-packs/`
   and list it in `workflow_packs` without local schema conversion.
 - Allowed workflow bindings in communication target references and Git promotion
@@ -2087,7 +2094,7 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-09 - Team Add-on State Model
 
-- Added the optional `truman_team_addon` package with private add-on state for
+- Added the optional `evander_team_addon` package with private add-on state for
   hierarchical teams, projects, persistent agents, prioritized tasks,
   deliverables, review requests, and release packages.
 - Exposed initial Team Add-on Admin API routes under `/api/addons/team-addon`

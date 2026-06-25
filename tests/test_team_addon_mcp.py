@@ -13,7 +13,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, ToolName, tool_name_value
 from agent_sandbox.runtime import build_runtime
-from truman_team_addon.mcp import (
+from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
@@ -35,7 +35,7 @@ from truman_team_addon.mcp import (
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentRuntime,
     EphemeralAgentPolicy,
     GovernanceAgendaItemState,
@@ -44,7 +44,7 @@ from truman_team_addon.models import (
     TeamRecordState,
     TeamTaskState,
 )
-from truman_team_addon.repository import ADDON_ID, TeamStateRepository
+from evander_team_addon.repository import ADDON_ID, TeamStateRepository
 
 
 def _runtime(tmp_path: Path, *, allowed_tools: list[str]):
@@ -59,7 +59,7 @@ def _runtime(tmp_path: Path, *, allowed_tools: list[str]):
             email_store_path=runtime_dir / "emails.json",
             discord_command_store_path=runtime_dir / "discord.json",
             addon_loader=AddonLoaderConfig(
-                modules=["truman_team_addon"],
+                modules=["evander_team_addon"],
                 enabled_addon_ids=[ADDON_ID],
             ),
         )

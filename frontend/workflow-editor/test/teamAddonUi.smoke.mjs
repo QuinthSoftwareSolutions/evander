@@ -8,7 +8,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 
 const staticRoot = path.resolve(
-  fileURLToPath(new URL("../../../src/truman_team_addon/ui_static", import.meta.url)),
+  fileURLToPath(new URL("../../../src/evander_team_addon/ui_static", import.meta.url)),
 );
 const teamViewStorageKey = "team-addon:active-view";
 

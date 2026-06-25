@@ -15,7 +15,7 @@ against an agreed stub/interface from that dependency.
 
 ## Non-Negotiable Constraints
 
-- Team-specific behavior stays in `src/truman_team_addon`.
+- Team-specific behavior stays in `src/evander_team_addon`.
 - Do not add Team MCP tools to core `ToolName`, core policy enums, core gateway
   tool functions, or core control-plane authorization branches.
 - Core changes are allowed only when they are generic add-on infrastructure, such
@@ -39,11 +39,11 @@ against an agreed stub/interface from that dependency.
 
 The current code already has the right ownership boundary:
 
-- Add-on MCP registration: `src/truman_team_addon/mcp.py`
-- Add-on state and semantics: `src/truman_team_addon/repository.py`,
-  `src/truman_team_addon/models.py`, `src/truman_team_addon/sqlite_store.py`
-- Team runtime, prompts, workflow providers: `src/truman_team_addon/providers.py`
-- Built-in runtime workflow pack: `src/truman_team_addon/workflow_packs.py` plus
+- Add-on MCP registration: `src/evander_team_addon/mcp.py`
+- Add-on state and semantics: `src/evander_team_addon/repository.py`,
+  `src/evander_team_addon/models.py`, `src/evander_team_addon/sqlite_store.py`
+- Team runtime, prompts, workflow providers: `src/evander_team_addon/providers.py`
+- Built-in runtime workflow pack: `src/evander_team_addon/workflow_packs.py` plus
   checked-in `config/workflow-packs/team-runtime.v1.json`
 - Focused tests: `tests/test_team_addon_mcp.py`,
   `tests/test_team_addon_repository.py`, `tests/test_team_addon_runtime.py`,
@@ -670,8 +670,8 @@ Parallelism: can run alongside Slice 2 if the result contract is agreed early.
 
 Primary files:
 
-- `src/truman_team_addon/mcp.py`
-- new `src/truman_team_addon/mcp_context.py` or equivalent add-on-owned helper
+- `src/evander_team_addon/mcp.py`
+- new `src/evander_team_addon/mcp_context.py` or equivalent add-on-owned helper
 - `tests/test_team_addon_mcp.py`
 - optionally `src/agent_sandbox/addons.py` or `src/agent_sandbox/gateway.py` only
   for a generic add-on ambient-session helper
@@ -699,7 +699,7 @@ Implementation tasks:
   - `activity_id`
   - `errors`
   - rich correction context
-- Register all Team tool names from `truman_team_addon.mcp`, but keep
+- Register all Team tool names from `evander_team_addon.mcp`, but keep
   implementation for later slices behind repository command calls.
 - Do not add Team tool names to core `ToolName`.
 
@@ -723,9 +723,9 @@ Parallelism: can run alongside Slice 1.
 
 Primary files:
 
-- `src/truman_team_addon/sqlite_store.py`
-- `src/truman_team_addon/models.py`
-- `src/truman_team_addon/repository.py`
+- `src/evander_team_addon/sqlite_store.py`
+- `src/evander_team_addon/models.py`
+- `src/evander_team_addon/repository.py`
 - `tests/test_team_addon_repository.py`
 - migration helper script if needed under `scripts/` or add-on-owned module
 
@@ -793,9 +793,9 @@ validators into pure helpers in parallel if they do not change behavior.
 
 Primary files:
 
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/sqlite_store.py`
-- `src/truman_team_addon/models.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/sqlite_store.py`
+- `src/evander_team_addon/models.py`
 - `tests/test_team_addon_repository.py`
 
 Implementation tasks:
@@ -868,9 +868,9 @@ schema is stable.
 
 Primary files:
 
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/providers.py`
-- `src/truman_team_addon/provider_schemas.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/providers.py`
+- `src/evander_team_addon/provider_schemas.py`
 - `tests/test_team_addon_runtime.py`
 - `tests/test_team_addon_repository.py`
 
@@ -928,9 +928,9 @@ Tools:
 
 Primary files:
 
-- `src/truman_team_addon/mcp.py`
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/models.py`
+- `src/evander_team_addon/mcp.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/models.py`
 - `tests/test_team_addon_mcp.py`
 - `tests/test_team_addon_repository.py`
 - `tests/test_team_addon_runtime.py`
@@ -987,9 +987,9 @@ Tools:
 
 Primary files:
 
-- `src/truman_team_addon/mcp.py`
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/models.py`
+- `src/evander_team_addon/mcp.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/models.py`
 - `tests/test_team_addon_mcp.py`
 - `tests/test_team_addon_repository.py`
 - `tests/test_team_addon_runtime.py`
@@ -1041,10 +1041,10 @@ Tools:
 
 Primary files:
 
-- `src/truman_team_addon/mcp.py`
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/providers.py` for reusable artifact publication helpers
-- `src/truman_team_addon/models.py`
+- `src/evander_team_addon/mcp.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/providers.py` for reusable artifact publication helpers
+- `src/evander_team_addon/models.py`
 - `tests/test_team_addon_mcp.py`
 - `tests/test_team_addon_repository.py`
 - `tests/test_team_addon_runtime.py`
@@ -1104,10 +1104,10 @@ Tools:
 
 Primary files:
 
-- `src/truman_team_addon/mcp.py`
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/git_naming.py`
-- `src/truman_team_addon/providers.py`
+- `src/evander_team_addon/mcp.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/git_naming.py`
+- `src/evander_team_addon/providers.py`
 - `tests/test_team_addon_mcp.py`
 - `tests/test_team_addon_git_effects.py`
 - `tests/test_team_addon_repository.py`
@@ -1160,10 +1160,10 @@ Tools:
 
 Primary files:
 
-- `src/truman_team_addon/mcp.py`
-- `src/truman_team_addon/repository.py`
-- `src/truman_team_addon/providers.py`
-- `src/truman_team_addon/models.py`
+- `src/evander_team_addon/mcp.py`
+- `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/providers.py`
+- `src/evander_team_addon/models.py`
 - `tests/test_team_addon_mcp.py`
 - `tests/test_team_addon_repository.py`
 - `tests/test_team_addon_runtime.py`
@@ -1208,11 +1208,11 @@ implemented.
 
 Primary files:
 
-- `src/truman_team_addon/workflow_packs.py`
+- `src/evander_team_addon/workflow_packs.py`
 - `config/workflow-packs/team-runtime.v1.json`
 - `config/workflow-packs/team-runtime.v1.layout.json`
-- `src/truman_team_addon/provider_schemas.py`
-- `src/truman_team_addon/providers.py`
+- `src/evander_team_addon/provider_schemas.py`
+- `src/evander_team_addon/providers.py`
 - `tests/test_workflow_packs.py`
 - `tests/test_team_addon_runtime.py`
 - `tests/test_workflow_editor_addon_catalog.py`
@@ -1258,8 +1258,8 @@ after tools are registered.
 
 Primary files:
 
-- `src/truman_team_addon/providers.py`
-- `src/truman_team_addon/repository.py` for embedded correction text
+- `src/evander_team_addon/providers.py`
+- `src/evander_team_addon/repository.py` for embedded correction text
 - `tests/test_team_addon_runtime.py`
 - `tests/test_team_addon_templates.py`
 - docs that describe Team Add-on operation
@@ -1343,7 +1343,7 @@ Implementation tasks:
 
 Acceptance criteria:
 
-- `rg "team-action|team-finish|agent-action-artifact|apply-agent-action|recover_missing_action" docs src/truman_team_addon config/workflow-packs tests`
+- `rg "team-action|team-finish|agent-action-artifact|apply-agent-action|recover_missing_action" docs src/evander_team_addon config/workflow-packs tests`
   only finds migration-history references, deleted-code references, or tests that
   explicitly assert removal.
 - Changelog entry names the clean MCP cutover.

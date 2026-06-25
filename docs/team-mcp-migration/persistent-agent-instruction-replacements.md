@@ -11,7 +11,7 @@ the explicit removal decision.
 ## Managed `AGENTS.md` Section
 
 Source: `_team_agent_guidance_content()`, managed section
-`truman-team-addon` in `/home/agent/AGENTS.md`.
+`evander-team-addon` in `/home/agent/AGENTS.md`.
 
 | Topic | Old instruction | New instruction | Human comment |
 | --- | --- | --- | --- |
@@ -48,7 +48,7 @@ Source: `_build_prompt()`.
 | Topic | Old instruction | New instruction | Human comment |
 | --- | --- | --- | --- |
 | Opening instruction | `Continue your assigned team-agent work... write the requested action artifact before finishing.` | Replace with: `Continue your assigned team-agent work. Use Team MCP action tools during this active dispatch only when there is Team state to change or a note to record. Tool calls validate and apply immediately. When you are done, simply finish your response; the normal session completion event closes the wake and records whether progress occurred.` | |
-| Managed guidance reference | `Follow the Team Add-on guidance in /home/agent/AGENTS.md, managed section truman-team-addon, version ...` | Keep, but remove artifact wording: `Follow the Team Add-on guidance in /home/agent/AGENTS.md... Use the Team context below for this dispatch and use the Team MCP tools for state changes.` | |
+| Managed guidance reference | `Follow the Team Add-on guidance in /home/agent/AGENTS.md, managed section evander-team-addon, version ...` | Keep, but remove artifact wording: `Follow the Team Add-on guidance in /home/agent/AGENTS.md... Use the Team context below for this dispatch and use the Team MCP tools for state changes.` | |
 | Role-aware delegation | `Use subordinates[].role_name and subordinates[].role_description. Reviewer roles should generally receive review_requests or review-focused tasks, not implementation task ownership.` | Keep. Replace `review_requests` with `team_request_review` or review-focused `team_create_task`. | |
 | Task creation mandate | `If create_root_task... You may create top-level tasks...`; otherwise `Every task_creations item you submit must set parent_task_id...` | Keep. Replace `task_creations item` with `team_create_task or team_create_tasks item`. | |
 | Deliverable mechanics, no owned tasks | `If no deliverable is ready, still write the Team action artifact with notes, questions, status_reports, or handled_inbox_item_ids... Do not finish without writing the action artifact.` | Replace with: `If no deliverable is ready, use team_send_progress_report, team_ask_question, team_mark_inbox_handled, or team_record_note only when one of those actions is actually useful. If there is nothing useful to do, do not call a Team tool; normal session completion will close the wake and count no progress.` | |

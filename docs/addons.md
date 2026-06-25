@@ -31,7 +31,7 @@ Add-on discovery is configured with `addon_loader`:
 ```json
 {
   "addon_loader": {
-    "modules": ["my_company.truman_team_addon"],
+    "modules": ["my_company.evander_team_addon"],
     "enabled_entry_points": false,
     "enabled_addon_ids": null
   }
@@ -187,9 +187,9 @@ Team, manager, project lead, task, deliverable, review, and release-package
 schemas belong in that package. Only generic hooks that are useful to other
 add-ons should be proposed for Truman core.
 
-The bundled `truman_team_addon` package provides the initial state-model layer
+The bundled `evander_team_addon` package provides the initial state-model layer
 for this pattern. It is still disabled by default; enable it with
-`addon_loader.modules: ["truman_team_addon"]` or by enabling the
+`addon_loader.modules: ["evander_team_addon"]` or by enabling the
 `agent_sandbox.addons` entry-point group. For the bundled add-on, explicit
 module loading is the recommended operator path because entry-point loading is
 disabled by default. Its canonical state lives in relational SQLite under
@@ -529,7 +529,7 @@ set:
 These node types are add-on-owned. They are not present unless the add-on is
 loaded, and their workflow-editor catalog entries are registered by the add-on's
 provider registration rather than hard-coded into Truman core. The packaged
-`truman_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
+`evander_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
 workflow pack for the intended cron plus agent-completion loop. Operators can
 write that definition into an operator-owned pack file when they want this
 opinionated runtime.
@@ -727,7 +727,7 @@ requests through either Team MCP tools or the Admin API.
 
 Branch names are derived deterministically so the repository, effect, and
 workflow layers all compute the same name without external lookups. The helpers
-live in `truman_team_addon.git_naming`:
+live in `evander_team_addon.git_naming`:
 
 - ephemeral agent branch: `agents/<session-id>/<assignment-id>`
 - review branch: `team/<team-id>/reviews/<assignment-id>`
@@ -815,7 +815,7 @@ promises.
 
 Use this checklist when enabling the bundled Team Add-on on a deployment:
 
-1. Confirm the installed package includes `truman_team_addon` and its
+1. Confirm the installed package includes `evander_team_addon` and its
    `ui_static` files.
 2. Enable Admin Web routes/navigation in the host config or legacy gateway
    config:
@@ -823,7 +823,7 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
    ```json
    {
      "addon_loader": {
-       "modules": ["truman_team_addon"],
+       "modules": ["evander_team_addon"],
        "enabled_entry_points": false,
        "enabled_addon_ids": ["team-addon"]
      }
@@ -834,7 +834,7 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
    the same `addon_loader` block. Trigger and effect workers both read this
    worker config.
 4. If autonomous team wakeups are desired, write the current-schema payload from
-   `truman_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
+   `evander_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
    workflow pack file under `config/workflow-packs/` and list that file in
    `workflow_packs`. Do not edit checked-in example packs for live operator
    state.

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from truman_team_addon.models import Project
+    from evander_team_addon.models import Project
 
 # Default canonical release prefix. ``<project-id>`` is substituted with the
 # concrete project id when building a canonical release branch.

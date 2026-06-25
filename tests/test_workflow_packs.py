@@ -368,7 +368,7 @@ def test_packaged_hidden_system_workflow_pack_matches_repo_config() -> None:
 
 
 def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
-    from truman_team_addon.workflow_packs import team_runtime_v1
+    from evander_team_addon.workflow_packs import team_runtime_v1
 
     project_dir = Path(__file__).resolve().parents[1]
     checked_in_pack = load_workflow_pack(project_dir, "team-runtime.v1")

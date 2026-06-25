@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentAvatar,
     AgentContextClearingPolicy,
     AgentInboxItem,
@@ -43,7 +43,7 @@ from truman_team_addon.models import (
     agent_project_ids,
     project_lead_agent_id,
 )
-from truman_team_addon.repository import (
+from evander_team_addon.repository import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     EPHEMERAL_COMPLETED_EVENT_TYPE,
     EPHEMERAL_REQUESTED_EVENT_TYPE,
@@ -54,7 +54,7 @@ from truman_team_addon.repository import (
     TeamStateConflictError,
     TeamStateRepository,
 )
-from truman_team_addon.sqlite_store import (
+from evander_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
     TeamIdempotencyConflictError,
     _ensure_team_conversations_operator_scope,
@@ -3009,7 +3009,7 @@ def test_task_state_entered_at_changes_only_on_state_transition(
             datetime(2026, 6, 21, 10, 2, 1, tzinfo=UTC),
         ]
     )
-    monkeypatch.setattr("truman_team_addon.repository.utc_now", lambda: next(moments))
+    monkeypatch.setattr("evander_team_addon.repository.utc_now", lambda: next(moments))
 
     state = repo.create_or_reprioritize_task(
         task_id="board-task",
@@ -3565,7 +3565,7 @@ def test_reassigned_project_lead_manager_can_create_tasks_across_team_projects(
 
 
 def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> None:
-    from truman_team_addon.models import AgentStatus
+    from evander_team_addon.models import AgentStatus
 
     repo = TeamStateRepository(tmp_path)
     repo.create_team(
@@ -9872,7 +9872,7 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
         instructions="Operator instructions.",
     )
 
-    from truman_team_addon.models import ReviewCriterionResult
+    from evander_team_addon.models import ReviewCriterionResult
 
     state = repo.record_review_decision(
         review_request_id="review-1",

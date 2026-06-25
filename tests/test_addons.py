@@ -38,15 +38,15 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
-    assert addon_entry_points["team"] == "truman_team_addon:register_addon"
-    assert package_data["truman_team_addon"] == ["ui_static/*"]
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/index.html").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.js").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.css").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-org-flow.js").is_file()
-    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-org-flow.css").is_file()
+    assert addon_entry_points["team"] == "evander_team_addon:register_addon"
+    assert package_data["evander_team_addon"] == ["ui_static/*"]
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.css").is_file()
 
-    addon = importlib.import_module("truman_team_addon").register_addon()
+    addon = importlib.import_module("evander_team_addon").register_addon()
     assert addon.mcp_tools is not None
 
 
@@ -277,7 +277,7 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
         include_entry_points=False,
         include_builtin=False,
         addon_loader=AddonLoaderConfig(
-            modules=["truman_team_addon"],
+            modules=["evander_team_addon"],
             enabled_addon_ids=["team-addon"],
         ),
     )

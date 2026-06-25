@@ -16,7 +16,7 @@ from pydantic import (
 )
 
 from agent_sandbox.models import utc_now
-from truman_team_addon.git_naming import (
+from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
 )

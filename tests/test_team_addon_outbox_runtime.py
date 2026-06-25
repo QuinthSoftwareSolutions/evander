@@ -5,10 +5,10 @@ from pathlib import Path
 
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
-from truman_team_addon.models import TeamOutboxRecord, TeamOutboxStatus
-from truman_team_addon.provider_schemas import TeamPublishOutboxEventsEffectDefinition
-from truman_team_addon.providers import TeamPublishOutboxEventsEffectProvider
-from truman_team_addon.repository import TeamStateRepository
+from evander_team_addon.models import TeamOutboxRecord, TeamOutboxStatus
+from evander_team_addon.provider_schemas import TeamPublishOutboxEventsEffectDefinition
+from evander_team_addon.providers import TeamPublishOutboxEventsEffectProvider
+from evander_team_addon.repository import TeamStateRepository
 
 
 def test_publish_outbox_events_claims_publishes_and_completes_record(

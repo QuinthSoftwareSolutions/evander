@@ -36,7 +36,7 @@ def _write_trigger_config(tmp_path: Path, *, enable_team_addon: bool) -> None:
     }
     if enable_team_addon:
         payload["addon_loader"] = {
-            "modules": ["truman_team_addon"],
+            "modules": ["evander_team_addon"],
             "enabled_entry_points": False,
             "enabled_addon_ids": ["team-addon"],
         }
@@ -57,7 +57,7 @@ def _write_invalid_trigger_config_with_team_addon(tmp_path: Path) -> None:
                     "provider_entry_points_enabled": False,
                 },
                 "addon_loader": {
-                    "modules": ["truman_team_addon"],
+                    "modules": ["evander_team_addon"],
                     "enabled_entry_points": False,
                     "enabled_addon_ids": ["team-addon"],
                 },

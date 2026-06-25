@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -111,9 +112,9 @@ from .repository import TeamStateConflictError, TeamStateRepository
 
 TEAM_AGENT_GUIDANCE_VERSION = 10
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
-TEAM_AGENT_GUIDANCE_SECTION_ID = "truman-team-addon"
+TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
-TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "truman-team-addon-governance"
+TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
 _ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
@@ -1127,6 +1128,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     context,
                     session_id=agent["session_id"],
                     tool_names=_ordinary_team_tools_for_agent(agent),
+                    dispatch_id=lease["dispatch_id"],
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
@@ -1278,6 +1280,7 @@ def _dispatch_queued_team_chat_messages(
                 context,
                 session_id=agent.session_id,
                 tool_names=chat_tool_names,
+                dispatch_id=dispatch_id,
             )
             guidance_result = _seed_team_agent_guidance(context, agent=agent_payload)
             prompt = _build_team_chat_prompt(
@@ -1387,6 +1390,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                     context,
                     session_id=agent["session_id"],
                     tool_names=GOVERNANCE_TEAM_MCP_TOOL_NAMES,
+                    dispatch_id=lease["dispatch_id"],
                 )
                 _register_team_dispatch_model_usage_context(
                     context,
@@ -4051,9 +4055,11 @@ def _set_session_team_mcp_tools(
     *,
     session_id: object,
     tool_names: list[str] | tuple[str, ...],
+    dispatch_id: object | None = None,
 ) -> dict[str, Any]:
     normalized_session_id = _required_text(session_id, "session_id")
     requested_tools = _unique_requested_tools(tool_names)
+    normalized_dispatch_id = _optional_text(dispatch_id)
     result: dict[str, Any] = {
         "session_id": normalized_session_id,
         "requested_tools": requested_tools,
@@ -4072,8 +4078,16 @@ def _set_session_team_mcp_tools(
         return result
     allowed_values = [tool_name_value(tool) for tool in getattr(session, "allowed_tools", [])]
     managed_tools = set(MCP_TOOL_NAMES)
-    requested_set = set(requested_tools)
     existing_team_tools = [tool for tool in allowed_values if tool in managed_tools]
+    active_scope_tools = _active_team_mcp_tools_for_other_dispatches(
+        context,
+        session_id=normalized_session_id,
+        dispatch_id=normalized_dispatch_id,
+    )
+    effective_team_tools = _unique_requested_tools(
+        [*requested_tools, *active_scope_tools]
+    )
+    effective_team_tool_set = set(effective_team_tools)
     preserved_tools: list[str] = []
     seen_preserved: set[str] = set()
     for tool in allowed_values:
@@ -4081,10 +4095,10 @@ def _set_session_team_mcp_tools(
             continue
         preserved_tools.append(tool)
         seen_preserved.add(tool)
-    next_allowed_values = preserved_tools + requested_tools
+    next_allowed_values = preserved_tools + effective_team_tools
     already_allowed = [tool for tool in requested_tools if tool in existing_team_tools]
     granted = [tool for tool in requested_tools if tool not in existing_team_tools]
-    removed = [tool for tool in existing_team_tools if tool not in requested_set]
+    removed = [tool for tool in existing_team_tools if tool not in effective_team_tool_set]
     if next_allowed_values != allowed_values:
         if callable(getattr(session, "model_copy", None)):
             updated_session = session.model_copy(update={"allowed_tools": next_allowed_values})
@@ -4096,6 +4110,75 @@ def _set_session_team_mcp_tools(
     result["granted_tools"] = granted
     result["removed_tools"] = removed
     return result
+
+
+def _active_team_mcp_tools_for_other_dispatches(
+    context: Any,
+    *,
+    session_id: str,
+    dispatch_id: str | None,
+) -> list[str]:
+    try:
+        state = TeamStateRepository(_runtime_dir(context)).read()
+    except Exception:
+        return []
+
+    now = datetime.now(UTC)
+    tool_names: list[str] = []
+    for agent_id, runtime in sorted(state.agent_runtimes.items()):
+        active_dispatch_id = _optional_text(getattr(runtime, "active_dispatch_id", None))
+        if active_dispatch_id is None or active_dispatch_id == dispatch_id:
+            continue
+        if not _team_runtime_lease_active(runtime, now=now):
+            continue
+        agent = state.agents.get(agent_id)
+        if agent is None or getattr(agent, "session_id", None) != session_id:
+            continue
+        if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
+            tool_names.extend(CHAT_TEAM_MCP_TOOL_NAMES)
+        else:
+            tool_names.extend(
+                _ordinary_team_tools_for_agent(
+                    {"team_id": getattr(agent, "team_id", None)}
+                )
+            )
+
+    for group_id, runtime in sorted(state.governance_runtimes.items()):
+        active_dispatch_id = _optional_text(getattr(runtime, "active_dispatch_id", None))
+        if active_dispatch_id is None or active_dispatch_id == dispatch_id:
+            continue
+        if not _team_runtime_lease_active(runtime, now=now):
+            continue
+        group = state.governance_groups.get(group_id)
+        if group is None:
+            continue
+        agent = state.agents.get(group.manager_agent_id)
+        if agent is None or getattr(agent, "session_id", None) != session_id:
+            continue
+        tool_names.extend(GOVERNANCE_TEAM_MCP_TOOL_NAMES)
+
+    return _unique_requested_tools(tool_names)
+
+
+def _team_runtime_lease_active(runtime: Any, *, now: datetime) -> bool:
+    wake_leased_until = getattr(runtime, "wake_leased_until", None)
+    if wake_leased_until is None:
+        return False
+    if isinstance(wake_leased_until, str):
+        lease_text = wake_leased_until.strip()
+        if not lease_text:
+            return False
+        try:
+            wake_leased_until = datetime.fromisoformat(
+                lease_text.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+    if not isinstance(wake_leased_until, datetime):
+        return False
+    if wake_leased_until.tzinfo is None:
+        wake_leased_until = wake_leased_until.replace(tzinfo=UTC)
+    return wake_leased_until > now
 
 
 def _unique_requested_tools(tool_names: list[str] | tuple[str, ...]) -> list[str]:

@@ -8,7 +8,7 @@ export default defineConfig({
     "process.env.NODE_ENV": JSON.stringify("production"),
   },
   build: {
-    outDir: path.resolve(__dirname, "../../src/truman_team_addon/ui_static"),
+    outDir: path.resolve(__dirname, "../../src/evander_team_addon/ui_static"),
     emptyOutDir: false,
     cssCodeSplit: false,
     lib: {

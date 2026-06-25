@@ -208,7 +208,7 @@ def test_vm_copy_files_provider_accepts_managed_section_entries(tmp_path: Path) 
                     "destination_path": "/home/agent/AGENTS.md",
                     "content": "Team guidance",
                     "merge_strategy": "managed_section",
-                    "section_id": "truman-team-addon",
+                    "section_id": "evander-team-addon",
                 }
             ],
         }
@@ -227,7 +227,7 @@ def test_vm_copy_files_provider_accepts_managed_section_entries(tmp_path: Path) 
                     "mode": None,
                     "overwrite": True,
                     "merge_strategy": "managed_section",
-                    "section_id": "truman-team-addon",
+                    "section_id": "evander-team-addon",
                 }
             ],
             "vm_user": "agent",

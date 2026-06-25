@@ -18,7 +18,7 @@ from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.workflow.packs import WorkflowPack
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
-from truman_team_addon.mcp import (
+from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
@@ -27,7 +27,7 @@ from truman_team_addon.mcp import (
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -62,7 +62,7 @@ from truman_team_addon.models import (
     TeamState,
     TeamTaskState,
 )
-from truman_team_addon.provider_schemas import (
+from evander_team_addon.provider_schemas import (
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
@@ -74,7 +74,7 @@ from truman_team_addon.provider_schemas import (
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
 )
-from truman_team_addon.providers import (
+from evander_team_addon.providers import (
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
     TEAM_AGENT_GUIDANCE_VERSION,
@@ -93,11 +93,11 @@ from truman_team_addon.providers import (
     _build_prompt,
     _publish_deliverable_artifact_bundle,
 )
-from truman_team_addon.repository import (
+from evander_team_addon.repository import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     TeamStateRepository,
 )
-from truman_team_addon.workflow_packs import team_runtime_v1
+from evander_team_addon.workflow_packs import team_runtime_v1
 
 
 def _team_runtime_sections() -> dict[str, list[dict[str, object]]]:
@@ -179,7 +179,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
                 "runtime_dir": str(tmp_path / "runtime"),
                 "workflow_packs": ["team-runtime.v1.json"],
                 "addon_loader": {
-                    "modules": ["truman_team_addon"],
+                    "modules": ["evander_team_addon"],
                     "enabled_entry_points": False,
                     "enabled_addon_ids": ["team-addon"],
                 },
@@ -1116,6 +1116,66 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
     assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_preserves_active_governance_tools(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="backend",
+        member_team_ids=["team"],
+        goals=[{"id": "goal", "description": "Watch Team health"}],
+        expected_revision=repo.read().revision,
+    )
+    repo.create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review Team health",
+        summary="Check the implementation team.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    _state, governance_leases = repo.lease_due_governance_managers(limit=1)
+    assert len(governance_leases) == 1
+
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].allowed_tools = list(
+        GOVERNANCE_TEAM_MCP_TOOL_NAMES
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 1
+    assert result["dispatches"][0]["agent_id"] == "backend"
+    team_tools = result["dispatches"][0]["team_mcp_tools"]
+    assert team_tools["requested_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert team_tools["granted_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert team_tools["removed_tools"] == []
+    assert session_store.sessions["session-backend"].allowed_tools == [
+        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *GOVERNANCE_TEAM_MCP_TOOL_NAMES,
+    ]
 
 
 def test_wake_due_agents_provider_imports_review_artifact_refs(
@@ -3927,7 +3987,7 @@ def test_create_case_effect_returns_generated_id_when_other_case_is_created(
             return super().create_case_with_id(**kwargs)
 
     monkeypatch.setattr(
-        "truman_team_addon.providers.TeamStateRepository",
+        "evander_team_addon.providers.TeamStateRepository",
         RacingCaseRepository,
     )
     provider = TeamCreateCaseEffectProvider()

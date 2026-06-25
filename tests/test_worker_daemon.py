@@ -446,7 +446,7 @@ def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
                     "mode": "0644",
                     "overwrite": True,
                     "merge_strategy": "managed_section",
-                    "section_id": "truman-team-addon",
+                    "section_id": "evander-team-addon",
                 }
             ]
         },
@@ -462,7 +462,7 @@ def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
                     "mode": "0644",
                     "overwrite": True,
                     "merge_strategy": "managed_section",
-                    "section_id": "truman-team-addon",
+                    "section_id": "evander-team-addon",
                 }
             ]
         },
@@ -476,9 +476,9 @@ def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
     target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
     assert target.read_text(encoding="utf-8") == (
         "# Base\n\n"
-        "<!-- agent-sandbox-managed-section:truman-team-addon:begin -->\n"
+        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
         "Team guidance v2\n"
-        "<!-- agent-sandbox-managed-section:truman-team-addon:end -->\n"
+        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n"
     )
 
 

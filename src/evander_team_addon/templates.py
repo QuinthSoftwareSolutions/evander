@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     EphemeralAgentPolicy,
     ProjectGoal,
     ReviewProfileCriterion,

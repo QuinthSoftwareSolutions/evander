@@ -19,12 +19,12 @@ from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from truman_team_addon import api as team_addon_api
-from truman_team_addon.api import (
+from evander_team_addon import api as team_addon_api
+from evander_team_addon.api import (
     _conversation_snapshot_events,
     _team_state_payload_for_request,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
@@ -40,7 +40,7 @@ from truman_team_addon.models import (
     TeamRecordState,
     TeamTaskState,
 )
-from truman_team_addon.repository import (
+from evander_team_addon.repository import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     TeamStateRepository,
 )
@@ -73,7 +73,7 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
             [
                 "addon_loader:",
                 "  modules:",
-                '    - "truman_team_addon"',
+                '    - "evander_team_addon"',
             ]
         )
     config_path.write_text("\n".join(lines), encoding="utf-8")
@@ -304,7 +304,9 @@ def _seed_long_chat_history(
     repo = _seed_runtime_operations_state(runtime_dir)
     _state, conversation, _created = repo.create_or_get_conversation(
         agent_id="backend",
-        created_by="operator",
+        operator_user_id="admin",
+        operator_display_name="Admin",
+        created_by="operator:admin",
         expected_revision=repo.read().revision,
     )
     conversation_id = conversation.id
@@ -408,7 +410,7 @@ def test_generated_agent_avatar_preview_wraps_transport_failures(
 ) -> None:
     _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "truman_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api.openai_avatar_generator_from_config",
         lambda _config: _FailingAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -428,7 +430,7 @@ def test_generated_agent_avatar_preview_is_accepted_with_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "truman_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -467,7 +469,7 @@ def test_agent_avatar_accept_preview_requires_current_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "truman_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -487,7 +489,7 @@ def test_agent_avatar_accept_preview_requires_current_revision(
 
 
 def test_openai_avatar_generator_wraps_http_transport_errors() -> None:
-    from truman_team_addon.avatars import OpenAIAvatarGenerator
+    from evander_team_addon.avatars import OpenAIAvatarGenerator
 
     async def _handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("dns failed")
@@ -1052,7 +1054,7 @@ def test_agent_voice_session_create_query_and_end(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -1158,7 +1160,7 @@ def test_agent_voice_session_records_chat_conversation_message(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -1244,7 +1246,7 @@ def test_agent_voice_session_can_end_by_request_id(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "truman_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))

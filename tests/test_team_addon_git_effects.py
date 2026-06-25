@@ -6,7 +6,7 @@ from pathlib import Path
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.events.models import WorkflowNodeEnvelope
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
     EphemeralAgentPolicy,
@@ -17,19 +17,19 @@ from truman_team_addon.models import (
     TeamInboxItemType,
     TeamRecordState,
 )
-from truman_team_addon.provider_schemas import (
+from evander_team_addon.provider_schemas import (
     TeamConsolidateGitBranchesEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
 )
-from truman_team_addon.providers import (
+from evander_team_addon.providers import (
     TeamConsolidateGitBranchesEffectProvider,
     TeamMarkReleasePublishedEffectProvider,
     TeamPublishReviewBranchEffectProvider,
     TeamRecordGitPromotionEffectProvider,
 )
-from truman_team_addon.repository import TeamStateRepository
+from evander_team_addon.repository import TeamStateRepository
 
 
 def _seed_team(runtime_dir: Path) -> TeamStateRepository:

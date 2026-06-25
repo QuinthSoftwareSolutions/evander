@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_sandbox.models import SessionManifest
-from truman_team_addon.git_naming import (
+from evander_team_addon.git_naming import (
     canonical_release_branch,
     ephemeral_agent_branch,
     feature_branch,
@@ -14,7 +14,7 @@ from truman_team_addon.git_naming import (
     review_branch,
     validate_branch_name,
 )
-from truman_team_addon.models import (
+from evander_team_addon.models import (
     AgentActionRecord,
     AgentContextClearingPolicy,
     AgentInboxItem,
