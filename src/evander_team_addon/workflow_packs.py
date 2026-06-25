@@ -359,6 +359,8 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
                 "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+                "bare_repo_path": "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}",
+                "bare_repo_name": "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}",
             },
             {
                 "id": "team-record-feature-promotion",
@@ -386,6 +388,8 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
                 "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+                "bare_repo_path": "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}",
+                "bare_repo_name": "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}",
             },
             {
                 "id": "team-record-release-promotion",

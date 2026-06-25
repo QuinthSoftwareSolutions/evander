@@ -578,6 +578,50 @@ def test_consolidate_git_branches_merges_in_order(tmp_path: Path) -> None:
     assert result["conflict_branch"] is None
 
 
+def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
+    tmp_path: Path,
+) -> None:
+    bare = tmp_path / "dropbox.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    source = tmp_path / "source"
+    _init_repo(source)
+    _git(source, "remote", "add", "origin", str(bare))
+    _git(source, "push", "-u", "origin", "main")
+    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+    trusted = tmp_path / "trusted"
+    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
+    _git(trusted, "config", "user.email", "test@example.invalid")
+    _git(trusted, "config", "user.name", "Team Test")
+    _branch_with(source, "agents/session-1/work", "agent work\n")
+    source_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
+    _git(source, "push", "origin", "agents/session-1/work")
+    assert _git(
+        trusted,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "agents/session-1/work^{commit}",
+        check=False,
+    ).returncode != 0
+
+    result = _consolidate_provider(
+        tmp_path,
+        host_repo_path=str(trusted),
+        bare_repo_path=str(bare),
+        source_branches=["agents/session-1/work"],
+        target_branch="team/team/features/task-ui",
+        base_branch="main",
+    )
+
+    assert result["success"] is True
+    assert result["merged_branches"] == ["agents/session-1/work"]
+    fetched = _git(trusted, "rev-parse", "refs/heads/agents/session-1/work")
+    assert fetched.stdout.strip() == source_commit
+    assert _git(trusted, "branch", "--show-current").stdout.strip() == (
+        "team/team/features/task-ui"
+    )
+
+
 def test_consolidate_git_branches_refuses_dirty_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)

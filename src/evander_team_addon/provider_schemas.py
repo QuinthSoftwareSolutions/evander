@@ -244,6 +244,8 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     source_branches: ConfigValue
     target_branch: ConfigValue
     base_branch: ConfigValue | None = None
+    bare_repo_path: ConfigValue | None = None
+    bare_repo_name: ConfigValue | None = None
 
     @field_validator("source_branches")
     @classmethod

@@ -16258,20 +16258,22 @@ def _build_release_package(
         for promotion_id in promotion_ids:
             promotion = state.git_promotions[promotion_id]
             assert promotion.task_id is not None
+            payload = {
+                "promotion_id": promotion_id,
+                "promotion_kind": "feature",
+                "project_id": project.id,
+                "release_package_id": release_id,
+                "host_repo_path": git.host_repo_path,
+                "base_branch": git.base_branch,
+                "source_branches": list(feature_sources_by_task[promotion.task_id]),
+                "target_branch": promotion.target_branch,
+                "task_id": promotion.task_id,
+            }
+            payload.update(_bare_repo_fields(git))
             _emit_git_promotion_event(
                 result,
                 promotion_id=promotion_id,
-                payload={
-                    "promotion_id": promotion_id,
-                    "promotion_kind": "feature",
-                    "project_id": project.id,
-                    "release_package_id": release_id,
-                    "host_repo_path": git.host_repo_path,
-                    "base_branch": git.base_branch,
-                    "source_branches": list(feature_sources_by_task[promotion.task_id]),
-                    "target_branch": promotion.target_branch,
-                    "task_id": promotion.task_id,
-                },
+                payload=payload,
             )
         result["git_promotion_event_ids"].extend(promotion_ids)
     elif feature_branches:
@@ -16401,19 +16403,21 @@ def _queue_release_promotion_if_ready(
         release.git_promotion_record_ids,
         release_promotion.id,
     )
+    payload = {
+        "promotion_id": release_promotion.id,
+        "promotion_kind": "release",
+        "project_id": project.id,
+        "release_package_id": release.id,
+        "host_repo_path": git.host_repo_path,
+        "base_branch": git.base_branch,
+        "source_branches": list(feature_branches),
+        "target_branch": target_release_branch,
+    }
+    payload.update(_bare_repo_fields(git))
     _emit_git_promotion_event(
         result,
         promotion_id=release_promotion.id,
-        payload={
-            "promotion_id": release_promotion.id,
-            "promotion_kind": "release",
-            "project_id": project.id,
-            "release_package_id": release.id,
-            "host_repo_path": git.host_repo_path,
-            "base_branch": git.base_branch,
-            "source_branches": list(feature_branches),
-            "target_branch": target_release_branch,
-        },
+        payload=payload,
     )
     result["git_promotion_event_ids"].append(release_promotion.id)
 

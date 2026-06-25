@@ -4725,6 +4725,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["source_branches"] == (
         "${{team-git-promotion-requested.payload.source_branches}}"
     )
+    assert effects["team-consolidate-feature-branches"]["bare_repo_path"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    )
+    assert effects["team-consolidate-feature-branches"]["bare_repo_name"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    )
     assert effects["team-record-feature-promotion"]["type"] == (
         "effect:team:record-git-promotion"
     )
@@ -4734,6 +4740,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # release -> consolidate -> record-git-promotion
     assert effects["team-consolidate-release-branches"]["type"] == (
         "effect:team:consolidate-git-branches"
+    )
+    assert effects["team-consolidate-release-branches"]["bare_repo_path"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    )
+    assert effects["team-consolidate-release-branches"]["bare_repo_name"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
     )
     assert effects["team-record-release-promotion"]["type"] == (
         "effect:team:record-git-promotion"

@@ -23,6 +23,9 @@
 - Added a Team runtime outbox publisher effect and wired it to the Team cron
   graph so MCP-recorded async intents publish their internal `team.*` workflow
   events and complete or retry their outbox rows.
+- Taught Team Git feature and release consolidation to fetch missing
+  `agents/...` source branches from the configured dropbox bare repo before
+  merging in the trusted host checkout.
 - Passed ephemeral assignment `allowed_tools` into the built-in
   `effect:agent:create` node so spawned workers receive the
   `team_report_ephemeral_result` MCP tool required to report completion.

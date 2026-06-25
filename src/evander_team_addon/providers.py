@@ -964,6 +964,22 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 description="Optional base branch to reset from before merging source branches.",
             ),
+            _catalog_field(
+                "bare_repo_path",
+                "Bare repo path",
+                "string",
+                description=(
+                    "Optional dropbox bare repository path used to fetch missing source branches."
+                ),
+            ),
+            _catalog_field(
+                "bare_repo_name",
+                "Bare repo name",
+                "string",
+                description=(
+                    "Optional dropbox bare repository name resolved under AGENT_SANDBOX_GIT_ROOT."
+                ),
+            ),
         ],
     ),
     _catalog_entry(
@@ -2145,6 +2161,8 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             "source_branches",
             "target_branch",
             "base_branch",
+            "bare_repo_path",
+            "bare_repo_name",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -2159,6 +2177,13 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             )
             base_value = _optional_text(payload.get("base_branch"))
             base_branch = validate_branch_name(base_value) if base_value else None
+            bare_repo_value = _optional_text(payload.get("bare_repo_path"))
+            bare_repo_name = _optional_text(payload.get("bare_repo_name"))
+            bare_repo_path = (
+                _resolve_bare_repo_path(bare_repo_value, bare_repo_name)
+                if bare_repo_value is not None or bare_repo_name is not None
+                else None
+            )
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))
         if not source_branches:
@@ -2168,6 +2193,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             source_branches=source_branches,
             target_branch=target_branch,
             base_branch=base_branch,
+            bare_repo_path=bare_repo_path,
         )
 
 
@@ -5164,6 +5190,7 @@ def _consolidate_git_branches(
     source_branches: list[str],
     target_branch: str,
     base_branch: str | None,
+    bare_repo_path: Path | None = None,
 ) -> dict[str, Any]:
     """Merge ``source_branches`` into ``target_branch`` inside ``host_repo_path``.
 
@@ -5201,6 +5228,35 @@ def _consolidate_git_branches(
         )
         failure["output"] = status.stdout
         return failure
+    if bare_repo_path is not None:
+        if not bare_repo_path.exists():
+            return _consolidation_failure(
+                target_branch,
+                f"bare repo not found: {bare_repo_path}",
+            )
+        for source in source_branches:
+            resolved = _git(
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{source}^{{commit}}",
+            )
+            if resolved.returncode == 0:
+                continue
+            fetch = _git(
+                "fetch",
+                "--no-tags",
+                str(bare_repo_path),
+                f"+refs/heads/{source}:refs/heads/{source}",
+            )
+            if fetch.returncode != 0:
+                failure = _consolidation_failure(
+                    target_branch,
+                    f"failed to fetch source branch {source} from {bare_repo_path}",
+                )
+                failure["output"] = _git_text(fetch)
+                failure["conflict_branch"] = source
+                return failure
 
     target_ref = f"refs/heads/{target_branch}"
     target_exists = _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0

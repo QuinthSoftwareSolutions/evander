@@ -7851,6 +7851,9 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert feature_promotion.release_package_id == "rel-1"
     outbox_records = repo.list_outbox_records()
     assert [record.aggregate_id for record in outbox_records] == [feature_promotion_id]
+    feature_payload = result["events"][0]["payload"]
+    assert feature_payload["bare_repo_name"] == "Truman.git"
+    assert feature_payload["source_branches"] == ["team/team/reviews/deliverable"]
 
 
 def test_recover_release_command_records_retryable_recovery_outbox(
@@ -8901,6 +8904,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     assert payload["promotion_kind"] == "feature"
     assert payload["release_package_id"] == "rel-1"
     assert payload["source_branches"] == ["team/team/reviews/deliverable"]
+    assert payload["bare_repo_name"] == "Truman.git"
 
     state, promotion_result = repo.record_git_promotion_result(
         promotion_id=feature_promotion_id,
@@ -8930,6 +8934,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     }
     assert payloads["release"]["source_branches"] == ["team/team/features/task-lead"]
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
+    assert payloads["release"]["bare_repo_name"] == "Truman.git"
 
 
 def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) -> None:
