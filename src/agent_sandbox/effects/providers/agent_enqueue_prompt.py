@@ -117,6 +117,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "resume_thread_metadata_collection": effect.resume_thread_metadata_collection,
             "queue_key": effect.queue_key,
             "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
+            "reduced_context_prompt": effect.reduced_context_prompt,
+            "context_retry_prompt": effect.context_retry_prompt,
+            "agent_context_retry_enabled": effect.agent_context_retry_enabled,
+            "agent_context_retry_max_attempts": effect.agent_context_retry_max_attempts,
+            "agent_context_retry_target_chars": effect.agent_context_retry_target_chars,
         }
         if resolved_config:
             payload.update(dict(resolved_config))

@@ -441,6 +441,9 @@ class GatewayConfig(BaseModel):
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
     agent_prompt_queue_max_retries: int = Field(default=3, ge=1)
+    agent_context_retry_enabled: bool = True
+    agent_context_retry_max_attempts: int = Field(default=1, ge=0)
+    agent_context_retry_target_chars: int = Field(default=16_000, ge=4_000)
     azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
     azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
     azure_devops_organization_url: str = "https://dev.azure.com"

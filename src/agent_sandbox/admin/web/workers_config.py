@@ -290,8 +290,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "agent_prompt_token_secret_env"),
                 ("providers", "agent_prompt_token_ttl_seconds"),
                 ("providers", "agent_prompt_queue_max_retries"),
+                ("providers", "agent_context_retry_enabled"),
+                ("providers", "agent_context_retry_max_attempts"),
+                ("providers", "agent_context_retry_target_chars"),
             ),
-            ("agent_prompt_token_", "agent_prompt_queue_"),
+            ("agent_prompt_token_", "agent_prompt_queue_", "agent_context_retry_"),
         ),
         (
             "Azure DevOps",

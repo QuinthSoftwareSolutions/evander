@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-26 - Reduced-Context Retry For Context-Exhausted Agents
+
+- Added a generic reduced-context retry path for Codex container-worker agent
+  prompts whose completed worker execution is marked as context exhausted.
+- Kept workflow agent-prompt records waiting while the bounded retry runs, so
+  downstream completion events are published only after the retry settles.
+- Added conservative provider config knobs for enabling the retry, limiting
+  attempts, and setting the deterministic reduced-prompt character budget.
+
 ## 2026-06-26 - Codex Missing Final Message Failure Detection
 
 - Marked completed Codex container-worker executions as failed when Codex emits

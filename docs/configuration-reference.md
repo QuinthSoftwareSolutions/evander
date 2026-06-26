@@ -631,6 +631,11 @@ tracks durable retry attempts by queue key and prompt digest, capped by
 `agent_prompt_queue_max_retries` (default `3`). Once the cap is exceeded,
 enqueue fails with `failed_phase: retry_limit` and includes `retry_count` and
 `max_retries` in the error outputs.
+Codex container-worker prompts that fail because the completed worker execution
+is marked context exhausted are retried once with deterministic reduced context
+by default. Tune this with `agent_context_retry_enabled`,
+`agent_context_retry_max_attempts` (default `1`), and
+`agent_context_retry_target_chars` (default `16000`).
 
 When `resume_thread_metadata_key` is set on either prompt effect, the effect
 resumes from and persists the Codex thread ID under a session metadata object.

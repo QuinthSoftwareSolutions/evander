@@ -9885,8 +9885,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "agent_prompt_token_secret_env",
         "agent_prompt_token_ttl_seconds",
         "agent_prompt_queue_max_retries",
+        "agent_context_retry_enabled",
+        "agent_context_retry_max_attempts",
+        "agent_context_retry_target_chars",
     }
     assert agent_prompt_fields["agent_prompt_queue_max_retries"]["kind"] == "int"
+    assert agent_prompt_fields["agent_context_retry_enabled"]["kind"] == "bool"
+    assert agent_prompt_fields["agent_context_retry_max_attempts"]["kind"] == "int"
+    assert agent_prompt_fields["agent_context_retry_target_chars"]["kind"] == "int"
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
     assert (
         "Fallback runner container image"

@@ -26,6 +26,7 @@ from agent_sandbox.effects.providers.agent_session import (
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
 )
+from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
 from agent_sandbox.effects.providers.ado_post_work_item_comment import (
     AdoPostWorkItemCommentEffectProvider,
@@ -92,6 +93,7 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository
+from agent_sandbox.triggers.queue import TriggerQueueRecord
 
 
 class _ResolverStub:
@@ -2898,6 +2900,203 @@ def test_container_thread_id_from_logs_parses_json_filter_output() -> None:
     logs = "planning\nSession ID: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
 
     assert container_thread_id_from_logs(logs) == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+
+
+def test_context_exhausted_container_completion_starts_reduced_context_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        agent_context_retry_target_chars=4_000,
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-1",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "agent_provider": "codex"},
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.config = config
+    monkeypatch.setattr(
+        AgentPromptEffectProvider,
+        "_container_backend_for_worker",
+        classmethod(lambda cls, worker, session_id: backend),
+    )
+
+    class Store:
+        def __init__(self) -> None:
+            self.record = None
+
+        def put(self, record) -> None:
+            self.record = record
+
+    store = Store()
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=store,
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+    record = SimpleNamespace(
+        execution_id="effect-exec-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        effect_id="agent-enqueue",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        resolved_config={
+            "prompt": "Important task instructions\n" + ("history\n" * 800) + "Final action",
+            "model": "gpt-5.4-mini",
+            "directory_path": "root",
+        },
+        input_payload={},
+        outputs={
+            "dispatch_id": "dispatch-1",
+            "thread_id": "thread-1",
+            "execution_backend": "container_worker_vm",
+            "execution_id": "agent-old-1",
+            "session_id": "session-1",
+        },
+    )
+    queue_record = TriggerQueueRecord(
+        event_id="complete-1",
+        trigger_id="__await-agent-completion__",
+        trigger_type="trigger:agent:run:completed",
+        trace_id="trace-1",
+        occurred_at=datetime.now(UTC),
+        payload={
+            "dispatch_id": "dispatch-1",
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "worker_execution_id": "agent-old-1",
+            "success": False,
+            "message": "Codex ended without a final agent message.",
+            "failure_kind": "context_exhausted",
+            "failure_reason": "codex_context_limit_suspected",
+        },
+    )
+
+    AgentPromptEffectProvider._finalize_waiting_record(
+        worker=worker,
+        record=record,
+        queue_record=queue_record,
+    )
+
+    assert store.record is record
+    assert record.status == "waiting"
+    assert len(backend.started_specs) == 1
+    started = backend.started_specs[0]
+    assert started.session_id == "session-1"
+    assert started.metadata["context_retry_attempt"] == 1
+    assert started.metadata["context_retry_of_execution_id"] == "agent-old-1"
+    assert "Previous agent run hit the model context limit" in started.command
+    assert "middle context omitted" in started.command
+    assert record.outputs["execution_id"] == started.target_name
+    assert record.outputs["context_retry_in_progress"] is True
+    assert record.outputs["context_retry_attempt"] == 1
+    assert record.outputs["context_retry_of_execution_id"] == "agent-old-1"
+
+
+def test_context_exhausted_container_completion_does_not_retry_after_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        agent_context_retry_max_attempts=1,
+    )
+    backend = _FakeContainerBackend()
+    backend.config = config
+    monkeypatch.setattr(
+        AgentPromptEffectProvider,
+        "_container_backend_for_worker",
+        classmethod(lambda cls, worker, session_id: backend),
+    )
+
+    class Store:
+        def __init__(self) -> None:
+            self.record = None
+
+        def put(self, record) -> None:
+            self.record = record
+
+    published: list[dict[str, object]] = []
+    store = Store()
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=store,
+        provider_factory=SimpleNamespace(admin_service=SimpleNamespace(runtime=None)),
+        _update_event_delivery_state=lambda event_id: None,
+        _publish_completion_event_from_record=lambda **kwargs: published.append(kwargs)
+        or "published-1",
+    )
+    record = SimpleNamespace(
+        execution_id="effect-exec-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        effect_id="agent-enqueue",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        resolved_config={"prompt": "Retry prompt", "model": "gpt-5.4-mini"},
+        input_payload={},
+        outputs={
+            "dispatch_id": "dispatch-1",
+            "execution_backend": "container_worker_vm",
+            "execution_id": "agent-retry-1",
+            "session_id": "session-1",
+            "context_retry_attempt": 1,
+            "context_retry_in_progress": True,
+        },
+    )
+    queue_record = TriggerQueueRecord(
+        event_id="complete-1",
+        trigger_id="__await-agent-completion__",
+        trigger_type="trigger:agent:run:completed",
+        trace_id="trace-1",
+        occurred_at=datetime.now(UTC),
+        payload={
+            "dispatch_id": "dispatch-1",
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "worker_execution_id": "agent-retry-1",
+            "success": False,
+            "message": "Codex ended without a final agent message.",
+            "failure_kind": "context_exhausted",
+            "failure_reason": "codex_context_limit_suspected",
+        },
+    )
+
+    AgentPromptEffectProvider._finalize_waiting_record(
+        worker=worker,
+        record=record,
+        queue_record=queue_record,
+    )
+
+    assert backend.started_specs == []
+    assert published
+    assert store.record is record
+    assert record.status == "succeeded"
+    assert record.outputs["success"] is False
+    assert record.outputs["context_retry_in_progress"] is False
+    assert record.outputs["context_retry_skipped_reason"] == "attempts_exhausted"
 
 
 def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(

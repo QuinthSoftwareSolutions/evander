@@ -6,6 +6,15 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from agent_sandbox.agent_context_retry import (
+    CONTEXT_EXHAUSTION_FAILURE_KIND,
+    CONTEXT_RETRY_MODE_REDUCED,
+    build_reduced_context_retry_prompt,
+    context_exhaustion_reason,
+    context_retry_enabled,
+    context_retry_max_attempts,
+    context_retry_target_chars,
+)
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import (
     ExecutionBackendKind,
@@ -154,6 +163,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "resume_thread_metadata_key": effect.resume_thread_metadata_key,
             "resume_thread_metadata_collection": effect.resume_thread_metadata_collection,
             "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
+            "reduced_context_prompt": effect.reduced_context_prompt,
+            "context_retry_prompt": effect.context_retry_prompt,
+            "agent_context_retry_enabled": effect.agent_context_retry_enabled,
+            "agent_context_retry_max_attempts": effect.agent_context_retry_max_attempts,
+            "agent_context_retry_target_chars": effect.agent_context_retry_target_chars,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -584,6 +598,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             success=status.status == ExecutionStatusKind.STOPPED,
             message=status.message,
             logs=logs,
+            status_metadata=getattr(status, "metadata", None),
         )
         cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
         return 1
@@ -954,6 +969,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         success: bool,
         message: str | None,
         logs: str,
+        status_metadata: Mapping[str, Any] | None = None,
     ) -> TriggerQueueRecord:
         finished_at = datetime.now(UTC)
         dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
@@ -976,6 +992,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 "vm_user": str(record.resolved_config.get("vm_user") or "agent"),
             },
         }
+        if isinstance(status_metadata, Mapping):
+            codex_outcome = status_metadata.get("codex_outcome")
+            if isinstance(codex_outcome, Mapping):
+                payload["codex_outcome"] = dict(codex_outcome)
+            failure_reason = context_exhaustion_reason(status_metadata)
+            if failure_reason is not None:
+                payload["failure_kind"] = CONTEXT_EXHAUSTION_FAILURE_KIND
+                payload["failure_reason"] = failure_reason
         if wake_dispatch_id:
             payload["wake_dispatch_id"] = wake_dispatch_id
         return TriggerQueueRecord(
@@ -1012,6 +1036,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 }
             },
         }
+        if cls._maybe_start_reduced_context_retry(
+            worker=worker,
+            record=record,
+            queue_record=queue_record,
+            merged_outputs=merged_outputs,
+        ):
+            return
+        if "context_retry_in_progress" in merged_outputs:
+            merged_outputs["context_retry_in_progress"] = False
         branch_port = (
             AGENT_PROMPT_COMPLETED_PORT
             if record.effect_type in {cls.node_type(), AGENT_ENQUEUE_PROMPT_EFFECT_TYPE}
@@ -1070,6 +1103,318 @@ class AgentPromptEffectProvider(EffectProviderBase):
                         queue_record.event_id,
                         exc_info=True,
                     )
+
+    @classmethod
+    def _maybe_start_reduced_context_retry(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        queue_record: TriggerQueueRecord,
+        merged_outputs: dict[str, Any],
+    ) -> bool:
+        reason = context_exhaustion_reason(merged_outputs) or context_exhaustion_reason(
+            queue_record.payload
+        )
+        if reason is None:
+            return False
+        if (
+            str(merged_outputs.get("execution_backend") or "").strip()
+            != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+        ):
+            merged_outputs["context_retry_skipped_reason"] = "unsupported_execution_backend"
+            return False
+
+        session_id = str(merged_outputs.get("session_id") or "").strip()
+        previous_execution_id = str(
+            merged_outputs.get("worker_execution_id")
+            or merged_outputs.get("execution_id")
+            or ""
+        ).strip()
+        if not session_id or not previous_execution_id:
+            merged_outputs["context_retry_skipped_reason"] = "missing_session_or_execution_id"
+            return False
+
+        backend = cls._container_backend_for_worker(worker=worker, session_id=session_id)
+        if backend is None:
+            merged_outputs["context_retry_skipped_reason"] = "container_backend_unavailable"
+            return False
+        config = getattr(backend, "config", None) or getattr(worker, "config", None)
+
+        if not cls._context_retry_enabled_for_record(record=record, config=config):
+            merged_outputs["context_retry_skipped_reason"] = "disabled"
+            return False
+        max_attempts = cls._context_retry_max_attempts_for_record(record=record, config=config)
+        attempt = cls._context_retry_attempt_from_record(record)
+        if attempt >= max_attempts:
+            merged_outputs["context_retry_skipped_reason"] = "attempts_exhausted"
+            merged_outputs["context_retry_attempt"] = attempt
+            merged_outputs["context_retry_max_attempts"] = max_attempts
+            return False
+
+        original_prompt = cls._record_text_value(record, "prompt")
+        if not original_prompt:
+            merged_outputs["context_retry_skipped_reason"] = "missing_original_prompt"
+            return False
+
+        session = cls._session_for_context_retry(worker=worker, session_id=session_id)
+        agent_harness = cls._agent_harness_from_session(session, config=config)
+        if str(agent_harness or "").strip().casefold() != "codex":
+            merged_outputs["context_retry_skipped_reason"] = "non_codex_agent_provider"
+            return False
+
+        model = (
+            cls._record_text_value(record, "model")
+            or str(getattr(session, "model", None) or "").strip()
+            or default_agent_model_for_provider(agent_harness, config)
+        )
+        target_chars = cls._context_retry_target_chars_for_record(record=record, config=config)
+        retry_prompt = build_reduced_context_retry_prompt(
+            original_prompt=original_prompt,
+            reduced_prompt=(
+                cls._record_text_value(record, "reduced_context_prompt")
+                or cls._record_text_value(record, "context_retry_prompt")
+            ),
+            failure_message=str(merged_outputs.get("message") or "").strip() or None,
+            failure_reason=reason,
+            target_chars=target_chars,
+        )
+        retry_execution_id = safe_effect_execution_id("agent", session_id)
+        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        directory_path = (
+            str(getattr(session, "directory_path", None) or "").strip()
+            or str(getattr(record, "resolved_config", {}).get("directory_path") or "").strip()
+            or "root"
+        )
+        try:
+            handle = backend.start(
+                backend.prepare(
+                    ExecutionSpec(
+                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                        target_name=retry_execution_id,
+                        session_id=session_id,
+                        directory_path=directory_path,
+                        image=container_worker_image_for_session(session, config),
+                        command=cls._container_prompt_command(
+                            prompt=retry_prompt,
+                            model=model,
+                            resume_thread_id=None,
+                            agent_provider=agent_harness,
+                            resume_mode="new_context",
+                            mcp_gateway_url=cls._context_retry_mcp_gateway_url(
+                                record=record,
+                                config=config,
+                                session_id=session_id,
+                            ),
+                            web_search_enabled=bool(
+                                getattr(session, "web_search_enabled", False)
+                            ),
+                        ),
+                        metadata={
+                            "effect_type": str(getattr(record, "effect_type", "") or ""),
+                            "dispatch_id": dispatch_id,
+                            "resume_thread_id": None,
+                            "agent_provider": agent_harness,
+                            "model": model,
+                            "model_provider_mode": getattr(config, "model_provider_mode", None),
+                            "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
+                            "context_retry_attempt": attempt + 1,
+                            "context_retry_max_attempts": max_attempts,
+                            "context_retry_of_execution_id": previous_execution_id,
+                            "context_retry_reason": reason,
+                        },
+                    )
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            merged_outputs["context_retry_skipped_reason"] = "retry_dispatch_failed"
+            merged_outputs["context_retry_dispatch_error"] = sanitize_text(str(exc))
+            return False
+
+        retry_history = cls._context_retry_history(record)
+        retry_history.append(
+            {
+                "attempt": attempt + 1,
+                "mode": CONTEXT_RETRY_MODE_REDUCED,
+                "reason": reason,
+                "previous_execution_id": previous_execution_id,
+                "retry_execution_id": handle.execution_id,
+                "started_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        retry_outputs = dict(record.outputs)
+        retry_outputs.update(
+            {
+                "success": True,
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "execution_id": handle.execution_id,
+                "worker_execution_id": handle.execution_id,
+                "session_id": session_id,
+                "thread_id": dispatch_id,
+                "context_retry_enqueued": True,
+                "context_retry_in_progress": True,
+                "context_retry_attempt": attempt + 1,
+                "context_retry_max_attempts": max_attempts,
+                "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
+                "context_retry_reason": reason,
+                "context_retry_of_execution_id": previous_execution_id,
+                "context_retry_latest_execution_id": handle.execution_id,
+                "context_retry_target_chars": target_chars,
+                "context_retry_history": retry_history[-10:],
+                "message": (
+                    "Context exhausted; started reduced-context retry "
+                    f"{attempt + 1}/{max_attempts} for {previous_execution_id}."
+                ),
+            }
+        )
+        record.status = "waiting"
+        record.outputs = retry_outputs
+        record.finished_at = datetime.now(UTC)
+        cls._put_execution_record(worker=worker, record=record)
+        update_event_delivery_state = getattr(worker, "_update_event_delivery_state", None)
+        if callable(update_event_delivery_state):
+            update_event_delivery_state(record.event_id)
+        cls._register_context_retry_model_usage(
+            worker=worker,
+            record=record,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            directory_path=directory_path,
+            model=model,
+            agent_harness=agent_harness,
+        )
+        return True
+
+    @staticmethod
+    def _context_retry_history(record: Any) -> list[dict[str, Any]]:
+        value = getattr(record, "outputs", {}).get("context_retry_history")
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, Mapping)]
+
+    @staticmethod
+    def _context_retry_attempt_from_record(record: Any) -> int:
+        value = getattr(record, "outputs", {}).get("context_retry_attempt")
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _context_retry_enabled_for_record(cls, *, record: Any, config: Any) -> bool:
+        value = cls._record_raw_value(record, "agent_context_retry_enabled")
+        if value is not None:
+            return context_retry_enabled(value)
+        return context_retry_enabled(getattr(config, "agent_context_retry_enabled", True))
+
+    @classmethod
+    def _context_retry_max_attempts_for_record(cls, *, record: Any, config: Any) -> int:
+        value = cls._record_raw_value(record, "agent_context_retry_max_attempts")
+        if value is None:
+            value = getattr(config, "agent_context_retry_max_attempts", None)
+        return context_retry_max_attempts(value)
+
+    @classmethod
+    def _context_retry_target_chars_for_record(cls, *, record: Any, config: Any) -> int:
+        value = cls._record_raw_value(record, "agent_context_retry_target_chars")
+        if value is None:
+            value = getattr(config, "agent_context_retry_target_chars", None)
+        return context_retry_target_chars(value)
+
+    @classmethod
+    def _record_text_value(cls, record: Any, key: str) -> str | None:
+        value = cls._record_raw_value(record, key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _record_raw_value(record: Any, key: str) -> Any | None:
+        for source_name in ("resolved_config", "input_payload", "outputs"):
+            source = getattr(record, source_name, None)
+            if isinstance(source, Mapping) and key in source:
+                return source.get(key)
+        return None
+
+    @staticmethod
+    def _session_for_context_retry(*, worker: Any, session_id: str) -> Any | None:
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        repository = getattr(getattr(admin_service, "runtime", None), "session_repository", None)
+        get_session = getattr(repository, "get_session", None)
+        if not callable(get_session):
+            return None
+        try:
+            return get_session(session_id)
+        except Exception:
+            return None
+
+    @classmethod
+    def _context_retry_mcp_gateway_url(
+        cls,
+        *,
+        record: Any,
+        config: Any,
+        session_id: str,
+    ) -> str | None:
+        lease_id = cls._record_text_value(record, "mcp_tool_approval_lease_id")
+        if not lease_id:
+            return None
+        workflow_run_id = (
+            cls._record_text_value(record, "workflow_run_id")
+            or str(getattr(record, "trace_id", "") or "").strip()
+            or None
+        )
+        try:
+            return gateway_url_with_session_context(
+                container_worker_guest_gateway_url(config),
+                session_id=session_id,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=lease_id,
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _put_execution_record(*, worker: Any, record: Any) -> None:
+        execution_store = getattr(worker, "execution_store", None)
+        put = getattr(execution_store, "put", None)
+        if callable(put):
+            put(record)
+            return
+        record_execution = getattr(execution_store, "record_execution", None)
+        if callable(record_execution):
+            record_execution(record)
+
+    @staticmethod
+    def _register_context_retry_model_usage(
+        *,
+        worker: Any,
+        record: Any,
+        session_id: str,
+        dispatch_id: str,
+        directory_path: str,
+        model: str,
+        agent_harness: str,
+    ) -> None:
+        runtime_dir = getattr(getattr(worker, "config", None), "runtime_dir", None)
+        if runtime_dir is None or not dispatch_id:
+            return
+        try:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=str(getattr(record, "trace_id", "") or "").strip() or None,
+                effect_id=str(getattr(record, "effect_id", "") or "").strip() or None,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=str(getattr(record, "trace_id", "") or "").strip() or None,
+                agent_harness=agent_harness,
+            )
+        except Exception:
+            pass
 
     @classmethod
     def _build_completion_queue_record_for_waiting_record(

@@ -319,6 +319,11 @@ class AgentPromptEffectDefinition(EffectDefinition):
     resume_thread_metadata_key: ConfigValue | None = None
     resume_thread_metadata_collection: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
+    reduced_context_prompt: ConfigValue | None = None
+    context_retry_prompt: ConfigValue | None = None
+    agent_context_retry_enabled: ConfigValue | None = None
+    agent_context_retry_max_attempts: ConfigValue | None = None
+    agent_context_retry_target_chars: ConfigValue | None = None
 
 
 class AgentEnqueuePromptEffectDefinition(EffectDefinition):
@@ -334,6 +339,11 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     resume_thread_metadata_collection: ConfigValue | None = None
     queue_key: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
+    reduced_context_prompt: ConfigValue | None = None
+    context_retry_prompt: ConfigValue | None = None
+    agent_context_retry_enabled: ConfigValue | None = None
+    agent_context_retry_max_attempts: ConfigValue | None = None
+    agent_context_retry_target_chars: ConfigValue | None = None
 
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):

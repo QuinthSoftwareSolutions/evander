@@ -2196,6 +2196,10 @@ queued before dispatch failed. Queue retries are also capped by
 `agent_prompt_queue_max_retries` (default `3`) for the same queue key and prompt
 digest. When the cap is exceeded, the prompt effect fails with
 `failed_phase: retry_limit` and reports `retry_count` plus `max_retries`.
+For Codex container-worker prompts, completed executions marked as context
+exhausted are retried once with deterministic reduced context by default.
+Use `agent_context_retry_enabled`, `agent_context_retry_max_attempts`, and
+`agent_context_retry_target_chars` to tune or disable that behavior.
 
 ### Guest repo preparation
 
