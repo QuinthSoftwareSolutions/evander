@@ -3999,6 +3999,10 @@ class TeamStateRepository:
 
             activity_id = f"activity-{uuid4().hex}"
             outbox_records = _team_command_outbox_records(apply_result)
+            stored_outbox_records = [
+                tx.enqueue_outbox_record(outbox_record)
+                for outbox_record in outbox_records
+            ]
             response = _command_success_response(
                 state=validated,
                 context=normalized_context,
@@ -4006,7 +4010,7 @@ class TeamStateRepository:
                 handled_inbox_item_ids=normalized_handled_ids,
                 apply_result=apply_result,
             )
-            _append_response_outbox_record_ids(response, outbox_records)
+            _append_response_outbox_record_ids(response, stored_outbox_records)
             tx.append_dispatch_activity(
                 TeamDispatchActivity(
                     id=activity_id,
@@ -4026,11 +4030,9 @@ class TeamStateRepository:
                     audit_record_id=_optional_text(response.get("audit_record_id")),
                 )
             )
-            for outbox_record in outbox_records:
-                tx.enqueue_outbox_record(outbox_record)
             if normalized_context.request_id is not None:
                 created_domain_ids = list(apply_result.created_domain_ids)
-                for outbox_record in outbox_records:
+                for outbox_record in stored_outbox_records:
                     if outbox_record.id not in created_domain_ids:
                         created_domain_ids.append(outbox_record.id)
                 tx.store_idempotency_record(

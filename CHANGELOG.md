@@ -4,6 +4,8 @@
 
 - Fixed Team MCP command handoffs so generated `team.agent.wake_requested`
   events are durably queued and immediately scheduled with their debounce delay.
+- Fixed duplicate debounced wake requests so command responses and idempotency
+  records report the stored outbox row after idempotency dedupe.
 
 ## 2026-06-26 - VM Session To Container Migration Tooling
 

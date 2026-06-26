@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import evander_team_addon.repository as team_repository_module
 from evander_team_addon.models import (
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -1774,6 +1775,55 @@ def test_create_task_command_enqueues_debounced_wake_request_outbox(
         DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
     )
     assert outbox_records[0].payload["payload"]["agent_id"] == "backend"
+
+
+def test_create_task_command_reports_stored_debounced_wake_outbox_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(team_repository_module, "utc_now", lambda: now)
+
+    _state, first = repo.create_task_command(
+        session_id="session-lead",
+        request_id="request-create-task-wake-a",
+        task_id="task-wake-a",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Wake backend A",
+        description="First wake in the debounce bucket.",
+    )
+    _state, second = repo.create_task_command(
+        session_id="session-lead",
+        request_id="request-create-task-wake-b",
+        task_id="task-wake-b",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Wake backend B",
+        description="Second wake in the same debounce bucket.",
+    )
+
+    outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert len(outbox_records) == 1
+    stored_outbox_id = outbox_records[0].id
+    assert first["outbox_record_ids"] == [stored_outbox_id]
+    assert second["outbox_record_ids"] == [stored_outbox_id]
+    idempotency = repo.get_idempotency_record(
+        tool_name="team_create_task",
+        caller_identity="agent:lead",
+        scope_kind="dispatch",
+        scope_id="dispatch-create-task",
+        request_id="request-create-task-wake-b",
+    )
+    assert idempotency is not None
+    assert idempotency.response_payload["outbox_record_ids"] == [stored_outbox_id]
+    assert stored_outbox_id in idempotency.created_domain_ids
 
 
 def test_low_priority_inbox_action_does_not_emit_wake_request(
