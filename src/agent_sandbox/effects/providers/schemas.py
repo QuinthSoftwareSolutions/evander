@@ -272,6 +272,9 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     repo_source: ConfigValue
+    canonical_origin_url: ConfigValue | None = None
+    bare_repo_name: ConfigValue | None = None
+    bare_repo_path: ConfigValue | None = None
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     directory_path: ConfigValue | None = None

@@ -48,6 +48,15 @@
 - Updated service templates, helper scripts, operator notifications, tests, and
   docs to use `evander-cli` for new installs and examples.
 
+## 2026-06-26 - Team Add-on Container Project Git Remotes
+
+- Passed Team project canonical Git URLs into container project-repo preparation
+  and let container mirrors prefer a matching local remote, avoiding SSH-only
+  origin fetches from systemd services when an HTTPS remote is configured.
+- Honored Team project bare Git remote names during container project-repo
+  preparation, keeping VM and container sessions on the same project remote
+  instead of creating a separate hashed mirror.
+
 ## 2026-06-26 - Team Add-on MCP Wake Request Publishing
 
 - Fixed Team MCP command handoffs so generated `team.agent.wake_requested`

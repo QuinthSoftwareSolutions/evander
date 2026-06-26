@@ -116,6 +116,45 @@ def test_container_git_mirror_uses_hash_to_avoid_same_basename_collisions(
     assert first_mirror.mirror_path != second_mirror.mirror_path
 
 
+def test_container_git_mirror_honors_explicit_bare_repo_name(tmp_path: Path) -> None:
+    source = _source_repo(tmp_path / "evander")
+    resolver = _resolver(tmp_path)
+
+    mirror = resolver.resolve(
+        repo_source=str(source),
+        bare_repo_name="evander.git",
+        clone_branch="main",
+    )
+
+    assert mirror.repo_name == "evander"
+    assert mirror.mirror_name == "evander"
+    assert mirror.mirror_path == tmp_path / "git-remotes" / "evander.git"
+    assert (
+        mirror.worker_repo_source
+        == f"ssh://agent-sandbox-git-host{tmp_path}/git-remotes/evander.git"
+    )
+    assert _has_ref(mirror.mirror_path, "refs/heads/main")
+
+    _run(
+        [
+            "git",
+            f"--git-dir={mirror.mirror_path}",
+            "update-ref",
+            "refs/heads/release/preserve",
+            "refs/heads/main",
+        ],
+        cwd=ROOT,
+    )
+
+    resolver.resolve(
+        repo_source=str(source),
+        bare_repo_name="evander.git",
+        clone_branch="main",
+    )
+
+    assert _has_ref(mirror.mirror_path, "refs/heads/release/preserve")
+
+
 def test_container_git_mirror_sanitizes_worker_repo_name(tmp_path: Path) -> None:
     source = _source_repo(tmp_path / "example_backup")
 
@@ -123,6 +162,44 @@ def test_container_git_mirror_sanitizes_worker_repo_name(tmp_path: Path) -> None
 
     assert mirror.repo_name == "example_backup"
     assert mirror.worker_repo_source.startswith("ssh://agent-sandbox-git-host")
+
+
+def test_container_git_mirror_prefers_remote_matching_canonical_source(
+    tmp_path: Path,
+) -> None:
+    source = _source_repo(tmp_path / "source")
+    remote = tmp_path / "remote.git"
+    _run(["git", "clone", "--bare", str(source), str(remote)], cwd=tmp_path)
+    canonical = f"file://{remote}"
+    _run(["git", "remote", "add", "origin", "git@example.invalid:org/repo.git"], cwd=source)
+    _run(["git", "config", "branch.main.remote", "origin"], cwd=source)
+    _run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=source)
+    _run(["git", "remote", "add", "safe-origin", canonical], cwd=source)
+
+    mirror = _resolver(tmp_path).resolve(
+        repo_source=str(source),
+        canonical_repo_source=canonical,
+        clone_branch="main",
+    )
+
+    assert mirror.canonical_repo_source == canonical
+    assert _has_ref(mirror.mirror_path, "refs/heads/main")
+    assert (
+        subprocess.run(
+            [
+                "git",
+                f"--git-dir={mirror.mirror_path}",
+                "config",
+                "--get",
+                "agent-sandbox.mirrorRemoteName",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "safe-origin"
+    )
 
 
 def test_safe_worker_repo_name_decodes_url_escaped_segments() -> None:

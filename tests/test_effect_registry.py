@@ -4513,6 +4513,66 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
     assert backend.destroyed == []
 
 
+def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    mirror_resolver = _FakeContainerGitMirrorResolver()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: mirror_resolver,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/evander",
+            canonical_origin_url="https://example.test/org/evander.git",
+            bare_repo_name="evander.git",
+        )
+    ).execute()
+
+    assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/evander"
+    assert (
+        mirror_resolver.resolved[0]["canonical_repo_source"]
+        == "https://example.test/org/evander.git"
+    )
+    assert mirror_resolver.resolved[0]["bare_repo_name"] == "evander.git"
+    assert mirror_resolver.resolved[0]["bare_repo_path"] is None
+
+
 def test_agent_create_container_noops_when_session_exists(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

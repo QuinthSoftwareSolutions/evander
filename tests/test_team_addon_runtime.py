@@ -3483,6 +3483,73 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
+def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            canonical_origin_url="https://example.test/org/Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    captured_effects: list[object] = []
+
+    class CapturingCloneProvider:
+        def initialize(self, effect: object, context: object) -> None:
+            del context
+            captured_effects.append(effect)
+
+        def execute(self) -> dict[str, object]:
+            return {
+                "success": True,
+                "message": "repo prepared",
+                "session_id": "session-backend",
+                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Truman",
+                "remote_url": "ssh://agent-sandbox-git-host/git-remotes/Truman.git",
+                "pr_notes_ref": "refs/notes/agent-pr/test",
+                "execution_backend": "container_worker_vm",
+                "vm_name": None,
+            }
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        CapturingCloneProvider,
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(captured_effects) == 1
+    clone_effect = captured_effects[0]
+    assert getattr(clone_effect, "repo_source") == "/opt/repos/Truman"
+    assert getattr(clone_effect, "canonical_origin_url") == "https://example.test/org/Truman.git"
+    assert getattr(clone_effect, "bare_repo_name") == "Truman.git"
+    assert getattr(clone_effect, "bare_repo_path") is None
+
+
 def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
     tmp_path: Path,
 ) -> None:
