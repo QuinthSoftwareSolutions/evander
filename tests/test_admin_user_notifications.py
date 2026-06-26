@@ -33,29 +33,42 @@ def test_admin_user_notifications_dedupe_and_mark_read(tmp_path):
         body="Miranda: Follow-up",
         source="team-chat",
         source_id="chatmsg-3",
+        metadata={"conversation_id": "conversation-1"},
+    )
+    unrelated = store.push(
+        user_id="admin@example.com",
+        title="New Team chat message",
+        body="Luke: Different thread",
+        source="team-chat",
+        source_id="chatmsg-4",
+        metadata={"conversation_id": "conversation-2"},
     )
 
     assert duplicate["id"] == first["id"]
 
     unread, unread_count = store.list_unread(user_id="admin@example.com")
-    assert unread_count == 2
+    assert unread_count == 3
     unread_by_id = {item["id"]: item for item in unread}
     assert unread_by_id[first["id"]]["target_url"] == "#addon:team-addon"
     assert unread_by_id[first["id"]]["metadata"] == {"conversation_id": "conversation-1"}
 
     assert store.mark_read(user_id="admin@example.com", notification_ids=[]) == []
     _unread, unread_count = store.list_unread(user_id="admin@example.com")
-    assert unread_count == 2
+    assert unread_count == 3
 
     marked_by_source = store.mark_source_read(
         user_id="admin@example.com",
         source="team-chat",
-        source_ids=["chatmsg-3"],
+        source_ids=["chatmsg-4"],
     )
-    assert marked_by_source == [second["id"]]
+    assert marked_by_source == [unrelated["id"]]
 
-    marked = store.mark_read(user_id="admin@example.com", notification_ids=[first["id"]])
-    assert marked == [first["id"]]
+    marked_by_metadata = store.mark_source_metadata_read(
+        user_id="admin@example.com",
+        source="team-chat",
+        metadata={"conversation_id": "conversation-1"},
+    )
+    assert set(marked_by_metadata) == {first["id"], second["id"]}
 
     unread, unread_count = store.list_unread(user_id="admin@example.com")
     assert unread == []

@@ -58,9 +58,18 @@ def user_notification_routes(service: AdminService, auth: AdminWebAuth) -> list[
         raw_ids = payload.get("notification_ids")
         raw_source = payload.get("source")
         raw_source_ids = payload.get("source_ids")
+        raw_metadata = payload.get("metadata")
         notification_ids: list[str] | None = None
         if mark_all:
             marked_ids = store.mark_read(user_id=user_id, notification_ids=None)
+        elif raw_metadata is not None:
+            if not isinstance(raw_metadata, dict):
+                return json_error("metadata must be an object")
+            marked_ids = store.mark_source_metadata_read(
+                user_id=user_id,
+                source=raw_source,
+                metadata=raw_metadata,
+            )
         elif raw_source is not None or raw_source_ids is not None:
             if not isinstance(raw_source_ids, list):
                 return json_error("source_ids must be a list")

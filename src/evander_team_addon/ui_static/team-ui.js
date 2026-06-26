@@ -5011,7 +5011,7 @@ function markChatConversationRead(conversationId, { rerender = true } = {}) {
   const newestMessageId = chatConversationNewestMessageId(conversation);
   const newestSender = chatConversationNewestSender(conversation);
   if (newestMessageId && newestSender !== "operator") {
-    markAdminChatNotificationRead(newestMessageId);
+    markAdminChatConversationNotificationsRead(normalizedConversationId);
   }
   if (!newestMessageId || text(chatReadMarkers[normalizedConversationId]) === newestMessageId) {
     return false;
@@ -5027,9 +5027,9 @@ function markChatConversationRead(conversationId, { rerender = true } = {}) {
   return true;
 }
 
-function markAdminChatNotificationRead(messageId) {
-  const normalizedMessageId = text(messageId);
-  if (!normalizedMessageId) {
+function markAdminChatConversationNotificationsRead(conversationId) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId) {
     return;
   }
   void teamFetch("/api/admin/user-notifications/read", {
@@ -5041,7 +5041,9 @@ function markAdminChatNotificationRead(messageId) {
     },
     body: JSON.stringify({
       source: "team-chat",
-      source_ids: [normalizedMessageId],
+      metadata: {
+        conversation_id: normalizedConversationId,
+      },
     }),
   })
     .then((response) => {

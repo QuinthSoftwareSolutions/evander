@@ -197,6 +197,53 @@ class AdminUserNotificationStore:
                 self._write(payload)
         return marked
 
+    def mark_source_metadata_read(
+        self,
+        *,
+        user_id: object,
+        source: object,
+        metadata: Mapping[str, Any],
+    ) -> list[str]:
+        normalized_user_id = normalize_admin_notification_user_id(user_id)
+        if normalized_user_id is None:
+            return []
+        normalized_source = str(source or "").strip()
+        if not normalized_source:
+            return []
+        target_metadata = {
+            str(key or "").strip(): str(value or "").strip()
+            for key, value in metadata.items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
+        if not target_metadata:
+            return []
+        now = utc_timestamp()
+        marked: list[str] = []
+        with self._lock:
+            payload = self._read()
+            for notification_id, notification in payload["notifications"].items():
+                if not isinstance(notification, dict):
+                    continue
+                if notification.get("user_id") != normalized_user_id:
+                    continue
+                if notification.get("source") != normalized_source:
+                    continue
+                notification_metadata = notification.get("metadata")
+                if not isinstance(notification_metadata, dict):
+                    continue
+                if any(
+                    str(notification_metadata.get(key) or "").strip() != value
+                    for key, value in target_metadata.items()
+                ):
+                    continue
+                if notification.get("read_at"):
+                    continue
+                notification["read_at"] = now
+                marked.append(notification_id)
+            if marked:
+                self._write(payload)
+        return marked
+
     @staticmethod
     def _prune_user_notifications(notifications: dict[str, Any], user_id: str) -> None:
         user_items = [
