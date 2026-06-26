@@ -91,6 +91,28 @@ type DeploymentStatus = {
   stale: boolean;
 };
 
+type UserNotification = {
+  id: string;
+  title: string;
+  body: string;
+  source: string;
+  source_id: string;
+  target_url: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  read_at: string | null;
+};
+
+type UserNotificationState = {
+  unread_count: number;
+  notifications: UserNotification[];
+};
+
+type UserNotificationResponse = UserNotificationState & {
+  user_id: string;
+  marked_notification_ids?: string[];
+};
+
 type DirectoryStateResponse = {
   directory_scoped_config_enabled: boolean;
   selected_directory_path: string;
@@ -739,6 +761,119 @@ function DirectoryDeleteIcon() {
   );
 }
 
+function NotificationBellIcon() {
+  return (
+    <DirectoryActionIcon>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </DirectoryActionIcon>
+  );
+}
+
+function formatNotificationTimestamp(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function AdminUserNotifications({
+  open,
+  busy,
+  error,
+  state,
+  onToggle,
+  onClose,
+  onMarkAllRead,
+  onNotificationClick,
+}: {
+  open: boolean;
+  busy: boolean;
+  error: string | null;
+  state: UserNotificationState;
+  onToggle: () => void;
+  onClose: () => void;
+  onMarkAllRead: () => void;
+  onNotificationClick: (notification: UserNotification) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const unreadCount = state.unread_count;
+  const notifications = state.notifications;
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        onClose();
+      }
+    }
+    function handleKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeydown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeydown);
+    };
+  }, [onClose, open]);
+
+  return (
+    <div className="admin-notification-menu-wrap" ref={containerRef}>
+      <Tooltip content="Unread notifications.">
+        <button
+          type="button"
+          className={`admin-notification-button${unreadCount > 0 ? " has-unread" : ""}`}
+          onClick={onToggle}
+          aria-label={unreadCount > 0 ? `${unreadCount} unread notifications` : "No unread notifications"}
+          aria-expanded={open}
+          aria-haspopup="menu"
+        >
+          <NotificationBellIcon />
+          {unreadCount > 0 ? <span className="admin-notification-badge">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
+        </button>
+      </Tooltip>
+      {open ? (
+        <div className="admin-notification-menu" role="menu">
+          <div className="admin-notification-menu-header">
+            <strong>Notifications</strong>
+            <button type="button" onClick={onMarkAllRead} disabled={busy || unreadCount === 0}>
+              Clear
+            </button>
+          </div>
+          {error ? <div className="admin-notification-error">{error}</div> : null}
+          {notifications.length ? (
+            <div className="admin-notification-list">
+              {notifications.map((notification) => (
+                <button
+                  key={notification.id}
+                  type="button"
+                  className="admin-notification-item"
+                  onClick={() => onNotificationClick(notification)}
+                  role="menuitem"
+                >
+                  <span className="admin-notification-item-title">{notification.title}</span>
+                  {notification.body ? <span className="admin-notification-item-body">{notification.body}</span> : null}
+                  <time>{formatNotificationTimestamp(notification.created_at)}</time>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="admin-notification-empty">{busy ? "Loading." : "No unread notifications."}</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DirectoryTreeBranch({
   node,
   selectedPath,
@@ -1198,6 +1333,13 @@ export default function AdminRoot() {
   const [directoryStateLoading, setDirectoryStateLoading] = useState(false);
   const [directoryStateError, setDirectoryStateError] = useState<string | null>(null);
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const [userNotifications, setUserNotifications] = useState<UserNotificationState>({
+    unread_count: 0,
+    notifications: [],
+  });
+  const [userNotificationsOpen, setUserNotificationsOpen] = useState(false);
+  const [userNotificationsBusy, setUserNotificationsBusy] = useState(false);
+  const [userNotificationsError, setUserNotificationsError] = useState<string | null>(null);
   const [workflowSidebarCollapsed, setWorkflowSidebarCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(WORKFLOW_SIDEBAR_STORAGE_KEY) === "true";
@@ -1438,6 +1580,40 @@ export default function AdminRoot() {
     void loadDirectoryState(selectedDirectoryPath);
   }, [session, selectedDirectoryPath]);
 
+  useEffect(() => {
+    if (session === null || (session.auth_required && !session.authenticated)) {
+      setUserNotifications({ unread_count: 0, notifications: [] });
+      return;
+    }
+    let cancelled = false;
+    async function loadUserNotifications() {
+      try {
+        const payload = await fetchJson<UserNotificationResponse>("/api/admin/user-notifications?limit=20", {
+          credentials: "same-origin",
+        });
+        if (!cancelled) {
+          setUserNotifications({
+            unread_count: payload.unread_count,
+            notifications: payload.notifications,
+          });
+          setUserNotificationsError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setUserNotificationsError(error instanceof Error ? error.message : "Unable to load notifications.");
+        }
+      }
+    }
+    void loadUserNotifications();
+    const intervalId = window.setInterval(() => {
+      void loadUserNotifications();
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [session]);
+
   async function signIn(username: string, password: string) {
     setAuthBusy(true);
     setSessionError(null);
@@ -1533,6 +1709,60 @@ export default function AdminRoot() {
     } finally {
       setAuthBusy(false);
     }
+  }
+
+  async function refreshUserNotifications() {
+    try {
+      const payload = await fetchJson<UserNotificationResponse>("/api/admin/user-notifications?limit=20", {
+        credentials: "same-origin",
+      });
+      setUserNotifications({
+        unread_count: payload.unread_count,
+        notifications: payload.notifications,
+      });
+      setUserNotificationsError(null);
+    } catch (error) {
+      setUserNotificationsError(error instanceof Error ? error.message : "Unable to load notifications.");
+    }
+  }
+
+  async function markUserNotificationsRead(notificationIds: string[] | null) {
+    setUserNotificationsBusy(true);
+    try {
+      const payload = await fetchJson<UserNotificationResponse>("/api/admin/user-notifications/read", {
+        method: "POST",
+        credentials: "same-origin",
+        body: JSON.stringify(
+          notificationIds === null
+            ? { all: true }
+            : { notification_ids: notificationIds },
+        ),
+      });
+      setUserNotifications({
+        unread_count: payload.unread_count,
+        notifications: payload.notifications,
+      });
+      setUserNotificationsError(null);
+    } catch (error) {
+      setUserNotificationsError(error instanceof Error ? error.message : "Unable to update notifications.");
+      await refreshUserNotifications();
+    } finally {
+      setUserNotificationsBusy(false);
+    }
+  }
+
+  function openUserNotification(notification: UserNotification) {
+    void markUserNotificationsRead([notification.id]);
+    setUserNotificationsOpen(false);
+    const targetUrl = notification.target_url?.trim();
+    if (!targetUrl) {
+      return;
+    }
+    if (targetUrl.startsWith("#")) {
+      window.location.hash = targetUrl.slice(1);
+      return;
+    }
+    window.location.assign(targetUrl);
   }
 
   const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
@@ -1728,6 +1958,16 @@ export default function AdminRoot() {
               </button>
             </div>
             <div className="admin-shell-info-group">
+              <AdminUserNotifications
+                open={userNotificationsOpen}
+                busy={userNotificationsBusy}
+                error={userNotificationsError}
+                state={userNotifications}
+                onToggle={() => setUserNotificationsOpen((current) => !current)}
+                onClose={() => setUserNotificationsOpen(false)}
+                onMarkAllRead={() => void markUserNotificationsRead(null)}
+                onNotificationClick={openUserNotification}
+              />
               <div className="admin-directory-context">
                 <span className="section-label">Directory</span>
                 <strong>{selectedDirectoryPath}</strong>
