@@ -3589,6 +3589,7 @@ def team_session_health_payload(
         container_lifecycle = metadata.get("container_lifecycle")
         if not isinstance(container_lifecycle, Mapping):
             container_lifecycle = {}
+        container_lifecycle_state = _optional_text(container_lifecycle.get("state"))
         expires_at_value = getattr(session, "expires_at", None) if session is not None else None
         expires_at = (
             _ensure_utc(expires_at_value)
@@ -3605,35 +3606,46 @@ def team_session_health_payload(
             if session is None
             else "unknown"
         )
-        rows.append(
-            {
-                "agent_id": agent.id,
-                "team_id": agent.team_id,
-                "project_ids": agent_project_ids(state, agent.id),
-                "lead_project_ids": agent_lead_project_ids(state, agent.id),
-                "role_id": agent.role_id,
-                "session_id": session_id,
-                "session_present": session is not None,
-                "vm_provider": vm_provider,
-                "execution_backend": execution_backend,
-                "container_lifecycle_state": _optional_text(
-                    container_lifecycle.get("state")
-                ),
-                "agent_execution_backend": _optional_text(
-                    getattr(execution_record, "backend", None)
-                ),
-                "agent_execution_status": _optional_text(
-                    getattr(execution_record, "status", None)
-                ),
-                "agent_active_execution_count": active_execution_count,
-                "agent_latest_execution_id": _optional_text(
-                    execution_host.get("latest_execution_id")
-                ),
-                "expires_at": _json_datetime(expires_at),
-                "is_expired": is_expired,
-                "status": status,
-            }
+        row = {
+            "agent_id": agent.id,
+            "team_id": agent.team_id,
+            "project_ids": agent_project_ids(state, agent.id),
+            "lead_project_ids": agent_lead_project_ids(state, agent.id),
+            "role_id": agent.role_id,
+            "session_id": session_id,
+            "session_present": session is not None,
+            "expires_at": _json_datetime(expires_at),
+            "is_expired": is_expired,
+            "status": status,
+        }
+        has_container_metadata = bool(
+            session is not None
+            and (
+                vm_provider == "container_worker_vm"
+                or execution_backend == "container_worker_vm"
+                or container_lifecycle_state is not None
+            )
         )
+        if has_container_metadata or execution_record is not None:
+            if vm_provider is not None:
+                row["vm_provider"] = vm_provider
+            if execution_backend is not None:
+                row["execution_backend"] = execution_backend
+            if container_lifecycle_state is not None:
+                row["container_lifecycle_state"] = container_lifecycle_state
+        if execution_record is not None:
+            agent_execution_backend = _optional_text(getattr(execution_record, "backend", None))
+            if agent_execution_backend is not None:
+                row["agent_execution_backend"] = agent_execution_backend
+            agent_execution_status = _optional_text(getattr(execution_record, "status", None))
+            if agent_execution_status is not None:
+                row["agent_execution_status"] = agent_execution_status
+            if active_execution_count is not None:
+                row["agent_active_execution_count"] = active_execution_count
+            agent_latest_execution_id = _optional_text(execution_host.get("latest_execution_id"))
+            if agent_latest_execution_id is not None:
+                row["agent_latest_execution_id"] = agent_latest_execution_id
+        rows.append(row)
     return rows
 
 

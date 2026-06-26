@@ -4370,6 +4370,73 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(
     assert watcher == {}
 
 
+def test_resume_agent_delegates_to_vm_admin_without_session_repository() -> None:
+    service = object.__new__(AdminService)
+    service.runtime = SimpleNamespace()
+    calls: list[dict[str, object]] = []
+
+    class _VmAgentAdminStub:
+        def resume_agent(
+            self,
+            target: str,
+            prompt: str,
+            *,
+            model: str | None = None,
+            vm_user: str = "agent",
+            dispatch_id: str | None = None,
+            resume_thread_id: str | None = None,
+            resume_mode: str = "new_context",
+            persist_thread_id: bool = True,
+            mcp_gateway_url: str | None = None,
+        ) -> VmActionResult:
+            calls.append(
+                {
+                    "target": target,
+                    "prompt": prompt,
+                    "model": model,
+                    "vm_user": vm_user,
+                    "dispatch_id": dispatch_id,
+                    "resume_thread_id": resume_thread_id,
+                    "resume_mode": resume_mode,
+                    "persist_thread_id": persist_thread_id,
+                    "mcp_gateway_url": mcp_gateway_url,
+                }
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=target,
+                action="resume_issue_agent",
+                message="ok",
+                thread_id="thread-1",
+            )
+
+    service.vm_agent_admin = _VmAgentAdminStub()
+
+    result = service.resume_agent(
+        "vm-libvirt",
+        "Resume now",
+        model="gpt-5.4",
+        dispatch_id="dispatch-vm-1",
+        resume_thread_id="thread-keep",
+        mcp_gateway_url="http://gateway.test/mcp",
+    )
+
+    assert result.success is True
+    assert calls == [
+        {
+            "target": "vm-libvirt",
+            "prompt": "Resume now",
+            "model": "gpt-5.4",
+            "vm_user": "agent",
+            "dispatch_id": "dispatch-vm-1",
+            "resume_thread_id": "thread-keep",
+            "resume_mode": "new_context",
+            "persist_thread_id": True,
+            "mcp_gateway_url": "http://gateway.test/mcp",
+        }
+    ]
+
+
 def test_resume_agent_passes_session_agent_provider(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

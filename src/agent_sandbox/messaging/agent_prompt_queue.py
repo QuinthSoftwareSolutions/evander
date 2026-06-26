@@ -65,6 +65,7 @@ class QueuedAgentPromptRecord(BaseModel):
     prompt: str = Field(min_length=1)
     model: str | None = None
     vm_user: str = Field(min_length=1, default="agent")
+    dispatch_id: str | None = None
     resume_thread_id: str | None = None
     resume_mode: str | None = None
     resume_thread_metadata_key: str | None = None

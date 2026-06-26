@@ -3183,6 +3183,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             type="effect:agent:enqueue-prompt",
             target="session-1",
             prompt="check teams",
+            dispatch_id="caller-dispatch-1",
             queue_key="chat:thread-1:msg-1",
             resume_thread_metadata_key="teams:chat-1:agent_thread_id",
             reduced_context_prompt="continue from the compact handoff",
@@ -3204,6 +3205,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
         "chat:thread-1:msg-1"
     )
     assert queued is not None
+    assert queued.dispatch_id == "caller-dispatch-1"
     assert queued.metadata["reduced_context_prompt"] == "continue from the compact handoff"
     assert queued.metadata["agent_context_retry_enabled"] == "False"
     assert queued.metadata["agent_context_retry_max_attempts"] == "0"

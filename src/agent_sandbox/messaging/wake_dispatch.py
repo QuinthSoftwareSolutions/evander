@@ -634,6 +634,7 @@ class HostWakeDispatcher:
                     prompt=prompt,
                     model=agent_model,
                     vm_user=worker_config.wake_vm_user,
+                    dispatch_id=dispatch_id,
                     resume_thread_id=None,
                     effect_id=queue_key,
                     resume_mode=effective_resume_mode,

@@ -4893,6 +4893,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
             prompt="hello",
             model=None,
             vm_user="agent",
+            dispatch_id="caller-dispatch-1",
             resume_thread_id=None,
             effect_id="effect-1",
         )
@@ -4916,6 +4917,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
 
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "vm-1"
+    assert resume_calls[0]["dispatch_id"] == "caller-dispatch-1"
     queued_store_path = runtime_dir / "queued-agent-prompts.json"
     queued_payload = (
         json.loads(queued_store_path.read_text(encoding="utf-8"))
@@ -4927,6 +4929,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert len(waiting_records) == 1
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert waiting_records[0].outputs["dispatch_id"] == "caller-dispatch-1"
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
 
 
@@ -5828,6 +5831,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             prompt="check teams",
             model=None,
             vm_user="agent",
+            dispatch_id="caller-dispatch-2",
             resume_thread_id=None,
             resume_thread_metadata_key="teams:chat-1:agent_thread_id",
             effect_id="effect-agent-enqueue-prompt-1",
@@ -5867,6 +5871,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert dispatched == 1
     assert queue_store.read_all() == {}
     assert backend.started_specs[0].session_id == "session-1"
+    assert backend.started_specs[0].metadata["dispatch_id"] == "caller-dispatch-2"
     assert backend.started_specs[0].image == "runner:queue-image"
     assert "check teams" in str(backend.started_specs[0].command)
     assert "thread-existing" in str(backend.started_specs[0].command)
@@ -5874,6 +5879,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert len(waiting_records) == 1
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert waiting_records[0].outputs["dispatch_id"] == "caller-dispatch-2"
     execution_id = str(waiting_records[0].outputs["execution_id"])
     assert execution_id == backend.started_specs[0].target_name
     assert published_events[0][0] == "started"

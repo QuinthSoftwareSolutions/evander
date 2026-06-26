@@ -14131,16 +14131,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
-        try:
-            container_session, _container_record = self._resolve_container_agent_session(
-                target,
-                require_session=False,
-            )
-        except ValueError as exc:
-            if not str(exc).startswith("Ambiguous container worker session target"):
-                container_session = None
-            else:
-                raise
+        container_session = None
+        runtime = getattr(self, "runtime", None)
+        if getattr(runtime, "session_repository", None) is not None:
+            try:
+                container_session, _container_record = self._resolve_container_agent_session(
+                    target,
+                    require_session=False,
+                )
+            except ValueError as exc:
+                if not str(exc).startswith("Ambiguous container worker session target"):
+                    container_session = None
+                else:
+                    raise
         if container_session is not None and self._is_container_session(container_session):
             response = self._prompt_admin_agent(
                 container_session.session_id,

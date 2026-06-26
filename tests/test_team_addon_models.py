@@ -978,8 +978,10 @@ def test_team_state_payload_includes_agent_session_backend_health() -> None:
     assert health["ui"]["agent_execution_status"] == "running"
     assert health["ui"]["agent_active_execution_count"] == 1
     assert health["ui"]["agent_latest_execution_id"] == "exec-ui"
-    assert health["lead"]["vm_provider"] == "libvirt"
-    assert health["lead"]["execution_backend"] == "libvirt_vm"
+    assert "vm_provider" not in health["lead"]
+    assert "execution_backend" not in health["lead"]
+    assert "container_lifecycle_state" not in health["lead"]
+    assert "agent_execution_backend" not in health["lead"]
 
 
 def test_team_state_payload_includes_blocked_release_next_action_hint() -> None:

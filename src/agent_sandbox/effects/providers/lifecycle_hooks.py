@@ -152,9 +152,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             ):
                 continue
 
-            dispatch_id = (
-                f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
-            )
+            dispatch_id = self._dispatch_id_for_queue_record(record)
             _session_id, session = self._session_context_for_libvirt_record(
                 worker=worker,
                 record=record,
@@ -291,7 +289,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         ):
             return False
 
-        dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
+        dispatch_id = self._dispatch_id_for_queue_record(record)
         execution_id = safe_effect_execution_id("agent", session_id)
         record_metadata = getattr(record, "metadata", {})
         workflow_run_id = (
@@ -422,6 +420,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
 
         return True
+
+    @staticmethod
+    def _dispatch_id_for_queue_record(record: Any) -> str:
+        dispatch_id = str(getattr(record, "dispatch_id", "") or "").strip()
+        if dispatch_id:
+            return dispatch_id
+        return f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
 
     @staticmethod
     def _scheduled_wake_request_id_for_record(

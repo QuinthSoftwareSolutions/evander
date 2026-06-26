@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-26 - Queued Dispatch Correlation Fixes
+
+- Preserved caller-supplied dispatch ids when busy agent prompts are queued and
+  reused them during queued libvirt and container dispatch replay.
+- Let lightweight AdminService facades delegate libvirt resume calls without
+  requiring container session repository support.
+- Kept Team session-health container and execution details out of rows that do
+  not have real container metadata or execution records.
+
 ## 2026-06-26 - Queued Reduced-Context Retry Metadata
 
 - Preserved reduced-context retry prompts and per-effect retry settings when
