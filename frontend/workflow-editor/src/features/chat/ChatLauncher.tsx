@@ -54,6 +54,12 @@ function scrollChatToBottom(element: HTMLDivElement) {
   element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
 }
 
+function messagesOverlap(current: ChatMessage[], incoming: ChatMessage[]) {
+  if (current.length === 0 || incoming.length === 0) return true;
+  const currentIds = new Set(current.map((message) => message.id));
+  return incoming.some((message) => currentIds.has(message.id));
+}
+
 export function ChatLauncher({
   enabled,
   assistantEnabled,
@@ -82,6 +88,7 @@ export function ChatLauncher({
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
   const activeThreadRef = useRef("");
   const stickToBottomRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
@@ -112,6 +119,24 @@ export function ChatLauncher({
   const requestChatScrollToBottom = () => {
     stickToBottomRef.current = true;
     forceScrollToBottomRef.current = true;
+  };
+
+  const setVisibleMessages = (nextMessages: ChatMessage[]) => {
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+  };
+
+  const applyLatestTranscript = (transcript: ChatTranscript) => {
+    const current = messagesRef.current;
+    const incoming = transcript.messages;
+    const replaceStaleWindow =
+      current.length > 0 && incoming.length > 0 && !messagesOverlap(current, incoming);
+    const nextMessages = replaceStaleWindow ? incoming : mergeMessages(current, incoming);
+    setVisibleMessages(nextMessages);
+    if (replaceStaleWindow || (current.length === 0 && incoming.length > 0)) {
+      setHasOlderMessages(Boolean(transcript.has_older));
+      pendingOlderScrollRestoreRef.current = null;
+    }
   };
 
   const handleChatScroll = () => {
@@ -157,6 +182,7 @@ export function ChatLauncher({
       setAssistantSession(DEFAULT_ASSISTANT_SESSION);
       setHasOlderMessages(false);
       setLoadingOlderMessages(false);
+      messagesRef.current = [];
       loadingOlderMessagesRef.current = false;
       pendingOlderScrollRestoreRef.current = null;
       setError("");
@@ -173,7 +199,7 @@ export function ChatLauncher({
         });
         if (cancelled) return;
         if (preferredState === "expanded") requestChatScrollToBottom();
-        setMessages(transcript.messages);
+        setVisibleMessages(transcript.messages);
         setHasOlderMessages(Boolean(transcript.has_older));
         setMode(transcript.assistant_capability_mode);
         setAssistantSession(transcript.assistant_session);
@@ -202,7 +228,7 @@ export function ChatLauncher({
       if (closed) return;
       try {
         const transcript = JSON.parse((event as MessageEvent).data) as ChatTranscript;
-        setMessages((current) => mergeMessages(current, transcript.messages));
+        applyLatestTranscript(transcript);
         setMode(transcript.assistant_capability_mode);
         setAssistantSession(transcript.assistant_session);
       } catch {
@@ -214,7 +240,7 @@ export function ChatLauncher({
       void fetchTranscript(threadId, { limit: CHAT_TRANSCRIPT_PAGE_SIZE })
         .then((transcript) => {
           if (closed) return;
-          setMessages((current) => mergeMessages(current, transcript.messages));
+          applyLatestTranscript(transcript);
           setMode(transcript.assistant_capability_mode);
           setAssistantSession(transcript.assistant_session);
         })
@@ -248,7 +274,7 @@ export function ChatLauncher({
 
   async function loadOlderMessages() {
     if (!threadId || !hasOlderMessages || loadingOlderMessagesRef.current) return;
-    const oldestMessage = messages[0];
+    const oldestMessage = messagesRef.current[0];
     if (!oldestMessage) {
       setHasOlderMessages(false);
       return;
@@ -269,7 +295,8 @@ export function ChatLauncher({
         before: oldestMessage.id,
       });
       if (activeThreadRef.current !== targetThreadId) return;
-      setMessages((current) => mergeMessages(transcript.messages, current));
+      if (!messagesRef.current.some((message) => message.id === oldestMessage.id)) return;
+      setVisibleMessages(mergeMessages(transcript.messages, messagesRef.current));
       setHasOlderMessages(Boolean(transcript.has_older));
       setMode(transcript.assistant_capability_mode);
       setAssistantSession(transcript.assistant_session);
@@ -295,7 +322,7 @@ export function ChatLauncher({
     try {
       const response = await postChatMessage(targetThreadId, content);
       if (activeThreadRef.current !== response.thread_id) return;
-      setMessages((current) => mergeMessages(current, response.messages));
+      setVisibleMessages(mergeMessages(messagesRef.current, response.messages));
       setMode(response.assistant_capability_mode);
       setAssistantSession(response.assistant_session);
       setDraft("");
@@ -318,7 +345,7 @@ export function ChatLauncher({
       setThreadId(session.thread_id);
       setMode(session.assistant_capability_mode);
       setAssistantSession(session.assistant_session);
-      setMessages([]);
+      setVisibleMessages([]);
       setHasOlderMessages(false);
       loadingOlderMessagesRef.current = false;
       pendingOlderScrollRestoreRef.current = null;

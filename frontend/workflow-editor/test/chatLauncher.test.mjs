@@ -106,22 +106,30 @@ test("chat launcher loads long transcripts progressively", () => {
   assert.match(launcher, /const CHAT_TRANSCRIPT_PAGE_SIZE = 80/);
   assert.match(launcher, /const \[hasOlderMessages, setHasOlderMessages\] = useState\(false\)/);
   assert.match(launcher, /const \[loadingOlderMessages, setLoadingOlderMessages\] = useState\(false\)/);
+  assert.match(launcher, /const messagesRef = useRef<ChatMessage\[\]>\(\[\]\)/);
   assert.match(launcher, /const pendingOlderScrollRestoreRef = useRef<OlderScrollRestore \| null>\(null\)/);
+  assert.match(launcher, /function messagesOverlap\(current: ChatMessage\[\], incoming: ChatMessage\[\]\)/);
+  assert.match(launcher, /const setVisibleMessages = \(nextMessages: ChatMessage\[\]\) => \{/);
+  assert.match(launcher, /const applyLatestTranscript = \(transcript: ChatTranscript\) => \{/);
+  assert.match(launcher, /!messagesOverlap\(current, incoming\)/);
+  assert.match(launcher, /const nextMessages = replaceStaleWindow \? incoming : mergeMessages\(current, incoming\)/);
+  assert.match(launcher, /setHasOlderMessages\(Boolean\(transcript\.has_older\)\)/);
   assert.match(
     launcher,
     /fetchTranscript\(session\.thread_id,\s+\{\s+limit: CHAT_TRANSCRIPT_PAGE_SIZE,\s+\}\)/,
   );
-  assert.match(launcher, /setHasOlderMessages\(Boolean\(transcript\.has_older\)\)/);
   assert.match(
     launcher,
     /new EventSource\(\s+`\/api\/chat\/stream\/\$\{encodeURIComponent\(threadId\)\}\?limit=\$\{CHAT_TRANSCRIPT_PAGE_SIZE\}`/,
   );
+  assert.match(launcher, /applyLatestTranscript\(transcript\)/);
   assert.match(launcher, /element\.scrollTop <= CHAT_SCROLL_TOP_LOAD_THRESHOLD_PX/);
   assert.match(launcher, /async function loadOlderMessages\(\)/);
   assert.match(launcher, /before: oldestMessage\.id/);
+  assert.match(launcher, /if \(!messagesRef\.current\.some\(\(message\) => message\.id === oldestMessage\.id\)\) return;/);
   assert.match(
     launcher,
-    /setMessages\(\(current\) => mergeMessages\(transcript\.messages, current\)\)/,
+    /setVisibleMessages\(mergeMessages\(transcript\.messages, messagesRef\.current\)\)/,
   );
   assert.match(launcher, /className="chat-load-older-button"/);
   assert.match(styles, /\.chat-load-older-button \{/);

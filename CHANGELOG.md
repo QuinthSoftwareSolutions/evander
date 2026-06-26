@@ -39,6 +39,9 @@
   anchored near the newest messages instead of jumping to the oldest messages.
 - Loaded built-in assistant chat transcripts in bounded pages and fetches older
   messages when scrolling upward, avoiding full-thread loads for long chats.
+- Replaced stale live transcript windows when the latest streamed page no longer
+  overlaps the loaded messages, preventing unrecoverable gaps after long tab
+  sleeps or disconnects.
 
 ## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
 
