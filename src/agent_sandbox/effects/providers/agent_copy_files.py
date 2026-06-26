@@ -128,6 +128,8 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             payload["merge_strategy"] = entry["merge_strategy"]
         if entry.get("section_id"):
             payload["section_id"] = entry["section_id"]
+        if entry.get("remove_section_ids"):
+            payload["remove_section_ids"] = list(entry["remove_section_ids"])
         if content is None:
             source_path = normalize_optional_string(entry.get("source_path"))
             if not source_path:

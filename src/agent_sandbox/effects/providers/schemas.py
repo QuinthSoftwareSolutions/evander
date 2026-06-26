@@ -566,6 +566,7 @@ class VmCopyFilesItemDefinition(BaseModel):
     overwrite: ConfigValue | None = True
     merge_strategy: ConfigValue | None = None
     section_id: ConfigValue | None = None
+    remove_section_ids: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_source_or_content(self) -> "VmCopyFilesItemDefinition":
@@ -578,6 +579,8 @@ class VmCopyFilesItemDefinition(BaseModel):
                 raise ValueError("managed_section merge requires inline content")
             if self.section_id is None:
                 raise ValueError("managed_section merge requires section_id")
+        elif self.remove_section_ids is not None and self.merge_strategy is None:
+            raise ValueError("remove_section_ids requires managed_section merge")
         return self
 
 

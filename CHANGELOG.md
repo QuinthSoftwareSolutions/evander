@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-26 - Codex Relay Bootstrap And Team Guidance Cleanup
+
+- Changed Codex VM and container session bootstrap to use a relay-specific
+  `evander_openai_relay` provider with websocket support disabled, preventing
+  startup websocket prewarm failures against the host OpenAI relay.
+- Bumped Team Add-on agent guidance seeding so active agents remove stale
+  `truman-team-addon` managed guidance sections when current
+  `evander-team-addon` MCP guidance is reseeded.
+
 ## 2026-06-26 - Team Add-on Debounced Wake Requests
 
 - Added debounced `team.agent.wake_requested` events so high-signal Team

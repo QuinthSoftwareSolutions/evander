@@ -61,7 +61,14 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert (
         'CODEX_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"' in script
     )
-    assert 'openai_base_url = "${CODEX_LLM_BASE_URL}"' in script
+    assert 'model_provider = "evander_openai_relay"' in script
+    assert "[model_providers.evander_openai_relay]" in script
+    assert 'base_url = "${CODEX_LLM_BASE_URL}"' in script
+    assert 'env_key = "OPENAI_API_KEY"' in script
+    assert 'wire_api = "responses"' in script
+    assert "requires_openai_auth = false" in script
+    assert "supports_websockets = false" in script
+    assert 'openai_base_url = "${CODEX_LLM_BASE_URL}"' not in script
     assert "[mcp_servers.agent_sandbox]" in script
     assert 'url = "${CODEX_GATEWAY_URL}"' in script
     assert "enabled_tools = %s\\n" not in script

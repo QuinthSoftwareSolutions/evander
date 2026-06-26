@@ -292,11 +292,18 @@ fi
 for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do
 cat > "${CODEX_CONFIG_PATH}" <<CONFIG
 model = "gpt-5.4"
-model_provider = "openai"
+model_provider = "evander_openai_relay"
 model_reasoning_effort = "high"
 personality = "pragmatic"
 web_search = "disabled"
-openai_base_url = "${CODEX_LLM_BASE_URL}"
+
+[model_providers.evander_openai_relay]
+name = "Evander OpenAI Relay"
+base_url = "${CODEX_LLM_BASE_URL}"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
 
 [mcp_servers.agent_sandbox]
 url = "${CODEX_GATEWAY_URL}"

@@ -3653,6 +3653,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                             "strategy is managed_section."
                         ),
                     ),
+                    _field(
+                        "remove_section_ids",
+                        "Remove section IDs",
+                        "string_list",
+                        bindable=True,
+                        description=(
+                            "Optional managed section IDs to remove from the destination before "
+                            "writing Section ID."
+                        ),
+                    ),
                 ],
             ),
         ],
@@ -4225,6 +4235,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                         options=[_field_option("managed_section", "Managed section")],
                     ),
                     _field("section_id", "Section ID", "string", bindable=True),
+                    _field(
+                        "remove_section_ids",
+                        "Remove section IDs",
+                        "string_list",
+                        bindable=True,
+                    ),
                 ],
             ),
         ],

@@ -631,6 +631,7 @@ class WorkerDaemon:
                         existing_text,
                         section_id=str(entry.section_id or ""),
                         content=content_text,
+                        remove_section_ids=entry.remove_section_ids,
                     )
                 desired_content = content_text.encode("utf-8")
             desired_mode = (

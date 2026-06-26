@@ -75,6 +75,7 @@ from evander_team_addon.provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from evander_team_addon.providers import (
+    LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS,
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
     TEAM_AGENT_GUIDANCE_VERSION,
@@ -1011,6 +1012,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
             "overwrite": True,
             "merge_strategy": "managed_section",
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
         }
     ]
     guidance = str(guidance_files[0]["content"])
@@ -2078,6 +2080,9 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         TEAM_AGENT_GUIDANCE_SECTION_ID,
         TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
     ]
+    assert guidance_files[0]["remove_section_ids"] == list(
+        LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS
+    )
     inactive_guidance = str(guidance_files[0]["content"])
     assert "not currently assigned to a Team" in inactive_guidance
     assert "Normal Team-agent task" in inactive_guidance
@@ -3570,6 +3575,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
+    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION
@@ -3673,6 +3679,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
+    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert 'Current display name: "Beatrice"' in str(copied_file["content"])
     prompt = str(resumer.calls[0]["prompt"])
     assert "Beatrice" not in prompt

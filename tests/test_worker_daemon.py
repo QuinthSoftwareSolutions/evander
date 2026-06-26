@@ -482,6 +482,50 @@ def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
     )
 
 
+def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "# Base\n\n"
+        "<!-- agent-sandbox-managed-section:truman-team-addon:begin -->\n"
+        "Old guidance\n"
+        "<!-- agent-sandbox-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
+        "Team guidance v1\n"
+        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n",
+        encoding="utf-8",
+    )
+
+    replaced = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "Team guidance v2\n",
+                    "mode": "0644",
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": "evander-team-addon",
+                    "remove_section_ids": ["truman-team-addon"],
+                }
+            ]
+        },
+    )
+
+    assert replaced.status_code == 200
+    assert "truman-team-addon" not in target.read_text(encoding="utf-8")
+    assert "Team guidance v2" in target.read_text(encoding="utf-8")
+
+
 def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     tmp_path: Path,
 ) -> None:

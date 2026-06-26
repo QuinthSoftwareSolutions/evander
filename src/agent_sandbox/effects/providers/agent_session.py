@@ -1356,11 +1356,18 @@ def _codex_config_content(
 ) -> str:
     return (
         f"model = {_toml_string(model)}\n"
-        'model_provider = "openai"\n'
+        'model_provider = "evander_openai_relay"\n'
         'model_reasoning_effort = "high"\n'
         'personality = "pragmatic"\n'
         f"web_search = {_toml_string('live' if web_search_enabled else 'disabled')}\n"
-        f"openai_base_url = {_toml_string(openai_base_url)}\n"
+        "\n"
+        "[model_providers.evander_openai_relay]\n"
+        'name = "Evander OpenAI Relay"\n'
+        f"base_url = {_toml_string(openai_base_url)}\n"
+        'env_key = "OPENAI_API_KEY"\n'
+        'wire_api = "responses"\n'
+        "requires_openai_auth = false\n"
+        "supports_websockets = false\n"
         "\n"
         "[mcp_servers.agent_sandbox]\n"
         f"url = {_toml_string(gateway_url)}\n"

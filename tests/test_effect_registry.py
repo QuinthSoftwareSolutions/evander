@@ -2576,11 +2576,18 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
 
     assert by_path["/home/agent/.codex/config.toml"] == (
         'model = "gpt-5.4"\n'
-        'model_provider = "openai"\n'
+        'model_provider = "evander_openai_relay"\n'
         'model_reasoning_effort = "high"\n'
         'personality = "pragmatic"\n'
         'web_search = "disabled"\n'
-        'openai_base_url = "http://relay.test:11434/v1/session/session-1"\n'
+        "\n"
+        "[model_providers.evander_openai_relay]\n"
+        'name = "Evander OpenAI Relay"\n'
+        'base_url = "http://relay.test:11434/v1/session/session-1"\n'
+        'env_key = "OPENAI_API_KEY"\n'
+        'wire_api = "responses"\n'
+        "requires_openai_auth = false\n"
+        "supports_websockets = false\n"
         "\n"
         "[mcp_servers.agent_sandbox]\n"
         'url = "http://relay.test:8000/mcp?session_id=session-1"\n'
@@ -3690,7 +3697,11 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     assert "replace-registry-host=always" not in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     assert (
-        'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
+        'base_url = "http://relay.test:11434/v1/session/session-1"'
+        in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
+    )
+    assert (
+        "supports_websockets = false"
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]

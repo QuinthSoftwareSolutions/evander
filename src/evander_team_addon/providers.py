@@ -112,9 +112,10 @@ from .provider_schemas import (
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
-TEAM_AGENT_GUIDANCE_VERSION = 10
+TEAM_AGENT_GUIDANCE_VERSION = 11
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
+LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -3569,6 +3570,7 @@ def _seed_team_agent_guidance(
                     "overwrite": True,
                     "merge_strategy": "managed_section",
                     "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                    "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
                 }
             ],
         ),
@@ -3627,6 +3629,7 @@ def _seed_team_governance_guidance(
                 "overwrite": True,
                 "merge_strategy": "managed_section",
                 "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
             }
         )
     files.append(
