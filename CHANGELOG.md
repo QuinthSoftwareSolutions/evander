@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-26 - Codex Final-Message Detection Corrections
+
+- Avoided marking Codex runs as failed when `task_complete.last_agent_message`
+  is empty but assistant output was already emitted in the same stream.
+- Parsed nested `event_msg` token-count events in worker outcome detection and
+  live Codex log filtering so context-limit diagnostics keep token details.
+
 ## 2026-06-26 - Container Codex Native MCP Tools
 
 - Enabled Codex `non_prefixed_mcp_tool_names` for generated container session

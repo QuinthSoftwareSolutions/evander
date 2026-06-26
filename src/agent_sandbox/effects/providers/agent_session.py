@@ -1028,6 +1028,7 @@ ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
 thread_id_printed = False
 printed_messages = set()
 last_token_usage = {}
+assistant_text_seen = False
 
 
 def first_string(*values):
@@ -1080,6 +1081,13 @@ def print_message(message):
         print(message, flush=True)
 
 
+def print_assistant_message(message):
+    global assistant_text_seen
+    if isinstance(message, str) and message.strip():
+        assistant_text_seen = True
+    print_message(message)
+
+
 def int_value(value):
     if isinstance(value, bool):
         return None
@@ -1097,19 +1105,25 @@ def int_value(value):
 
 def update_token_usage(event):
     global last_token_usage
-    info = event.get("info")
-    if not isinstance(info, dict):
-        info = event.get("payload")
-    if not isinstance(info, dict):
-        return
-    raw_usage = info.get("last_token_usage") or info.get("usage")
-    if not isinstance(raw_usage, dict):
-        return
     usage = {}
-    for key in ("input_tokens", "output_tokens", "total_tokens"):
-        value = int_value(raw_usage.get(key))
-        if value is not None:
-            usage[key] = value
+    candidates = []
+    info = event.get("info")
+    if isinstance(info, dict):
+        candidates.append(info)
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        candidates.append(payload)
+        payload_info = payload.get("info")
+        if isinstance(payload_info, dict):
+            candidates.append(payload_info)
+    for candidate in candidates:
+        raw_usage = candidate.get("last_token_usage") or candidate.get("usage")
+        if not isinstance(raw_usage, dict):
+            continue
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = int_value(raw_usage.get(key))
+            if value is not None:
+                usage[key] = value
     if usage:
         last_token_usage = usage
 
@@ -1197,21 +1211,23 @@ for raw_line in sys.stdin:
         if isinstance(payload, dict):
             payload_type = str(payload.get("type") or "")
             if payload_type == "agent_message":
-                print_message(first_text(payload.get("message")))
+                print_assistant_message(first_text(payload.get("message")))
+            elif payload_type == "token_count":
+                update_token_usage(event)
             elif payload_type == "task_complete":
                 message = first_text(payload.get("last_agent_message"))
                 if message:
-                    print_message(message)
-                else:
+                    print_assistant_message(message)
+                elif not assistant_text_seen:
                     print_message(no_final_message_diagnostic())
         continue
 
     if event_type == "response_item":
-        print_message(text_from_response_item(event))
+        print_assistant_message(text_from_response_item(event))
         continue
 
     if event_type == "item.completed":
-        print_message(text_from_item_completed(event))
+        print_assistant_message(text_from_item_completed(event))
         continue
 
     if event_type in {"error", "turn.failed"}:

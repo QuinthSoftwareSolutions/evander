@@ -1326,6 +1326,7 @@ def _codex_session_outcome(
     explicit_failure_event_type: str | None = None
     last_token_usage: dict[str, int] | None = None
     model_context_window: int | None = None
+    assistant_text_seen = False
     saw_event = False
 
     for event in _iter_codex_session_events(
@@ -1336,13 +1337,15 @@ def _codex_session_outcome(
     ):
         saw_event = True
         event_type = str(event.get("type") or "")
-        if event_type == "token_count":
+        if _codex_event_is_token_count(event):
             token_usage, context_window = _codex_token_count_details(event)
             if token_usage:
                 last_token_usage = token_usage
             if context_window is not None:
                 model_context_window = context_window
             continue
+        if any(message.strip() for message in _codex_messages_from_session_event(event)):
+            assistant_text_seen = True
         if event_type in {"error", "turn.failed"}:
             message = _codex_event_error_message(event)
             if message:
@@ -1370,7 +1373,7 @@ def _codex_session_outcome(
             "reason": _CODEX_OUTCOME_REASON_TURN_FAILED,
             "message": f"Codex reported {explicit_failure_event_type}: {explicit_failure_message}",
         }
-    elif task_complete_without_final_message:
+    elif task_complete_without_final_message and not assistant_text_seen:
         context_limit_suspected = _codex_context_limit_suspected(
             provider_kind=provider_kind,
             last_token_usage=last_token_usage,
@@ -1439,24 +1442,41 @@ def _iter_codex_session_events(
             yield event
 
 
+def _codex_event_is_token_count(event: dict[str, object]) -> bool:
+    if str(event.get("type") or "") == "token_count":
+        return True
+    payload = event.get("payload")
+    return isinstance(payload, dict) and str(payload.get("type") or "") == "token_count"
+
+
 def _codex_token_count_details(event: dict[str, object]) -> tuple[dict[str, int] | None, int | None]:
+    candidates: list[dict[str, object]] = []
     info = event.get("info")
-    if not isinstance(info, dict):
-        info = event.get("payload")
-    if not isinstance(info, dict):
-        return None, None
-    raw_usage = info.get("last_token_usage") or info.get("usage")
+    if isinstance(info, dict):
+        candidates.append(info)
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        candidates.append(payload)
+        payload_info = payload.get("info")
+        if isinstance(payload_info, dict):
+            candidates.append(payload_info)
+
     usage: dict[str, int] = {}
-    if isinstance(raw_usage, dict):
+    model_context_window: int | None = None
+    for candidate in candidates:
+        raw_usage = candidate.get("last_token_usage") or candidate.get("usage")
+        if not isinstance(raw_usage, dict):
+            continue
         for key in ("input_tokens", "output_tokens", "total_tokens"):
             value = _codex_int(raw_usage.get(key))
             if value is not None:
                 usage[key] = value
-    model_context_window = _codex_int(
-        info.get("model_context_window")
-        or info.get("context_window")
-        or info.get("context_limit")
-    )
+        if model_context_window is None:
+            model_context_window = _codex_int(
+                candidate.get("model_context_window")
+                or candidate.get("context_window")
+                or candidate.get("context_limit")
+            )
     return (usage or None), model_context_window
 
 

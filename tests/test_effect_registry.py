@@ -2848,7 +2848,7 @@ def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
             "type": "event_msg",
             "payload": {
                 "type": "task_complete",
-                "last_agent_message": "Done.",
+                "last_agent_message": None,
             },
         },
     ]
@@ -2869,13 +2869,14 @@ def test_codex_json_log_filter_reports_missing_final_message() -> None:
     events = [
         {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
         {
-            "type": "token_count",
-            "info": {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
                 "last_token_usage": {
                     "input_tokens": 63657,
                     "output_tokens": 343,
                     "total_tokens": 64000,
-                }
+                },
             },
         },
         {

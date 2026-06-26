@@ -1446,8 +1446,9 @@ def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: 
                 {"type": "session_meta", "payload": {"id": thread_id}},
                 {
                     "timestamp": (started_at + timedelta(seconds=50)).isoformat(),
-                    "type": "token_count",
-                    "info": {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
                         "last_token_usage": {
                             "input_tokens": 63657,
                             "output_tokens": 343,
@@ -1482,6 +1483,79 @@ def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: 
         f"session id: {thread_id}\n"
         "codex failed: task_complete did not include a final agent message; "
         "context limit suspected (last_total_tokens=64000)\n"
+    )
+
+
+def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["bash", "-lc", "codex exec --json prompt | agent_sandbox_codex_json_to_log"],
+        container_name="agent-worker-job-1",
+        status="exited",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=40)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "Done."},
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=55)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "last_agent_message": None},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert "codex_outcome" not in inspected.metadata
+    assert inspected.error is None
+    assert daemon.get_logs(inspected, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "Done.\n"
     )
 
 
