@@ -46,6 +46,20 @@ def test_docker_runtime_refuses_host_network() -> None:
         DockerContainerRuntime(docker_network="host")
 
 
+def test_docker_runtime_allows_explicitly_unsafe_host_network(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(
+        sandbox_profile=WorkerSandboxProfile(
+            name="local-unsafe", network_mode="host", allow_host_network=True
+        ),
+        docker_network=None,
+    )
+
+    args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
+
+    assert args[args.index("--network") + 1] == "host"
+
+
 def test_docker_runtime_defaults_to_none_network() -> None:
     runtime = DockerContainerRuntime()
 

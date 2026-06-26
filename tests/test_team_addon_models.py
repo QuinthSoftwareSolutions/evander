@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -920,6 +921,65 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         row["kind"] == "waiting_dependency_task" and row["id"] == "task"
         for row in runtime_operations["attention"]
     )
+
+
+def test_team_state_payload_includes_agent_session_backend_health() -> None:
+    state = TeamState.model_validate(_state_with_task_graph())
+    expires_at = datetime(2026, 1, 2, tzinfo=UTC)
+
+    payload = team_state_payload(
+        state,
+        session_records={
+            "session-ui": SessionManifest(
+                session_id="session-ui",
+                vm_provider="container_worker_vm",
+                vm_provider_id="session-ui",
+                model="gpt-5",
+                allowed_tools=[],
+                expires_at=expires_at,
+                metadata={
+                    "execution_backend": "container_worker_vm",
+                    "container_lifecycle": {"state": "running"},
+                },
+            ),
+            "session-lead": SessionManifest(
+                session_id="session-lead",
+                vm_id="vm-lead",
+                vm_provider="libvirt",
+                vm_provider_id="vm-lead",
+                model="gpt-5",
+                allowed_tools=[],
+                expires_at=expires_at,
+                metadata={"execution_backend": "libvirt_vm"},
+            ),
+        },
+        agent_execution_records={
+            "session-ui": SimpleNamespace(
+                backend="container_worker_vm",
+                status="running",
+                host={
+                    "active_execution_count": 1,
+                    "latest_execution_id": "exec-ui",
+                },
+            )
+        },
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    health = {
+        row["agent_id"]: row
+        for row in payload["runtime_operations"]["session_health"]
+    }
+    assert health["ui"]["session_present"] is True
+    assert health["ui"]["vm_provider"] == "container_worker_vm"
+    assert health["ui"]["execution_backend"] == "container_worker_vm"
+    assert health["ui"]["container_lifecycle_state"] == "running"
+    assert health["ui"]["agent_execution_backend"] == "container_worker_vm"
+    assert health["ui"]["agent_execution_status"] == "running"
+    assert health["ui"]["agent_active_execution_count"] == 1
+    assert health["ui"]["agent_latest_execution_id"] == "exec-ui"
+    assert health["lead"]["vm_provider"] == "libvirt"
+    assert health["lead"]["execution_backend"] == "libvirt_vm"
 
 
 def test_team_state_payload_includes_blocked_release_next_action_hint() -> None:

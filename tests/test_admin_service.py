@@ -3311,6 +3311,70 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert refreshed_session.metadata["agent_thread_id"] == "thread-real-container-1"
 
 
+def test_resume_agent_routes_container_session_through_container_prompt_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {"image": "runner:team-image"},
+            },
+        )
+    )
+
+    class DirectContainerBackend:
+        def __init__(self) -> None:
+            self.repository = SimpleNamespace(read_all=lambda: {})
+            self.started_specs: list[object] = []
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            self.started_specs.append(spec)
+            return SimpleNamespace(execution_id=spec.target_name)
+
+    backend = DirectContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+
+    result = service.resume_agent(
+        "container-session",
+        "Resume Team work",
+        dispatch_id="team-dispatch-1",
+        resume_mode="same_context",
+    )
+
+    stores = service._workflow_run_store_paths()
+    if service._workflow_uses_sqlite_store(stores):
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+    else:
+        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+    records = list(execution_store.read_all().values())
+
+    assert result.success is True
+    assert result.provider == "container_worker_vm"
+    assert result.thread_id == "team-dispatch-1"
+    assert backend.started_specs[0].session_id == "container-session"
+    assert backend.started_specs[0].image == "runner:team-image"
+    assert "codex exec resume --last" in str(backend.started_specs[0].command)
+    assert len(records) == 1
+    assert records[0].status == "waiting"
+    assert records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert records[0].outputs["dispatch_id"] == "team-dispatch-1"
+    assert records[0].outputs["execution_backend"] == "container_worker_vm"
+
+
 def test_submit_operator_steering_interrupts_container_waiting_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

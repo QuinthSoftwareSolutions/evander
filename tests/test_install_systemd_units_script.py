@@ -23,6 +23,16 @@ def test_install_systemd_units_runs_preflight_before_install() -> None:
     assert "Aborting install because preflight checks failed." in text
 
 
+def test_install_systemd_units_root_without_sudo_user_uses_repo_owner() -> None:
+    text = _script_text()
+
+    assert 'if [[ -n "${SUDO_USER:-}" ]]; then' in text
+    assert 'RUN_USER="${SUDO_USER}"' in text
+    assert 'elif [[ "$(id -u)" -eq 0 ]]; then' in text
+    assert 'RUN_USER="$(stat -c \'%U\' "${ROOT_DIR}")"' in text
+    assert 'RUN_USER="${USER}"' in text
+
+
 def test_install_systemd_units_preflight_reports_failures_with_hints() -> None:
     text = _script_text()
 

@@ -337,7 +337,9 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     prompt: ConfigValue
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
+    dispatch_id: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    resume_mode: ConfigValue | None = None
     resume_thread_metadata_key: ConfigValue | None = None
     resume_thread_metadata_collection: ConfigValue | None = None
     queue_key: ConfigValue | None = None

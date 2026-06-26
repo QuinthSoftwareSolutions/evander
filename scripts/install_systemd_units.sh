@@ -44,7 +44,13 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RUN_USER="${SUDO_USER:-$USER}"
+if [[ -n "${SUDO_USER:-}" ]]; then
+  RUN_USER="${SUDO_USER}"
+elif [[ "$(id -u)" -eq 0 ]]; then
+  RUN_USER="$(stat -c '%U' "${ROOT_DIR}")"
+else
+  RUN_USER="${USER}"
+fi
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 SECRETS_FILE="${ROOT_DIR}/secrets.env"

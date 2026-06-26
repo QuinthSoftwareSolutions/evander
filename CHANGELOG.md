@@ -48,8 +48,14 @@
 - Updated service templates, helper scripts, operator notifications, tests, and
   docs to use `evander-cli` for new installs and examples.
 
-## 2026-06-26 - Team Add-on Container Project Git Remotes
+## 2026-06-26 - Team Add-on Container Roster Status
 
+- Hid the Team Add-on roster `active` pill for container-backed agents unless
+  they have an active Team runtime dispatch, while preserving paused/archived
+  roster states and VM-backed status display.
+- Added session backend, container lifecycle, and Agents-page execution details
+  to Team runtime session health payloads so the UI can distinguish roster
+  state from execution state.
 - Passed Team project canonical Git URLs into container project-repo preparation
   and let container mirrors prefer a matching local remote, avoiding SSH-only
   origin fetches from systemd services when an HTTPS remote is configured.
@@ -59,6 +65,11 @@
 - Preserved Team-owned branch refs during container Git SSH mirror refresh and
   fell back to generated mirrors for host-only bare repo paths that are not
   directly worker-addressable under the configured Git root.
+- Fixed systemd unit rendering under `pkexec` so services run as the repository
+  owner instead of root when `SUDO_USER` is unavailable.
+- Routed generic agent resume calls for container-backed sessions through the
+  container prompt dispatch path, preserving Team dispatch ids and resume mode
+  instead of falling through to VM-only resume handling.
 
 ## 2026-06-26 - Team Add-on MCP Wake Request Publishing
 
@@ -104,6 +115,16 @@
 - Replaced stale live transcript windows when the latest streamed page no longer
   overlaps the loaded messages, preventing unrecoverable gaps after long tab
   sleeps or disconnects.
+
+## 2026-06-26 - Local Container Worker Host-Network Opt-In
+
+- Added an explicit unsafe host-network opt-in for single-host local container
+  worker experiments, keeping Docker host networking refused by default while
+  allowing operator-owned workstation deployments to bypass blocked bridge
+  traffic.
+- Fixed effect-provider runtime metadata seeding so the effect orchestrator can
+  start while passing internal event and workflow journal paths to effect
+  providers.
 
 ## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
 

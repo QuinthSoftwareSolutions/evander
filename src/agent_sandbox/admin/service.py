@@ -3832,7 +3832,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
+            _field("dispatch_id", "Dispatch ID", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "resume_mode",
+                "Resume mode",
+                "string",
+                bindable=True,
+                placeholder="same_context",
+            ),
             _field(
                 "resume_thread_metadata_key",
                 "Resume thread metadata key",
@@ -13792,7 +13800,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         prompt = self._agent_optional_string(payload, "prompt")
         if not prompt:
             raise ValueError("prompt-agent requires a non-empty prompt")
+        model = self._agent_optional_string(payload, "model")
+        dispatch_id = self._agent_optional_string(payload, "dispatch_id")
         resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
+        resume_mode = self._agent_optional_string(payload, "resume_mode")
         vm_user = self._agent_optional_string(payload, "vm_user") or "agent"
 
         if backend == "libvirt_vm":
@@ -13831,7 +13842,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             session_id=session_id,
             vm_name=target_name,
             prompt=prompt,
+            model=model,
             resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
+            dispatch_id=dispatch_id,
             vm_user=vm_user,
             queue_key=effect_id,
         )
@@ -14117,6 +14131,40 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
+        try:
+            container_session, _container_record = self._resolve_container_agent_session(
+                target,
+                require_session=False,
+            )
+        except ValueError as exc:
+            if not str(exc).startswith("Ambiguous container worker session target"):
+                container_session = None
+            else:
+                raise
+        if container_session is not None and self._is_container_session(container_session):
+            response = self._prompt_admin_agent(
+                container_session.session_id,
+                backend="container_worker_vm",
+                payload={
+                    "prompt": prompt,
+                    "model": model,
+                    "vm_user": vm_user,
+                    "dispatch_id": dispatch_id,
+                    "resume_thread_id": resume_thread_id,
+                    "resume_mode": resume_mode,
+                },
+            )
+            return VmActionResult(
+                success=bool(response.get("success", True)),
+                vm_name=str(
+                    response.get("target_name")
+                    or self._container_session_target_name(container_session)
+                ),
+                action=str(response.get("action") or "resume_issue_agent"),
+                message=str(response.get("message") or ""),
+                provider="container_worker_vm",
+                thread_id=str(response.get("thread_id") or "") or None,
+            )
         return self.vm_agent_admin.resume_agent(
             target,
             prompt,

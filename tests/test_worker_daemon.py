@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.worker.service import WorkerDaemon
+from agent_sandbox.worker.models import WorkerRepoCloneRequest
 from agent_sandbox.worker_daemon import (
     WorkerJobRecord,
     WorkerJobRequest,
@@ -243,6 +244,50 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
     assert telemetry.jobs.cleanup_failure_message == "1 cleanup failure recorded"
     assert telemetry.jobs.health is HealthState.WARNING
     assert telemetry.jobs.error_count == 1
+
+
+def test_worker_clone_repo_uses_session_home_for_git_ssh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ssh_source = tmp_path / "git-ssh"
+    ssh_source.mkdir()
+    for name in ("agent-sandbox-git", "config"):
+        (ssh_source / name).write_text("ssh\n", encoding="utf-8")
+    (ssh_source / "agent-sandbox-git.pub").write_text("ssh pub\n", encoding="utf-8")
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/git-remotes/"],
+        git_ssh_source_dir=ssh_source,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append({"args": args, **kwargs})
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(
+            repo_source="ssh://agent-sandbox-git-host/git-remotes/repo.git",
+            clone_branch="main",
+            repo_name="repo",
+        ),
+    )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    assert (paths.agent_home / ".ssh" / "config").is_file()
+    clone_call = next(call for call in calls if call["args"][:2] == ["git", "clone"])
+    assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
+    assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
+        f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
+        f"-i {paths.agent_home / '.ssh' / 'agent-sandbox-git'}"
+    )
 
 
 def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(

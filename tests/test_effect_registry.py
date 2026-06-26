@@ -311,6 +311,7 @@ class _AdminServiceStub:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ):
@@ -322,6 +323,7 @@ class _AdminServiceStub:
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
+                "resume_mode": resume_mode,
                 "persist_thread_id": persist_thread_id,
                 "mcp_gateway_url": mcp_gateway_url,
             }
@@ -537,6 +539,10 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
         registry=registry,
         admin_service=admin_service,
         env={"API_TOKEN": "top-secret"},
+        metadata={
+            "directory_path": "stale-directory",
+            "internal_event_store_path": "runtime/internal-events.json",
+        },
     )
     provider = factory.build(effect, directory_path="root/team-a", graph_id="graph-1")
 
@@ -546,6 +552,10 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
     assert provider.runtime_context.resolve_secret("API_TOKEN") == "top-secret"
     assert provider.runtime_context.metadata["directory_path"] == "root/team-a"
     assert provider.runtime_context.metadata["graph_id"] == "graph-1"
+    assert (
+        provider.runtime_context.metadata["internal_event_store_path"]
+        == "runtime/internal-events.json"
+    )
 
 
 def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(

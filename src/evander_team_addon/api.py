@@ -252,6 +252,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             session_records=_session_records_by_id(
                 _session_repository_from_context(context)
             ),
+            agent_execution_records=_agent_execution_records_by_session(
+                context.service
+            ),
         )
 
     def _state_response(
@@ -325,6 +328,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 view=view,
                 session_records=_session_records_by_id(
                     _session_repository_from_context(context)
+                ),
+                agent_execution_records=_agent_execution_records_by_session(
+                    context.service
                 ),
             )
         )
@@ -2254,6 +2260,30 @@ def _session_repository_from_context(context: AddonContext) -> Any | None:
     return getattr(service, "session_repository", None)
 
 
+def _agent_execution_records_by_session(service: Any | None) -> dict[str, Any] | None:
+    list_agents = getattr(service, "list_agents", None)
+    if not callable(list_agents):
+        return None
+    try:
+        records = list_agents(
+            include_inactive=True,
+            direct_only=False,
+            all_directories=True,
+            reconcile_containers=False,
+            omit_vm_state=True,
+            summary_only=True,
+            backend="container_worker_vm",
+        )
+    except Exception:
+        return None
+    by_session: dict[str, Any] = {}
+    for record in records:
+        session_id = str(getattr(record, "session_id", "") or "").strip()
+        if session_id:
+            by_session[session_id] = record
+    return by_session
+
+
 def _runtime_from_context(context: AddonContext) -> Any:
     service = getattr(context, "service", None)
     runtime = getattr(service, "runtime", None)
@@ -2270,8 +2300,13 @@ def _team_state_payload_for_request(
     state: TeamState,
     *,
     session_records: Mapping[str, Any] | None = None,
+    agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = team_state_payload(state, session_records=session_records)
+    payload = team_state_payload(
+        state,
+        session_records=session_records,
+        agent_execution_records=agent_execution_records,
+    )
     _add_team_resource_tokens(payload, state)
     if _can_view_all_team_chats(auth, request):
         return payload
@@ -2337,6 +2372,7 @@ def _view_payload_for_request(
     *,
     view: str,
     session_records: Mapping[str, Any] | None = None,
+    agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     generated_at = utc_now().isoformat()
     if view == "chat":
@@ -2396,6 +2432,7 @@ def _view_payload_for_request(
             collections=collections,
             ids_by_collection=ids_by_collection,
             session_records=session_records,
+            agent_execution_records=agent_execution_records,
         )
     }
     if view == "timeline":
@@ -2457,12 +2494,14 @@ def _state_slice_payload_for_request(
     collections: set[str],
     ids_by_collection: Mapping[str, set[str]] | None = None,
     session_records: Mapping[str, Any] | None = None,
+    agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = _team_state_payload_for_request(
         auth,
         request,
         state,
         session_records=session_records,
+        agent_execution_records=agent_execution_records,
     )
     return _filter_state_payload(
         payload,

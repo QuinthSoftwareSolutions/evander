@@ -120,7 +120,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "prompt": effect.prompt,
             "model": effect.model,
             "vm_user": effect.vm_user,
+            "dispatch_id": effect.dispatch_id,
             "resume_thread_id": effect.resume_thread_id,
+            "resume_mode": effect.resume_mode,
             "resume_thread_metadata_key": effect.resume_thread_metadata_key,
             "resume_thread_metadata_collection": effect.resume_thread_metadata_collection,
             "queue_key": effect.queue_key,
@@ -146,7 +148,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         target = self._resolve_target(payload)
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         model = self._normalize_optional_string(payload.get("model"))
+        dispatch_id = self._normalize_optional_string(payload.get("dispatch_id"))
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        resume_mode = self._normalize_resume_mode(payload.get("resume_mode"))
         resume_thread_metadata_key = self._normalize_optional_string(
             payload.get("resume_thread_metadata_key")
         )
@@ -171,7 +175,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=model,
                 vm_user=vm_user,
+                dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 queue_key=queue_key,
@@ -222,6 +228,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect.id,
@@ -243,7 +250,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "max_retries": record.max_retries,
             }
 
-        dispatch_id = self._make_dispatch_id(effect_id=effect.id)
+        dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect.id)
         result = context.agent_resumer.resume_agent(
             target=target,
             prompt=prompt,
@@ -251,6 +258,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=effective_resume_thread_id,
+            resume_mode=resume_mode or "new_context",
             persist_thread_id=resume_thread_metadata_key is None,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=config,
@@ -268,6 +276,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect.id,
@@ -363,7 +372,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str | None,
         vm_user: str,
+        dispatch_id: str | None,
         resume_thread_id: str | None,
+        resume_mode: str | None,
         resume_thread_metadata_key: str | None,
         resume_thread_metadata_collection: str,
         queue_key: str | None,
@@ -411,6 +422,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect_id,
@@ -433,7 +445,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             }
 
-        dispatch_id = self._make_dispatch_id(effect_id=effect_id)
+        dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect_id)
         agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
             session,
             config=effective_config,
@@ -462,6 +474,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                             model=resolved_model,
                             resume_thread_id=effective_resume_thread_id,
                             agent_provider=agent_harness,
+                            resume_mode=resume_mode,
                             mcp_gateway_url=self._mcp_gateway_url(
                                 config=effective_config,
                                 target=session_id,
@@ -493,6 +506,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect_id,
@@ -923,6 +937,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user: str,
         resume_thread_id: str | None,
         effect_id: str,
+        resume_mode: str | None = None,
         queue_key: str | None = None,
         workflow_context: dict[str, dict[str, Any]] | None = None,
         workflow_for_execution_ids: dict[str, str] | None = None,
@@ -956,6 +971,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
                 resume_thread_metadata_key=resume_thread_metadata_key,
                 resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect_id,
@@ -1118,6 +1134,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     @staticmethod
     def _make_dispatch_id(*, effect_id: str) -> str:
         return f"dispatch-{effect_id}-{uuid4().hex[:12]}"
+
+    @classmethod
+    def _normalize_resume_mode(cls, value: Any) -> str | None:
+        text = cls._normalize_optional_string(value)
+        if text is None:
+            return None
+        if text not in {"same_context", "new_context"}:
+            raise ValueError("resume_mode must be one of: same_context, new_context")
+        return text
 
     def _trace_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
         if not isinstance(execution_context, Mapping):

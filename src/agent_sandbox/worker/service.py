@@ -1094,7 +1094,11 @@ class WorkerDaemon:
                 f"/home/agent/repos/{repo_name}"
             )
         if target_dir.exists() and any(target_dir.iterdir()):
-            if self._is_git_checkout_for_source(target_dir, repo_source):
+            if self._is_git_checkout_for_source(
+                target_dir,
+                repo_source,
+                agent_home=paths.agent_home,
+            ):
                 return target_dir, False
             raise ValueError(
                 f"repo target already exists and is not a checkout for requested source: "
@@ -1105,7 +1109,14 @@ class WorkerDaemon:
         if clone_branch:
             args.extend(["--branch", clone_branch])
         args.extend([repo_source, str(target_dir)])
-        subprocess.run(args, cwd=paths.repo_root, check=True, capture_output=True, text=True)
+        subprocess.run(
+            args,
+            cwd=paths.repo_root,
+            env=_git_subprocess_env(paths.agent_home),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         return target_dir, True
 
     def _ensure_allowed_git_source(self, repo_source: str) -> None:
@@ -1248,12 +1259,18 @@ class WorkerDaemon:
         return candidate
 
     @staticmethod
-    def _is_git_checkout_for_source(target_dir: Path, repo_source: str) -> bool:
+    def _is_git_checkout_for_source(
+        target_dir: Path,
+        repo_source: str,
+        *,
+        agent_home: Path,
+    ) -> bool:
         if not (target_dir / ".git").exists():
             return False
         try:
             completed = subprocess.run(
                 ["git", "-C", str(target_dir), "remote", "get-url", "origin"],
+                env=_git_subprocess_env(agent_home),
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1270,6 +1287,16 @@ def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
     return normalized.startswith("ssh://") or bool(
         re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized)
     )
+
+
+def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
+    return os.environ | {
+        "HOME": str(agent_home),
+        "GIT_SSH_COMMAND": (
+            f"ssh -F {agent_home / '.ssh' / 'config'} "
+            f"-i {agent_home / '.ssh' / 'agent-sandbox-git'}"
+        ),
+    }
 
 
 def _worker_job_uses_claude(record: WorkerJobRecord) -> bool:
