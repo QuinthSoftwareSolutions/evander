@@ -5,6 +5,18 @@
 - Fixed Team MCP command handoffs so generated `team.agent.wake_requested`
   events are durably queued and immediately scheduled with their debounce delay.
 
+## 2026-06-26 - VM Session To Container Migration Tooling
+
+- Added a guarded VM-to-container session migration command with dry-run,
+  copy-only, verify-only, cutover, and rollback phases for moving libvirt agent
+  state into durable container worker session directories.
+- Preserved existing session manifests during cutover by cloning each manifest
+  and changing only the backend identity fields while retaining model, approval,
+  tool, Team/add-on, and agent thread metadata.
+- Copied VM `/home/agent`, `/artifacts`, optional run logs, and Codex history
+  into the worker root, mirroring legacy `.codex/sessions` into the active
+  container Codex state path before refreshing container session config files.
+
 ## 2026-06-26 - Codex Relay Bootstrap And Team Guidance Cleanup
 
 - Changed Codex VM and container session bootstrap to use a relay-specific
