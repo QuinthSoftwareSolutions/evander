@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-26 - Queued Reduced-Context Retry Metadata
+
+- Preserved reduced-context retry prompts and per-effect retry settings when
+  container agent prompts are queued for later dispatch.
+- Restored queued workflow and MCP approval metadata onto container waiting
+  records so reduced-context retries keep using the same approved MCP tools.
+
 ## 2026-06-26 - Codex Final-Message Detection Corrections
 
 - Avoided marking Codex runs as failed when `task_complete.last_agent_message`

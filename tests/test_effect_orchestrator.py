@@ -5927,6 +5927,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
         runtime_dir=tmp_path,
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
+        gateway_url="http://gateway.test/mcp",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     session_repository.upsert_session(
@@ -5954,6 +5955,14 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             resume_thread_id=None,
             resume_mode="same_context",
             effect_id="scheduled-wake:wake-1",
+            metadata={
+                "workflow_run_id": "run-1",
+                "mcp_tool_approval_lease_id": "lease-1",
+                "reduced_context_prompt": "continue from the compact handoff",
+                "agent_context_retry_enabled": "false",
+                "agent_context_retry_max_attempts": "0",
+                "agent_context_retry_target_chars": "4096",
+            },
         )
     )
     backend = _ContainerDispatchBackendStub()
@@ -5987,9 +5996,40 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     command = str(backend.started_specs[0].command)
     assert "codex exec resume --last" in command
     assert "resume scheduled work" in command
+    assert "mcp_servers.agent_sandbox.url" in command
+    assert "workflow_run_id=run-1" in command
+    assert "mcp_tool_approval_lease_id=lease-1" in command
     waiting_records = list(execution_store.read_all().values())
     assert waiting_records[0].resolved_config["resume_mode"] == "same_context"
     assert waiting_records[0].input_payload["resume_mode"] == "same_context"
+    assert waiting_records[0].resolved_config["workflow_run_id"] == "run-1"
+    assert waiting_records[0].resolved_config["mcp_tool_approval_lease_id"] == "lease-1"
+    assert waiting_records[0].input_payload["workflow_run_id"] == "run-1"
+    assert waiting_records[0].input_payload["mcp_tool_approval_lease_id"] == "lease-1"
+    assert waiting_records[0].outputs["workflow_run_id"] == "run-1"
+    assert waiting_records[0].outputs["mcp_tool_approval_lease_id"] == "lease-1"
+    assert (
+        waiting_records[0].resolved_config["reduced_context_prompt"]
+        == "continue from the compact handoff"
+    )
+    assert waiting_records[0].resolved_config["agent_context_retry_enabled"] == "false"
+    assert waiting_records[0].resolved_config["agent_context_retry_max_attempts"] == "0"
+    assert waiting_records[0].resolved_config["agent_context_retry_target_chars"] == "4096"
+    assert (
+        waiting_records[0].input_payload["reduced_context_prompt"]
+        == "continue from the compact handoff"
+    )
+    assert waiting_records[0].input_payload["agent_context_retry_enabled"] == "false"
+    assert waiting_records[0].input_payload["agent_context_retry_max_attempts"] == "0"
+    assert waiting_records[0].input_payload["agent_context_retry_target_chars"] == "4096"
+    assert AgentPromptEffectProvider._context_retry_mcp_gateway_url(
+        record=waiting_records[0],
+        config=config,
+        session_id="session-1",
+    ) == (
+        "http://gateway.test/mcp?"
+        "session_id=session-1&workflow_run_id=run-1&mcp_tool_approval_lease_id=lease-1"
+    )
     assert published_events[0][0] == "started"
 
 

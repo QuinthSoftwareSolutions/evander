@@ -50,6 +50,15 @@ from agent_sandbox.session_expiry import (
 logger = logging.getLogger(__name__)
 
 _ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX = "admin-agent-prompt:"
+_QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
+    "workflow_run_id",
+    "mcp_tool_approval_lease_id",
+    "reduced_context_prompt",
+    "context_retry_prompt",
+    "agent_context_retry_enabled",
+    "agent_context_retry_max_attempts",
+    "agent_context_retry_target_chars",
+)
 
 
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
@@ -479,6 +488,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         wake_dispatch_id = ""
         if isinstance(getattr(record, "metadata", {}), dict):
             wake_dispatch_id = str(record.metadata.get("wake_dispatch_id") or "").strip()
+        restored_metadata = self._queued_prompt_restored_metadata(record)
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -495,6 +505,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "agent_provider": agent_harness,
             "queue_key": queue_key,
             "wake_dispatch_id": wake_dispatch_id,
+            **restored_metadata,
         }
         outputs = {
             "dispatch_id": dispatch_id,
@@ -509,6 +520,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "execution_id": execution_id,
             "queue_key": queue_key,
             "wake_dispatch_id": wake_dispatch_id,
+            **restored_metadata,
         }
         input_payload = {
             "target": record.target,
@@ -522,6 +534,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,
+            **restored_metadata,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
@@ -570,6 +583,19 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             execution_record=execution_record,
         )
         return True
+
+    @staticmethod
+    def _queued_prompt_restored_metadata(record: Any) -> dict[str, str]:
+        metadata = getattr(record, "metadata", {})
+        if not isinstance(metadata, dict):
+            return {}
+        restored: dict[str, str] = {}
+        for key in _QUEUED_PROMPT_RESTORED_METADATA_KEYS:
+            value = metadata.get(key)
+            text = str(value).strip() if value is not None else ""
+            if text:
+                restored[key] = text
+        return restored
 
     def _record_libvirt_waiting_execution(
         self,

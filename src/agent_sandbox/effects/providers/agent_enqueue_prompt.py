@@ -62,6 +62,14 @@ _ACTIVE_CONTAINER_STATUSES = {
     "running",
 }
 
+_CONTEXT_RETRY_METADATA_KEYS = (
+    "reduced_context_prompt",
+    "context_retry_prompt",
+    "agent_context_retry_enabled",
+    "agent_context_retry_max_attempts",
+    "agent_context_retry_target_chars",
+)
+
 
 def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
     execution_store = getattr(worker, "execution_store", None)
@@ -222,6 +230,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
             )
             return {
                 "success": True,
@@ -267,6 +276,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             error_message = (
@@ -409,6 +419,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
             )
             return {
                 "success": True,
@@ -490,6 +501,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
             error_message = (
@@ -916,6 +928,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         workflow_for_execution_ids: dict[str, str] | None = None,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
+        context_retry_metadata: Mapping[str, Any] | None = None,
         resume_thread_metadata_key: str | None = None,
         resume_thread_metadata_collection: str | None = None,
     ) -> QueuedAgentPromptRecord:
@@ -930,6 +943,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             }.items()
             if value
         }
+        metadata.update(self._context_retry_metadata(context_retry_metadata))
         max_retries = self._agent_prompt_queue_max_retries()
         try:
             return enqueue_agent_prompt(
@@ -966,6 +980,21 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     max_retries=exc.max_retries,
                 ),
             ) from exc
+
+    @classmethod
+    def _context_retry_metadata(
+        cls, payload: Mapping[str, Any] | None
+    ) -> dict[str, str]:
+        if not isinstance(payload, Mapping):
+            return {}
+        metadata: dict[str, str] = {}
+        for key in _CONTEXT_RETRY_METADATA_KEYS:
+            if key not in payload:
+                continue
+            text = cls._normalize_optional_string(payload.get(key))
+            if text is not None:
+                metadata[key] = text
+        return metadata
 
     def _agent_prompt_queue_max_retries(self) -> int:
         context = self._context()

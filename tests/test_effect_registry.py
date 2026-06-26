@@ -3175,6 +3175,10 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             prompt="check teams",
             queue_key="chat:thread-1:msg-1",
             resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+            reduced_context_prompt="continue from the compact handoff",
+            agent_context_retry_enabled=False,
+            agent_context_retry_max_attempts=0,
+            agent_context_retry_target_chars=4096,
         )
     ).execute()
 
@@ -3186,6 +3190,14 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     assert "check teams" in queued_payload
     assert "chat:thread-1:msg-1" in queued_payload
     assert "teams:chat-1:agent_thread_id" in queued_payload
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+        "chat:thread-1:msg-1"
+    )
+    assert queued is not None
+    assert queued.metadata["reduced_context_prompt"] == "continue from the compact handoff"
+    assert queued.metadata["agent_context_retry_enabled"] == "False"
+    assert queued.metadata["agent_context_retry_max_attempts"] == "0"
+    assert queued.metadata["agent_context_retry_target_chars"] == "4096"
 
 
 def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
@@ -3565,6 +3577,8 @@ def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(
                 type="effect:agent:enqueue-prompt",
                 target="session-1",
                 prompt="check teams",
+                context_retry_prompt="retry with the minimal state",
+                agent_context_retry_max_attempts=2,
             )
         ).execute()
 
@@ -3572,6 +3586,10 @@ def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(
     queued_payload = (tmp_path / "queued-agent-prompts.json").read_text(encoding="utf-8")
     assert "session-1" in queued_payload
     assert "check teams" in queued_payload
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get("session-1")
+    assert queued is not None
+    assert queued.metadata["context_retry_prompt"] == "retry with the minimal state"
+    assert queued.metadata["agent_context_retry_max_attempts"] == "2"
 
 
 def test_agent_prompt_provider_passes_model_override() -> None:
