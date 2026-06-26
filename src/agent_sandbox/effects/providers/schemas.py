@@ -272,6 +272,9 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     repo_source: ConfigValue
+    canonical_origin_url: ConfigValue | None = None
+    bare_repo_name: ConfigValue | None = None
+    bare_repo_path: ConfigValue | None = None
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     directory_path: ConfigValue | None = None
@@ -319,6 +322,11 @@ class AgentPromptEffectDefinition(EffectDefinition):
     resume_thread_metadata_key: ConfigValue | None = None
     resume_thread_metadata_collection: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
+    reduced_context_prompt: ConfigValue | None = None
+    context_retry_prompt: ConfigValue | None = None
+    agent_context_retry_enabled: ConfigValue | None = None
+    agent_context_retry_max_attempts: ConfigValue | None = None
+    agent_context_retry_target_chars: ConfigValue | None = None
 
 
 class AgentEnqueuePromptEffectDefinition(EffectDefinition):
@@ -329,11 +337,18 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     prompt: ConfigValue
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
+    dispatch_id: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    resume_mode: ConfigValue | None = None
     resume_thread_metadata_key: ConfigValue | None = None
     resume_thread_metadata_collection: ConfigValue | None = None
     queue_key: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
+    reduced_context_prompt: ConfigValue | None = None
+    context_retry_prompt: ConfigValue | None = None
+    agent_context_retry_enabled: ConfigValue | None = None
+    agent_context_retry_max_attempts: ConfigValue | None = None
+    agent_context_retry_target_chars: ConfigValue | None = None
 
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
@@ -566,6 +581,7 @@ class VmCopyFilesItemDefinition(BaseModel):
     overwrite: ConfigValue | None = True
     merge_strategy: ConfigValue | None = None
     section_id: ConfigValue | None = None
+    remove_section_ids: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_source_or_content(self) -> "VmCopyFilesItemDefinition":
@@ -578,6 +594,8 @@ class VmCopyFilesItemDefinition(BaseModel):
                 raise ValueError("managed_section merge requires inline content")
             if self.section_id is None:
                 raise ValueError("managed_section merge requires section_id")
+        elif self.remove_section_ids is not None and self.merge_strategy is None:
+            raise ValueError("remove_section_ids requires managed_section merge")
         return self
 
 

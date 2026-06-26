@@ -53,4 +53,6 @@ EOF
     assert args[:2] == ["exec", "-c"]
     assert "web_search=\"disabled\"" in args
     assert "mcp_servers.agent_sandbox.url=\"http://gateway.test:8000/mcp?session_id=session-1\"" in args
+    assert "--enable" in args
+    assert "non_prefixed_mcp_tool_names" in args
     assert "--json" in args

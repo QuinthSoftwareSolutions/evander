@@ -1,5 +1,140 @@
 # Changelog
 
+## 2026-06-26 - Queued Dispatch Correlation Fixes
+
+- Preserved caller-supplied dispatch ids when busy agent prompts are queued and
+  reused them during queued libvirt and container dispatch replay.
+- Let lightweight AdminService facades delegate libvirt resume calls without
+  requiring container session repository support.
+- Kept Team session-health container and execution details out of rows that do
+  not have real container metadata or execution records.
+
+## 2026-06-26 - Queued Reduced-Context Retry Metadata
+
+- Preserved reduced-context retry prompts and per-effect retry settings when
+  container agent prompts are queued for later dispatch.
+- Restored queued workflow and MCP approval metadata onto container waiting
+  records so reduced-context retries keep using the same approved MCP tools.
+
+## 2026-06-26 - Codex Final-Message Detection Corrections
+
+- Avoided marking Codex runs as failed when `task_complete.last_agent_message`
+  is empty but assistant output was already emitted in the same stream.
+- Parsed nested `event_msg` token-count events in worker outcome detection and
+  live Codex log filtering so context-limit diagnostics keep token details.
+
+## 2026-06-26 - Container Codex Native MCP Tools
+
+- Enabled Codex `non_prefixed_mcp_tool_names` for generated container session
+  configs and container Codex invocations so Team MCP tools can appear as
+  native callable tools instead of requiring manual MCP HTTP calls.
+- Covered existing VM-to-container refresh tooling so repaired container
+  session homes preserve Codex history while receiving the native MCP feature
+  flag in both active and legacy Codex config locations.
+
+## 2026-06-26 - Reduced-Context Retry For Context-Exhausted Agents
+
+- Added a generic reduced-context retry path for Codex container-worker agent
+  prompts whose completed worker execution is marked as context exhausted.
+- Kept workflow agent-prompt records waiting while the bounded retry runs, so
+  downstream completion events are published only after the retry settles.
+- Added conservative provider config knobs for enabling the retry, limiting
+  attempts, and setting the deterministic reduced-prompt character budget.
+
+## 2026-06-26 - Codex Missing Final Message Failure Detection
+
+- Marked completed Codex container-worker executions as failed when Codex emits
+  `task_complete` without a final agent message, including suspected local
+  context-limit diagnostics when local-model token usage supports that cause.
+- Added the same missing-final-message diagnostic to live filtered Codex logs,
+  reconstructed worker logs, container execution metadata, and Admin
+  container-agent status presentation.
+
+## 2026-06-26 - Evander CLI Rename
+
+- Added `evander-cli` as the preferred host CLI entry point while keeping
+  `agent-sandbox-cli` as a compatibility alias.
+- Updated service templates, helper scripts, operator notifications, tests, and
+  docs to use `evander-cli` for new installs and examples.
+
+## 2026-06-26 - Team Add-on Container Roster Status
+
+- Hid the Team Add-on roster `active` pill for container-backed agents unless
+  they have an active Team runtime dispatch, while preserving paused/archived
+  roster states and VM-backed status display.
+- Added session backend, container lifecycle, and Agents-page execution details
+  to Team runtime session health payloads so the UI can distinguish roster
+  state from execution state.
+- Passed Team project canonical Git URLs into container project-repo preparation
+  and let container mirrors prefer a matching local remote, avoiding SSH-only
+  origin fetches from systemd services when an HTTPS remote is configured.
+- Honored Team project bare Git remote names during container project-repo
+  preparation, keeping VM and container sessions on the same project remote
+  instead of creating a separate hashed mirror.
+- Preserved Team-owned branch refs during container Git SSH mirror refresh and
+  fell back to generated mirrors for host-only bare repo paths that are not
+  directly worker-addressable under the configured Git root.
+- Fixed systemd unit rendering under `pkexec` so services run as the repository
+  owner instead of root when `SUDO_USER` is unavailable.
+- Routed generic agent resume calls for container-backed sessions through the
+  container prompt dispatch path, preserving Team dispatch ids and resume mode
+  instead of falling through to VM-only resume handling.
+
+## 2026-06-26 - Team Add-on MCP Wake Request Publishing
+
+- Fixed Team MCP command handoffs so generated `team.agent.wake_requested`
+  events are durably queued and immediately scheduled with their debounce delay.
+- Fixed duplicate debounced wake requests so command responses and idempotency
+  records report the stored outbox row after idempotency dedupe.
+
+## 2026-06-26 - VM Session To Container Migration Tooling
+
+- Added a guarded VM-to-container session migration command with dry-run,
+  copy-only, verify-only, cutover, and rollback phases for moving libvirt agent
+  state into durable container worker session directories.
+- Preserved existing session manifests during cutover by cloning each manifest
+  and changing only the backend identity fields while retaining model, approval,
+  tool, Team/add-on, and agent thread metadata.
+- Copied VM `/home/agent`, `/artifacts`, optional run logs, and Codex history
+  into the worker root, mirroring legacy `.codex/sessions` into the active
+  container Codex state path before refreshing container session config files.
+
+## 2026-06-26 - Codex Relay Bootstrap And Team Guidance Cleanup
+
+- Changed Codex VM and container session bootstrap to use a relay-specific
+  `evander_openai_relay` provider with websocket support disabled, preventing
+  startup websocket prewarm failures against the host OpenAI relay.
+- Bumped Team Add-on agent guidance seeding so active agents remove stale
+  `truman-team-addon` managed guidance sections when current
+  `evander-team-addon` MCP guidance is reseeded.
+
+## 2026-06-26 - Team Add-on Debounced Wake Requests
+
+- Added debounced `team.agent.wake_requested` events so high-signal Team
+  handoffs can lease an agent outside the shared 15-minute cron while preserving
+  active lease checks, cost guards, low-priority batching, and no-progress
+  suppression.
+
+## 2026-06-26 - Built-In Chat Scroll Anchoring
+
+- Fixed the built-in assistant chat so sending a message keeps the transcript
+  anchored near the newest messages instead of jumping to the oldest messages.
+- Loaded built-in assistant chat transcripts in bounded pages and fetches older
+  messages when scrolling upward, avoiding full-thread loads for long chats.
+- Replaced stale live transcript windows when the latest streamed page no longer
+  overlaps the loaded messages, preventing unrecoverable gaps after long tab
+  sleeps or disconnects.
+
+## 2026-06-26 - Local Container Worker Host-Network Opt-In
+
+- Added an explicit unsafe host-network opt-in for single-host local container
+  worker experiments, keeping Docker host networking refused by default while
+  allowing operator-owned workstation deployments to bypass blocked bridge
+  traffic.
+- Fixed effect-provider runtime metadata seeding so the effect orchestrator can
+  start while passing internal event and workflow journal paths to effect
+  providers.
+
 ## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
 
 - Added a Team Add-on state stream so the UI receives revision snapshots

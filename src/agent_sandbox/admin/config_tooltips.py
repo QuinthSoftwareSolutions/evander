@@ -437,6 +437,15 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "agent_prompt_queue_max_retries": (
         "Maximum durable queue attempts allowed for the same agent prompt before prompt enqueue fails."
     ),
+    "agent_context_retry_enabled": (
+        "Automatically retry Codex agent prompts with reduced context when a run exhausts the model context before producing a final response."
+    ),
+    "agent_context_retry_max_attempts": (
+        "Maximum automatic reduced-context retries after context-exhausted agent prompt runs."
+    ),
+    "agent_context_retry_target_chars": (
+        "Target character budget for deterministic reduced-context retry prompts."
+    ),
     "discord_resume_prompt": (
         "Prompt text passed to the Discord wake worker when waking an agent session for unread Discord messages."
     ),

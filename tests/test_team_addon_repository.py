@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import evander_team_addon.repository as team_repository_module
 from evander_team_addon.models import (
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -45,7 +46,9 @@ from evander_team_addon.models import (
     project_lead_agent_id,
 )
 from evander_team_addon.repository import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
     EPHEMERAL_COMPLETED_EVENT_TYPE,
     EPHEMERAL_REQUESTED_EVENT_TYPE,
     GIT_PROMOTION_EVENT_TYPE,
@@ -1702,6 +1705,224 @@ def test_repository_finalize_agent_dispatch_counts_mark_inbox_handled_when_class
 
     assert result["progress_made"] is True
     assert state.agent_runtimes["backend"].no_progress_count == 0
+
+
+def test_high_priority_inbox_action_emits_debounced_wake_request(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "questions": [
+                {
+                    "recipient_agent_id": "lead",
+                    "question": "Can you decide this now?",
+                    "priority": "high",
+                    "response_requested": True,
+                }
+            ],
+        },
+    )
+
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    assert wake_events[0]["payload"] == {
+        "team_id": "team",
+        "agent_id": "lead",
+        "session_id": "session-lead",
+        "reason": "inbox",
+    }
+
+
+def test_create_task_command_enqueues_debounced_wake_request_outbox(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
+
+    _state, result = repo.create_task_command(
+        session_id="session-lead",
+        request_id="request-create-task-wake",
+        task_id="task-wake",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Wake backend",
+        description="Create work that should wake backend after debounce.",
+    )
+
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert result["outbox_record_ids"]
+    outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert [record.id for record in outbox_records] == result["outbox_record_ids"]
+    assert outbox_records[0].status == TeamOutboxStatus.PENDING
+    assert outbox_records[0].payload["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert outbox_records[0].payload["delay_seconds"] == (
+        DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    )
+    assert outbox_records[0].payload["payload"]["agent_id"] == "backend"
+
+
+def test_create_task_command_reports_stored_debounced_wake_outbox_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(team_repository_module, "utc_now", lambda: now)
+
+    _state, first = repo.create_task_command(
+        session_id="session-lead",
+        request_id="request-create-task-wake-a",
+        task_id="task-wake-a",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Wake backend A",
+        description="First wake in the debounce bucket.",
+    )
+    _state, second = repo.create_task_command(
+        session_id="session-lead",
+        request_id="request-create-task-wake-b",
+        task_id="task-wake-b",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Wake backend B",
+        description="Second wake in the same debounce bucket.",
+    )
+
+    outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert len(outbox_records) == 1
+    stored_outbox_id = outbox_records[0].id
+    assert first["outbox_record_ids"] == [stored_outbox_id]
+    assert second["outbox_record_ids"] == [stored_outbox_id]
+    idempotency = repo.get_idempotency_record(
+        tool_name="team_create_task",
+        caller_identity="agent:lead",
+        scope_kind="dispatch",
+        scope_id="dispatch-create-task",
+        request_id="request-create-task-wake-b",
+    )
+    assert idempotency is not None
+    assert idempotency.response_payload["outbox_record_ids"] == [stored_outbox_id]
+    assert stored_outbox_id in idempotency.created_domain_ids
+
+
+def test_low_priority_inbox_action_does_not_emit_wake_request(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    _state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "message": "Progress note only.",
+                    "priority": "low",
+                    "response_requested": False,
+                }
+            ],
+        },
+    )
+
+    assert all(
+        event["event_type"] != AGENT_WAKE_REQUESTED_EVENT_TYPE
+        for event in result["events"]
+    )
+
+
+def test_immediate_lease_path_bypasses_wake_interval_for_ready_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_task(repo, task_id="task-ready", owner_agent_id="backend")
+
+    def _throttle_by_interval(state):
+        runtime = state.agent_runtimes.setdefault(
+            "backend",
+            AgentRuntime(agent_id="backend"),
+        )
+        runtime.next_wake_at = now + timedelta(minutes=15)
+        return state
+
+    repo.update(_throttle_by_interval)
+
+    _state, cron_leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=now,
+        respect_wake_interval=True,
+    )
+    state, immediate_leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=now,
+        respect_wake_interval=False,
+    )
+
+    assert cron_leases == []
+    assert [lease["agent"]["id"] for lease in immediate_leases] == ["backend"]
+    assert state.agent_runtimes["backend"].wake_reason == "scheduled"
+
+
+def test_finalize_reemits_wake_request_for_inbox_arriving_during_active_lease(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _lease_backend(repo, dispatch_id="dispatch-active")
+
+    def _add_pending_message(state):
+        state.inbox["inbox-during-lease"] = AgentInboxItem(
+            id="inbox-during-lease",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.QUESTION,
+            response_requested=True,
+            priority=TeamInboxPriority.HIGH,
+            state=TeamInboxItemState.PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_add_pending_message)
+
+    state, result = repo.finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id="dispatch-active",
+    )
+
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["delay_seconds"] == 0
+    assert wake_events[0]["idempotency_key"].endswith(":after-dispatch:dispatch-active")
+    assert wake_events[0]["payload"]["agent_id"] == "backend"
+    assert wake_events[0]["payload"]["reason"] == "inbox"
 
 
 def test_repository_finalize_agent_dispatch_validation_failure_has_no_action_feedback(

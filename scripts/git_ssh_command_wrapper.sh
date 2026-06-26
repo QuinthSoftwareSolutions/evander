@@ -127,7 +127,7 @@ clear_staged_mirror_refs() {
 is_preserved_local_mirror_ref() {
   local ref="$1"
   case "${ref}" in
-    refs/heads/agents/*|refs/heads/review/*)
+    refs/heads/agents/*|refs/heads/review/*|refs/heads/team/*)
       return 0
       ;;
   esac
@@ -213,7 +213,7 @@ build_safe_default_refspecs() {
     [[ -n "${ref}" ]] || continue
     local branch_name="${ref#refs/heads/}"
     case "${branch_name}" in
-      agents/*|review/*)
+      agents/*|review/*|team/*)
         continue
         ;;
     esac
@@ -270,7 +270,7 @@ build_remote_tracking_refspecs() {
     [[ -n "${ref}" ]] || continue
     local remote_branch_name="${ref#refs/remotes/${remote_name}/}"
     case "${remote_branch_name}" in
-      HEAD|agents/*|review/*)
+      HEAD|agents/*|review/*|team/*)
         continue
         ;;
     esac

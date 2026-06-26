@@ -45,6 +45,9 @@ class ContainerGitMirrorResolver:
         self,
         *,
         repo_source: str,
+        canonical_repo_source: str | None = None,
+        bare_repo_name: str | None = None,
+        bare_repo_path: str | None = None,
         clone_branch: str | None = None,
         directory_path: str | None = None,
         session_id: str | None = None,
@@ -57,14 +60,23 @@ class ContainerGitMirrorResolver:
         resolved_repo_path = self._resolve_repo_path(original_repo_source)
         raw_repo_name = self._resolve_repo_name(original_repo_source)
         repo_name = _safe_worker_repo_name(raw_repo_name)
-        canonical_hash_source = (
-            original_repo_source
-            if _is_remote_git_source(original_repo_source)
-            else str(Path(resolved_repo_path).resolve(strict=False))
+        explicit_mirror_target = self._explicit_mirror_target(
+            bare_repo_name=bare_repo_name,
+            bare_repo_path=bare_repo_path,
         )
-        mirror_name = _mirror_name(raw_repo_name, canonical_hash_source)
-        mirror_path = self.git_root_path / f"{mirror_name}.git"
-        canonical_repo_source = self._canonical_repo_source(
+        explicit_project_mirror = explicit_mirror_target is not None
+        if explicit_mirror_target is None:
+            canonical_hash_source = (
+                original_repo_source
+                if _is_remote_git_source(original_repo_source)
+                else str(Path(resolved_repo_path).resolve(strict=False))
+            )
+            mirror_name = _mirror_name(raw_repo_name, canonical_hash_source)
+            mirror_path = self.git_root_path / f"{mirror_name}.git"
+        else:
+            mirror_name, mirror_path = explicit_mirror_target
+        preferred_canonical_repo_source = _optional_text(canonical_repo_source)
+        resolved_canonical_repo_source = preferred_canonical_repo_source or self._canonical_repo_source(
             original_repo_source=original_repo_source,
             resolved_repo_path=resolved_repo_path,
         )
@@ -76,14 +88,16 @@ class ContainerGitMirrorResolver:
                     mirror_path=mirror_path,
                     resolved_repo_path=resolved_repo_path,
                     original_repo_source=original_repo_source,
-                    canonical_repo_source=canonical_repo_source,
+                    canonical_repo_source=resolved_canonical_repo_source,
+                    preferred_remote_url=preferred_canonical_repo_source,
+                    prune_stale_branches=not explicit_project_mirror,
                 )
                 if clone_branch:
                     self._ensure_branch_exists(mirror_path, clone_branch)
 
         return ContainerGitMirror(
             original_repo_source=original_repo_source,
-            canonical_repo_source=canonical_repo_source,
+            canonical_repo_source=resolved_canonical_repo_source,
             resolved_repo_path=resolved_repo_path,
             repo_name=repo_name,
             mirror_name=mirror_name,
@@ -152,6 +166,32 @@ class ContainerGitMirrorResolver:
             env=self._helper_env(),
         )
 
+    def _explicit_mirror_target(
+        self,
+        *,
+        bare_repo_name: str | None,
+        bare_repo_path: str | None,
+    ) -> tuple[str, Path] | None:
+        normalized_name = _optional_text(bare_repo_name)
+        normalized_path = _optional_text(bare_repo_path)
+        if normalized_name and normalized_path:
+            raise ValueError("bare_repo_name and bare_repo_path are mutually exclusive")
+        if normalized_name:
+            mirror_name = _normalize_bare_repo_name(normalized_name)
+            return mirror_name, self.git_root_path / f"{mirror_name}.git"
+        if not normalized_path:
+            return None
+
+        mirror_path = Path(normalized_path)
+        if not mirror_path.is_absolute():
+            mirror_path = self.git_root_path / mirror_path
+        mirror_path = mirror_path.resolve(strict=False)
+        git_root = self.git_root_path.resolve(strict=False)
+        if mirror_path.parent != git_root or not mirror_path.name.endswith(".git"):
+            return None
+        mirror_name = _normalize_bare_repo_name(mirror_path.name)
+        return mirror_name, mirror_path
+
     @contextmanager
     def _mirror_initialization_lock(self, mirror_name: str) -> Iterator[None]:
         self.git_root_path.mkdir(parents=True, exist_ok=True)
@@ -181,8 +221,14 @@ class ContainerGitMirrorResolver:
         resolved_repo_path: str,
         original_repo_source: str,
         canonical_repo_source: str,
+        preferred_remote_url: str | None = None,
+        prune_stale_branches: bool = True,
     ) -> None:
-        remote_name = _mirror_remote_name_for_repo(self, resolved_repo_path)
+        remote_name = _mirror_remote_name_for_repo(
+            self,
+            resolved_repo_path,
+            preferred_remote_url=preferred_remote_url,
+        )
         if not _is_remote_git_source(original_repo_source):
             _sync_and_validate_local_remote(self, resolved_repo_path, remote_name)
         refspecs = _mirror_fetch_refspecs(self, resolved_repo_path, remote_name)
@@ -198,7 +244,8 @@ class ContainerGitMirrorResolver:
                 *refspecs,
             ]
         )
-        _prune_stale_mirror_branches(self, mirror_path, refspecs)
+        if prune_stale_branches:
+            _prune_stale_mirror_branches(self, mirror_path, refspecs)
         mirror_source = (
             original_repo_source
             if _is_remote_git_source(original_repo_source)
@@ -311,11 +358,30 @@ def _mirror_name(repo_name: str, canonical_source: str) -> str:
     return f"{safe_name}-{source_hash}"
 
 
+def _normalize_bare_repo_name(value: str) -> str:
+    text = value.strip()
+    if "/" in text or "\\" in text or text in {"", ".", ".."}:
+        raise ValueError("bare_repo_name must be a single repository name")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+(?:\.git)?", text):
+        raise ValueError("bare_repo_name contains unsupported characters")
+    name = text[:-4] if text.endswith(".git") else text
+    if name in {"", ".", ".."}:
+        raise ValueError("bare_repo_name must be a single repository name")
+    return name
+
+
 def _safe_worker_repo_name(repo_name: str) -> str:
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", unquote(repo_name.strip())).strip(".-")
     if not safe_name or safe_name in {".", ".."}:
         return "repo"
     return safe_name
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _git_remote_url(
@@ -334,7 +400,20 @@ def _git_remote_url(
     return (completed.stdout or "").strip() if completed.returncode == 0 else ""
 
 
-def _mirror_remote_name_for_repo(resolver: ContainerGitMirrorResolver, repo_path: str) -> str:
+def _mirror_remote_name_for_repo(
+    resolver: ContainerGitMirrorResolver,
+    repo_path: str,
+    *,
+    preferred_remote_url: str | None = None,
+) -> str:
+    preferred = _optional_text(preferred_remote_url)
+    if preferred:
+        remotes = _git_output(resolver, ["git", "-C", repo_path, "remote"])
+        for line in remotes.splitlines():
+            remote = line.strip()
+            if remote and _git_remote_url(resolver, repo_path, remote) == preferred:
+                return remote
+
     current_branch = _git_output(resolver, ["git", "-C", repo_path, "branch", "--show-current"])
     if current_branch:
         tracking_remote = _git_output(
@@ -517,7 +596,11 @@ def _refspec_destination_ref(refspec: str) -> str:
 
 
 def _skip_mirror_branch(branch: str) -> bool:
-    return branch.startswith("agents/") or branch.startswith("review/")
+    return (
+        branch.startswith("agents/")
+        or branch.startswith("review/")
+        or branch.startswith("team/")
+    )
 
 
 def _git_bare_refs(

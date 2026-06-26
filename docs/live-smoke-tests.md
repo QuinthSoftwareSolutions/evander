@@ -107,7 +107,7 @@ Create a dedicated smoke-test session:
 
 ```bash
 cd /path/to/agent-sandbox
-./.venv/bin/agent-sandbox-cli create-session \
+./.venv/bin/evander-cli create-session \
   smoke-live \
   --runtime-dir runtime \
   --vm-id vm-smoke-live \
@@ -117,7 +117,7 @@ cd /path/to/agent-sandbox
 Seed the dedicated Discord channel into the command store and note the returned cursor:
 
 ```bash
-./.venv/bin/agent-sandbox-cli seed-discord-channel \
+./.venv/bin/evander-cli seed-discord-channel \
   123456789012345678 \
   --runtime-dir runtime
 ```

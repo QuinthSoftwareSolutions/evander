@@ -28,14 +28,14 @@ route. For full wordmark logos, set `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE=wo
 ## Bootstrap Flow
 
 1. Install Python dependencies with `uv`.
-2. Run `agent-sandbox-cli init-state --runtime-dir runtime`.
+2. Run `evander-cli init-state --runtime-dir runtime`.
 3. Edit host-global bootstrap settings in `runtime/host-config.json`.
-4. Configure `root` directory overlays directly with the admin UI or `agent-sandbox-cli directories config-set`.
-5. If you are importing an older install, run `agent-sandbox-cli migrate-global-config-to-root --config /path/to/legacy-gateway.yaml` once to seed `host-config.json` plus `root` from the legacy YAML file.
+4. Configure `root` directory overlays directly with the admin UI or `evander-cli directories config-set`.
+5. If you are importing an older install, run `evander-cli migrate-global-config-to-root --config /path/to/legacy-gateway.yaml` once to seed `host-config.json` plus `root` from the legacy YAML file.
 6. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
 7. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
 8. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
-9. Create a session manifest with `agent-sandbox-cli create-session`.
+9. Create a session manifest with `evander-cli create-session`.
 10. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 10. Optionally bootstrap a provider runtime in the guest (for example `./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
@@ -58,9 +58,9 @@ route. For full wordmark logos, set `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE=wo
 Before debugging individual scripts or services, run the consolidated host status command:
 
 - Human-readable summary:
-  - `agent-sandbox-cli status --runtime-dir runtime`
+  - `evander-cli status --runtime-dir runtime`
 - Machine-readable output:
-  - `agent-sandbox-cli status --runtime-dir runtime --json`
+  - `evander-cli status --runtime-dir runtime --json`
 
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
@@ -209,7 +209,7 @@ tools are the only Team action path.
 7. Run focused smoke checks:
 
    ```bash
-   agent-sandbox-cli status --runtime-dir runtime --json
+   evander-cli status --runtime-dir runtime --json
    ```
 
    Confirm the migration grep from the implementation plan shows only expected
@@ -415,8 +415,8 @@ button sends a cache-bypass marker for a fresh read.
 For machine-readable scripting that matches the GUI data model, use:
 
 ```bash
-agent-sandbox-cli list-vms --all --json
-agent-sandbox-cli list-local-issues --json
+evander-cli list-vms --all --json
+evander-cli list-local-issues --json
 ```
 
 ## Admin Web Authentication
@@ -498,19 +498,19 @@ To keep the rollout safe, directory-scoped config remains transition-gated:
 Initialize missing ownership on an existing runtime:
 
 ```bash
-agent-sandbox-cli migrate-directory-ownership --runtime-dir runtime
+evander-cli migrate-directory-ownership --runtime-dir runtime
 ```
 
 Common CLI flows:
 
 ```bash
-agent-sandbox-cli directories list --runtime-dir runtime --parent root
-agent-sandbox-cli directories create --runtime-dir runtime --parent root team
-agent-sandbox-cli directories rename --runtime-dir runtime root/team sandbox
-agent-sandbox-cli directories move --runtime-dir runtime root/sandbox --new-parent root
-agent-sandbox-cli directories show --runtime-dir runtime root
-agent-sandbox-cli directories config-set --runtime-dir runtime --domain policy root/team '{"default_session_ttl_seconds":120}'
-agent-sandbox-cli directories config-show --runtime-dir runtime --domain policy root/team
+evander-cli directories list --runtime-dir runtime --parent root
+evander-cli directories create --runtime-dir runtime --parent root team
+evander-cli directories rename --runtime-dir runtime root/team sandbox
+evander-cli directories move --runtime-dir runtime root/sandbox --new-parent root
+evander-cli directories show --runtime-dir runtime root
+evander-cli directories config-set --runtime-dir runtime --domain policy root/team '{"default_session_ttl_seconds":120}'
+evander-cli directories config-show --runtime-dir runtime --domain policy root/team
 ```
 
 Storage layout for directory config:
@@ -536,7 +536,7 @@ Storage layout for directory config:
 - Override the key with `SSH_PUBLIC_KEY_FILE=/path/to/key.pub`, or point `SSH_PRIVATE_KEY_PATH` at the matching private key so the script can derive a temporary public key when needed.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.
 - Host-side guest SSH commands store guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name. `destroy_agent_vm.sh` removes the stale alias for a destroyed VM so a replacement VM can be learned cleanly.
-- To list all currently running VMs with live guest agent status from the host, run `agent-sandbox-cli list-vms`.
+- To list all currently running VMs with live guest agent status from the host, run `evander-cli list-vms`.
 
 ## VM Agent Runtime Baseline
 
@@ -549,7 +549,7 @@ Storage layout for directory config:
 ### Codex provider bootstrap
 
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, seeds `~/bin/rg`, and verifies Codex.
-- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
+- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
 
@@ -597,10 +597,10 @@ Storage layout for directory config:
 - Use the channel lookup helper in the same Communications area to resolve `team-id/channel-id`
   entries and copy them into communication targets.
 - Use the host CLI for delegated auth lifecycle when you need a headless fallback:
-  - `agent-sandbox-cli teams-auth login --directory <directory-path>`
-  - `agent-sandbox-cli teams-auth status --directory <directory-path>`
-  - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
-  - `agent-sandbox-cli teams-auth list`
+  - `evander-cli teams-auth login --directory <directory-path>`
+  - `evander-cli teams-auth status --directory <directory-path>`
+  - `evander-cli teams-auth logout --directory <directory-path>`
+  - `evander-cli teams-auth list`
 - After changing `teams_delegated_scopes`, repeat `teams-auth login` for that directory so the
   stored delegated credential is refreshed with the new scopes.
 - The legacy static env-token mode remains supported for compatibility. In that mode,
@@ -758,7 +758,7 @@ Storage layout for directory config:
     }
   }
   ```
-- For local OpenAI-compatible Codex routing, keep `agent_provider` as `codex` and set `model_provider_mode: "local_openai"`. The relay forwards normal OpenAI-compatible HTTP requests to `local_openai_api_base_url`, sends `local_openai_api_key` as a placeholder bearer token, and records usage rows under `local_openai_provider_name`.
+- For local OpenAI-compatible Codex routing, keep `agent_provider` as `codex` and set `model_provider_mode: "local_openai"`. The relay forwards normal OpenAI-compatible HTTP requests to `local_openai_api_base_url`, sends `local_openai_api_key` as a placeholder bearer token, and records usage rows under `local_openai_provider_name`. Guest Codex config should use the generated `evander_openai_relay` provider instead of overriding the built-in `openai` provider so websocket prewarm remains disabled for the relay.
 - `local_openai` mode is HTTP/SSE only. The relay rejects websocket/realtime requests
   before dialing the upstream local endpoint because the supported Ollama target does
   not implement OpenAI websocket `/responses`.
@@ -1050,8 +1050,8 @@ Example MCP call:
   - `respond_to_agent` consumes the token one time; replay attempts are denied.
   - Tampered/invalid/expired tokens are denied.
 - CLI defaults and overrides:
-  - `agent-sandbox-cli create-session` includes both tools by default.
-  - Use `agent-sandbox-cli add-tool-permission` / `revoke-tool-permission` to grant or remove
+  - `evander-cli create-session` includes both tools by default.
+  - Use `evander-cli add-tool-permission` / `revoke-tool-permission` to grant or remove
     either tool per session.
 - Least-privilege guidance:
   - Grant `prompt_agent` only to dispatcher sessions.
@@ -1411,7 +1411,7 @@ Audit/result behavior:
 - Use per-session channel allowlists when creating session manifests:
 
   ```bash
-  agent-sandbox-cli create-session \
+  evander-cli create-session \
     real-session \
     --runtime-dir runtime \
     --discord-channel 123456789012345678
@@ -1434,7 +1434,7 @@ Audit/result behavior:
 - Seed a dedicated test/control channel and get an initial cursor with:
 
   ```bash
-  ./.venv/bin/agent-sandbox-cli seed-discord-channel 123456789012345678 --runtime-dir runtime
+  ./.venv/bin/evander-cli seed-discord-channel 123456789012345678 --runtime-dir runtime
   ```
 
   Use the printed cursor as the first `since_cursor` for `discord_get_commands` so the seed entry
@@ -1517,7 +1517,7 @@ email send allowlists for the host to notify an operator target.
 2. Configure the owning directory policy with those target IDs:
 
    ```bash
-   agent-sandbox-cli directories config-set \
+   evander-cli directories config-set \
      --runtime-dir runtime \
      --domain policy \
      root \
@@ -1541,7 +1541,7 @@ email send allowlists for the host to notify an operator target.
 4. Review with Admin Web Approvals or with:
 
    ```bash
-   agent-sandbox-cli show-approval <request_id> --runtime-dir runtime
+   evander-cli show-approval <request_id> --runtime-dir runtime
    ```
 
    The review payload includes notification status and delivery attempts, so failed delivery is
@@ -1550,8 +1550,8 @@ email send allowlists for the host to notify an operator target.
 5. Decide through the existing audited path:
 
    ```bash
-   agent-sandbox-cli approve <request_id> <approver> --approve --reason "approved reason" --runtime-dir runtime
-   agent-sandbox-cli approve <request_id> <approver> --deny --reason "denied reason" --runtime-dir runtime
+   evander-cli approve <request_id> <approver> --approve --reason "approved reason" --runtime-dir runtime
+   evander-cli approve <request_id> <approver> --deny --reason "denied reason" --runtime-dir runtime
    ```
 
 Delivery failure logs `metric_approval_notification` with the target id, request id, review command,
@@ -1675,7 +1675,7 @@ still pass the provider destination/mailbox checks, and host-side credentials re
 Start from the conservative example and apply it to the directory that owns the test session:
 
 ```bash
-agent-sandbox-cli directories config-set \
+evander-cli directories config-set \
   --runtime-dir runtime \
   --domain policy \
   root \
@@ -1688,7 +1688,7 @@ For a tightly scoped outbound-send test, temporarily overlay only the send flag 
 reviewers are available:
 
 ```bash
-agent-sandbox-cli directories config-set \
+evander-cli directories config-set \
   --runtime-dir runtime \
   --domain policy \
   root \
@@ -1771,7 +1771,7 @@ If the Tool Calls SQLite index needs a full refresh after deleting or repairing 
 run:
 
 ```bash
-agent-sandbox-cli rebuild-audit-index --config runtime
+evander-cli rebuild-audit-index --config runtime
 ```
 
 Review for:
@@ -2009,8 +2009,8 @@ live provider APIs.
 
 ### Wake workers
 
-- `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
-- `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
+- `evander-cli discord-wake` owns Discord inbox wakeups and resumes.
+- `evander-cli scheduled-wake` owns scheduled resume dispatch.
 - Existing Azure DevOps PR feedback ingestion and PR completion polling are
   still owned by `agent-sandbox-ado-worker`. Legacy trigger mode writes
   `runtime/pr-feedback-store.json`, updates `runtime/pr-map.json` PR status
@@ -2088,10 +2088,10 @@ live provider APIs.
   session.
 - Recurring cron wake schedules are consumed only after a successful host resume dispatch. Failed, timed-out, or missing-script attempts stay due/retryable and remain visible through wake dispatch history.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
-  - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
-  - create recurring wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --cron "*/10 * * * *" --prompt "Periodic check-in." --mode new_context`
-  - edit existing wake: `agent-sandbox-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
-  - delete wake: `agent-sandbox-cli wake-schedules delete <request-id>`
+  - create one-time wake: `evander-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
+  - create recurring wake: `evander-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --cron "*/10 * * * *" --prompt "Periodic check-in." --mode new_context`
+  - edit existing wake: `evander-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
+  - delete wake: `evander-cli wake-schedules delete <request-id>`
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the wake workers check that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
@@ -2196,6 +2196,10 @@ queued before dispatch failed. Queue retries are also capped by
 `agent_prompt_queue_max_retries` (default `3`) for the same queue key and prompt
 digest. When the cap is exceeded, the prompt effect fails with
 `failed_phase: retry_limit` and reports `retry_count` plus `max_retries`.
+For Codex container-worker prompts, completed executions marked as context
+exhausted are retried once with deterministic reduced context by default.
+Use `agent_context_retry_enabled`, `agent_context_retry_max_attempts`, and
+`agent_context_retry_target_chars` to tune or disable that behavior.
 
 ### Guest repo preparation
 
@@ -2272,13 +2276,13 @@ email_mailboxes:
 ### Multi-mailbox session allowlist example
 
 ```bash
-agent-sandbox-cli directories config-set \
+evander-cli directories config-set \
   --runtime-dir runtime \
   --domain policy \
   root \
   '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
 
-agent-sandbox-cli create-session real-session --runtime-dir runtime
+evander-cli create-session real-session --runtime-dir runtime
 ```
 
 ## Host-Side NuGet Access
@@ -2306,7 +2310,7 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
 ## Host-Side Azure DevOps PR Worker And Work-Item Workflow Intake
 
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
-  `agent-sandbox-cli poll-ado-backlog`.
+  `evander-cli poll-ado-backlog`.
 - The worker owns Azure DevOps PR feedback ingestion and PR completion polling for configured PR
   streams. Legacy triggers without `repo` use `runtime/pr-map.json`, update
   `runtime/pr-feedback-store.json`, record PR status in `runtime/pr-map.json`, and publish
@@ -2348,14 +2352,14 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   polled; a parent directory no longer implicitly observes sessions in its descendants.
 - `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
   warnings.
-- Materialize `root/ado-worker.json` with `agent-sandbox-cli migrate-ado-worker-env-to-root` or
+- Materialize `root/ado-worker.json` with `evander-cli migrate-ado-worker-env-to-root` or
   `migrate-global-config-to-root` when you still use directory-scoped PR automation settings.
 
 Foreground runbook:
 
 ```bash
 set -a; source secrets.env; set +a
-agent-sandbox-cli poll-ado-backlog --log-level INFO
+evander-cli poll-ado-backlog --log-level INFO
 ```
 
 Systemd runbook:
@@ -2631,15 +2635,15 @@ root/default user.
 For the common issue workflow, create the VM first:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/agent-sandbox-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
+MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/evander-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
 ```
 
 Then clone the repo and apply repo-specific bootstraps as needed:
 
 ```bash
-./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
-./.venv/bin/agent-sandbox-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
-./.venv/bin/agent-sandbox-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
+./.venv/bin/evander-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+./.venv/bin/evander-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
+./.venv/bin/evander-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
 ```
 
 `create-issue-vm` still resolves issue-scoped Git settings from the `root` issue setup config,
@@ -2694,9 +2698,9 @@ host environment variable when you need different checklist wording.
 To inspect or follow the guest agent from the host:
 
 ```bash
-agent-sandbox-cli list-vms
-agent-sandbox-cli list-vms --all
-agent-sandbox-cli logs 14084 --lines 50
+evander-cli list-vms
+evander-cli list-vms --all
+evander-cli logs 14084 --lines 50
 ```
 
 For a lower-level point-in-time VM inspection, `./scripts/check_issue_vm.sh 14084`
@@ -2711,7 +2715,7 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 Create a host-local bare repository:
 
 ```bash
-agent-sandbox-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
+evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
@@ -2733,8 +2737,8 @@ step:
 
 ```bash
 ./scripts/setup_issue_git_vm.sh --remote-name origin vm-real 14084 /path/to/local/repo
-./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-real --repo-source /path/to/local/repo
-./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-real --repo-source https://example.com/org/repo.git
+./.venv/bin/evander-cli clone-repo-into-vm vm-real --repo-source /path/to/local/repo
+./.venv/bin/evander-cli clone-repo-into-vm vm-real --repo-source https://example.com/org/repo.git
 ```
 
 Issue mirrors now carry a `post-receive` hook. When the bare repo has a trusted clone mapping,
@@ -2782,7 +2786,7 @@ To migrate the legacy repo-level `config/pr-template.md` into the root directory
 run:
 
 ```bash
-agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml
+evander-cli migrate-pr-template-to-root --config config/gateway.yaml
 ```
 
 On guest issue VMs, prefer `git agent-pr-note set` / `git agent-pr-note append` instead of raw

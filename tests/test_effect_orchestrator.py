@@ -4893,6 +4893,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
             prompt="hello",
             model=None,
             vm_user="agent",
+            dispatch_id="caller-dispatch-1",
             resume_thread_id=None,
             effect_id="effect-1",
         )
@@ -4916,6 +4917,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
 
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "vm-1"
+    assert resume_calls[0]["dispatch_id"] == "caller-dispatch-1"
     queued_store_path = runtime_dir / "queued-agent-prompts.json"
     queued_payload = (
         json.loads(queued_store_path.read_text(encoding="utf-8"))
@@ -4927,6 +4929,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert len(waiting_records) == 1
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert waiting_records[0].outputs["dispatch_id"] == "caller-dispatch-1"
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
 
 
@@ -5828,6 +5831,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             prompt="check teams",
             model=None,
             vm_user="agent",
+            dispatch_id="caller-dispatch-2",
             resume_thread_id=None,
             resume_thread_metadata_key="teams:chat-1:agent_thread_id",
             effect_id="effect-agent-enqueue-prompt-1",
@@ -5867,6 +5871,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert dispatched == 1
     assert queue_store.read_all() == {}
     assert backend.started_specs[0].session_id == "session-1"
+    assert backend.started_specs[0].metadata["dispatch_id"] == "caller-dispatch-2"
     assert backend.started_specs[0].image == "runner:queue-image"
     assert "check teams" in str(backend.started_specs[0].command)
     assert "thread-existing" in str(backend.started_specs[0].command)
@@ -5874,6 +5879,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert len(waiting_records) == 1
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert waiting_records[0].outputs["dispatch_id"] == "caller-dispatch-2"
     execution_id = str(waiting_records[0].outputs["execution_id"])
     assert execution_id == backend.started_specs[0].target_name
     assert published_events[0][0] == "started"
@@ -5927,6 +5933,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
         runtime_dir=tmp_path,
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
+        gateway_url="http://gateway.test/mcp",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     session_repository.upsert_session(
@@ -5954,6 +5961,14 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             resume_thread_id=None,
             resume_mode="same_context",
             effect_id="scheduled-wake:wake-1",
+            metadata={
+                "workflow_run_id": "run-1",
+                "mcp_tool_approval_lease_id": "lease-1",
+                "reduced_context_prompt": "continue from the compact handoff",
+                "agent_context_retry_enabled": "false",
+                "agent_context_retry_max_attempts": "0",
+                "agent_context_retry_target_chars": "4096",
+            },
         )
     )
     backend = _ContainerDispatchBackendStub()
@@ -5987,9 +6002,40 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     command = str(backend.started_specs[0].command)
     assert "codex exec resume --last" in command
     assert "resume scheduled work" in command
+    assert "mcp_servers.agent_sandbox.url" in command
+    assert "workflow_run_id=run-1" in command
+    assert "mcp_tool_approval_lease_id=lease-1" in command
     waiting_records = list(execution_store.read_all().values())
     assert waiting_records[0].resolved_config["resume_mode"] == "same_context"
     assert waiting_records[0].input_payload["resume_mode"] == "same_context"
+    assert waiting_records[0].resolved_config["workflow_run_id"] == "run-1"
+    assert waiting_records[0].resolved_config["mcp_tool_approval_lease_id"] == "lease-1"
+    assert waiting_records[0].input_payload["workflow_run_id"] == "run-1"
+    assert waiting_records[0].input_payload["mcp_tool_approval_lease_id"] == "lease-1"
+    assert waiting_records[0].outputs["workflow_run_id"] == "run-1"
+    assert waiting_records[0].outputs["mcp_tool_approval_lease_id"] == "lease-1"
+    assert (
+        waiting_records[0].resolved_config["reduced_context_prompt"]
+        == "continue from the compact handoff"
+    )
+    assert waiting_records[0].resolved_config["agent_context_retry_enabled"] == "false"
+    assert waiting_records[0].resolved_config["agent_context_retry_max_attempts"] == "0"
+    assert waiting_records[0].resolved_config["agent_context_retry_target_chars"] == "4096"
+    assert (
+        waiting_records[0].input_payload["reduced_context_prompt"]
+        == "continue from the compact handoff"
+    )
+    assert waiting_records[0].input_payload["agent_context_retry_enabled"] == "false"
+    assert waiting_records[0].input_payload["agent_context_retry_max_attempts"] == "0"
+    assert waiting_records[0].input_payload["agent_context_retry_target_chars"] == "4096"
+    assert AgentPromptEffectProvider._context_retry_mcp_gateway_url(
+        record=waiting_records[0],
+        config=config,
+        session_id="session-1",
+    ) == (
+        "http://gateway.test/mcp?"
+        "session_id=session-1&workflow_run_id=run-1&mcp_tool_approval_lease_id=lease-1"
+    )
     assert published_events[0][0] == "started"
 
 

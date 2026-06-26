@@ -634,6 +634,7 @@ class HostWakeDispatcher:
                     prompt=prompt,
                     model=agent_model,
                     vm_user=worker_config.wake_vm_user,
+                    dispatch_id=dispatch_id,
                     resume_thread_id=None,
                     effect_id=queue_key,
                     resume_mode=effective_resume_mode,
@@ -719,6 +720,11 @@ class HostWakeDispatcher:
                             "dispatch_id": dispatch_id,
                             "resume_mode": effective_resume_mode,
                             "agent_provider": agent_provider,
+                            "model": (
+                                agent_model
+                                or str(getattr(session, "model", "") or "").strip()
+                            ),
+                            "model_provider_mode": base_config.model_provider_mode,
                         },
                     )
                 )

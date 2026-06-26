@@ -44,7 +44,13 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RUN_USER="${SUDO_USER:-$USER}"
+if [[ -n "${SUDO_USER:-}" ]]; then
+  RUN_USER="${SUDO_USER}"
+elif [[ "$(id -u)" -eq 0 ]]; then
+  RUN_USER="$(stat -c '%U' "${ROOT_DIR}")"
+else
+  RUN_USER="${USER}"
+fi
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 SECRETS_FILE="${ROOT_DIR}/secrets.env"
@@ -251,7 +257,7 @@ run_preflight_checks() {
     "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json."
   check_file \
     "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
-    "Run agent-sandbox-cli migrate-ado-worker-env-to-root, migrate-global-config-to-root, or configure the directory after deployment." \
+    "Run evander-cli migrate-ado-worker-env-to-root, migrate-global-config-to-root, or configure the directory after deployment." \
     "warning"
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \

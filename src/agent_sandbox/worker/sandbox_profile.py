@@ -11,6 +11,7 @@ WorkerSandboxProfileName = Literal["default", "strict"]
 class WorkerSandboxProfile:
     name: str
     network_mode: str = "none"
+    allow_host_network: bool = False
     cap_drop: tuple[str, ...] = ("ALL",)
     security_opt: tuple[str, ...] = ("no-new-privileges",)
     privileged: bool = False
@@ -24,6 +25,7 @@ class WorkerSandboxProfile:
         self,
         *,
         network_mode: str | None = None,
+        allow_host_network: bool | None = None,
         read_only_rootfs: bool | None = None,
         tmpfs: tuple[str, ...] | list[str] | None = None,
         user: str | None = None,
@@ -31,6 +33,9 @@ class WorkerSandboxProfile:
         updated = replace(
             self,
             network_mode=self.network_mode if network_mode is None else network_mode,
+            allow_host_network=self.allow_host_network
+            if allow_host_network is None
+            else allow_host_network,
             read_only_rootfs=self.read_only_rootfs
             if read_only_rootfs is None
             else read_only_rootfs,
@@ -64,7 +69,7 @@ def worker_sandbox_profile(name: str) -> WorkerSandboxProfile:
 
 def validate_worker_sandbox_profile(profile: WorkerSandboxProfile) -> WorkerSandboxProfile:
     network_mode = str(profile.network_mode or "none").strip()
-    if network_mode == "host":
+    if network_mode == "host" and not profile.allow_host_network:
         raise ValueError("container sandbox profile cannot use host networking")
     if profile.privileged:
         raise ValueError("privileged worker containers are not allowed")

@@ -1,8 +1,9 @@
 # Team Add-on Wake Decision Tree
 
-This is a visual companion to the Team Add-on wake logic. It separates the three
+This is a visual companion to the Team Add-on wake logic. It separates the four
 wake paths:
 
+- debounced persistent-agent wake requests,
 - queued Team Chat wake dispatches,
 - normal persistent-agent wake leasing,
 - governance-manager wake leasing.
@@ -18,14 +19,17 @@ flowchart TD
     start([Team runtime pack enabled])
 
     start --> cron["team-cron<br/>default: every 15 minutes"]
+    start --> wake_event["team.agent.wake_requested event<br/>default debounce: 10s"]
     start --> chat_event["team.chat.message_queued event"]
 
     cron --> normal_effect["effect:team:wake-due-agents<br/>limit 10, lease 900s, interval 900s"]
+    wake_event --> requested_effect["effect:team:wake-due-agents<br/>agent_id from wake event, limit 1<br/>respect_wake_interval=false"]
     chat_event --> chat_effect["effect:team:wake-due-agents<br/>agent_id from chat event, limit 1"]
     cron --> gov_effect["effect:team:wake-governance-managers<br/>limit 10, lease 900s, interval 3600s"]
     cron --> outbox_effect["effect:team:publish-outbox-events<br/>limit 25"]
 
     normal_effect --> cost_guard{"Team cost cap<br/>reached?"}
+    requested_effect --> cost_guard
     chat_effect --> cost_guard
     cost_guard -->|Yes| cost_skip["Skip Team-agent wakes<br/>queued chat remains queued"]
     cost_guard -->|No| normal_tree["Evaluate normal persistent agents"]
@@ -36,7 +40,7 @@ flowchart TD
     classDef wake fill:#e8fff0,stroke:#208a42,color:#102a16;
     classDef skip fill:#fff1f0,stroke:#b42318,color:#3a0b07;
     classDef process fill:#f5f8ff,stroke:#3867d6,color:#102044;
-    class normal_effect,chat_effect,gov_effect,outbox_effect,normal_tree,gov_tree,outbox,cron,chat_event process;
+    class normal_effect,requested_effect,chat_effect,gov_effect,outbox_effect,normal_tree,gov_tree,outbox,cron,wake_event,chat_event process;
     class cost_skip skip;
 ```
 
@@ -76,7 +80,7 @@ flowchart TD
     immediate_inbox -->|No| action_feedback{"Latest failed action<br/>needs feedback?"}
 
     action_feedback -->|Yes| lease_feedback["Lease now<br/>wake_reason: action_feedback"]
-    action_feedback -->|No| due_time{"next_wake_at missing<br/>or at/past now?"}
+    action_feedback -->|No| due_time{"respect_wake_interval=false<br/>or next_wake_at due?"}
 
     due_time -->|Yes| task_ready{"Task work ready?<br/>dependencies satisfied<br/>or open child tasks"}
     due_time -->|No| low_only{"Only delayed<br/>low-priority inbox?"}

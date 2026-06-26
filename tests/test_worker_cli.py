@@ -77,6 +77,28 @@ def test_worker_cli_accepts_strict_profile_network_and_container_tuning(
     assert profile.user == "1000:1000"
 
 
+def test_worker_cli_requires_explicit_unsafe_flag_for_host_network(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured = _run_cli(
+        monkeypatch,
+        [
+            "agent-sandbox-worker-daemon",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--worker-root",
+            str(tmp_path / "worker-root"),
+            "--docker-network",
+            "host",
+            "--unsafe-allow-host-network",
+        ],
+    )
+
+    profile = captured["create_app"]["sandbox_profile"]
+    assert profile.network_mode == "host"
+    assert profile.allow_host_network is True
+
+
 def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: Path) -> None:
     ssh_dir = tmp_path / "ssh"
     captured = _run_cli(

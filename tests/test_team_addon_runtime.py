@@ -11,6 +11,8 @@ import pytest
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.artifact_spaces import ArtifactSpaceStore
+from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.events.scheduled import scheduled_internal_event_store_path
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.model_usage.store import ModelUsageStore
@@ -73,6 +75,7 @@ from evander_team_addon.provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from evander_team_addon.providers import (
+    LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS,
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
     TEAM_AGENT_GUIDANCE_VERSION,
@@ -90,8 +93,10 @@ from evander_team_addon.providers import (
     TeamWakeGovernanceManagersEffectProvider,
     _build_prompt,
     _publish_deliverable_artifact_bundle,
+    _publish_team_events,
 )
 from evander_team_addon.repository import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
     TeamStateRepository,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1
@@ -194,6 +199,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-cron",
         "team-agent-run-completed",
         "team-chat-message-queued",
+        "team-agent-wake-requested",
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
@@ -254,6 +260,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         if isinstance(effect, dict)
     }
     assert effects["team-wake-due-agents"]["low_priority_wake_after_cycles"] == 4
+    assert effects["team-wake-due-agents"].get("respect_wake_interval", True) is True
     assert "outputs" not in effects["team-record-review-promotion"]
     assert effects["team-record-review-promotion"]["result_outputs"] == {
         "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
@@ -1005,6 +1012,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
             "overwrite": True,
             "merge_strategy": "managed_section",
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+            "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
         }
     ]
     guidance = str(guidance_files[0]["content"])
@@ -2072,6 +2080,9 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         TEAM_AGENT_GUIDANCE_SECTION_ID,
         TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
     ]
+    assert guidance_files[0]["remove_section_ids"] == list(
+        LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS
+    )
     inactive_guidance = str(guidance_files[0]["content"])
     assert "not currently assigned to a Team" in inactive_guidance
     assert "Normal Team-agent task" in inactive_guidance
@@ -3472,6 +3483,73 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
+def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            canonical_origin_url="https://example.test/org/Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    captured_effects: list[object] = []
+
+    class CapturingCloneProvider:
+        def initialize(self, effect: object, context: object) -> None:
+            del context
+            captured_effects.append(effect)
+
+        def execute(self) -> dict[str, object]:
+            return {
+                "success": True,
+                "message": "repo prepared",
+                "session_id": "session-backend",
+                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Truman",
+                "remote_url": "ssh://agent-sandbox-git-host/git-remotes/Truman.git",
+                "pr_notes_ref": "refs/notes/agent-pr/test",
+                "execution_backend": "container_worker_vm",
+                "vm_name": None,
+            }
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        CapturingCloneProvider,
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(captured_effects) == 1
+    clone_effect = captured_effects[0]
+    assert getattr(clone_effect, "repo_source") == "/opt/repos/Truman"
+    assert getattr(clone_effect, "canonical_origin_url") == "https://example.test/org/Truman.git"
+    assert getattr(clone_effect, "bare_repo_name") == "Truman.git"
+    assert getattr(clone_effect, "bare_repo_path") is None
+
+
 def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
     tmp_path: Path,
 ) -> None:
@@ -3564,6 +3642,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
+    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION
@@ -3667,6 +3746,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
+    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert 'Current display name: "Beatrice"' in str(copied_file["content"])
     prompt = str(resumer.calls[0]["prompt"])
     assert "Beatrice" not in prompt
@@ -4653,6 +4733,10 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert triggers["team-chat-message-queued"]["event_type"] == (
         "team.chat.message_queued"
     )
+    assert triggers["team-agent-wake-requested"]["type"] == "trigger:event"
+    assert triggers["team-agent-wake-requested"]["event_type"] == (
+        "team.agent.wake_requested"
+    )
     assert effects["team-wake-queued-chat-message"]["type"] == (
         "effect:team:wake-due-agents"
     )
@@ -4660,6 +4744,14 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
         "${{team-chat-message-queued.payload.agent_id}}"
     )
     assert effects["team-wake-queued-chat-message"]["limit"] == 1
+    assert effects["team-wake-requested-agent"]["type"] == (
+        "effect:team:wake-due-agents"
+    )
+    assert effects["team-wake-requested-agent"]["agent_id"] == (
+        "${{team-agent-wake-requested.payload.agent_id}}"
+    )
+    assert effects["team-wake-requested-agent"]["limit"] == 1
+    assert effects["team-wake-requested-agent"]["respect_wake_interval"] is False
 
     notify = effects["team-notify-operator"]
     assert notify["type"] == "effect:communication:send-message"
@@ -4671,6 +4763,40 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
     assert ("team-operator-escalation", "team-notify-operator") in edges
     assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
+    assert ("team-agent-wake-requested", "team-wake-requested-agent") in edges
+
+
+def test_team_event_publisher_schedules_delayed_wake_events(tmp_path: Path) -> None:
+    context = EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)})
+
+    published_ids = _publish_team_events(
+        context,
+        [
+            {
+                "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
+                "correlation_key": "team.agent.wake_requested:backend",
+                "idempotency_key": "team-addon:team.agent.wake_requested:backend:1",
+                "delay_seconds": 10,
+                "payload": {
+                    "team_id": "team",
+                    "agent_id": "backend",
+                    "session_id": "session-backend",
+                    "reason": "inbox",
+                },
+            }
+        ],
+    )
+
+    assert published_ids and published_ids[0].startswith("sched-")
+    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
+    scheduled = json.loads(
+        scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
+    )
+    assert len(scheduled) == 1
+    [record] = scheduled.values()
+    assert record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert record["status"] == "pending"
+    assert record["payload"]["agent_id"] == "backend"
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:

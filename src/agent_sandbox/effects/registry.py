@@ -63,6 +63,7 @@ class EffectProviderFactory:
         gate_adapter: object | None = None,
         env: Mapping[str, str] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         self.provider_config_resolver = provider_config_resolver
         self._provider_runtime_ports = build_provider_runtime_ports(
@@ -81,6 +82,7 @@ class EffectProviderFactory:
         self.registry = registry or EffectProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
+        self.metadata = dict(metadata or {})
 
     def build(
         self,
@@ -93,7 +95,10 @@ class EffectProviderFactory:
         resolved_config = _resolve_effect_provider_config(
             self.provider_config_resolver, directory_path
         )
-        metadata: dict[str, Any] = {"directory_path": directory_path or "root"}
+        metadata: dict[str, Any] = {
+            **self.metadata,
+            "directory_path": directory_path or "root",
+        }
         if graph_id is not None:
             metadata["graph_id"] = graph_id
         runtime_context = EffectRuntimeContext(

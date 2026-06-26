@@ -665,6 +665,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "overwrite",
             "merge_strategy",
             "section_id",
+            "remove_section_ids",
         ]
     )
     assert agent_copy_file_fields["content"]["multiline"]
@@ -888,7 +889,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "prompt",
         "model",
         "vm_user",
+        "dispatch_id",
         "resume_thread_id",
+        "resume_mode",
         "resume_thread_metadata_key",
         "resume_thread_metadata_collection",
         "mcp_tool_approval_lease_id",
@@ -1764,6 +1767,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "repo_source",
+        "canonical_origin_url",
+        "bare_repo_name",
+        "bare_repo_path",
         "clone_branch",
         "vm_user",
         "directory_path",
@@ -9884,8 +9890,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "agent_prompt_token_secret_env",
         "agent_prompt_token_ttl_seconds",
         "agent_prompt_queue_max_retries",
+        "agent_context_retry_enabled",
+        "agent_context_retry_max_attempts",
+        "agent_context_retry_target_chars",
     }
     assert agent_prompt_fields["agent_prompt_queue_max_retries"]["kind"] == "int"
+    assert agent_prompt_fields["agent_context_retry_enabled"]["kind"] == "bool"
+    assert agent_prompt_fields["agent_context_retry_max_attempts"]["kind"] == "int"
+    assert agent_prompt_fields["agent_context_retry_target_chars"]["kind"] == "int"
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
     assert (
         "Fallback runner container image"

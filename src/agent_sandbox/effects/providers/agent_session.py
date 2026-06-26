@@ -912,6 +912,8 @@ def container_prompt_command(
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
+        "--enable",
+        "non_prefixed_mcp_tool_names",
         "--model",
         model,
         "-c",
@@ -1025,6 +1027,8 @@ TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
 ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
 thread_id_printed = False
 printed_messages = set()
+last_token_usage = {}
+assistant_text_seen = False
 
 
 def first_string(*values):
@@ -1075,6 +1079,59 @@ def print_message(message):
         print(message, end="", flush=True)
     else:
         print(message, flush=True)
+
+
+def print_assistant_message(message):
+    global assistant_text_seen
+    if isinstance(message, str) and message.strip():
+        assistant_text_seen = True
+    print_message(message)
+
+
+def int_value(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def update_token_usage(event):
+    global last_token_usage
+    usage = {}
+    candidates = []
+    info = event.get("info")
+    if isinstance(info, dict):
+        candidates.append(info)
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        candidates.append(payload)
+        payload_info = payload.get("info")
+        if isinstance(payload_info, dict):
+            candidates.append(payload_info)
+    for candidate in candidates:
+        raw_usage = candidate.get("last_token_usage") or candidate.get("usage")
+        if not isinstance(raw_usage, dict):
+            continue
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = int_value(raw_usage.get(key))
+            if value is not None:
+                usage[key] = value
+    if usage:
+        last_token_usage = usage
+
+
+def no_final_message_diagnostic():
+    total_tokens = last_token_usage.get("total_tokens")
+    suffix = f" (last_total_tokens={total_tokens})" if total_tokens is not None else ""
+    return "codex failed: task_complete did not include a final agent message" + suffix
 
 
 def thread_id_from_event(event):
@@ -1145,22 +1202,32 @@ for raw_line in sys.stdin:
             thread_id_printed = True
         continue
 
+    if event_type == "token_count":
+        update_token_usage(event)
+        continue
+
     if event_type == "event_msg":
         payload = event.get("payload")
         if isinstance(payload, dict):
             payload_type = str(payload.get("type") or "")
             if payload_type == "agent_message":
-                print_message(first_text(payload.get("message")))
+                print_assistant_message(first_text(payload.get("message")))
+            elif payload_type == "token_count":
+                update_token_usage(event)
             elif payload_type == "task_complete":
-                print_message(first_text(payload.get("last_agent_message")))
+                message = first_text(payload.get("last_agent_message"))
+                if message:
+                    print_assistant_message(message)
+                elif not assistant_text_seen:
+                    print_message(no_final_message_diagnostic())
         continue
 
     if event_type == "response_item":
-        print_message(text_from_response_item(event))
+        print_assistant_message(text_from_response_item(event))
         continue
 
     if event_type == "item.completed":
-        print_message(text_from_item_completed(event))
+        print_assistant_message(text_from_item_completed(event))
         continue
 
     if event_type in {"error", "turn.failed"}:
@@ -1356,11 +1423,21 @@ def _codex_config_content(
 ) -> str:
     return (
         f"model = {_toml_string(model)}\n"
-        'model_provider = "openai"\n'
+        'model_provider = "evander_openai_relay"\n'
         'model_reasoning_effort = "high"\n'
         'personality = "pragmatic"\n'
         f"web_search = {_toml_string('live' if web_search_enabled else 'disabled')}\n"
-        f"openai_base_url = {_toml_string(openai_base_url)}\n"
+        "\n"
+        "[features]\n"
+        "non_prefixed_mcp_tool_names = true\n"
+        "\n"
+        "[model_providers.evander_openai_relay]\n"
+        'name = "Evander OpenAI Relay"\n'
+        f"base_url = {_toml_string(openai_base_url)}\n"
+        'env_key = "OPENAI_API_KEY"\n'
+        'wire_api = "responses"\n'
+        "requires_openai_auth = false\n"
+        "supports_websockets = false\n"
         "\n"
         "[mcp_servers.agent_sandbox]\n"
         f"url = {_toml_string(gateway_url)}\n"

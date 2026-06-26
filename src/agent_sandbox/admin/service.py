@@ -3461,6 +3461,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("repo_source", "Repo source", "string", required=True, bindable=True),
+            _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),
+            _field("bare_repo_name", "Bare repo name", "string", bindable=True),
+            _field("bare_repo_path", "Bare repo path", "string", bindable=True),
             _field("clone_branch", "Clone branch", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("directory_path", "Directory path", "string", bindable=True),
@@ -3653,6 +3656,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                             "strategy is managed_section."
                         ),
                     ),
+                    _field(
+                        "remove_section_ids",
+                        "Remove section IDs",
+                        "string_list",
+                        bindable=True,
+                        description=(
+                            "Optional managed section IDs to remove from the destination before "
+                            "writing Section ID."
+                        ),
+                    ),
                 ],
             ),
         ],
@@ -3819,7 +3832,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
+            _field("dispatch_id", "Dispatch ID", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "resume_mode",
+                "Resume mode",
+                "string",
+                bindable=True,
+                placeholder="same_context",
+            ),
             _field(
                 "resume_thread_metadata_key",
                 "Resume thread metadata key",
@@ -4225,6 +4246,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                         options=[_field_option("managed_section", "Managed section")],
                     ),
                     _field("section_id", "Section ID", "string", bindable=True),
+                    _field(
+                        "remove_section_ids",
+                        "Remove section IDs",
+                        "string_list",
+                        bindable=True,
+                    ),
                 ],
             ),
         ],
@@ -9603,6 +9630,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                             "resume_thread_id": resume_thread_id,
                             "operator_steering": "interrupt_and_resume",
                             "interrupted_execution_id": current_execution_id,
+                            "agent_provider": agent_harness,
+                            "model": resolved_model,
+                            "model_provider_mode": effective_config.model_provider_mode,
                             **(
                                 {"created_by": str(created_by).strip()}
                                 if str(created_by or "").strip()
@@ -10563,6 +10593,25 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return "unknown"
 
     @staticmethod
+    def _container_codex_outcome(record: Any) -> Mapping[str, Any] | None:
+        metadata = getattr(record, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            return None
+        outcome = metadata.get("codex_outcome")
+        if not isinstance(outcome, Mapping):
+            return None
+        return outcome
+
+    @classmethod
+    def _container_execution_status(cls, record: Any) -> str:
+        outcome = cls._container_codex_outcome(record)
+        if outcome is not None:
+            status = str(outcome.get("status") or "").strip().casefold()
+            if status == "failed":
+                return "failed"
+        return cls._container_agent_status(getattr(record, "last_status", None))
+
+    @staticmethod
     def _agent_status_is_active(status: str | None) -> bool:
         return str(status or "").strip().casefold() in {
             "preparing",
@@ -10584,13 +10633,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _container_session_status(cls, records: list[Any]) -> str:
         if not records:
             return "prepared"
-        statuses = [cls._container_agent_status(record.last_status) for record in records]
+        statuses = [cls._container_execution_status(record) for record in records]
         if "running" in statuses:
             return "running"
         if "starting" in statuses:
             return "starting"
         latest = max(records, key=cls._container_execution_sort_key)
-        latest_status = cls._container_agent_status(latest.last_status)
+        latest_status = cls._container_execution_status(latest)
         if latest_status == "failed":
             return "failed"
         return "idle"
@@ -11417,7 +11466,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return reconciled
 
     def _container_execution_payload(self, record: Any) -> dict[str, Any]:
-        status = self._container_agent_status(record.last_status)
+        status = self._container_execution_status(record)
         metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
         image = metadata.get("image")
         return {
@@ -11567,7 +11616,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         reconcile: bool,
         include_effective_tool_policy: bool = True,
     ) -> AgentRecord:
-        status = self._container_agent_status(record.last_status)
+        status = self._container_execution_status(record)
         message: str | None = None
         session = self.runtime.session_repository.get_session(record.session_id)
         if reconcile:
@@ -11580,7 +11629,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 message = str(exc)
             else:
                 record = self._container_worker_execution_repository().resolve(record.execution_id)
-                status = self._container_agent_status(record.last_status)
+                status = self._container_execution_status(record)
         host = {
             "kind": "container_worker",
             "worker_job_id": record.worker_job_id,
@@ -13015,7 +13064,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             for execution in execution_records:
                 header_parts = [
                     f"execution={execution.execution_id}",
-                    f"status={self._container_agent_status(execution.last_status)}",
+                    f"status={self._container_execution_status(execution)}",
                     f"worker_job={execution.worker_job_id}",
                     "log=execution",
                 ]
@@ -13045,7 +13094,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> str:
         header_parts = [
             f"execution={execution.execution_id}",
-            f"status={self._container_agent_status(execution.last_status)}",
+            f"status={self._container_execution_status(execution)}",
             f"worker_job={execution.worker_job_id}",
             f"log={mode}",
         ]
@@ -13751,7 +13800,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         prompt = self._agent_optional_string(payload, "prompt")
         if not prompt:
             raise ValueError("prompt-agent requires a non-empty prompt")
+        model = self._agent_optional_string(payload, "model")
+        dispatch_id = self._agent_optional_string(payload, "dispatch_id")
         resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
+        resume_mode = self._agent_optional_string(payload, "resume_mode")
         vm_user = self._agent_optional_string(payload, "vm_user") or "agent"
 
         if backend == "libvirt_vm":
@@ -13790,7 +13842,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             session_id=session_id,
             vm_name=target_name,
             prompt=prompt,
+            model=model,
             resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
+            dispatch_id=dispatch_id,
             vm_user=vm_user,
             queue_key=effect_id,
         )
@@ -14076,6 +14131,43 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
+        container_session = None
+        runtime = getattr(self, "runtime", None)
+        if getattr(runtime, "session_repository", None) is not None:
+            try:
+                container_session, _container_record = self._resolve_container_agent_session(
+                    target,
+                    require_session=False,
+                )
+            except ValueError as exc:
+                if not str(exc).startswith("Ambiguous container worker session target"):
+                    container_session = None
+                else:
+                    raise
+        if container_session is not None and self._is_container_session(container_session):
+            response = self._prompt_admin_agent(
+                container_session.session_id,
+                backend="container_worker_vm",
+                payload={
+                    "prompt": prompt,
+                    "model": model,
+                    "vm_user": vm_user,
+                    "dispatch_id": dispatch_id,
+                    "resume_thread_id": resume_thread_id,
+                    "resume_mode": resume_mode,
+                },
+            )
+            return VmActionResult(
+                success=bool(response.get("success", True)),
+                vm_name=str(
+                    response.get("target_name")
+                    or self._container_session_target_name(container_session)
+                ),
+                action=str(response.get("action") or "resume_issue_agent"),
+                message=str(response.get("message") or ""),
+                provider="container_worker_vm",
+                thread_id=str(response.get("thread_id") or "") or None,
+            )
         return self.vm_agent_admin.resume_agent(
             target,
             prompt,

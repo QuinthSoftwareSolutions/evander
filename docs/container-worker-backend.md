@@ -263,7 +263,7 @@ Then deploy the worker playbook and verify the worker-side policy on the VM:
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 sudo systemctl status agent-sandbox-worker-egress-policy.service
 sudo iptables -S DOCKER-USER
-agent-sandbox-cli execution smoke-container-worker --json
+evander-cli execution smoke-container-worker --json
 ```
 
 ## Session Durability
@@ -284,7 +284,7 @@ Each session contains:
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 
-Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/agent-sandbox/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/agent-sandbox/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed.
+Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/agent-sandbox/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/agent-sandbox/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed. Both config files use the `evander_openai_relay` Codex provider with `supports_websockets = false` so container Codex sessions do not websocket-prewarm against the HTTP/SSE relay.
 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` so Codex state, identity files, and checked-out repos can resume naturally.
 
@@ -309,6 +309,72 @@ The worker API also exposes a session-preparation surface used by portable
 Those endpoints do not accept raw environment variables or secrets. Prompt and exec effects still
 use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
 the relevant completion path, then removes the container while preserving the session directory.
+
+## Migrating Existing VM Sessions
+
+The VM-to-container migration path is intentionally staged. Stop the effect and trigger
+orchestrators before copying active sessions so no agent writes new state while rsync is running:
+
+```bash
+sudo systemctl stop agent-sandbox-effect-orchestrator.service
+sudo systemctl stop agent-sandbox-trigger-orchestrator.service
+systemctl is-active agent-sandbox-effect-orchestrator.service agent-sandbox-trigger-orchestrator.service
+```
+
+Dry-run selection first. With no phase flag, the command only reports which libvirt-backed sessions
+would migrate and where their worker state would land:
+
+```bash
+evander-cli migrate-vm-sessions-to-container --all
+```
+
+Copy VM state into the local worker root without changing manifests:
+
+```bash
+evander-cli migrate-vm-sessions-to-container --all --copy-only --skip-logs
+```
+
+The copy maps VM `/home/agent` to
+`<worker-root>/sessions/<session_id>/agent_home`, VM `/artifacts` to
+`<worker-root>/sessions/<session_id>/artifacts`, and optionally VM run logs to
+`<worker-root>/sessions/<session_id>/logs/migrated-vm-agent-runs`. It mirrors Codex session files
+between the legacy `.codex/sessions` tree and the active container
+`.config/agent-sandbox/codex/sessions` tree so old `.codex` history is not stranded. It also
+refreshes container-side session files such as `.agent-sandbox/session.env`, shell profiles, Codex
+config, Claude config, and package-manager config. Any overwritten file is first copied under
+`/home/agent/.agent-sandbox/migration-originals` inside the migrated worker session home.
+
+Verify copied sessions before cutover:
+
+```bash
+evander-cli migrate-vm-sessions-to-container --all --verify-only
+```
+
+Cutover writes a manifest backup under
+`runtime/migration-backups/vm-to-container/<timestamp>-vm-to-container/`, then upserts only the
+selected session manifests as `container_worker_vm`. It preserves the original manifest fields,
+allowed tools, model, approval settings, and metadata, and adds `metadata.previous_libvirt`,
+`metadata.migrated_from_libvirt_at`, and `metadata.migration_backup_id` for audit and rollback:
+
+```bash
+evander-cli migrate-vm-sessions-to-container --all --cutover
+```
+
+If agents might have written VM state after an earlier copy, run a final delta while the
+orchestrators are still stopped:
+
+```bash
+evander-cli migrate-vm-sessions-to-container --all --copy-only --final-delta --skip-logs
+evander-cli migrate-vm-sessions-to-container --all --cutover
+```
+
+Rollback restores the selected original manifests from a cutover backup. It does not delete worker
+session directories, so copied state remains available for inspection or a later retry:
+
+```bash
+evander-cli migrate-vm-sessions-to-container \
+  --rollback runtime/migration-backups/vm-to-container/<backup-id>
+```
 
 ## Worker Telemetry
 
@@ -381,7 +447,7 @@ session id.
 Container worker execution is exposed as an explicit operator-only path:
 
 ```bash
-agent-sandbox-cli execution start-container-job \
+evander-cli execution start-container-job \
   --session-id demo-session \
   --directory root \
   --target-name demo-container-1 \
@@ -402,11 +468,11 @@ execution mapping database; use `--backend container_worker_vm` or `--backend li
 a backend:
 
 ```bash
-agent-sandbox-cli execution status demo-container-1
-agent-sandbox-cli execution logs demo-container-1 --lines 100
-agent-sandbox-cli execution stop demo-container-1 --timeout-seconds 30
-agent-sandbox-cli execution destroy demo-container-1
-agent-sandbox-cli execution list-container-worker-executions --json
+evander-cli execution status demo-container-1
+evander-cli execution logs demo-container-1 --lines 100
+evander-cli execution stop demo-container-1 --timeout-seconds 30
+evander-cli execution destroy demo-container-1
+evander-cli execution list-container-worker-executions --json
 ```
 
 `destroy` deletes the worker job/container record. It does not delete durable session state under `/var/lib/agent-worker/sessions/<session_id>/`.
@@ -414,7 +480,7 @@ agent-sandbox-cli execution list-container-worker-executions --json
 The smoke command runs two unique jobs with the same session id. The first writes markers under `/home/agent` and `/home/agent/repos`; the second reads them back and fails if continuity or logs are missing:
 
 ```bash
-agent-sandbox-cli execution smoke-container-worker \
+evander-cli execution smoke-container-worker \
   --session-id smoke-session \
   --image agent-sandbox-runner:latest \
   --json
@@ -471,6 +537,13 @@ default-deny `DOCKER-USER` chain for the configured container network, blocks `1
 allows only the configured private control-plane endpoints. Workers should not have direct
 outbound access to Ubuntu mirrors, `pypi.org`, or `registry.npmjs.org`; apt-cacher-ng is the
 private apt egress point and Nexus is the private PyPI/npm egress point.
+
+For single-host local experiments only, the daemon has an explicit escape hatch:
+`--unsafe-allow-host-network --docker-network host` or
+`AGENT_SANDBOX_WORKER_UNSAFE_ALLOW_HOST_NETWORK=1`. This is intended for an operator-owned
+workstation where the worker daemon and control plane run on the same host and Docker bridge
+traffic is not usable. It weakens the container isolation boundary and should not be used for
+customer or shared deployments.
 
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 

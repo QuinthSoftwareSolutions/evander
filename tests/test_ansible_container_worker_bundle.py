@@ -587,7 +587,7 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "agent-sandbox-worker-egress-policy.service" in ansible_docs
     assert "sudo systemctl status agent-sandbox-worker-egress-policy.service" in ansible_docs
     assert "sudo iptables -S DOCKER-USER" in ansible_docs
-    assert "agent-sandbox-cli execution smoke-container-worker --json" in ansible_docs
+    assert "evander-cli execution smoke-container-worker --json" in ansible_docs
     assert "169.254.169.254" in ansible_docs
     assert "smoke-container-worker" in ansible_docs
     assert "ansible/worker.yml" in worker_docs

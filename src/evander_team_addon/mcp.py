@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.addons import AddonContext
+from agent_sandbox.events.internal import (
+    InternalEventBus,
+    InternalEventSource,
+    internal_event_store_path,
+)
+from agent_sandbox.events.scheduled import (
+    ScheduledInternalEventStore,
+    scheduled_internal_event_store_path,
+)
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 
 from .mcp_context import (
@@ -13,7 +24,11 @@ from .mcp_context import (
     team_mcp_failure,
     team_mcp_success,
 )
-from .repository import TeamStateConflictError, TeamStateRepository
+from .repository import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    TeamStateConflictError,
+    TeamStateRepository,
+)
 
 TEAM_RECORD_NOTE_TOOL = "team_record_note"
 TEAM_MARK_INBOX_HANDLED_TOOL = "team_mark_inbox_handled"
@@ -190,7 +205,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     @server.tool()
     def team_mark_governance_agenda_handled(
@@ -232,11 +247,11 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             governance_agenda_item=item.model_dump(mode="json"),
         )
 
-    _register_slice5_tools(server, repo, resolver)
-    _register_slice6_tools(server, repo, resolver)
+    _register_slice5_tools(server, repo, resolver, context)
+    _register_slice6_tools(server, repo, resolver, context)
     _register_slice7_tools(server, repo, resolver, context)
-    _register_slice8_tools(server, repo, resolver)
-    _register_slice9_tools(server, repo, resolver)
+    _register_slice8_tools(server, repo, resolver, context)
+    _register_slice9_tools(server, repo, resolver, context)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
         if tool_name in IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -258,6 +273,7 @@ def _register_slice5_tools(
     server: FastMCP,
     repo: TeamStateRepository,
     resolver: TeamMcpContextResolver,
+    context: AddonContext,
 ) -> None:
     def team_record_note(
         body: str,
@@ -282,7 +298,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_record_note,
@@ -312,7 +328,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_mark_inbox_handled,
@@ -354,7 +370,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_request_status,
@@ -400,7 +416,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_ask_question,
@@ -444,7 +460,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_send_progress_report,
@@ -482,7 +498,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_reply_to_chat,
@@ -520,7 +536,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_send_operator_chat_message,
@@ -562,7 +578,7 @@ def _register_slice5_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_escalate_operator,
@@ -578,6 +594,7 @@ def _register_slice6_tools(
     server: FastMCP,
     repo: TeamStateRepository,
     resolver: TeamMcpContextResolver,
+    context: AddonContext,
 ) -> None:
     def team_create_case(
         title: str,
@@ -622,7 +639,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_create_case,
@@ -682,7 +699,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_update_case,
@@ -731,7 +748,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_create_task,
@@ -762,7 +779,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_create_tasks,
@@ -811,7 +828,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_update_task,
@@ -846,7 +863,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_update_goal,
@@ -879,7 +896,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_stand_down_agent,
@@ -910,7 +927,7 @@ def _register_slice6_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_revoke_stand_down,
@@ -967,7 +984,7 @@ def _register_slice7_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_submit_deliverable,
@@ -1008,7 +1025,7 @@ def _register_slice7_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_submit_deliverable_for_review,
@@ -1053,7 +1070,7 @@ def _register_slice7_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_request_review,
@@ -1096,7 +1113,7 @@ def _register_slice7_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_decide_review,
@@ -1112,6 +1129,7 @@ def _register_slice8_tools(
     server: FastMCP,
     repo: TeamStateRepository,
     resolver: TeamMcpContextResolver,
+    context: AddonContext,
 ) -> None:
     def team_publish_review_branch(
         request_id: str,
@@ -1142,7 +1160,7 @@ def _register_slice8_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_publish_review_branch,
@@ -1183,7 +1201,7 @@ def _register_slice8_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_update_feature_branch,
@@ -1227,7 +1245,7 @@ def _register_slice8_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_request_release,
@@ -1267,7 +1285,7 @@ def _register_slice8_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_recover_release,
@@ -1319,6 +1337,7 @@ def _register_slice9_tools(
     server: FastMCP,
     repo: TeamStateRepository,
     resolver: TeamMcpContextResolver,
+    context: AddonContext,
 ) -> None:
     def team_request_ephemeral_agent(
         task_id: str,
@@ -1365,7 +1384,7 @@ def _register_slice9_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_request_ephemeral_agent,
@@ -1399,7 +1418,7 @@ def _register_slice9_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_request_ephemeral_agents,
@@ -1435,7 +1454,7 @@ def _register_slice9_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_accept_ephemeral_result,
@@ -1471,7 +1490,7 @@ def _register_slice9_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_reject_ephemeral_result,
@@ -1511,7 +1530,7 @@ def _register_slice9_tools(
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
-        return _team_command_mcp_result(result, caller=caller)
+        return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
         team_report_ephemeral_result,
@@ -1523,8 +1542,23 @@ def _register_slice9_tools(
     )
 
 
-def _team_command_mcp_result(result: dict[str, Any], *, caller: Any) -> dict[str, Any]:
+def _team_command_mcp_result(
+    result: dict[str, Any],
+    *,
+    caller: Any,
+    context: AddonContext | None = None,
+) -> dict[str, Any]:
     payload = dict(result)
+    if context is not None:
+        wake_request_events = _wake_request_events(payload.get("events"))
+        try:
+            published_event_ids = _publish_team_events(context, wake_request_events)
+        except Exception as exc:
+            if wake_request_events:
+                payload["event_publish_error"] = str(exc)
+        else:
+            if published_event_ids:
+                payload["published_event_ids"] = published_event_ids
     payload.setdefault("agent_id", caller.agent_id)
     payload.setdefault("governance_group_id", None)
     payload.setdefault("assignment_id", None)
@@ -1533,6 +1567,82 @@ def _team_command_mcp_result(result: dict[str, Any], *, caller: Any) -> dict[str
         first = payload["errors"][0]
         payload["error"] = first.get("message") if isinstance(first, dict) else str(first)
     return payload
+
+
+def _wake_request_events(events: object) -> list[Mapping[str, Any]]:
+    if not isinstance(events, list):
+        return []
+    return [
+        event
+        for event in events
+        if isinstance(event, Mapping)
+        and event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+
+
+def _publish_team_events(context: AddonContext, events: object) -> list[str]:
+    if not isinstance(events, list):
+        return []
+    bus = InternalEventBus(internal_event_store_path(context.runtime_dir))
+    scheduled_store = ScheduledInternalEventStore(
+        scheduled_internal_event_store_path(context.runtime_dir)
+    )
+    published_ids: list[str] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            payload = {}
+        delay_seconds = _optional_event_float(event.get("delay_seconds"))
+        if delay_seconds is not None and delay_seconds > 0:
+            scheduled, _created = scheduled_store.schedule_event(
+                event_type=_required_event_text(event.get("event_type"), "event_type"),
+                payload=dict(payload),
+                correlation_key=_optional_event_text(event.get("correlation_key")),
+                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                idempotency_key=_optional_event_text(event.get("idempotency_key")),
+                source=InternalEventSource(
+                    source_type="team-addon",
+                    source_name="team-addon",
+                ),
+            )
+            published_ids.append(scheduled.schedule_id)
+            continue
+        published = bus.publish(
+            event_type=_required_event_text(event.get("event_type"), "event_type"),
+            payload=dict(payload),
+            correlation_key=_optional_event_text(event.get("correlation_key")),
+            idempotency_key=_optional_event_text(event.get("idempotency_key")),
+            source=InternalEventSource(
+                source_type="team-addon",
+                source_name="team-addon",
+            ),
+        )
+        published_ids.append(published.event_id)
+    return published_ids
+
+
+def _required_event_text(value: object, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _optional_event_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_event_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("number value is required")
+    return float(value)
 
 
 def _register_persistent_placeholder(

@@ -42,16 +42,25 @@ class FakeContainerWorkerClient:
         self.written_files: list[tuple[str, WorkerFileWriteRequest]] = []
         self.provisioned_mssql: list[tuple[str, WorkerMssqlDatabaseRequest]] = []
         self.status_by_job: dict[str, str] = {}
+        self.metadata_by_job: dict[str, dict[str, object]] = {}
 
     def create(self, request: WorkerJobRequest) -> WorkerJobRecord:
         self.created.append(request)
-        return _record(request, self.status_by_job.get(request.job_id or "", "running"))
+        job_id = request.job_id or ""
+        request = request.model_copy(
+            update={"metadata": {**request.metadata, **self.metadata_by_job.get(job_id, {})}}
+        )
+        return _record(request, self.status_by_job.get(job_id, "running"))
 
     def get(self, job_id: str) -> WorkerJobRecord:
         self.got.append(job_id)
         return _record(
             WorkerJobRequest(
-                session_id="session-1", job_id=job_id, image="runner:latest", command=["true"]
+                session_id="session-1",
+                job_id=job_id,
+                image="runner:latest",
+                command=["true"],
+                metadata=self.metadata_by_job.get(job_id, {}),
             ),
             self.status_by_job.get(job_id, "running"),
         )
@@ -60,7 +69,11 @@ class FakeContainerWorkerClient:
         self.stopped.append(job_id)
         return _record(
             WorkerJobRequest(
-                session_id="session-1", job_id=job_id, image="runner:latest", command=["true"]
+                session_id="session-1",
+                job_id=job_id,
+                image="runner:latest",
+                command=["true"],
+                metadata=self.metadata_by_job.get(job_id, {}),
             ),
             "stopped",
         )
@@ -267,6 +280,41 @@ def test_inspect_maps_worker_status(tmp_path: Path) -> None:
 
     assert status.status == ExecutionStatusKind.FAILED
     assert client.got == ["exec-1"]
+
+
+def test_inspect_prefers_failed_codex_outcome_over_worker_lifecycle_status(
+    tmp_path: Path,
+) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+    handle = backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend="container_worker_vm",
+                target_name="exec-1",
+                session_id="session-1",
+                command=["true"],
+            )
+        )
+    )
+    client.status_by_job["exec-1"] = "exited"
+    client.metadata_by_job["exec-1"] = {
+        "codex_outcome": {
+            "status": "failed",
+            "reason": "codex_no_final_message",
+            "message": "Codex ended without a final agent message.",
+            "provider_kind": "cloud_or_unknown",
+        }
+    }
+
+    status = backend.inspect(handle)
+
+    assert status.status == ExecutionStatusKind.FAILED
+    assert status.message == "Codex ended without a final agent message."
+    stored = backend.repository.get("exec-1")
+    assert stored is not None
+    assert stored.last_status == "exited"
+    assert stored.metadata["codex_outcome"]["reason"] == "codex_no_final_message"
 
 
 def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:

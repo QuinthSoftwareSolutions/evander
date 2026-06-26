@@ -340,6 +340,7 @@ def test_git_ssh_wrapper_preserves_local_output_refs_during_shared_mirror_refres
     _git(output_clone, "commit", "-m", "Agent output", env=env)
     _git(output_clone, "push", "origin", "HEAD:refs/heads/agents/session/work", env=env)
     _git(output_clone, "push", "origin", "HEAD:refs/heads/review/session/work", env=env)
+    _git(output_clone, "push", "origin", "HEAD:refs/heads/team/team/reviews/session-work", env=env)
     expected_output_sha = _git(output_clone, "rev-parse", "HEAD").stdout.strip()
 
     (source_repo / "README.md").write_text("v2\n", encoding="utf-8")
@@ -377,6 +378,10 @@ def test_git_ssh_wrapper_preserves_local_output_refs_during_shared_mirror_refres
     )
     assert (
         _git_dir(bare_repo, "rev-parse", "refs/heads/review/session/work").stdout.strip()
+        == expected_output_sha
+    )
+    assert (
+        _git_dir(bare_repo, "rev-parse", "refs/heads/team/team/reviews/session-work").stdout.strip()
         == expected_output_sha
     )
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"

@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,10 @@ from agent_sandbox.artifact_spaces import (
     normalize_space_path,
 )
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
+from agent_sandbox.events.scheduled import (
+    ScheduledInternalEventStore,
+    scheduled_internal_event_store_path,
+)
 from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
@@ -108,9 +112,10 @@ from .provider_schemas import (
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
-TEAM_AGENT_GUIDANCE_VERSION = 10
+TEAM_AGENT_GUIDANCE_VERSION = 11
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
+LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -257,6 +262,13 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Batch low-priority inbox items until this many wake evaluations pass.",
                 default_value=4,
                 placeholder="4",
+            ),
+            _catalog_field(
+                "respect_wake_interval",
+                "Respect wake interval",
+                "boolean",
+                description="When false, ready task work can lease before next_wake_at; active leases and no-progress throttles still apply.",
+                default_value=True,
             ),
             _catalog_field(
                 "resume_mode",
@@ -1051,6 +1063,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "wake_interval_seconds",
             "max_no_progress_count",
             "low_priority_wake_after_cycles",
+            "respect_wake_interval",
             "resume_mode",
         )
         if resolved_config:
@@ -1119,6 +1132,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 low_priority_wake_after_cycles=_optional_int(
                     payload.get("low_priority_wake_after_cycles"),
                     default=4,
+                ),
+                respect_wake_interval=_optional_bool(
+                    payload.get("respect_wake_interval"),
+                    default=True,
                 ),
                 blocked_team_ids=blocked_team_ids,
             )
@@ -3447,6 +3464,9 @@ def _prepare_project_repo(
             type="effect:agent:clone-repo",
             session_id=session_id,
             repo_source=repo_source,
+            canonical_origin_url=_optional_text(_value(git, "canonical_origin_url")),
+            bare_repo_name=_optional_text(_value(git, "bare_repo_name")),
+            bare_repo_path=_optional_text(_value(git, "bare_repo_path")),
             clone_branch=clone_branch,
             vm_user="agent",
         ),
@@ -3553,6 +3573,7 @@ def _seed_team_agent_guidance(
                     "overwrite": True,
                     "merge_strategy": "managed_section",
                     "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                    "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
                 }
             ],
         ),
@@ -3611,6 +3632,7 @@ def _seed_team_governance_guidance(
                 "overwrite": True,
                 "merge_strategy": "managed_section",
                 "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
+                "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
             }
         )
     files.append(
@@ -4282,6 +4304,7 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
     if not isinstance(events, list):
         return []
     bus = _internal_event_bus(context)
+    scheduled_store = _scheduled_internal_event_store(context)
     published_ids: list[str] = []
     for event in events:
         if not isinstance(event, Mapping):
@@ -4289,6 +4312,21 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        delay_seconds = _optional_float(event.get("delay_seconds"), default=None)
+        if delay_seconds is not None and delay_seconds > 0:
+            scheduled, _created = scheduled_store.schedule_event(
+                event_type=_required_text(event.get("event_type"), "event_type"),
+                payload=dict(payload),
+                correlation_key=_optional_text(event.get("correlation_key")),
+                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                idempotency_key=_optional_text(event.get("idempotency_key")),
+                source=InternalEventSource(
+                    source_type="team-addon",
+                    source_name="team-addon",
+                ),
+            )
+            published_ids.append(scheduled.schedule_id)
+            continue
         published = bus.publish(
             event_type=_required_text(event.get("event_type"), "event_type"),
             payload=dict(payload),
@@ -4311,6 +4349,17 @@ def _internal_event_bus(context: Any) -> InternalEventBus:
     return InternalEventBus(
         Path(event_path) if event_path else internal_event_store_path(runtime_dir),
         journal_path=Path(journal_path) if journal_path else None,
+    )
+
+
+def _scheduled_internal_event_store(context: Any) -> ScheduledInternalEventStore:
+    runtime_dir = _runtime_dir(context)
+    metadata = getattr(context, "metadata", {})
+    store_path = None
+    if isinstance(metadata, Mapping):
+        store_path = metadata.get("scheduled_internal_event_store_path")
+    return ScheduledInternalEventStore(
+        Path(store_path) if store_path else scheduled_internal_event_store_path(runtime_dir)
     )
 
 
@@ -5011,6 +5060,14 @@ def _optional_int(value: object, *, default: int | None) -> int | None:
     if isinstance(value, bool):
         raise ValueError("integer value is required")
     return int(value)
+
+
+def _optional_float(value: object, *, default: float | None) -> float | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError("number value is required")
+    return float(value)
 
 
 def _number_or_none(value: object) -> float | None:

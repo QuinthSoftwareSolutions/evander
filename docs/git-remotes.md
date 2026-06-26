@@ -17,7 +17,7 @@ Create a local bare remote on the host:
 
 ```bash
 cd /path/to/agent-sandbox
-agent-sandbox-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
+evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
 ./scripts/create_git_remote.sh sample-repo
 ```
 
@@ -65,7 +65,7 @@ If you want the shortest host-side setup path for an issue VM, combine both step
 
 `setup_issue_git_vm.sh` forwards the same freshness and pinning flags to
 `mirror_issue_repo.sh`. VM creation is now separate; after the VM is up, clone the mirrored repo
-with `agent-sandbox-cli clone-repo-into-vm`.
+with `evander-cli clone-repo-into-vm`.
 
 That bootstraps guest Git SSH and refreshes the `14084_repo.git` host mirror in one command.
 
@@ -246,7 +246,7 @@ When a PR body is assembled, merge order is deterministic:
 
 For per-directory PR boilerplate, use the directory-scoped `pr_template` domain and migrate the
 legacy repo-level `config/pr-template.md` into root config with
-`agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml`.
+`evander-cli migrate-pr-template-to-root --config config/gateway.yaml`.
 
 Fallback behavior when the note is missing:
 

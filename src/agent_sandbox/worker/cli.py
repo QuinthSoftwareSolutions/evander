@@ -26,6 +26,18 @@ def main() -> None:
         "--docker-network",
         default=os.environ.get("AGENT_SANDBOX_WORKER_DOCKER_NETWORK"),
     )
+    parser.add_argument(
+        "--unsafe-allow-host-network",
+        action="store_true",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_UNSAFE_ALLOW_HOST_NETWORK", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Allow --docker-network host for single-host local experiments. "
+            "This weakens the container isolation boundary and should not be used for customers."
+        ),
+    )
     parser.add_argument("--read-only-rootfs", action="store_true")
     parser.add_argument("--tmpfs", action="append", default=None)
     parser.add_argument(
@@ -98,6 +110,7 @@ def main() -> None:
     args = parser.parse_args()
     sandbox_profile = worker_sandbox_profile(args.sandbox_profile).with_overrides(
         network_mode=args.docker_network,
+        allow_host_network=True if args.unsafe_allow_host_network else None,
         read_only_rootfs=True if args.read_only_rootfs else None,
         tmpfs=args.tmpfs,
         user=args.container_user,

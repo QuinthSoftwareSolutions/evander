@@ -39,6 +39,8 @@ _ASSISTANT_SESSION_STATUSES = {
 }
 _PREWARM_LOCK = Lock()
 _PREWARM_TASKS: dict[tuple[str, str, str, str, str], Thread] = {}
+DEFAULT_TRANSCRIPT_LIMIT = 80
+MAX_TRANSCRIPT_LIMIT = 200
 
 
 def _default_assistant_session() -> dict[str, str | None]:
@@ -68,6 +70,14 @@ def _concise_error(exc: BaseException) -> str:
     if len(first_line) > 300:
         return f"{first_line[:297]}..."
     return first_line
+
+
+def _transcript_limit(value: Any) -> int:
+    try:
+        limit = int(str(value).strip()) if value is not None else DEFAULT_TRANSCRIPT_LIMIT
+    except (TypeError, ValueError):
+        limit = DEFAULT_TRANSCRIPT_LIMIT
+    return max(1, min(MAX_TRANSCRIPT_LIMIT, limit))
 
 
 @dataclass
@@ -273,7 +283,14 @@ class ChatStore:
                 return dict(message)
         return None
 
-    def get_transcript(self, *, user_id: str, thread_id: str) -> dict[str, Any]:
+    def get_transcript(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        limit: int = DEFAULT_TRANSCRIPT_LIMIT,
+        before: str | None = None,
+    ) -> dict[str, Any]:
         normalized_user_id = str(user_id or "").strip() or "anonymous"
         with self.lock:
             payload = self._read()
@@ -283,9 +300,32 @@ class ChatStore:
                 thread_id=thread_id,
             )
             messages = thread.get("messages") if isinstance(thread.get("messages"), list) else []
+            before_id = str(before or "").strip()
+            end_index = len(messages)
+            if before_id:
+                end_index = 0
+                for index, message in enumerate(messages):
+                    if isinstance(message, dict) and str(message.get("id") or "").strip() == before_id:
+                        end_index = index
+                        break
+            effective_limit = _transcript_limit(limit)
+            start_index = max(0, end_index - effective_limit)
+            page = messages[start_index:end_index]
+            oldest_message_id = None
+            newest_message_id = None
+            if page:
+                first = page[0]
+                last = page[-1]
+                if isinstance(first, dict):
+                    oldest_message_id = str(first.get("id") or "").strip() or None
+                if isinstance(last, dict):
+                    newest_message_id = str(last.get("id") or "").strip() or None
             return {
                 "thread_id": thread_id,
-                "messages": messages,
+                "messages": page,
+                "has_older": start_index > 0,
+                "oldest_message_id": oldest_message_id,
+                "newest_message_id": newest_message_id,
                 "assistant_session": _normalize_assistant_session(
                     thread.get("assistant_session")
                 ),
@@ -683,8 +723,15 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         if not thread_id:
             return json_error("thread_id is required")
         user_id = user_id_for_request(request)
+        limit = _transcript_limit(request.query_params.get("limit"))
+        before = str(request.query_params.get("before") or "").strip() or None
         try:
-            transcript = store.get_transcript(user_id=user_id, thread_id=thread_id)
+            transcript = store.get_transcript(
+                user_id=user_id,
+                thread_id=thread_id,
+                limit=limit,
+                before=before,
+            )
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
         transcript["assistant_capability_mode"] = capability_mode(request)
@@ -696,8 +743,9 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         if not thread_id:
             return json_error("thread_id is required")
         user_id = user_id_for_request(request)
+        limit = _transcript_limit(request.query_params.get("limit"))
         try:
-            initial = store.get_transcript(user_id=user_id, thread_id=thread_id)
+            initial = store.get_transcript(user_id=user_id, thread_id=thread_id, limit=limit)
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
 
@@ -712,7 +760,11 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
                     break
                 await asyncio.sleep(1.0)
                 try:
-                    snapshot = store.get_transcript(user_id=user_id, thread_id=thread_id)
+                    snapshot = store.get_transcript(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        limit=limit,
+                    )
                 except ValueError:
                     break
                 snapshot["assistant_capability_mode"] = capability_mode(request)

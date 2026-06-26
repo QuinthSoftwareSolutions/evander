@@ -48,6 +48,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "repo_source": effect.repo_source,
+            "canonical_origin_url": effect.canonical_origin_url,
+            "bare_repo_name": effect.bare_repo_name,
+            "bare_repo_path": effect.bare_repo_path,
             "clone_branch": effect.clone_branch,
             "vm_user": effect.vm_user,
             "directory_path": effect.directory_path,
@@ -94,6 +97,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         clone_branch = normalize_optional_string(payload.get("clone_branch"))
         mirror = _container_git_mirror_resolver(context, directory_path).resolve(
             repo_source=repo_source,
+            canonical_repo_source=normalize_optional_string(payload.get("canonical_origin_url")),
+            bare_repo_name=normalize_optional_string(payload.get("bare_repo_name")),
+            bare_repo_path=normalize_optional_string(payload.get("bare_repo_path")),
             clone_branch=clone_branch,
             directory_path=directory_path,
             session_id=session_id,

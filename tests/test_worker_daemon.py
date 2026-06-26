@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.worker.service import WorkerDaemon
+from agent_sandbox.worker.models import WorkerRepoCloneRequest
 from agent_sandbox.worker_daemon import (
     WorkerJobRecord,
     WorkerJobRequest,
@@ -243,6 +244,50 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
     assert telemetry.jobs.cleanup_failure_message == "1 cleanup failure recorded"
     assert telemetry.jobs.health is HealthState.WARNING
     assert telemetry.jobs.error_count == 1
+
+
+def test_worker_clone_repo_uses_session_home_for_git_ssh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ssh_source = tmp_path / "git-ssh"
+    ssh_source.mkdir()
+    for name in ("agent-sandbox-git", "config"):
+        (ssh_source / name).write_text("ssh\n", encoding="utf-8")
+    (ssh_source / "agent-sandbox-git.pub").write_text("ssh pub\n", encoding="utf-8")
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/git-remotes/"],
+        git_ssh_source_dir=ssh_source,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append({"args": args, **kwargs})
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(
+            repo_source="ssh://agent-sandbox-git-host/git-remotes/repo.git",
+            clone_branch="main",
+            repo_name="repo",
+        ),
+    )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    assert (paths.agent_home / ".ssh" / "config").is_file()
+    clone_call = next(call for call in calls if call["args"][:2] == ["git", "clone"])
+    assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
+    assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
+        f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
+        f"-i {paths.agent_home / '.ssh' / 'agent-sandbox-git'}"
+    )
 
 
 def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(
@@ -480,6 +525,50 @@ def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
         "Team guidance v2\n"
         "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n"
     )
+
+
+def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "# Base\n\n"
+        "<!-- agent-sandbox-managed-section:truman-team-addon:begin -->\n"
+        "Old guidance\n"
+        "<!-- agent-sandbox-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
+        "Team guidance v1\n"
+        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n",
+        encoding="utf-8",
+    )
+
+    replaced = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "Team guidance v2\n",
+                    "mode": "0644",
+                    "overwrite": True,
+                    "merge_strategy": "managed_section",
+                    "section_id": "evander-team-addon",
+                    "remove_section_ids": ["truman-team-addon"],
+                }
+            ]
+        },
+    )
+
+    assert replaced.status_code == 200
+    assert "truman-team-addon" not in target.read_text(encoding="utf-8")
+    assert "Team guidance v2" in target.read_text(encoding="utf-8")
 
 
 def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
@@ -1352,6 +1441,166 @@ def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path
         f"session id: {thread_id}\n"
         "latest raw output\n"
         "real session status\n"
+    )
+
+
+def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["bash", "-lc", "codex exec --json prompt | agent_sandbox_codex_json_to_log"],
+        container_name="agent-worker-job-1",
+        status="exited",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=50)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "last_token_usage": {
+                            "input_tokens": 63657,
+                            "output_tokens": 343,
+                            "total_tokens": 64000,
+                        },
+                        "model_context_window": 258400,
+                    },
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=55)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "last_agent_message": None},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    outcome = inspected.metadata["codex_outcome"]
+    assert outcome["status"] == "failed"
+    assert outcome["reason"] == "codex_context_limit_suspected"
+    assert outcome["provider_kind"] == "local_model"
+    assert outcome["last_token_usage"]["total_tokens"] == 64000
+    assert inspected.error == (
+        "Codex ended without a final agent message after local model token usage "
+        "reached 64000 tokens."
+    )
+    assert daemon.get_logs(inspected, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "codex failed: task_complete did not include a final agent message; "
+        "context limit suspected (last_total_tokens=64000)\n"
+    )
+
+
+def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["bash", "-lc", "codex exec --json prompt | agent_sandbox_codex_json_to_log"],
+        container_name="agent-worker-job-1",
+        status="exited",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=40)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "Done."},
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=55)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "last_agent_message": None},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert "codex_outcome" not in inspected.metadata
+    assert inspected.error is None
+    assert daemon.get_logs(inspected, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "Done.\n"
     )
 
 

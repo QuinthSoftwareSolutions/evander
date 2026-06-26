@@ -3087,6 +3087,7 @@ def team_state_payload(
     include_agent_avatars: bool = True,
     include_agent_voice_profiles: bool | None = None,
     session_records: Mapping[str, Any] | None = None,
+    agent_execution_records: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if include_agent_voice_profiles is None:
@@ -3114,6 +3115,7 @@ def team_state_payload(
         state,
         now=now,
         session_records=session_records,
+        agent_execution_records=agent_execution_records,
     )
     payload["agent_activity_summaries"] = agent_activity_summaries_payload(
         state,
@@ -3279,11 +3281,13 @@ def runtime_operations_payload(
     *,
     now: datetime | None = None,
     session_records: Mapping[str, Any] | None = None,
+    agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_now = _ensure_utc(now or utc_now())
     session_health = team_session_health_payload(
         state,
         session_records=session_records,
+        agent_execution_records=agent_execution_records,
         now=effective_now,
     )
     session_health_by_agent = {
@@ -3549,6 +3553,7 @@ def team_session_health_payload(
     state: TeamState,
     *,
     session_records: Mapping[str, Any] | None = None,
+    agent_execution_records: Mapping[str, Any] | None = None,
     now: datetime | None = None,
     agent_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -3561,6 +3566,30 @@ def team_session_health_payload(
             continue
         session_id = agent.session_id
         session = session_records.get(session_id) if session_id else None
+        execution_record = (
+            agent_execution_records.get(session_id)
+            if agent_execution_records is not None and session_id
+            else None
+        )
+        execution_host = (
+            getattr(execution_record, "host", {})
+            if execution_record is not None
+            else {}
+        )
+        if not isinstance(execution_host, Mapping):
+            execution_host = {}
+        active_execution_count = execution_host.get("active_execution_count")
+        if not isinstance(active_execution_count, int):
+            active_execution_count = None
+        metadata = getattr(session, "metadata", {}) if session is not None else {}
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        vm_provider = _optional_text(getattr(session, "vm_provider", None))
+        execution_backend = _optional_text(metadata.get("execution_backend")) or vm_provider
+        container_lifecycle = metadata.get("container_lifecycle")
+        if not isinstance(container_lifecycle, Mapping):
+            container_lifecycle = {}
+        container_lifecycle_state = _optional_text(container_lifecycle.get("state"))
         expires_at_value = getattr(session, "expires_at", None) if session is not None else None
         expires_at = (
             _ensure_utc(expires_at_value)
@@ -3577,20 +3606,46 @@ def team_session_health_payload(
             if session is None
             else "unknown"
         )
-        rows.append(
-            {
-                "agent_id": agent.id,
-                "team_id": agent.team_id,
-                "project_ids": agent_project_ids(state, agent.id),
-                "lead_project_ids": agent_lead_project_ids(state, agent.id),
-                "role_id": agent.role_id,
-                "session_id": session_id,
-                "session_present": session is not None,
-                "expires_at": _json_datetime(expires_at),
-                "is_expired": is_expired,
-                "status": status,
-            }
+        row = {
+            "agent_id": agent.id,
+            "team_id": agent.team_id,
+            "project_ids": agent_project_ids(state, agent.id),
+            "lead_project_ids": agent_lead_project_ids(state, agent.id),
+            "role_id": agent.role_id,
+            "session_id": session_id,
+            "session_present": session is not None,
+            "expires_at": _json_datetime(expires_at),
+            "is_expired": is_expired,
+            "status": status,
+        }
+        has_container_metadata = bool(
+            session is not None
+            and (
+                vm_provider == "container_worker_vm"
+                or execution_backend == "container_worker_vm"
+                or container_lifecycle_state is not None
+            )
         )
+        if has_container_metadata or execution_record is not None:
+            if vm_provider is not None:
+                row["vm_provider"] = vm_provider
+            if execution_backend is not None:
+                row["execution_backend"] = execution_backend
+            if container_lifecycle_state is not None:
+                row["container_lifecycle_state"] = container_lifecycle_state
+        if execution_record is not None:
+            agent_execution_backend = _optional_text(getattr(execution_record, "backend", None))
+            if agent_execution_backend is not None:
+                row["agent_execution_backend"] = agent_execution_backend
+            agent_execution_status = _optional_text(getattr(execution_record, "status", None))
+            if agent_execution_status is not None:
+                row["agent_execution_status"] = agent_execution_status
+            if active_execution_count is not None:
+                row["agent_active_execution_count"] = active_execution_count
+            agent_latest_execution_id = _optional_text(execution_host.get("latest_execution_id"))
+            if agent_latest_execution_id is not None:
+                row["agent_latest_execution_id"] = agent_latest_execution_id
+        rows.append(row)
     return rows
 
 

@@ -16,8 +16,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             "node_ids": [
                 "team-cron",
                 "team-chat-message-queued",
+                "team-agent-wake-requested",
                 "team-wake-due-agents",
                 "team-wake-queued-chat-message",
+                "team-wake-requested-agent",
                 "team-wake-governance-managers",
                 "team-publish-outbox-events",
                 "team-ephemeral-requested",
@@ -72,6 +74,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team chat message queued",
                 "type": "trigger:event",
                 "event_type": "team.chat.message_queued",
+            },
+            {
+                "id": "team-agent-wake-requested",
+                "display_name": "Team agent wake requested",
+                "type": "trigger:event",
+                "event_type": "team.agent.wake_requested",
             },
             {
                 "id": "team-ephemeral-requested",
@@ -222,6 +230,20 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "wake_interval_seconds": 900,
                 "max_no_progress_count": 3,
                 "low_priority_wake_after_cycles": 4,
+                "resume_mode": "same_context",
+            },
+            {
+                "id": "team-wake-requested-agent",
+                "display_name": "Wake requested team agent",
+                "type": "effect:team:wake-due-agents",
+                "team_id": "${{team-agent-wake-requested.payload.team_id ?? null}}",
+                "agent_id": "${{team-agent-wake-requested.payload.agent_id}}",
+                "limit": 1,
+                "lease_seconds": 900,
+                "wake_interval_seconds": 900,
+                "max_no_progress_count": 3,
+                "low_priority_wake_after_cycles": 4,
+                "respect_wake_interval": False,
                 "resume_mode": "same_context",
             },
             {
@@ -508,6 +530,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {
                 "source_id": "team-chat-message-queued",
                 "target_id": "team-wake-queued-chat-message",
+            },
+            {
+                "source_id": "team-agent-wake-requested",
+                "target_id": "team-wake-requested-agent",
             },
             {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
             {"source_id": "team-cron", "target_id": "team-publish-outbox-events"},

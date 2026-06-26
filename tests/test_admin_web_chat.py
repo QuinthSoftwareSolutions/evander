@@ -184,6 +184,56 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
     assert alice_transcript["messages"][0]["status"] == "queued"
 
 
+def test_chat_transcript_is_bounded_and_supports_before_cursor(tmp_path: Path) -> None:
+    service = FakeAdminService(tmp_path)
+    alice = _client_for_user(service, {"username": "alice"})
+    store_path = tmp_path / "admin-web-chat-store.json"
+    store = ChatStore(store_path)
+    thread_id = store.get_or_create_thread("alice")
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    messages = [
+        {
+            "id": f"msg-{index:03d}",
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"message {index:03d}",
+            "created_at": "2026-06-26T00:00:00Z",
+        }
+        for index in range(125)
+    ]
+    payload["threads"][thread_id]["messages"] = messages
+    payload["threads"][thread_id]["updated_at"] = "2026-06-26T00:00:00Z"
+    store_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    latest_response = alice.get(f"/api/chat/transcript/{thread_id}")
+
+    assert latest_response.status_code == 200
+    latest = latest_response.json()
+    assert len(latest["messages"]) == 80
+    assert latest["messages"][0]["id"] == "msg-045"
+    assert latest["messages"][-1]["id"] == "msg-124"
+    assert latest["has_older"] is True
+    assert latest["oldest_message_id"] == "msg-045"
+    assert latest["newest_message_id"] == "msg-124"
+
+    older_response = alice.get(f"/api/chat/transcript/{thread_id}?limit=20&before=msg-045")
+
+    assert older_response.status_code == 200
+    older = older_response.json()
+    assert [message["id"] for message in older["messages"]] == [
+        f"msg-{index:03d}" for index in range(25, 45)
+    ]
+    assert older["has_older"] is True
+
+    oldest_response = alice.get(f"/api/chat/transcript/{thread_id}?limit=50&before=msg-025")
+
+    assert oldest_response.status_code == 200
+    oldest = oldest_response.json()
+    assert [message["id"] for message in oldest["messages"]] == [
+        f"msg-{index:03d}" for index in range(25)
+    ]
+    assert oldest["has_older"] is False
+
+
 def test_chat_session_start_prewarms_assistant_session_with_effective_settings(
     tmp_path: Path,
 ) -> None:

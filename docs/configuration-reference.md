@@ -631,6 +631,11 @@ tracks durable retry attempts by queue key and prompt digest, capped by
 `agent_prompt_queue_max_retries` (default `3`). Once the cap is exceeded,
 enqueue fails with `failed_phase: retry_limit` and includes `retry_count` and
 `max_retries` in the error outputs.
+Codex container-worker prompts that fail because the completed worker execution
+is marked context exhausted are retried once with deterministic reduced context
+by default. Tune this with `agent_context_retry_enabled`,
+`agent_context_retry_max_attempts` (default `1`), and
+`agent_context_retry_target_chars` (default `16000`).
 
 When `resume_thread_metadata_key` is set on either prompt effect, the effect
 resumes from and persists the Codex thread ID under a session metadata object.
@@ -1117,7 +1122,7 @@ successfully.
 - Recurring cron schedule (host CLI):
 
 ```bash
-agent-sandbox-cli wake-schedules create \
+evander-cli wake-schedules create \
   --runtime-dir runtime \
   --session-id issue-11-session \
   --cron "*/15 * * * *" \
@@ -1533,7 +1538,7 @@ Approval notification policy:
 - This field does not grant guests Discord, Teams, or email send permission. The host sends
   notifications for newly created approval records, and delivery failures are audited without
   changing the approval state. Operators still decide through Admin Web, the admin service, or
-  `agent-sandbox-cli approve`.
+  `evander-cli approve`.
 
 Approval-required tool policy:
 

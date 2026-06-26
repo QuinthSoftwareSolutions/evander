@@ -3987,7 +3987,7 @@ function renderHierarchyNode(node, options = {}) {
             </div>
             <div class="hierarchy-node-subtitle">
               <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>
-              <span class="state-pill ${escapeHtml(node.agentData.status)}">${escapeHtml(node.agentData.status)}</span>
+              ${renderAgentRosterStatusPill(node.agentData)}
               ${focused ? renderAgentAwakePill(node.agentData) : ""}
               ${renderAgentInboxHeaderIndicators(node.agentData)}
             </div>
@@ -4063,7 +4063,7 @@ function renderAgents() {
                     <strong>${escapeHtml(details.label)}</strong>
                   </div>
                   <div class="record-actions">
-                    <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+                    ${renderAgentRosterStatusPill(details)}
                     ${renderAgentStandDownControls(details.id, details)}
                     <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
                     ${editButton("agent", details.id)}
@@ -5142,6 +5142,7 @@ function renderChatConversationRow(conversation) {
 function renderChatAgentPickerRow(agent) {
   const conversation = conversationForAgent(agent.id);
   const label = text(agent.display_name) || text(agent.id);
+  const details = agentCardData(agent);
   return `
     <button type="button" class="chat-agent-picker-row" data-chat-agent-id="${escapeAttr(agent.id)}">
       ${renderChatAvatar(agent)}
@@ -5149,7 +5150,7 @@ function renderChatAgentPickerRow(agent) {
         <strong>${escapeHtml(label)}</strong>
         <span>${escapeHtml(conversation ? "Open conversation" : agent.session_id || agent.id)}</span>
       </span>
-      <span class="state-pill ${escapeAttr(agent.status || "active")}">${escapeHtml(agent.status || "active")}</span>
+      ${renderAgentRosterStatusPill(details)}
     </button>
   `;
 }
@@ -5578,7 +5579,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
           <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
         </div>
         <div class="agent-detail-badges">
-          <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+          ${renderAgentRosterStatusPill(details)}
           ${renderAgentSessionPill(details)}
           ${renderAgentAwakePill(details)}
           ${renderAgentInboxHeaderIndicators(details)}
@@ -5869,6 +5870,41 @@ function agentStatus(agent) {
   return text(agent?.status) || "active";
 }
 
+function agentSessionBackend(agentData) {
+  const health = agentData?.sessionHealth || {};
+  return text(health.agentExecutionBackend || health.executionBackend || health.vmProvider).toLowerCase();
+}
+
+function agentUsesContainerBackend(agentData) {
+  return agentSessionBackend(agentData) === "container_worker_vm";
+}
+
+function agentHasActiveRuntime(agentData) {
+  const runtimeRow = runtimeOperationForAgent(agentData?.id);
+  const activeDispatchId = text(runtimeRow?.active_dispatch_id || agentData?.runtime?.activeDispatchId);
+  if (activeDispatchId) {
+    return true;
+  }
+  const health = agentData?.sessionHealth || {};
+  const activeExecutionCount = Number(health.activeExecutionCount);
+  if (Number.isFinite(activeExecutionCount) && activeExecutionCount > 0) {
+    return true;
+  }
+  const executionStatus = text(health.agentExecutionStatus).toLowerCase();
+  return ["preparing", "starting", "running"].includes(executionStatus);
+}
+
+function renderAgentRosterStatusPill(agentData) {
+  const status = text(agentData?.status) || "active";
+  if (!status) {
+    return "";
+  }
+  if (status === "active" && agentUsesContainerBackend(agentData) && !agentHasActiveRuntime(agentData)) {
+    return "";
+  }
+  return `<span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>`;
+}
+
 function agentCardData(agent) {
   const taskStats = agentTaskStats(agent.id);
   const runtime = runtimeSummary(agent.id);
@@ -6106,6 +6142,13 @@ function normalizeAgentSessionHealth(row) {
     present: row?.session_present === undefined ? null : Boolean(row.session_present),
     isExpired: Boolean(row?.is_expired || row?.session_is_expired || status === "expired"),
     expiresAt: text(row?.expires_at || row?.session_expires_at),
+    vmProvider: text(row?.vm_provider || row?.vmProvider),
+    executionBackend: text(row?.execution_backend || row?.executionBackend),
+    containerLifecycleState: text(row?.container_lifecycle_state || row?.containerLifecycleState),
+    agentExecutionBackend: text(row?.agent_execution_backend || row?.agentExecutionBackend),
+    agentExecutionStatus: text(row?.agent_execution_status || row?.agentExecutionStatus),
+    activeExecutionCount: row?.agent_active_execution_count ?? row?.agentActiveExecutionCount ?? null,
+    latestExecutionId: text(row?.agent_latest_execution_id || row?.agentLatestExecutionId),
     status,
   };
 }

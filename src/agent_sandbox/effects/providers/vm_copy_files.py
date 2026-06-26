@@ -138,6 +138,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                         remote_path=remote_path,
                         content=self._text_content(entry.get("content")),
                         section_id=str(entry.get("section_id") or ""),
+                        remove_section_ids=list(entry.get("remove_section_ids") or []),
                         mode=entry["mode"],
                     )
                     recursive = False
@@ -153,20 +154,21 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                         mode=entry["mode"],
                     )
                     recursive = staged_source.is_dir()
-                copied_files.append(
-                    {
-                        "source_path": entry.get("source_path"),
-                        "destination_path": remote_path,
-                        "source_kind": "content"
-                        if entry.get("content") is not None
-                        else "source_path",
-                        "recursive": recursive,
-                        "mode": entry["mode"],
-                        "overwrite": entry["overwrite"],
-                        "merge_strategy": entry.get("merge_strategy"),
-                        "section_id": entry.get("section_id"),
-                    }
-                )
+                copied_file = {
+                    "source_path": entry.get("source_path"),
+                    "destination_path": remote_path,
+                    "source_kind": "content"
+                    if entry.get("content") is not None
+                    else "source_path",
+                    "recursive": recursive,
+                    "mode": entry["mode"],
+                    "overwrite": entry["overwrite"],
+                    "merge_strategy": entry.get("merge_strategy"),
+                    "section_id": entry.get("section_id"),
+                }
+                if entry.get("remove_section_ids"):
+                    copied_file["remove_section_ids"] = list(entry["remove_section_ids"])
+                copied_files.append(copied_file)
 
         copied_paths = [entry["destination_path"] for entry in copied_files]
         message = f"Copied {len(copied_paths)} file(s) to {vm_name}"
@@ -361,11 +363,16 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         remote_path: str,
         content: str,
         section_id: str,
+        remove_section_ids: Sequence[str],
         mode: str | None,
     ) -> None:
         from agent_sandbox.admin.service import _ssh_options
 
         normalized_section_id = normalize_managed_section_id(section_id)
+        normalized_remove_section_ids = [
+            normalize_managed_section_id(stale_section_id)
+            for stale_section_id in remove_section_ids
+        ]
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
         script = "\n".join(
             [
@@ -375,12 +382,21 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 "from pathlib import Path",
                 f"path = Path({remote_path!r})",
                 f"section_id = {normalized_section_id!r}",
+                f"remove_section_ids = {normalized_remove_section_ids!r}",
                 f"content = base64.b64decode({encoded_content!r}).decode('utf-8')",
-                "begin_marker = f'<!-- agent-sandbox-managed-section:{section_id}:begin -->'",
-                "end_marker = f'<!-- agent-sandbox-managed-section:{section_id}:end -->'",
+                "def markers(current_section_id):",
+                "    return (",
+                "        f'<!-- agent-sandbox-managed-section:{current_section_id}:begin -->',",
+                "        f'<!-- agent-sandbox-managed-section:{current_section_id}:end -->',",
+                "    )",
+                "begin_marker, end_marker = markers(section_id)",
                 "body = content.rstrip() + '\\n'",
                 "section = f'{begin_marker}\\n{body}{end_marker}\\n'",
                 "existing = path.read_text(encoding='utf-8') if path.exists() else ''",
+                "for stale_section_id in remove_section_ids:",
+                "    stale_begin, stale_end = markers(stale_section_id)",
+                "    stale_pattern = re.compile(rf'(?ms)^{re.escape(stale_begin)}\\n.*?^{re.escape(stale_end)}\\n{{0,2}}')",
+                "    existing = stale_pattern.sub('', existing)",
                 "pattern = re.compile(rf'(?ms)^{re.escape(begin_marker)}\\n.*?^{re.escape(end_marker)}\\n?')",
                 "if pattern.search(existing):",
                 "    merged = pattern.sub(section, existing, count=1)",
@@ -481,12 +497,19 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             content_format = self._normalize_content_format(raw_entry.get("content_format"))
             merge_strategy = self._normalize_merge_strategy(raw_entry.get("merge_strategy"))
             section_id = self._normalize_optional_string(raw_entry.get("section_id"))
+            remove_section_ids = self._normalize_remove_section_ids(
+                raw_entry.get("remove_section_ids")
+            )
             if merge_strategy == "managed_section":
                 if source_path is not None:
                     raise ValueError(
                         "effect:vm:copy-files managed_section entries require inline content"
                     )
                 section_id = normalize_managed_section_id(section_id or "")
+            elif remove_section_ids:
+                raise ValueError(
+                    "effect:vm:copy-files remove_section_ids requires managed_section merge_strategy"
+                )
             overwrite = raw_entry.get("overwrite")
             if overwrite is None:
                 overwrite = True
@@ -505,6 +528,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             if merge_strategy is not None:
                 entry["merge_strategy"] = merge_strategy
                 entry["section_id"] = section_id
+                if remove_section_ids:
+                    entry["remove_section_ids"] = remove_section_ids
             entries.append(entry)
         return entries
 
@@ -560,6 +585,14 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 "effect:vm:copy-files merge_strategy must be one of: managed_section"
             )
         return text
+
+    @staticmethod
+    def _normalize_remove_section_ids(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+            raise ValueError("effect:vm:copy-files remove_section_ids must be a list")
+        return [normalize_managed_section_id(str(item or "")) for item in value]
 
     @classmethod
     def _render_inline_content(cls, content: Any, *, content_format: str | None) -> Any:

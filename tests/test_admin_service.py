@@ -863,6 +863,59 @@ def test_list_agents_groups_container_executions_under_session(
     assert lifecycle.state == ContainerSessionLifecycleState.RUNNING
 
 
+def test_list_agents_prefers_failed_codex_outcome_for_container_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-current",
+            session_id="container-session",
+            worker_job_id="job-current",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="removed",
+            cleanup_status="cleanup_succeeded",
+            metadata={
+                "codex_outcome": {
+                    "status": "failed",
+                    "reason": "codex_no_final_message",
+                    "message": "Codex ended without a final agent message.",
+                }
+            },
+        )
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+
+    assert agents[0].status == "failed"
+    assert agents[0].host["executions"][0]["status"] == "failed"
+    assert agents[0].host["executions"][0]["last_status"] == "removed"
+
+
 def test_list_agents_summary_mode_skips_container_reconciliation_and_omits_vm_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3258,6 +3311,70 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert refreshed_session.metadata["agent_thread_id"] == "thread-real-container-1"
 
 
+def test_resume_agent_routes_container_session_through_container_prompt_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {"image": "runner:team-image"},
+            },
+        )
+    )
+
+    class DirectContainerBackend:
+        def __init__(self) -> None:
+            self.repository = SimpleNamespace(read_all=lambda: {})
+            self.started_specs: list[object] = []
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            self.started_specs.append(spec)
+            return SimpleNamespace(execution_id=spec.target_name)
+
+    backend = DirectContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+
+    result = service.resume_agent(
+        "container-session",
+        "Resume Team work",
+        dispatch_id="team-dispatch-1",
+        resume_mode="same_context",
+    )
+
+    stores = service._workflow_run_store_paths()
+    if service._workflow_uses_sqlite_store(stores):
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+    else:
+        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+    records = list(execution_store.read_all().values())
+
+    assert result.success is True
+    assert result.provider == "container_worker_vm"
+    assert result.thread_id == "team-dispatch-1"
+    assert backend.started_specs[0].session_id == "container-session"
+    assert backend.started_specs[0].image == "runner:team-image"
+    assert "codex exec resume --last" in str(backend.started_specs[0].command)
+    assert len(records) == 1
+    assert records[0].status == "waiting"
+    assert records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert records[0].outputs["dispatch_id"] == "team-dispatch-1"
+    assert records[0].outputs["execution_backend"] == "container_worker_vm"
+
+
 def test_submit_operator_steering_interrupts_container_waiting_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4251,6 +4368,73 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "disabled"
     assert captured["timeout"] == 120.0
     assert watcher == {}
+
+
+def test_resume_agent_delegates_to_vm_admin_without_session_repository() -> None:
+    service = object.__new__(AdminService)
+    service.runtime = SimpleNamespace()
+    calls: list[dict[str, object]] = []
+
+    class _VmAgentAdminStub:
+        def resume_agent(
+            self,
+            target: str,
+            prompt: str,
+            *,
+            model: str | None = None,
+            vm_user: str = "agent",
+            dispatch_id: str | None = None,
+            resume_thread_id: str | None = None,
+            resume_mode: str = "new_context",
+            persist_thread_id: bool = True,
+            mcp_gateway_url: str | None = None,
+        ) -> VmActionResult:
+            calls.append(
+                {
+                    "target": target,
+                    "prompt": prompt,
+                    "model": model,
+                    "vm_user": vm_user,
+                    "dispatch_id": dispatch_id,
+                    "resume_thread_id": resume_thread_id,
+                    "resume_mode": resume_mode,
+                    "persist_thread_id": persist_thread_id,
+                    "mcp_gateway_url": mcp_gateway_url,
+                }
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=target,
+                action="resume_issue_agent",
+                message="ok",
+                thread_id="thread-1",
+            )
+
+    service.vm_agent_admin = _VmAgentAdminStub()
+
+    result = service.resume_agent(
+        "vm-libvirt",
+        "Resume now",
+        model="gpt-5.4",
+        dispatch_id="dispatch-vm-1",
+        resume_thread_id="thread-keep",
+        mcp_gateway_url="http://gateway.test/mcp",
+    )
+
+    assert result.success is True
+    assert calls == [
+        {
+            "target": "vm-libvirt",
+            "prompt": "Resume now",
+            "model": "gpt-5.4",
+            "vm_user": "agent",
+            "dispatch_id": "dispatch-vm-1",
+            "resume_thread_id": "thread-keep",
+            "resume_mode": "new_context",
+            "persist_thread_id": True,
+            "mcp_gateway_url": "http://gateway.test/mcp",
+        }
+    ]
 
 
 def test_resume_agent_passes_session_agent_provider(tmp_path: Path, monkeypatch) -> None:

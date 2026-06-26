@@ -244,6 +244,7 @@ class WorkerFileWrite(BaseModel):
     overwrite: bool = True
     merge_strategy: str | None = None
     section_id: str | None = None
+    remove_section_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_content_source(self) -> "WorkerFileWrite":
@@ -254,6 +255,8 @@ class WorkerFileWrite(BaseModel):
                 raise ValueError("managed_section merge requires UTF-8 text content")
             if self.section_id is None:
                 raise ValueError("managed_section merge requires section_id")
+        elif self.remove_section_ids:
+            raise ValueError("remove_section_ids requires managed_section merge")
         return self
 
     @field_validator("destination_path", mode="before")
@@ -293,6 +296,15 @@ class WorkerFileWrite(BaseModel):
         if not text:
             return None
         return normalize_managed_section_id(text)
+
+    @field_validator("remove_section_ids", mode="before")
+    @classmethod
+    def normalize_remove_section_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("remove_section_ids must be a list")
+        return [normalize_managed_section_id(str(item or "")) for item in value]
 
 
 class WorkerFileWriteRequest(BaseModel):

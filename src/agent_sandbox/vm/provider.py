@@ -1238,13 +1238,26 @@ def _normalize_copy_merge_strategy(value: Any) -> str | None:
     return text
 
 
+def _normalize_copy_remove_section_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("remove_section_ids must be a list")
+    return [normalize_managed_section_id(str(item or "")) for item in value]
+
+
 def _remote_managed_section_python(
     *,
     destination_path: str,
     section_id: str,
     encoded_content: str,
+    remove_section_ids: list[str] | None = None,
 ) -> str:
     normalized_section_id = normalize_managed_section_id(section_id)
+    normalized_remove_section_ids = [
+        normalize_managed_section_id(stale_section_id)
+        for stale_section_id in (remove_section_ids or [])
+    ]
     return "\n".join(
         [
             "python3 - <<'PY'",
@@ -1253,12 +1266,21 @@ def _remote_managed_section_python(
             "from pathlib import Path",
             f"path = Path({destination_path!r})",
             f"section_id = {normalized_section_id!r}",
+            f"remove_section_ids = {normalized_remove_section_ids!r}",
             f"content = base64.b64decode({encoded_content!r}).decode('utf-8')",
-            "begin_marker = f'<!-- agent-sandbox-managed-section:{section_id}:begin -->'",
-            "end_marker = f'<!-- agent-sandbox-managed-section:{section_id}:end -->'",
+            "def markers(current_section_id):",
+            "    return (",
+            "        f'<!-- agent-sandbox-managed-section:{current_section_id}:begin -->',",
+            "        f'<!-- agent-sandbox-managed-section:{current_section_id}:end -->',",
+            "    )",
+            "begin_marker, end_marker = markers(section_id)",
             "body = content.rstrip() + '\\n'",
             "section = f'{begin_marker}\\n{body}{end_marker}\\n'",
             "existing = path.read_text(encoding='utf-8') if path.exists() else ''",
+            "for stale_section_id in remove_section_ids:",
+            "    stale_begin, stale_end = markers(stale_section_id)",
+            "    stale_pattern = re.compile(rf'(?ms)^{re.escape(stale_begin)}\\n.*?^{re.escape(stale_end)}\\n{{0,2}}')",
+            "    existing = stale_pattern.sub('', existing)",
             "pattern = re.compile(rf'(?ms)^{re.escape(begin_marker)}\\n.*?^{re.escape(end_marker)}\\n?')",
             "if pattern.search(existing):",
             "    merged = pattern.sub(section, existing, count=1)",
@@ -1340,10 +1362,15 @@ def _libvirt_vm_copy_files(
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
         merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
         section_id = str(file_spec.get("section_id") or "").strip()
+        remove_section_ids = _normalize_copy_remove_section_ids(
+            file_spec.get("remove_section_ids")
+        )
         if merge_strategy == "managed_section":
             if source_path_raw:
                 raise ValueError(f"files[{index}] managed_section requires inline content")
             section_id = normalize_managed_section_id(section_id)
+        elif remove_section_ids:
+            raise ValueError(f"files[{index}] remove_section_ids requires managed_section")
         overwrite = bool(file_spec.get("overwrite", True))
         mode = str(file_spec.get("mode") or "").strip()
         parent_path = str(Path(destination_path).parent)
@@ -1416,6 +1443,7 @@ def _libvirt_vm_copy_files(
                     destination_path=destination_path,
                     section_id=section_id,
                     encoded_content=encoded_content,
+                    remove_section_ids=remove_section_ids,
                 )
             else:
                 write_command = (
@@ -1644,10 +1672,15 @@ def _ssh_copy_files(
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
         merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
         section_id = str(file_spec.get("section_id") or "").strip()
+        remove_section_ids = _normalize_copy_remove_section_ids(
+            file_spec.get("remove_section_ids")
+        )
         if merge_strategy == "managed_section":
             if source_path_raw:
                 raise ValueError(f"files[{index}] managed_section requires inline content")
             section_id = normalize_managed_section_id(section_id)
+        elif remove_section_ids:
+            raise ValueError(f"files[{index}] remove_section_ids requires managed_section")
         overwrite = bool(file_spec.get("overwrite", True))
         mode = str(file_spec.get("mode") or "").strip()
         parent_path = str(Path(destination_path).parent)
@@ -1720,6 +1753,7 @@ def _ssh_copy_files(
                     destination_path=destination_path,
                     section_id=section_id,
                     encoded_content=encoded_content,
+                    remove_section_ids=remove_section_ids,
                 )
             else:
                 write_command = (

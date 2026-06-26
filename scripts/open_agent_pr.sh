@@ -37,7 +37,7 @@ Configuration:
   PRs open as drafts for that session's directory.
   AGENT_SANDBOX_CREATE_PRS_AS_DRAFT can force draft behavior globally for this invocation.
   If a PR is created and a session id is available, the script also attaches the
-  PR feedback stream to that session through agent-sandbox-cli.
+  PR feedback stream to that session through evander-cli.
 EOF
 }
 
@@ -661,7 +661,7 @@ PY
 }
 
 attach_pr_feedback_stream() {
-  local cli_path="${AGENT_SANDBOX_CLI_BIN:-}"
+  local cli_path="${EVANDER_CLI_BIN:-${AGENT_SANDBOX_CLI_BIN:-}}"
   local session_id="$1"
   local provider="$2"
   local repo_slug="$3"
@@ -672,10 +672,12 @@ attach_pr_feedback_stream() {
   fi
 
   if [[ -z "${cli_path}" ]]; then
-    if [[ -x "${ROOT_DIR}/.venv/bin/agent-sandbox-cli" ]]; then
+    if [[ -x "${ROOT_DIR}/.venv/bin/evander-cli" ]]; then
+      cli_path="${ROOT_DIR}/.venv/bin/evander-cli"
+    elif [[ -x "${ROOT_DIR}/.venv/bin/agent-sandbox-cli" ]]; then
       cli_path="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
     else
-      cli_path="agent-sandbox-cli"
+      cli_path="evander-cli"
     fi
   fi
 

@@ -60,7 +60,7 @@ esac
         '#!/usr/bin/env bash\nset -euo pipefail\necho "https://github.com/example/repo/pull/42"\n',
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "{attach_log}"
@@ -69,7 +69,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     pr_map = tmp_path / "runtime" / "pr-map.json"
     pr_map.parent.mkdir(parents=True)
@@ -81,7 +81,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
 
     try:
         result = subprocess.run(
@@ -177,19 +177,19 @@ esac
         '#!/usr/bin/env bash\nset -euo pipefail\necho "https://github.com/example/repo/pull/42"\n',
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     pr_map = tmp_path / "runtime" / "pr-map.json"
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
 
     old_umask = os.umask(0o027)
     try:
@@ -373,7 +373,7 @@ esac
         '#!/usr/bin/env bash\nset -euo pipefail\necho "https://github.com/example/repo/pull/42"\n',
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "{attach_log}"
@@ -382,12 +382,12 @@ printf '%s\\n' "$*" >> "{attach_log}"
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
@@ -472,18 +472,18 @@ echo "https://github.com/example/repo/pull/42"
 """,
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
@@ -573,18 +573,18 @@ echo "https://github.com/example/repo/pull/42"
 """,
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
@@ -718,7 +718,7 @@ exit 1
 """,
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "{attach_log}"
@@ -727,12 +727,12 @@ printf '%s\\n' "$*" >> "{attach_log}"
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
@@ -824,7 +824,7 @@ esac
         f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
     )
@@ -897,13 +897,13 @@ urllib.request.urlopen = fake_urlopen
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["PYTHONPATH"] = str(sitecustomize_dir)
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     subprocess.run(
@@ -1031,7 +1031,7 @@ exit 1
 """,
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "{attach_log}"
@@ -1040,12 +1040,12 @@ printf '%s\\n' "$*" >> "{attach_log}"
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
@@ -1174,7 +1174,7 @@ exit 1
 """,
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "{attach_log}"
@@ -1183,12 +1183,12 @@ printf '%s\\n' "$*" >> "{attach_log}"
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
@@ -1327,18 +1327,18 @@ exit 1
 """,
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AGENT_SANDBOX_RUNTIME_DIR"] = str(runtime_dir)
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
@@ -1434,7 +1434,7 @@ esac
         f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
-    (fake_bin / "agent-sandbox-cli").write_text(
+    (fake_bin / "evander-cli").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
     )
@@ -1519,13 +1519,13 @@ urllib.request.urlopen = fake_urlopen
     )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
-    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+    os.chmod(fake_bin / "evander-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["PYTHONPATH"] = str(sitecustomize_dir)
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
-    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AGENT_SANDBOX_RUNTIME_DIR"] = str(runtime_dir)
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 

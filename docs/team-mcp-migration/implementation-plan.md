@@ -1499,7 +1499,7 @@ Full-suite gate before cutover:
 Live cutover smoke, after restart:
 
 ```bash
-./.venv/bin/agent-sandbox-cli status --runtime-dir runtime --json
+./.venv/bin/evander-cli status --runtime-dir runtime --json
 ```
 
 Then verify through live Team state and Admin Web that a normal Team dispatch:
