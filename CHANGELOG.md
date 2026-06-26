@@ -7,6 +7,13 @@
   active lease checks, cost guards, low-priority batching, and no-progress
   suppression.
 
+## 2026-06-26 - Built-In Chat Scroll Anchoring
+
+- Fixed the built-in assistant chat so sending a message keeps the transcript
+  anchored near the newest messages instead of jumping to the oldest messages.
+- Loaded built-in assistant chat transcripts in bounded pages and fetches older
+  messages when scrolling upward, avoiding full-thread loads for long chats.
+
 ## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
 
 - Added a Team Add-on state stream so the UI receives revision snapshots
