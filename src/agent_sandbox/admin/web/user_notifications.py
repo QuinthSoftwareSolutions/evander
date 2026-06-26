@@ -56,12 +56,28 @@ def user_notification_routes(service: AdminService, auth: AdminWebAuth) -> list[
             return json_error("Request body must be a JSON object")
         mark_all = bool(payload.get("all"))
         raw_ids = payload.get("notification_ids")
+        raw_source = payload.get("source")
+        raw_source_ids = payload.get("source_ids")
         notification_ids: list[str] | None = None
-        if not mark_all:
+        if mark_all:
+            marked_ids = store.mark_read(user_id=user_id, notification_ids=None)
+        elif raw_source is not None or raw_source_ids is not None:
+            if not isinstance(raw_source_ids, list):
+                return json_error("source_ids must be a list")
+            marked_ids = store.mark_source_read(
+                user_id=user_id,
+                source=raw_source,
+                source_ids=[
+                    str(item or "").strip()
+                    for item in raw_source_ids
+                    if str(item or "").strip()
+                ],
+            )
+        else:
             if not isinstance(raw_ids, list):
                 return json_error("notification_ids must be a list unless all is true")
             notification_ids = [str(item or "").strip() for item in raw_ids if str(item or "").strip()]
-        marked_ids = store.mark_read(user_id=user_id, notification_ids=notification_ids)
+            marked_ids = store.mark_read(user_id=user_id, notification_ids=notification_ids)
         notifications, unread_count = store.list_unread(user_id=user_id, limit=20)
         return JSONResponse(
             {

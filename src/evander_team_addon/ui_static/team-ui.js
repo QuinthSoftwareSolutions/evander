@@ -5009,6 +5009,10 @@ function markChatConversationRead(conversationId, { rerender = true } = {}) {
   }
   const conversation = chatConversationById(normalizedConversationId);
   const newestMessageId = chatConversationNewestMessageId(conversation);
+  const newestSender = chatConversationNewestSender(conversation);
+  if (newestMessageId && newestSender !== "operator") {
+    markAdminChatNotificationRead(newestMessageId);
+  }
   if (!newestMessageId || text(chatReadMarkers[normalizedConversationId]) === newestMessageId) {
     return false;
   }
@@ -5021,6 +5025,31 @@ function markChatConversationRead(conversationId, { rerender = true } = {}) {
     renderChat();
   }
   return true;
+}
+
+function markAdminChatNotificationRead(messageId) {
+  const normalizedMessageId = text(messageId);
+  if (!normalizedMessageId) {
+    return;
+  }
+  void teamFetch("/api/admin/user-notifications/read", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      source: "team-chat",
+      source_ids: [normalizedMessageId],
+    }),
+  })
+    .then((response) => {
+      if (response.ok && window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "admin-user-notifications:changed" }, window.location.origin);
+      }
+    })
+    .catch(() => {});
 }
 
 function renderChatOperatorView() {

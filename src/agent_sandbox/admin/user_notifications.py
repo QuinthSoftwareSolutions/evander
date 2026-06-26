@@ -140,8 +140,12 @@ class AdminUserNotificationStore:
         normalized_user_id = normalize_admin_notification_user_id(user_id)
         if normalized_user_id is None:
             return []
-        target_ids = {str(item or "").strip() for item in notification_ids or []}
-        target_ids.discard("")
+        target_ids: set[str] | None = None
+        if notification_ids is not None:
+            target_ids = {str(item or "").strip() for item in notification_ids}
+            target_ids.discard("")
+            if not target_ids:
+                return []
         now = utc_timestamp()
         marked: list[str] = []
         with self._lock:
@@ -151,7 +155,39 @@ class AdminUserNotificationStore:
                     continue
                 if notification.get("user_id") != normalized_user_id:
                     continue
-                if target_ids and notification_id not in target_ids:
+                if target_ids is not None and notification_id not in target_ids:
+                    continue
+                if notification.get("read_at"):
+                    continue
+                notification["read_at"] = now
+                marked.append(notification_id)
+            if marked:
+                self._write(payload)
+        return marked
+
+    def mark_source_read(self, *, user_id: object, source: object, source_ids: list[str]) -> list[str]:
+        normalized_user_id = normalize_admin_notification_user_id(user_id)
+        if normalized_user_id is None:
+            return []
+        normalized_source = str(source or "").strip()
+        if not normalized_source:
+            return []
+        target_source_ids = {str(item or "").strip() for item in source_ids}
+        target_source_ids.discard("")
+        if not target_source_ids:
+            return []
+        now = utc_timestamp()
+        marked: list[str] = []
+        with self._lock:
+            payload = self._read()
+            for notification_id, notification in payload["notifications"].items():
+                if not isinstance(notification, dict):
+                    continue
+                if notification.get("user_id") != normalized_user_id:
+                    continue
+                if notification.get("source") != normalized_source:
+                    continue
+                if str(notification.get("source_id") or "") not in target_source_ids:
                     continue
                 if notification.get("read_at"):
                     continue

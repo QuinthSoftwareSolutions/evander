@@ -1726,6 +1726,26 @@ export default function AdminRoot() {
     }
   }
 
+  useEffect(() => {
+    if (session === null || (session.auth_required && !session.authenticated)) {
+      return;
+    }
+    function handleNotificationMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+      const payload = event.data;
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      if ((payload as { type?: unknown }).type === "admin-user-notifications:changed") {
+        void refreshUserNotifications();
+      }
+    }
+    window.addEventListener("message", handleNotificationMessage);
+    return () => window.removeEventListener("message", handleNotificationMessage);
+  }, [session]);
+
   async function markUserNotificationsRead(notificationIds: string[] | null) {
     setUserNotificationsBusy(true);
     try {
