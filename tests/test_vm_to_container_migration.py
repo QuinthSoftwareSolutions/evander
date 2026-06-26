@@ -182,4 +182,10 @@ def test_refresh_container_session_files_preserves_original_profile(tmp_path: Pa
     assert "evander_openai_relay" in (
         agent_home / ".config" / "agent-sandbox" / "codex" / "config.toml"
     ).read_text(encoding="utf-8")
+    assert "non_prefixed_mcp_tool_names = true" in (
+        agent_home / ".config" / "agent-sandbox" / "codex" / "config.toml"
+    ).read_text(encoding="utf-8")
+    assert "non_prefixed_mcp_tool_names = true" in (
+        agent_home / ".codex" / "config.toml"
+    ).read_text(encoding="utf-8")
     assert any("preserved original" in warning for warning in warnings)

@@ -2461,6 +2461,7 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
 
     assert "exec resume dispatch-effect-agent-enqueue-prompt-1-deadbeef" not in command
     assert "codex exec --json" in command
+    assert "--enable non_prefixed_mcp_tool_names" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
     assert 'web_search="disabled"' in command
@@ -2490,6 +2491,7 @@ def test_container_prompt_command_uses_resume_last_for_same_context_without_thre
 
     assert "codex exec resume --last" in command
     assert "--json" in command
+    assert "--enable non_prefixed_mcp_tool_names" in command
     assert "-s danger-full-access" not in command
     assert "-C /home/agent" not in command
 
@@ -2582,6 +2584,9 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         'model_reasoning_effort = "high"\n'
         'personality = "pragmatic"\n'
         'web_search = "disabled"\n'
+        "\n"
+        "[features]\n"
+        "non_prefixed_mcp_tool_names = true\n"
         "\n"
         "[model_providers.evander_openai_relay]\n"
         'name = "Evander OpenAI Relay"\n'

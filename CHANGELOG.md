@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-26 - Container Codex Native MCP Tools
+
+- Enabled Codex `non_prefixed_mcp_tool_names` for generated container session
+  configs and container Codex invocations so Team MCP tools can appear as
+  native callable tools instead of requiring manual MCP HTTP calls.
+- Covered existing VM-to-container refresh tooling so repaired container
+  session homes preserve Codex history while receiving the native MCP feature
+  flag in both active and legacy Codex config locations.
+
 ## 2026-06-26 - Reduced-Context Retry For Context-Exhausted Agents
 
 - Added a generic reduced-context retry path for Codex container-worker agent

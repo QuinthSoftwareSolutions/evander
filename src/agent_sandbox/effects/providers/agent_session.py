@@ -912,6 +912,8 @@ def container_prompt_command(
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
+        "--enable",
+        "non_prefixed_mcp_tool_names",
         "--model",
         model,
         "-c",
@@ -1409,6 +1411,9 @@ def _codex_config_content(
         'model_reasoning_effort = "high"\n'
         'personality = "pragmatic"\n'
         f"web_search = {_toml_string('live' if web_search_enabled else 'disabled')}\n"
+        "\n"
+        "[features]\n"
+        "non_prefixed_mcp_tool_names = true\n"
         "\n"
         "[model_providers.evander_openai_relay]\n"
         'name = "Evander OpenAI Relay"\n'
