@@ -155,6 +155,33 @@ def test_container_git_mirror_honors_explicit_bare_repo_name(tmp_path: Path) -> 
     assert _has_ref(mirror.mirror_path, "refs/heads/release/preserve")
 
 
+@pytest.mark.parametrize(
+    "bare_repo_path",
+    [
+        "nested/evander.git",
+        "/outside/evander.git",
+    ],
+)
+def test_container_git_mirror_falls_back_for_non_direct_bare_repo_paths(
+    tmp_path: Path,
+    bare_repo_path: str,
+) -> None:
+    source = _source_repo(tmp_path / "evander")
+    if bare_repo_path.startswith("/"):
+        bare_repo_path = str(tmp_path / bare_repo_path.removeprefix("/"))
+
+    mirror = _resolver(tmp_path).resolve(
+        repo_source=str(source),
+        bare_repo_path=bare_repo_path,
+        clone_branch="main",
+    )
+
+    assert mirror.mirror_name.startswith("evander-")
+    assert mirror.mirror_path.parent == tmp_path / "git-remotes"
+    assert mirror.mirror_path != Path(bare_repo_path)
+    assert _has_ref(mirror.mirror_path, "refs/heads/main")
+
+
 def test_container_git_mirror_sanitizes_worker_repo_name(tmp_path: Path) -> None:
     source = _source_repo(tmp_path / "example_backup")
 

@@ -56,6 +56,9 @@
 - Honored Team project bare Git remote names during container project-repo
   preparation, keeping VM and container sessions on the same project remote
   instead of creating a separate hashed mirror.
+- Preserved Team-owned branch refs during container Git SSH mirror refresh and
+  fell back to generated mirrors for host-only bare repo paths that are not
+  directly worker-addressable under the configured Git root.
 
 ## 2026-06-26 - Team Add-on MCP Wake Request Publishing
 

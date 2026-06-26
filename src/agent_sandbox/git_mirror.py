@@ -187,10 +187,8 @@ class ContainerGitMirrorResolver:
             mirror_path = self.git_root_path / mirror_path
         mirror_path = mirror_path.resolve(strict=False)
         git_root = self.git_root_path.resolve(strict=False)
-        if mirror_path.parent != git_root:
-            raise ValueError("bare_repo_path must resolve to a direct child of git_root")
-        if not mirror_path.name.endswith(".git"):
-            raise ValueError("bare_repo_path must point to a .git bare repository")
+        if mirror_path.parent != git_root or not mirror_path.name.endswith(".git"):
+            return None
         mirror_name = _normalize_bare_repo_name(mirror_path.name)
         return mirror_name, mirror_path
 
