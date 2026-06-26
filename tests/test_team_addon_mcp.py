@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.events.scheduled import scheduled_internal_event_store_path
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, ToolName, tool_name_value
 from agent_sandbox.runtime import build_runtime
@@ -45,7 +47,11 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamTaskState,
 )
-from evander_team_addon.repository import ADDON_ID, TeamStateRepository
+from evander_team_addon.repository import (
+    ADDON_ID,
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    TeamStateRepository,
+)
 
 
 def _runtime(tmp_path: Path, *, allowed_tools: list[str]):
@@ -626,6 +632,21 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert created_case["success"] is True
     assert updated_case["updated_case_ids"] == ["case-mcp"]
     assert created_task["created_task_ids"] == ["task-mcp"]
+    assert created_task["published_event_ids"]
+    assert created_task["outbox_record_ids"]
+    scheduled = json.loads(
+        scheduled_internal_event_store_path(context.config.runtime_dir).read_text(
+            encoding="utf-8",
+        )
+    )
+    scheduled_wakes = [
+        record
+        for record in scheduled.values()
+        if record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record["payload"]["agent_id"] == "backend"
+    ]
+    assert scheduled_wakes
+    assert all(record["status"] == "pending" for record in scheduled_wakes)
     assert created_tasks["created_task_ids"] == [
         "task-mcp-batch-a",
         "task-mcp-batch-b",

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-26 - Team Add-on MCP Wake Request Publishing
+
+- Fixed Team MCP command handoffs so generated `team.agent.wake_requested`
+  events are durably queued and immediately scheduled with their debounce delay.
+
 ## 2026-06-26 - Codex Relay Bootstrap And Team Guidance Cleanup
 
 - Changed Codex VM and container session bootstrap to use a relay-specific

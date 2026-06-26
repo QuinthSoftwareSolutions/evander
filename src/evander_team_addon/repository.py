@@ -3998,6 +3998,7 @@ class TeamStateRepository:
             payload.update(validated.model_dump(mode="json"))
 
             activity_id = f"activity-{uuid4().hex}"
+            outbox_records = _team_command_outbox_records(apply_result)
             response = _command_success_response(
                 state=validated,
                 context=normalized_context,
@@ -4005,6 +4006,7 @@ class TeamStateRepository:
                 handled_inbox_item_ids=normalized_handled_ids,
                 apply_result=apply_result,
             )
+            _append_response_outbox_record_ids(response, outbox_records)
             tx.append_dispatch_activity(
                 TeamDispatchActivity(
                     id=activity_id,
@@ -4024,9 +4026,13 @@ class TeamStateRepository:
                     audit_record_id=_optional_text(response.get("audit_record_id")),
                 )
             )
-            for outbox_record in apply_result.outbox_records:
+            for outbox_record in outbox_records:
                 tx.enqueue_outbox_record(outbox_record)
             if normalized_context.request_id is not None:
+                created_domain_ids = list(apply_result.created_domain_ids)
+                for outbox_record in outbox_records:
+                    if outbox_record.id not in created_domain_ids:
+                        created_domain_ids.append(outbox_record.id)
                 tx.store_idempotency_record(
                     TeamIdempotencyRecord(
                         id=f"idempotency-{uuid4().hex}",
@@ -4037,7 +4043,7 @@ class TeamStateRepository:
                         request_id=normalized_context.request_id,
                         normalized_payload_digest=payload_digest,
                         response_payload=response,
-                        created_domain_ids=apply_result.created_domain_ids,
+                        created_domain_ids=created_domain_ids,
                         created_event_ids=apply_result.created_event_ids,
                     )
                 )
@@ -12847,6 +12853,13 @@ def _team_event_outbox_records(
         }:
             aggregate_type = "ephemeral_assignment"
             aggregate_id = _optional_text(payload_mapping.get("assignment_id")) or aggregate_id
+        outbox_payload: dict[str, Any] = {
+            "event_type": event_type,
+            "correlation_key": _optional_text(event.get("correlation_key")),
+            "payload": payload_mapping,
+        }
+        if "delay_seconds" in event:
+            outbox_payload["delay_seconds"] = event.get("delay_seconds")
         records.append(
             TeamOutboxRecord(
                 id=f"outbox-{uuid4().hex}",
@@ -12854,16 +12867,67 @@ def _team_event_outbox_records(
                 aggregate_type=aggregate_type,
                 aggregate_id=aggregate_id,
                 idempotency_key=_optional_text(event.get("idempotency_key")),
-                payload={
-                    "event_type": event_type,
-                    "correlation_key": _optional_text(event.get("correlation_key")),
-                    "payload": payload_mapping,
-                },
+                payload=outbox_payload,
                 created_at=now,
                 updated_at=now,
             )
         )
     return records
+
+
+def _team_command_outbox_records(
+    apply_result: TeamCommandApplyResult,
+) -> list[TeamOutboxRecord]:
+    records = [
+        TeamOutboxRecord.model_validate(record)
+        for record in apply_result.outbox_records
+    ]
+    events = _response_event_mappings(apply_result.response_payload)
+    if not events:
+        return records
+    seen = {_outbox_record_dedupe_key(record) for record in records}
+    for record in _team_event_outbox_records(events):
+        key = _outbox_record_dedupe_key(record)
+        if key in seen:
+            continue
+        records.append(record)
+        seen.add(key)
+    return records
+
+
+def _response_event_mappings(response_payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    events = response_payload.get("events")
+    if not isinstance(events, Sequence) or isinstance(events, (str, bytes, bytearray)):
+        return []
+    return [event for event in events if isinstance(event, Mapping)]
+
+
+def _outbox_record_dedupe_key(record: TeamOutboxRecord) -> tuple[Any, ...]:
+    if record.idempotency_key is not None:
+        return ("idempotency", record.idempotency_key)
+    return (
+        "aggregate",
+        record.intent_type,
+        record.aggregate_type,
+        record.aggregate_id,
+    )
+
+
+def _append_response_outbox_record_ids(
+    response: dict[str, Any],
+    outbox_records: Sequence[TeamOutboxRecord],
+) -> None:
+    if not outbox_records:
+        return
+    raw_ids = response.get("outbox_record_ids")
+    if isinstance(raw_ids, Sequence) and not isinstance(raw_ids, (str, bytes, bytearray)):
+        outbox_ids = [str(item) for item in raw_ids]
+    else:
+        outbox_ids = []
+    for record in outbox_records:
+        if record.id not in outbox_ids:
+            outbox_ids.append(record.id)
+    response["outbox_record_ids"] = outbox_ids
 
 
 def _release_command_next_action_hints(

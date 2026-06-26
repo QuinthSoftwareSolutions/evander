@@ -1740,6 +1740,42 @@ def test_high_priority_inbox_action_emits_debounced_wake_request(
     }
 
 
+def test_create_task_command_enqueues_debounced_wake_request_outbox(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
+
+    _state, result = repo.create_task_command(
+        session_id="session-lead",
+        request_id="request-create-task-wake",
+        task_id="task-wake",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Wake backend",
+        description="Create work that should wake backend after debounce.",
+    )
+
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert result["outbox_record_ids"]
+    outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert [record.id for record in outbox_records] == result["outbox_record_ids"]
+    assert outbox_records[0].status == TeamOutboxStatus.PENDING
+    assert outbox_records[0].payload["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert outbox_records[0].payload["delay_seconds"] == (
+        DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    )
+    assert outbox_records[0].payload["payload"]["agent_id"] == "backend"
+
+
 def test_low_priority_inbox_action_does_not_emit_wake_request(
     tmp_path: Path,
 ) -> None:
