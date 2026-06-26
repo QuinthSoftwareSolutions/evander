@@ -126,7 +126,7 @@
 
 - name: Run repo-aware status verification
   ansible.builtin.command:
-    cmd: "./.venv/bin/agent-sandbox-cli status --runtime-dir runtime"
+    cmd: "./.venv/bin/evander-cli status --runtime-dir runtime"
   args:
     chdir: "{{ agent_sandbox_deploy_path }}"
   become_user: "{{ agent_sandbox_run_user }}"

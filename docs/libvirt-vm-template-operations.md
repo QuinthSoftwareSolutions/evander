@@ -49,8 +49,8 @@ Directory-scoped `vm.json` stores the alias catalog. Register an approved alias 
 confirm the effective config before using it:
 
 ```bash
-agent-sandbox-cli directories config-set root '{"libvirt_vm_default_template":"default","libvirt_vm_templates":{"default":"ubuntu-24.04-server-cloudimg-amd64.img","dotnet-lab":"dotnet-agent.qcow2"}}' --domain vm --runtime-dir runtime
-agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime
+evander-cli directories config-set root '{"libvirt_vm_default_template":"default","libvirt_vm_templates":{"default":"ubuntu-24.04-server-cloudimg-amd64.img","dotnet-lab":"dotnet-agent.qcow2"}}' --domain vm --runtime-dir runtime
+evander-cli directories config-show root --domain vm --runtime-dir runtime
 ```
 
 The example above keeps `default` mapped to the stock Ubuntu image and adds a
@@ -104,7 +104,7 @@ session. It requires a libvirt-capable host.
 2. Confirm the alias catalog still resolves to the approved qcow2 image:
 
    ```bash
-   agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime
+   evander-cli directories config-show root --domain vm --runtime-dir runtime
    ```
 
    The expected effective mapping includes:
@@ -177,7 +177,7 @@ session. It requires a libvirt-capable host.
 Start with the effective alias catalog and the recorded session metadata before changing anything:
 
 ```bash
-agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime
+evander-cli directories config-show root --domain vm --runtime-dir runtime
 jq '."template-smoke".metadata.libvirt_vm_template' runtime/sessions.json
 ```
 
@@ -188,7 +188,7 @@ and `sudo virsh console <vm-name>` lets you see cloud-init and boot-time failure
 
 - Symptom: `scripts/launch_agent_vm.sh` prints `Selected libvirt base image: ...` and then
   fails with `Missing base image: ...`.
-- Where to look: `agent-sandbox-cli directories config-show ... --domain vm --runtime-dir runtime`,
+- Where to look: `evander-cli directories config-show ... --domain vm --runtime-dir runtime`,
   `sudo qemu-img info <image-ref>`, and `runtime/sessions.json` if the selection came from a
   workflow run.
 - Likely cause: the alias or selector points at a file that does not exist, or the image was
@@ -202,12 +202,12 @@ and `sudo virsh console <vm-name>` lets you see cloud-init and boot-time failure
 
 - Symptom: the effect runtime rejects the selector with `unknown libvirt VM template selector ...;
   configured aliases: ...`.
-- Where to look: `agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime`,
+- Where to look: `evander-cli directories config-show root --domain vm --runtime-dir runtime`,
   the workflow run output, and `journalctl -u agent-sandbox-effect-orchestrator.service` when the
   failure surfaced through `effect:agent:create`.
 - Likely cause: `vm_image` names an alias that is not present in the effective `vm.json`
   catalog, or a parent directory override removed the alias you expected.
-- Remediation: register the alias with `agent-sandbox-cli directories config-set ... --domain vm
+- Remediation: register the alias with `evander-cli directories config-set ... --domain vm
   --runtime-dir runtime`, or choose an existing alias. If you want the default image, omit
   `vm_image` and let `libvirt_vm_default_template` resolve it.
 

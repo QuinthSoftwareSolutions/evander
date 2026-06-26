@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-26 - Evander CLI Rename
+
+- Added `evander-cli` as the preferred host CLI entry point while keeping
+  `agent-sandbox-cli` as a compatibility alias.
+- Updated service templates, helper scripts, operator notifications, tests, and
+  docs to use `evander-cli` for new installs and examples.
+
 ## 2026-06-26 - Team Add-on MCP Wake Request Publishing
 
 - Fixed Team MCP command handoffs so generated `team.agent.wake_requested`

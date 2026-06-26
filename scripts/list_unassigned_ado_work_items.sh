@@ -27,7 +27,12 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CLI_BIN="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
+CLI_BIN="${ROOT_DIR}/.venv/bin/evander-cli"
+LEGACY_CLI_BIN="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
+
+if [[ ! -x "${CLI_BIN}" && -x "${LEGACY_CLI_BIN}" ]]; then
+  CLI_BIN="${LEGACY_CLI_BIN}"
+fi
 
 if [[ -f "${ROOT_DIR}/secrets.env" ]]; then
   set -a
@@ -36,7 +41,7 @@ if [[ -f "${ROOT_DIR}/secrets.env" ]]; then
 fi
 
 if [[ ! -x "${CLI_BIN}" ]]; then
-  echo "Missing CLI entry point: ${CLI_BIN}" >&2
+  echo "Missing CLI entry point: ${ROOT_DIR}/.venv/bin/evander-cli" >&2
   echo "Install the project into .venv first, for example: uv pip install -e '.[dev]'" >&2
   exit 1
 fi

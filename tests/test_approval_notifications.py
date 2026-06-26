@@ -184,10 +184,10 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     assert "decision=approve" in message
     assert "decision=deny" in message
     assert "CLI fallback:" in message
-    assert "agent-sandbox-cli show-approval" in message
-    assert f"agent-sandbox-cli show-approval {approval.request_id}" in message
+    assert "evander-cli show-approval" in message
+    assert f"evander-cli show-approval {approval.request_id}" in message
     assert (
-        f"agent-sandbox-cli approve {approval.request_id} <approver> --approve|--deny --reason"
+        f"evander-cli approve {approval.request_id} <approver> --approve|--deny --reason"
         in message
     )
     assert "payload:" not in message.lower()
@@ -694,4 +694,4 @@ def test_approval_notification_failures_are_recorded_per_target(
     assert approval.notification_deliveries[1].status == ApprovalNotificationDeliveryStatus.FAILED
     assert approval.notification_deliveries[1].error == "notification relay unavailable"
     assert "metric_approval_notification outcome=failed" in caplog.text
-    assert f"agent-sandbox-cli show-approval {approval.request_id}" in caplog.text
+    assert f"evander-cli show-approval {approval.request_id}" in caplog.text

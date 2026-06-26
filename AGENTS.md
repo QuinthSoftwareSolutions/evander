@@ -53,7 +53,7 @@ The security model is:
     audit, workflow editing/runs/reports, configuration, workers, skills, chat, and users.
 
 - Workflow runtime:
-  - Trigger worker command: `agent-sandbox-cli trigger-orchestrator`
+  - Trigger worker command: `evander-cli trigger-orchestrator`
   - Trigger worker service: `agent-sandbox-trigger-orchestrator.service`
   - Effect worker: `agent-sandbox-effect-orchestrator`
   - Config: `config/trigger-orchestrator/config.json`
@@ -67,7 +67,7 @@ The security model is:
   - Discord ingest: `agent-sandbox-discord-ingest`
   - Discord wake: `agent-sandbox-discord-wake`
   - Scheduled wake: `agent-sandbox-scheduled-wake`
-  - Teams ingest: `agent-sandbox-cli teams-ingest` via `scripts/run_teams_ingest.sh`
+  - Teams ingest: `evander-cli teams-ingest` via `scripts/run_teams_ingest.sh`
   - Teams meeting ingest: `agent-sandbox-teams-meeting-ingest`
   - There is no current `agent-sandbox-host-heartbeat` service. Azure DevOps PR feedback polling
     lives in the ADO worker; Discord/scheduled wakeups live in their dedicated wake workers.
@@ -186,7 +186,7 @@ Before install/start, populate the required local config and secret files for th
 3. Initialize runtime state:
 
    ```bash
-   agent-sandbox-cli init-state --runtime-dir runtime
+   evander-cli init-state --runtime-dir runtime
    ```
 
 4. Create network/firewall and install services:
@@ -211,7 +211,7 @@ Before install/start, populate the required local config and secret files for th
    sudo systemctl start agent-sandbox-effect-orchestrator.service
    ```
 
-Use `agent-sandbox-cli status --runtime-dir runtime --json` as the first broad health check.
+Use `evander-cli status --runtime-dir runtime --json` as the first broad health check.
 
 ### Create Or Recreate A VM
 
@@ -261,8 +261,8 @@ node -e 'const { chromium } = require("playwright"); console.log(chromium.execut
 Issue flows create the VM first, then clone/bootstrap a repo as separate steps:
 
 ```bash
-agent-sandbox-cli create-issue-vm 14084 --dotnet --nuget /path/to/project.slnx --playwright
-agent-sandbox-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+evander-cli create-issue-vm 14084 --dotnet --nuget /path/to/project.slnx --playwright
+evander-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
 ```
 
 For host-local Git remotes:
@@ -288,7 +288,7 @@ Use this only when the directory/provider config selects `execution_backend: con
 4. Verify from the control plane:
 
    ```bash
-   agent-sandbox-cli execution smoke-container-worker --json
+   evander-cli execution smoke-container-worker --json
    ```
 
 The worker backend is intentionally bounded: no general secret transport, no general internet

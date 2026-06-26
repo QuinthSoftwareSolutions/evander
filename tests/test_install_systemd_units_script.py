@@ -168,7 +168,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in proxy_issue_sync
     assert "Environment=TRIGGER_ORCHESTRATOR_LOG_LEVEL=INFO" in trigger_orchestrator
     assert "--log-level ${TRIGGER_ORCHESTRATOR_LOG_LEVEL}" in trigger_orchestrator
-    assert "agent-sandbox-cli trigger-orchestrator" in trigger_orchestrator
+    assert "evander-cli trigger-orchestrator" in trigger_orchestrator
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in trigger_orchestrator
 
 

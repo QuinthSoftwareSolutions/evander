@@ -13,7 +13,7 @@ the existing VM services.
 `container_worker_vm` has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run
 jobs in disposable Docker containers while preserving durable per-session state on the worker VM.
 It is wired for one configured worker URL, the single-worker Phase 5 deployment slice, explicit
-manual/operator use through `agent-sandbox-cli execution ...`, and backend-aware
+manual/operator use through `evander-cli execution ...`, and backend-aware
 `effect:agent:*` workflow nodes. It is additive; `libvirt_vm` remains the default and is
 unchanged.
 

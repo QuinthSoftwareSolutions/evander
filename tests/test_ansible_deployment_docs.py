@@ -36,13 +36,13 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "agent-sandbox-worker-egress-policy.service" in text
     assert "DOCKER-USER" in text
     assert "169.254.169.254" in text
-    assert "agent-sandbox-cli execution smoke-container-worker --json" in text
+    assert "evander-cli execution smoke-container-worker --json" in text
     assert "agent-sandbox-qdrant.service" in text
     assert "qdrant/qdrant:v1.18.0" in text
     assert "/var/lib/agent-sandbox/qdrant" in text
     assert "127.0.0.1:6333" in text
     assert "/healthz" in text
-    assert "agent-sandbox-cli status --runtime-dir runtime" in text
+    assert "evander-cli status --runtime-dir runtime" in text
     assert "dist/agent-sandbox-runner.tar.manifest" in text
     assert "dist/agent-sandbox-runner-claude.tar.manifest" in text
     assert "./scripts/build_agent_sandbox_claude_runner_image.sh" in text

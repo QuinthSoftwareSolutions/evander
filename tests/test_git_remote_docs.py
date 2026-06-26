@@ -15,10 +15,10 @@ def test_git_remote_docs_and_script_are_present() -> None:
     assert "create_git_remote.sh" in ops or "setup_issue_git_vm.sh" in ops
     assert "bootstrap_git_vm.sh" in readme
     assert "bootstrap_git_vm.sh" in ops
-    assert "agent-sandbox-cli list-vms" in readme
-    assert "agent-sandbox-cli list-vms" in ops
-    assert "agent-sandbox-cli logs" in readme
-    assert "agent-sandbox-cli logs" in ops
+    assert "evander-cli list-vms" in readme
+    assert "evander-cli list-vms" in ops
+    assert "evander-cli logs" in readme
+    assert "evander-cli logs" in ops
     assert "check_issue_vm.sh" in readme
     assert "check_issue_vm.sh" in ops
     assert "AGENT_TASK.yaml" in readme

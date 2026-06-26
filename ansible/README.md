@@ -41,7 +41,7 @@ The playbook follows the repo-native bootstrap order:
 3. Install and configure the apt-cacher-ng relay when enabled
 4. Clone or update the repo
 5. Create `.venv` and install the package
-6. Run `agent-sandbox-cli init-state --runtime-dir runtime`
+6. Run `evander-cli init-state --runtime-dir runtime`
 7. Render managed config under `config/` and optional `secrets.env`
 8. Optionally install and configure Asterisk for the DIDWW SIP bridge
 9. Run `scripts/install_systemd_units.sh`
@@ -379,7 +379,7 @@ The verification role checks:
 - for `full`: libvirt network `agent-sandbox` exists
 - for `full` when firewall is enabled: nftables table `inet agent_sandbox` exists
 - for `full`: the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage
-- `.venv/bin/agent-sandbox-cli status --runtime-dir runtime` succeeds
+- `.venv/bin/evander-cli status --runtime-dir runtime` succeeds
 - local relay endpoints respond where applicable
 - when enabled, `agent-sandbox-nexus.service` is active and
   `http://127.0.0.1:8081/service/rest/v1/status` responds
@@ -390,7 +390,7 @@ After the playbook completes, common manual follow-ups are:
 
 ```bash
 cd /opt/agent-sandbox
-./.venv/bin/agent-sandbox-cli status --runtime-dir runtime
+./.venv/bin/evander-cli status --runtime-dir runtime
 curl -I http://127.0.0.1:8100/healthz
 sudo systemctl status agent-sandbox-admin-web.service
 sudo systemctl status agent-sandbox-gateway.service
@@ -529,7 +529,7 @@ agent_sandbox_worker_egress_policy_enabled: true
 ```bash
 sudo systemctl status agent-sandbox-worker-egress-policy.service
 sudo iptables -S DOCKER-USER
-agent-sandbox-cli execution smoke-container-worker --json
+evander-cli execution smoke-container-worker --json
 ```
 Do not grant worker hosts or runner containers direct GitHub/Azure DevOps egress for this mode; the
 control plane owns upstream credentials and mirror refresh. Worker host apt provisioning uses
@@ -607,7 +607,7 @@ control plane:
 ```bash
 cd /opt/agent-sandbox
 export AGENT_SANDBOX_WORKER_TOKEN='<same token>'
-./.venv/bin/agent-sandbox-cli execution smoke-container-worker \
+./.venv/bin/evander-cli execution smoke-container-worker \
   --session-id smoke-worker \
   --image agent-sandbox-runner:latest \
   --json

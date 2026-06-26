@@ -162,12 +162,12 @@ class ApprovalNotificationDispatcher:
 
     @staticmethod
     def _review_command(request_id: str) -> str:
-        return f"agent-sandbox-cli show-approval {request_id}"
+        return f"evander-cli show-approval {request_id}"
 
     def _render_message(self, request: ApprovalRequest) -> str:
         review_command = self._review_command(request.request_id)
         decision_command = (
-            f'agent-sandbox-cli approve {request.request_id} <approver> '
+            f'evander-cli approve {request.request_id} <approver> '
             '--approve|--deny --reason "..."'
         )
         review_url = self._approval_admin_web_url(request.request_id)

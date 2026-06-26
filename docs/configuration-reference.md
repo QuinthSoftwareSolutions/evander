@@ -1117,7 +1117,7 @@ successfully.
 - Recurring cron schedule (host CLI):
 
 ```bash
-agent-sandbox-cli wake-schedules create \
+evander-cli wake-schedules create \
   --runtime-dir runtime \
   --session-id issue-11-session \
   --cron "*/15 * * * *" \
@@ -1533,7 +1533,7 @@ Approval notification policy:
 - This field does not grant guests Discord, Teams, or email send permission. The host sends
   notifications for newly created approval records, and delivery failures are audited without
   changing the approval state. Operators still decide through Admin Web, the admin service, or
-  `agent-sandbox-cli approve`.
+  `evander-cli approve`.
 
 Approval-required tool policy:
 

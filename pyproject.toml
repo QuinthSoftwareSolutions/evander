@@ -52,6 +52,7 @@ agent-sandbox-discord-wake = "agent_sandbox.messaging.discord_wake:main"
 agent-sandbox-effect-orchestrator = "agent_sandbox.daemons.effect_orchestrator:main"
 agent-sandbox-scheduled-wake = "agent_sandbox.messaging.scheduled_wake:main"
 agent-sandbox-worker-daemon = "agent_sandbox.worker_daemon:main"
+evander-cli = "agent_sandbox.cli:app"
 agent-sandbox-cli = "agent_sandbox.cli:app"
 agent-sandbox-admin-web = "agent_sandbox.admin.web.app:main"
 

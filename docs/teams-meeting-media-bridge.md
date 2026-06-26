@@ -18,7 +18,7 @@ teams_meeting_max_active_meetings: 1
 Start a meeting session from the host:
 
 ```bash
-agent-sandbox-cli teams-meeting start \
+evander-cli teams-meeting start \
   --directory root \
   --join-url "https://teams.microsoft.com/l/meetup-join/..." \
   --model gpt-5.4
@@ -28,7 +28,7 @@ To project an existing agent into the meeting instead of creating an unrelated m
 include the originating session id:
 
 ```bash
-agent-sandbox-cli teams-meeting start \
+evander-cli teams-meeting start \
   --directory root \
   --join-url "https://teams.microsoft.com/l/meetup-join/..." \
   --origin-session-id existing-agent-session \
@@ -134,7 +134,7 @@ Automated tests use mocked Graph/media/Speech boundaries because real-time media
 
 1. Deploy the bridge to an Azure Windows Server with the configuration above.
 2. Confirm the Azure Bot Teams calling webhook points to `/api/calls` and tenant admin consent has been applied after every permission change.
-3. Start a meeting from the host with `agent-sandbox-cli teams-meeting start --join-url "https://teams.microsoft.com/l/meetup-join/..."`.
+3. Start a meeting from the host with `evander-cli teams-meeting start --join-url "https://teams.microsoft.com/l/meetup-join/..."`.
 4. Confirm the bot joins the scheduled meeting, finalized transcript events appear within 5-15
    seconds, `teams_meeting_speak` is audible, and `teams_meeting_stop` leaves cleanly.
 5. For `Bridge:SpeechMode=OpenAIRealtime`, start with `--origin-session-id` and confirm the bridge

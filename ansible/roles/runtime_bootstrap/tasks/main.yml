@@ -31,7 +31,7 @@
 
 - name: Initialize repo runtime state
   ansible.builtin.command:
-    cmd: "./.venv/bin/agent-sandbox-cli init-state --runtime-dir runtime"
+    cmd: "./.venv/bin/evander-cli init-state --runtime-dir runtime"
   args:
     chdir: "{{ agent_sandbox_deploy_path }}"
   become_user: "{{ agent_sandbox_run_user }}"

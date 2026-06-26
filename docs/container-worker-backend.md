@@ -263,7 +263,7 @@ Then deploy the worker playbook and verify the worker-side policy on the VM:
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 sudo systemctl status agent-sandbox-worker-egress-policy.service
 sudo iptables -S DOCKER-USER
-agent-sandbox-cli execution smoke-container-worker --json
+evander-cli execution smoke-container-worker --json
 ```
 
 ## Session Durability
@@ -325,13 +325,13 @@ Dry-run selection first. With no phase flag, the command only reports which libv
 would migrate and where their worker state would land:
 
 ```bash
-agent-sandbox-cli migrate-vm-sessions-to-container --all
+evander-cli migrate-vm-sessions-to-container --all
 ```
 
 Copy VM state into the local worker root without changing manifests:
 
 ```bash
-agent-sandbox-cli migrate-vm-sessions-to-container --all --copy-only --skip-logs
+evander-cli migrate-vm-sessions-to-container --all --copy-only --skip-logs
 ```
 
 The copy maps VM `/home/agent` to
@@ -347,7 +347,7 @@ config, Claude config, and package-manager config. Any overwritten file is first
 Verify copied sessions before cutover:
 
 ```bash
-agent-sandbox-cli migrate-vm-sessions-to-container --all --verify-only
+evander-cli migrate-vm-sessions-to-container --all --verify-only
 ```
 
 Cutover writes a manifest backup under
@@ -357,22 +357,22 @@ allowed tools, model, approval settings, and metadata, and adds `metadata.previo
 `metadata.migrated_from_libvirt_at`, and `metadata.migration_backup_id` for audit and rollback:
 
 ```bash
-agent-sandbox-cli migrate-vm-sessions-to-container --all --cutover
+evander-cli migrate-vm-sessions-to-container --all --cutover
 ```
 
 If agents might have written VM state after an earlier copy, run a final delta while the
 orchestrators are still stopped:
 
 ```bash
-agent-sandbox-cli migrate-vm-sessions-to-container --all --copy-only --final-delta --skip-logs
-agent-sandbox-cli migrate-vm-sessions-to-container --all --cutover
+evander-cli migrate-vm-sessions-to-container --all --copy-only --final-delta --skip-logs
+evander-cli migrate-vm-sessions-to-container --all --cutover
 ```
 
 Rollback restores the selected original manifests from a cutover backup. It does not delete worker
 session directories, so copied state remains available for inspection or a later retry:
 
 ```bash
-agent-sandbox-cli migrate-vm-sessions-to-container \
+evander-cli migrate-vm-sessions-to-container \
   --rollback runtime/migration-backups/vm-to-container/<backup-id>
 ```
 
@@ -447,7 +447,7 @@ session id.
 Container worker execution is exposed as an explicit operator-only path:
 
 ```bash
-agent-sandbox-cli execution start-container-job \
+evander-cli execution start-container-job \
   --session-id demo-session \
   --directory root \
   --target-name demo-container-1 \
@@ -468,11 +468,11 @@ execution mapping database; use `--backend container_worker_vm` or `--backend li
 a backend:
 
 ```bash
-agent-sandbox-cli execution status demo-container-1
-agent-sandbox-cli execution logs demo-container-1 --lines 100
-agent-sandbox-cli execution stop demo-container-1 --timeout-seconds 30
-agent-sandbox-cli execution destroy demo-container-1
-agent-sandbox-cli execution list-container-worker-executions --json
+evander-cli execution status demo-container-1
+evander-cli execution logs demo-container-1 --lines 100
+evander-cli execution stop demo-container-1 --timeout-seconds 30
+evander-cli execution destroy demo-container-1
+evander-cli execution list-container-worker-executions --json
 ```
 
 `destroy` deletes the worker job/container record. It does not delete durable session state under `/var/lib/agent-worker/sessions/<session_id>/`.
@@ -480,7 +480,7 @@ agent-sandbox-cli execution list-container-worker-executions --json
 The smoke command runs two unique jobs with the same session id. The first writes markers under `/home/agent` and `/home/agent/repos`; the second reads them back and fails if continuity or logs are missing:
 
 ```bash
-agent-sandbox-cli execution smoke-container-worker \
+evander-cli execution smoke-container-worker \
   --session-id smoke-session \
   --image agent-sandbox-runner:latest \
   --json
@@ -537,6 +537,13 @@ default-deny `DOCKER-USER` chain for the configured container network, blocks `1
 allows only the configured private control-plane endpoints. Workers should not have direct
 outbound access to Ubuntu mirrors, `pypi.org`, or `registry.npmjs.org`; apt-cacher-ng is the
 private apt egress point and Nexus is the private PyPI/npm egress point.
+
+For single-host local experiments only, the daemon has an explicit escape hatch:
+`--unsafe-allow-host-network --docker-network host` or
+`AGENT_SANDBOX_WORKER_UNSAFE_ALLOW_HOST_NETWORK=1`. This is intended for an operator-owned
+workstation where the worker daemon and control plane run on the same host and Docker bridge
+traffic is not usable. It weakens the container isolation boundary and should not be used for
+customer or shared deployments.
 
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 
