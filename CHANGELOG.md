@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-26 - Team Add-on Debounced Wake Requests
+
+- Added debounced `team.agent.wake_requested` events so high-signal Team
+  handoffs can lease an agent outside the shared 15-minute cron while preserving
+  active lease checks, cost guards, low-priority batching, and no-progress
+  suppression.
+
 ## 2026-06-25 - Team Add-on Live UI and Chat Unread Indicators
 
 - Added a Team Add-on state stream so the UI receives revision snapshots

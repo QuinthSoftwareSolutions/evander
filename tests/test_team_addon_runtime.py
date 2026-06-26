@@ -11,6 +11,8 @@ import pytest
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.artifact_spaces import ArtifactSpaceStore
+from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.events.scheduled import scheduled_internal_event_store_path
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.model_usage.store import ModelUsageStore
@@ -90,8 +92,10 @@ from evander_team_addon.providers import (
     TeamWakeGovernanceManagersEffectProvider,
     _build_prompt,
     _publish_deliverable_artifact_bundle,
+    _publish_team_events,
 )
 from evander_team_addon.repository import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
     TeamStateRepository,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1
@@ -194,6 +198,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-cron",
         "team-agent-run-completed",
         "team-chat-message-queued",
+        "team-agent-wake-requested",
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
@@ -254,6 +259,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         if isinstance(effect, dict)
     }
     assert effects["team-wake-due-agents"]["low_priority_wake_after_cycles"] == 4
+    assert effects["team-wake-due-agents"].get("respect_wake_interval", True) is True
     assert "outputs" not in effects["team-record-review-promotion"]
     assert effects["team-record-review-promotion"]["result_outputs"] == {
         "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
@@ -4653,6 +4659,10 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert triggers["team-chat-message-queued"]["event_type"] == (
         "team.chat.message_queued"
     )
+    assert triggers["team-agent-wake-requested"]["type"] == "trigger:event"
+    assert triggers["team-agent-wake-requested"]["event_type"] == (
+        "team.agent.wake_requested"
+    )
     assert effects["team-wake-queued-chat-message"]["type"] == (
         "effect:team:wake-due-agents"
     )
@@ -4660,6 +4670,14 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
         "${{team-chat-message-queued.payload.agent_id}}"
     )
     assert effects["team-wake-queued-chat-message"]["limit"] == 1
+    assert effects["team-wake-requested-agent"]["type"] == (
+        "effect:team:wake-due-agents"
+    )
+    assert effects["team-wake-requested-agent"]["agent_id"] == (
+        "${{team-agent-wake-requested.payload.agent_id}}"
+    )
+    assert effects["team-wake-requested-agent"]["limit"] == 1
+    assert effects["team-wake-requested-agent"]["respect_wake_interval"] is False
 
     notify = effects["team-notify-operator"]
     assert notify["type"] == "effect:communication:send-message"
@@ -4671,6 +4689,40 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
     assert ("team-operator-escalation", "team-notify-operator") in edges
     assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
+    assert ("team-agent-wake-requested", "team-wake-requested-agent") in edges
+
+
+def test_team_event_publisher_schedules_delayed_wake_events(tmp_path: Path) -> None:
+    context = EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)})
+
+    published_ids = _publish_team_events(
+        context,
+        [
+            {
+                "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
+                "correlation_key": "team.agent.wake_requested:backend",
+                "idempotency_key": "team-addon:team.agent.wake_requested:backend:1",
+                "delay_seconds": 10,
+                "payload": {
+                    "team_id": "team",
+                    "agent_id": "backend",
+                    "session_id": "session-backend",
+                    "reason": "inbox",
+                },
+            }
+        ],
+    )
+
+    assert published_ids and published_ids[0].startswith("sched-")
+    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
+    scheduled = json.loads(
+        scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
+    )
+    assert len(scheduled) == 1
+    [record] = scheduled.values()
+    assert record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert record["status"] == "pending"
+    assert record["payload"]["agent_id"] == "backend"
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:

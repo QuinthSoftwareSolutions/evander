@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -21,6 +21,10 @@ from agent_sandbox.events.internal import (
     InternalEventBus,
     InternalEventSource,
     internal_event_store_path,
+)
+from agent_sandbox.events.scheduled import (
+    ScheduledInternalEventStore,
+    scheduled_internal_event_store_path,
 )
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.models import utc_now
@@ -3535,6 +3539,9 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
     if not isinstance(events, list):
         return []
     bus = InternalEventBus(internal_event_store_path(context.runtime_dir))
+    scheduled_store = ScheduledInternalEventStore(
+        scheduled_internal_event_store_path(context.runtime_dir)
+    )
     published_ids: list[str] = []
     for event in events:
         if not isinstance(event, Mapping):
@@ -3542,6 +3549,21 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        delay_seconds = _optional_event_float(event.get("delay_seconds"))
+        if delay_seconds is not None and delay_seconds > 0:
+            scheduled, _created = scheduled_store.schedule_event(
+                event_type=_required_event_text(event.get("event_type"), "event_type"),
+                payload=dict(payload),
+                correlation_key=_optional_event_text(event.get("correlation_key")),
+                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                idempotency_key=_optional_event_text(event.get("idempotency_key")),
+                source=InternalEventSource(
+                    source_type="team-addon",
+                    source_name="team-addon",
+                ),
+            )
+            published_ids.append(scheduled.schedule_id)
+            continue
         published = bus.publish(
             event_type=_required_event_text(event.get("event_type"), "event_type"),
             payload=dict(payload),
@@ -3565,6 +3587,14 @@ def _optional_event_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_event_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("number value is required")
+    return float(value)
 
 
 async def _read_payload(request: Request) -> Mapping[str, Any]:

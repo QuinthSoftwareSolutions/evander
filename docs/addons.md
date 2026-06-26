@@ -488,6 +488,13 @@ set:
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.
+  High-signal wake requests, such as high/normal response-requested inbox,
+  ready task handoffs, review requests, rework requests, and remaining work
+  found when a dispatch finalizes, emit a debounced
+  `team.agent.wake_requested` internal event. The default debounce is 10
+  seconds, after which the wake-request path leases only the requested agent
+  with `respect_wake_interval=false`. Active leases, stand-downs, cost guards,
+  no-progress suppression, and low-priority batching still apply.
 - Team-owned MCP tools mutate Team state immediately and atomically during the
   wake. They infer the caller identity, active Team lease, dispatch, and worker
   assignment from the MCP connection/session and do not accept agent-facing
@@ -675,12 +682,13 @@ Team communication is directional and enforced by the repository, not by prose:
   revoke or override them.
 
 Inbox priority controls wake timing, not visibility or permission. `high` and
-`normal` pending inbox items wake recipients immediately on the next Team wake
-evaluation. `low` items are visible in Team state immediately but do not wake an
-otherwise idle recipient until `low_priority_wake_after_cycles` evaluations have
-seen that low-priority work. Additional low-priority items do not reset an active
-countdown. Any other wake reason cancels the countdown and includes all pending
-low-priority inbox in that dispatch.
+`normal` pending inbox items request a debounced recipient wake outside the
+15-minute Team cron; the default delay is 10 seconds so short bursts can batch
+into one dispatch. `low` items are visible in Team state immediately but do not
+wake an otherwise idle recipient until `low_priority_wake_after_cycles`
+evaluations have seen that low-priority work. Additional low-priority items do
+not reset an active countdown. Any other wake reason cancels the countdown and
+includes all pending low-priority inbox in that dispatch.
 
 ### Review Decisions And Decision Cascade
 

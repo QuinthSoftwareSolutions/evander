@@ -104,9 +104,12 @@ EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 EPHEMERAL_WORKER_REPORT_TOOL = "team_report_ephemeral_result"
 CHAT_MESSAGE_QUEUED_EVENT_TYPE = "team.chat.message_queued"
+AGENT_WAKE_REQUESTED_EVENT_TYPE = "team.agent.wake_requested"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
+DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS = 10.0
+DEFAULT_MAX_NO_PROGRESS_COUNT = 3
 
 _NON_TERMINAL_TASK_STATES = frozenset(
     {
@@ -638,7 +641,7 @@ class TeamStateRepository:
             _validate_command_task_scope(state, agent=agent, task_id=normalized_task_id)
             inbox_id = f"inbox-{uuid4().hex}"
             now = utc_now()
-            state.inbox[inbox_id] = AgentInboxItem(
+            item = AgentInboxItem(
                 id=inbox_id,
                 recipient_agent_id=recipient.id,
                 sender_agent_id=agent.id,
@@ -650,16 +653,24 @@ class TeamStateRepository:
                 created_at=now,
                 updated_at=now,
             )
+            state.inbox[inbox_id] = item
             _mark_agent_work_due(state, agent_id=recipient.id, now=now)
+            response_payload = {
+                "inbox_item_id": inbox_id,
+                "created_inbox_item_ids": [inbox_id],
+                "recipient_agent_id": recipient.id,
+                "intent_recorded": True,
+                "async_effect_pending": True,
+                "progress_made": True,
+            }
+            _append_agent_wake_requested_event_for_inbox_item(
+                state,
+                item=item,
+                result=response_payload,
+                now=now,
+            )
             return TeamCommandApplyResult(
-                response_payload={
-                    "inbox_item_id": inbox_id,
-                    "created_inbox_item_ids": [inbox_id],
-                    "recipient_agent_id": recipient.id,
-                    "intent_recorded": True,
-                    "async_effect_pending": True,
-                    "progress_made": True,
-                },
+                response_payload=response_payload,
                 created_domain_ids=[inbox_id],
             )
 
@@ -754,7 +765,7 @@ class TeamStateRepository:
                 payload["summary"] = normalized_summary
             inbox_id = f"inbox-{uuid4().hex}"
             now = utc_now()
-            state.inbox[inbox_id] = AgentInboxItem(
+            item = AgentInboxItem(
                 id=inbox_id,
                 recipient_agent_id=recipient.id,
                 sender_agent_id=agent.id,
@@ -766,16 +777,24 @@ class TeamStateRepository:
                 created_at=now,
                 updated_at=now,
             )
+            state.inbox[inbox_id] = item
             _mark_agent_work_due(state, agent_id=recipient.id, now=now)
+            response_payload = {
+                "inbox_item_id": inbox_id,
+                "created_inbox_item_ids": [inbox_id],
+                "recipient_agent_id": recipient.id,
+                "intent_recorded": True,
+                "async_effect_pending": True,
+                "progress_made": True,
+            }
+            _append_agent_wake_requested_event_for_inbox_item(
+                state,
+                item=item,
+                result=response_payload,
+                now=now,
+            )
             return TeamCommandApplyResult(
-                response_payload={
-                    "inbox_item_id": inbox_id,
-                    "created_inbox_item_ids": [inbox_id],
-                    "recipient_agent_id": recipient.id,
-                    "intent_recorded": True,
-                    "async_effect_pending": True,
-                    "progress_made": True,
-                },
+                response_payload=response_payload,
                 created_domain_ids=[inbox_id],
             )
 
@@ -866,7 +885,7 @@ class TeamStateRepository:
                 payload["summary"] = normalized_summary
             inbox_id = f"inbox-{uuid4().hex}"
             now = utc_now()
-            state.inbox[inbox_id] = AgentInboxItem(
+            item = AgentInboxItem(
                 id=inbox_id,
                 recipient_agent_id=recipient.id,
                 sender_agent_id=agent.id,
@@ -878,17 +897,25 @@ class TeamStateRepository:
                 created_at=now,
                 updated_at=now,
             )
+            state.inbox[inbox_id] = item
             _mark_agent_work_due(state, agent_id=recipient.id, now=now)
+            response_payload = {
+                "inbox_item_id": inbox_id,
+                "created_inbox_item_ids": [inbox_id],
+                "recipient_agent_id": recipient.id,
+                "context_rotation_activity": False,
+                "intent_recorded": True,
+                "async_effect_pending": True,
+                "progress_made": True,
+            }
+            _append_agent_wake_requested_event_for_inbox_item(
+                state,
+                item=item,
+                result=response_payload,
+                now=now,
+            )
             return TeamCommandApplyResult(
-                response_payload={
-                    "inbox_item_id": inbox_id,
-                    "created_inbox_item_ids": [inbox_id],
-                    "recipient_agent_id": recipient.id,
-                    "context_rotation_activity": False,
-                    "intent_recorded": True,
-                    "async_effect_pending": True,
-                    "progress_made": True,
-                },
+                response_payload=response_payload,
                 created_domain_ids=[inbox_id],
             )
 
@@ -2671,12 +2698,21 @@ class TeamStateRepository:
                 )
             created_id = _apply_task_creation_plan(state, plan=plan, actor=agent)
             _recalculate_project_status(state, plan.project_id)
+            response_payload = {
+                "task_id": created_id,
+                "created_task_ids": [created_id],
+                "progress_made": True,
+            }
+            _append_agent_wake_requested_event(
+                state,
+                agent_id=plan.owner_id,
+                result=response_payload,
+                reason="task_ready",
+                now=utc_now(),
+                delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+            )
             return TeamCommandApplyResult(
-                response_payload={
-                    "task_id": created_id,
-                    "created_task_ids": [created_id],
-                    "progress_made": True,
-                },
+                response_payload=response_payload,
                 created_domain_ids=[created_id],
             )
 
@@ -2764,11 +2800,22 @@ class TeamStateRepository:
                 recalc_project_ids.add(plan.project_id)
             for recalc_id in sorted(recalc_project_ids):
                 _recalculate_project_status(state, recalc_id)
+            response_payload = {
+                "created_task_ids": created_ids,
+                "progress_made": True,
+            }
+            now = utc_now()
+            for plan in plans:
+                _append_agent_wake_requested_event(
+                    state,
+                    agent_id=plan.owner_id,
+                    result=response_payload,
+                    reason="task_ready",
+                    now=now,
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                )
             return TeamCommandApplyResult(
-                response_payload={
-                    "created_task_ids": created_ids,
-                    "progress_made": True,
-                },
+                response_payload=response_payload,
                 created_domain_ids=list(created_ids),
             )
 
@@ -2991,12 +3038,22 @@ class TeamStateRepository:
                     )
                 if next_state is not None:
                     _recalculate_project_status(state_model, task.project_id)
+            response_payload = {
+                "task_id": task.id,
+                "updated_task_ids": [task.id] if changed else [],
+                "progress_made": changed,
+            }
+            if changed and task.state in _NON_TERMINAL_TASK_STATES:
+                _append_agent_wake_requested_event(
+                    state_model,
+                    agent_id=task.owner_agent_id,
+                    result=response_payload,
+                    reason="task_ready",
+                    now=now,
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                )
             return TeamCommandApplyResult(
-                response_payload={
-                    "task_id": task.id,
-                    "updated_task_ids": [task.id] if changed else [],
-                    "progress_made": changed,
-                },
+                response_payload=response_payload,
                 created_domain_ids=[task.id] if changed else [],
             )
 
@@ -7762,6 +7819,7 @@ class TeamStateRepository:
         wake_interval_seconds: int = 900,
         max_no_progress_count: int = 3,
         low_priority_wake_after_cycles: int = 4,
+        respect_wake_interval: bool = True,
         team_id: str | None = None,
         project_id: str | None = None,
         agent_id: str | None = None,
@@ -7856,7 +7914,8 @@ class TeamStateRepository:
                     _clear_low_priority_batch(runtime)
                     continue
                 due_by_time = (
-                    runtime.next_wake_at is None
+                    not respect_wake_interval
+                    or runtime.next_wake_at is None
                     or _ensure_utc(runtime.next_wake_at) <= effective_now
                 )
                 immediate_wake_ready = (
@@ -8422,6 +8481,14 @@ class TeamStateRepository:
                 completed_dispatch_id=normalized_dispatch_id,
                 result=result,
             )
+            _append_follow_up_agent_wake_requested_event(
+                state,
+                agent_id=agent.id,
+                result=result,
+                now=completed_at,
+                completed_dispatch_id=normalized_dispatch_id,
+                progress_made=progress_made,
+            )
 
             next_state = state.model_copy(
                 update={"revision": state.revision + 1, "updated_at": completed_at},
@@ -8780,6 +8847,15 @@ class TeamStateRepository:
                         changed = True
                     if changed:
                         task.updated_at = now
+                        if task.state in _NON_TERMINAL_TASK_STATES:
+                            _append_agent_wake_requested_event(
+                                state_model,
+                                agent_id=task.owner_agent_id,
+                                result=result,
+                                reason="task_ready",
+                                now=now,
+                                delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                            )
                         _mark_progress()
                         result["updated_task_ids"].append(task.id)
                 except ValueError as exc:
@@ -8823,6 +8899,14 @@ class TeamStateRepository:
                 )
                 result["created_task_ids"].append(created_id)
                 projects_to_recalc.add(state_model.tasks[created_id].project_id)
+                _append_agent_wake_requested_event(
+                    state_model,
+                    agent_id=plan.owner_id,
+                    result=result,
+                    reason="task_ready",
+                    now=utc_now(),
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                )
                 _mark_progress()
 
             for index, question in enumerate(
@@ -8871,6 +8955,12 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
+                _append_agent_wake_requested_event_for_inbox_item(
+                    state_model,
+                    item=item,
+                    result=result,
+                    now=utc_now(),
+                )
                 _mark_progress()
 
             for index, report in enumerate(
@@ -8922,6 +9012,12 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
+                _append_agent_wake_requested_event_for_inbox_item(
+                    state_model,
+                    item=item,
+                    result=result,
+                    now=utc_now(),
+                )
                 _mark_progress(context_activity=False)
 
             for index, status_request in enumerate(
@@ -8965,6 +9061,12 @@ class TeamStateRepository:
                     )
                     state_model.inbox[item.id] = item
                     result["created_status_request_ids"].append(item.id)
+                    _append_agent_wake_requested_event_for_inbox_item(
+                        state_model,
+                        item=item,
+                        result=result,
+                        now=utc_now(),
+                    )
                     _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "status_requests", index, exc)
@@ -9341,6 +9443,14 @@ class TeamStateRepository:
                 agent=agent,
                 completed_dispatch_id=record.dispatch_id,
                 result=result,
+            )
+            _append_follow_up_agent_wake_requested_event(
+                state_model,
+                agent_id=agent.id,
+                result=result,
+                now=runtime.updated_at,
+                completed_dispatch_id=record.dispatch_id,
+                progress_made=progress,
             )
             result["success"] = progress or not result["errors"]
             result["applied"] = progress
@@ -13753,6 +13863,156 @@ def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInbox
     return items
 
 
+def _append_agent_wake_requested_event_for_inbox_item(
+    state: TeamState,
+    *,
+    item: AgentInboxItem,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    if not item.response_requested or item.priority == TeamInboxPriority.LOW:
+        return
+    _append_agent_wake_requested_event(
+        state,
+        agent_id=item.recipient_agent_id,
+        result=result,
+        reason="inbox",
+        now=now,
+        delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+    )
+
+
+def _append_follow_up_agent_wake_requested_event(
+    state: TeamState,
+    *,
+    agent_id: str,
+    result: dict[str, Any],
+    now: datetime,
+    completed_dispatch_id: str,
+    progress_made: bool,
+    max_no_progress_count: int = DEFAULT_MAX_NO_PROGRESS_COUNT,
+) -> None:
+    wake = _agent_immediate_wake_request(state, agent_id=agent_id, now=now)
+    if wake is None:
+        return
+    reason, delay_seconds = wake
+    if not progress_made and reason != "inbox":
+        return
+    if (
+        reason == "task_ready"
+        and max_no_progress_count >= 0
+        and state.agent_runtimes.get(agent_id, AgentRuntime(agent_id=agent_id)).no_progress_count
+        >= max_no_progress_count
+    ):
+        return
+    _append_agent_wake_requested_event(
+        state,
+        agent_id=agent_id,
+        result=result,
+        reason=reason,
+        now=now,
+        delay_seconds=delay_seconds,
+        idempotency_suffix=(
+            f"after-dispatch:{completed_dispatch_id}" if delay_seconds <= 0 else None
+        ),
+    )
+
+
+def _agent_immediate_wake_request(
+    state: TeamState,
+    *,
+    agent_id: str,
+    now: datetime,
+) -> tuple[str, float] | None:
+    agent = state.agents.get(agent_id)
+    if agent is None or agent.status != AgentStatus.ACTIVE or agent.team_id is None:
+        return None
+    if _active_stand_downs_for_agent(state, agent.id):
+        return None
+    runtime = state.agent_runtimes.get(agent.id)
+    if runtime is None:
+        runtime = AgentRuntime(agent_id=agent.id)
+    if (
+        runtime.wake_leased_until is not None
+        and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
+    ):
+        return None
+
+    pending_inbox = _pending_inbox_for_agent(state, agent.id)
+    wake_inbox = _wakeable_inbox_items(pending_inbox)
+    immediate_inbox = [
+        item for item in wake_inbox if item.priority != TeamInboxPriority.LOW
+    ]
+    if immediate_inbox:
+        oldest = min(_ensure_utc(item.created_at) for item in immediate_inbox)
+        age_seconds = max(0.0, (_ensure_utc(now) - oldest).total_seconds())
+        return (
+            "inbox",
+            max(0.0, DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS - age_seconds),
+        )
+    if runtime.context_rotation_pending:
+        return "context_rotation", DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    if _latest_action_feedback_for_agent(state, agent.id):
+        return "action_feedback", DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    if _agent_task_work_ready(state, agent.id):
+        return "task_ready", DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    return None
+
+
+def _agent_task_work_ready(state: TeamState, agent_id: str) -> bool:
+    wakeable_tasks = [
+        task
+        for task in _active_tasks_for_agent(state, agent_id)
+        if _task_can_wake_owner_for_work(state, task)
+    ]
+    return any(
+        state.dependency_status(task.id) == "satisfied"
+        for task in wakeable_tasks
+    ) or any(
+        state.subtask_counts(task.id)["open"] > 0
+        for task in wakeable_tasks
+    )
+
+
+def _append_agent_wake_requested_event(
+    state: TeamState,
+    *,
+    agent_id: str,
+    result: dict[str, Any],
+    reason: str,
+    now: datetime,
+    delay_seconds: float,
+    idempotency_suffix: str | None = None,
+) -> None:
+    agent = state.agents.get(agent_id)
+    if agent is None or agent.status != AgentStatus.ACTIVE or agent.team_id is None:
+        return
+    normalized_now = _ensure_utc(now)
+    normalized_delay = max(0.0, float(delay_seconds))
+    bucket_seconds = max(1.0, DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS)
+    bucket = int((normalized_now.timestamp() + normalized_delay) // bucket_seconds)
+    suffix = f":{idempotency_suffix}" if idempotency_suffix else ""
+    result.setdefault("events", []).append(
+        {
+            "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
+            "correlation_key": f"{AGENT_WAKE_REQUESTED_EVENT_TYPE}:{agent.id}",
+            "idempotency_key": (
+                "team-addon:"
+                f"{AGENT_WAKE_REQUESTED_EVENT_TYPE}:"
+                f"{agent.id}:{bucket}"
+                f"{suffix}"
+            ),
+            "delay_seconds": normalized_delay,
+            "payload": {
+                "team_id": agent.team_id,
+                "agent_id": agent.id,
+                "session_id": agent.session_id,
+                "reason": reason,
+            },
+        }
+    )
+
+
 def _resolve_action_agent(
     state: TeamState,
     *,
@@ -15211,7 +15471,7 @@ def _apply_review_request(
             ],
         }
     inbox_id = f"inbox-{uuid4().hex}"
-    state.inbox[inbox_id] = AgentInboxItem(
+    item = AgentInboxItem(
         id=inbox_id,
         recipient_agent_id=reviewer_id,
         sender_agent_id=actor.id,
@@ -15223,8 +15483,15 @@ def _apply_review_request(
         created_at=now,
         updated_at=now,
     )
+    state.inbox[inbox_id] = item
     result["created_inbox_item_ids"].append(inbox_id)
     _mark_agent_work_due(state, agent_id=reviewer_id, now=now)
+    _append_agent_wake_requested_event_for_inbox_item(
+        state,
+        item=item,
+        result=result,
+        now=now,
+    )
     return review.id
 
 
@@ -15397,7 +15664,7 @@ def _cascade_review_decision(
         task.updated_at = now
         rework_agent_id = task.owner_agent_id
         inbox_id = f"inbox-{uuid4().hex}"
-        state.inbox[inbox_id] = AgentInboxItem(
+        item = AgentInboxItem(
             id=inbox_id,
             recipient_agent_id=rework_agent_id,
             sender_agent_id=review.reviewer_agent_id,
@@ -15416,8 +15683,15 @@ def _cascade_review_decision(
                 "artifact_refs": list(deliverable.artifact_refs),
             },
         )
+        state.inbox[inbox_id] = item
         if result is not None:
             result["created_inbox_item_ids"].append(inbox_id)
+            _append_agent_wake_requested_event_for_inbox_item(
+                state,
+                item=item,
+                result=result,
+                now=now,
+            )
         _mark_agent_work_due(
             state,
             agent_id=rework_agent_id,
