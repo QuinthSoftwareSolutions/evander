@@ -123,11 +123,10 @@ class ContainerWorkerVmExecutionBackend:
             finished_at=record.finished_at,
             last_status=record.status,
             directory_path=prepared.directory_path,
-            metadata={
-                **prepared.metadata,
-                "worker_status": record.status,
-                "image": record.image,
-            },
+            metadata=self._metadata_from_worker_record(
+                {**prepared.metadata, "image": record.image},
+                record,
+            ),
         )
         self.repository.put(mapping)
         return ExecutionHandle(
@@ -152,7 +151,7 @@ class ContainerWorkerVmExecutionBackend:
         mapping.last_status = record.status
         mapping.started_at = record.started_at
         mapping.finished_at = record.finished_at
-        mapping.metadata = {**mapping.metadata, "worker_status": record.status}
+        mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
         self.repository.put(mapping)
         return self._status_from_record(mapping, record.status, message=record.error)
 
@@ -162,7 +161,7 @@ class ContainerWorkerVmExecutionBackend:
         record = self.client.stop(mapping.worker_job_id)
         mapping.last_status = record.status
         mapping.finished_at = record.finished_at
-        mapping.metadata = {**mapping.metadata, "worker_status": record.status}
+        mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
         self.repository.put(mapping)
         return self._status_from_record(mapping, record.status, message=record.error)
 
@@ -449,11 +448,16 @@ class ContainerWorkerVmExecutionBackend:
         *,
         message: str | None,
     ) -> ExecutionStatus:
+        outcome = _failed_codex_outcome(mapping.metadata)
+        status = self._map_status(worker_status)
+        if outcome is not None:
+            status = ExecutionStatusKind.FAILED
+            message = message or str(outcome.get("message") or "Codex execution failed")
         return ExecutionStatus(
             backend=self.kind,
             execution_id=mapping.execution_id,
             target_name=mapping.target_name,
-            status=self._map_status(worker_status),
+            status=status,
             session_id=mapping.session_id,
             message=message,
             started_at=mapping.started_at,
@@ -476,6 +480,21 @@ class ContainerWorkerVmExecutionBackend:
         if normalized == "removed":
             return ExecutionStatusKind.DESTROYED
         return ExecutionStatusKind.UNKNOWN
+
+    @staticmethod
+    def _metadata_from_worker_record(
+        existing_metadata: dict[str, Any],
+        record: Any,
+    ) -> dict[str, Any]:
+        metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+        worker_metadata = (
+            dict(record.metadata) if isinstance(getattr(record, "metadata", None), dict) else {}
+        )
+        for key in ("codex_outcome", "agent_provider", "model_provider_mode", "model"):
+            if key in worker_metadata:
+                metadata[key] = worker_metadata[key]
+        metadata["worker_status"] = record.status
+        return sanitize_metadata(metadata)
 
     def _mark_cleanup_succeeded(
         self,
@@ -551,6 +570,18 @@ class ContainerWorkerVmExecutionBackend:
                 error=error,
                 attempted_at=attempted_at,
             )
+
+
+def _failed_codex_outcome(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    outcome = metadata.get("codex_outcome")
+    if not isinstance(outcome, dict):
+        return None
+    status = str(outcome.get("status") or "").strip().casefold()
+    if status != "failed":
+        return None
+    return outcome
 
 
 def _log_page_from_end(

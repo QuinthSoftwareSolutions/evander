@@ -69,6 +69,13 @@ _SESSION_MESSAGE_ARTIFACTS = {
     "no response requested",
     "no response requested.",
 }
+_CODEX_OUTCOME_METADATA_KEY = "codex_outcome"
+_CODEX_OUTCOME_STATUS_FAILED = "failed"
+_CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED = "codex_context_limit_suspected"
+_CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE = "codex_no_final_message"
+_CODEX_OUTCOME_REASON_TURN_FAILED = "codex_turn_failed"
+_CODEX_LOCAL_MODEL_PROVIDER_MODES = {"local_openai"}
+_CODEX_CONTEXT_LIMIT_WARNING_TOTAL_TOKENS = 60_000
 
 
 class WorkerDaemon:
@@ -189,6 +196,8 @@ class WorkerDaemon:
         record.status = status
         if status in {"exited", "stopped", "failed", "removed"} and record.finished_at is None:
             record.finished_at = now_utc()
+        if status in {"exited", "stopped", "failed", "removed"}:
+            self._refresh_codex_job_outcome(record)
         self.store.put(record)
         return record
 
@@ -341,6 +350,7 @@ class WorkerDaemon:
             for message in self._codex_session_messages(
                 agent_home,
                 thread_id,
+                metadata=record.metadata,
                 include_running_context=record.status == "running",
             ):
                 if message in seen or (skip_existing and message in text):
@@ -374,6 +384,7 @@ class WorkerDaemon:
                 thread_id,
                 started_at=record.started_at,
                 finished_at=record.finished_at,
+                metadata=record.metadata,
                 include_running_context=record.status == "running",
             ):
                 if message in seen or (skip_existing and message in text):
@@ -464,11 +475,46 @@ class WorkerDaemon:
                 thread_id,
                 started_at=record.started_at,
                 finished_at=record.finished_at,
+                metadata=record.metadata,
             ):
                 lines.append(message)
         if not lines:
             return None
         return "\n".join(lines) + "\n"
+
+    def _refresh_codex_job_outcome(self, record: WorkerJobRecord) -> None:
+        if not _worker_job_uses_codex(record):
+            return
+        if record.started_at is None and record.finished_at is None:
+            return
+        text = ""
+        log_path = self._log_path(record)
+        if log_path.exists():
+            try:
+                text = log_path.read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_codex_session_ids(Path(record.agent_home_path), limit=1)
+        if not thread_ids:
+            return
+        for thread_id in thread_ids:
+            outcome = _codex_session_outcome(
+                Path(record.agent_home_path),
+                thread_id,
+                started_at=record.started_at,
+                finished_at=record.finished_at,
+                metadata=record.metadata,
+            )
+            if outcome is None:
+                continue
+            metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+            metadata[_CODEX_OUTCOME_METADATA_KEY] = outcome
+            record.metadata = sanitize_metadata(metadata)
+            if outcome.get("status") == _CODEX_OUTCOME_STATUS_FAILED and not record.error:
+                record.error = sanitize_text(str(outcome.get("message") or "Codex failed"))
+            return
 
     @staticmethod
     def _codex_session_messages(
@@ -477,6 +523,7 @@ class WorkerDaemon:
         *,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        metadata: dict[str, object] | None = None,
         include_running_context: bool = False,
     ) -> list[str]:
         messages: list[str] = []
@@ -520,6 +567,17 @@ class WorkerDaemon:
                 if not message or message in seen:
                     continue
                 seen.add(message)
+                messages.append(message)
+        outcome = _codex_session_outcome(
+            agent_home,
+            thread_id,
+            started_at=started_at,
+            finished_at=finished_at,
+            metadata=metadata,
+        )
+        if outcome is not None:
+            message = _codex_outcome_log_line(outcome)
+            if message and message not in seen:
                 messages.append(message)
         return messages
 
@@ -958,6 +1016,7 @@ class WorkerDaemon:
         record.cleanup_attempted_at = attempted_at or record.cleanup_attempted_at or completed
         record.cleanup_completed_at = completed
         record.cleanup_error = None
+        self._refresh_codex_job_outcome(record)
         self.store.put(record)
         return record
 
@@ -976,6 +1035,7 @@ class WorkerDaemon:
         record.cleanup_attempted_at = attempted_at or record.cleanup_attempted_at or completed
         record.cleanup_completed_at = completed
         record.cleanup_error = sanitize_text(error)
+        self._refresh_codex_job_outcome(record)
         self.store.put(record)
         return record
 
@@ -1231,6 +1291,263 @@ def _worker_job_uses_claude(record: WorkerJobRecord) -> bool:
         r"(^|\s)claude(\s|$)",
         command_text,
     ) is not None
+
+
+def _worker_job_uses_codex(record: WorkerJobRecord) -> bool:
+    if _worker_job_uses_claude(record):
+        return False
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    for key in ("agent_provider", "provider", "model_provider"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip().casefold() == "codex":
+            return True
+    command = getattr(record, "command", None)
+    command_text = (
+        " ".join(command)
+        if isinstance(command, list) and all(isinstance(item, str) for item in command)
+        else str(command or "")
+    ).casefold()
+    return "agent_sandbox_codex_json_to_log" in command_text or re.search(
+        r"(^|\s)codex(\s|$)",
+        command_text,
+    ) is not None
+
+
+def _codex_session_outcome(
+    agent_home: Path,
+    thread_id: str,
+    *,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    task_complete_without_final_message = False
+    explicit_failure_message: str | None = None
+    explicit_failure_event_type: str | None = None
+    last_token_usage: dict[str, int] | None = None
+    model_context_window: int | None = None
+    saw_event = False
+
+    for event in _iter_codex_session_events(
+        agent_home,
+        thread_id,
+        started_at=started_at,
+        finished_at=finished_at,
+    ):
+        saw_event = True
+        event_type = str(event.get("type") or "")
+        if event_type == "token_count":
+            token_usage, context_window = _codex_token_count_details(event)
+            if token_usage:
+                last_token_usage = token_usage
+            if context_window is not None:
+                model_context_window = context_window
+            continue
+        if event_type in {"error", "turn.failed"}:
+            message = _codex_event_error_message(event)
+            if message:
+                explicit_failure_message = message
+                explicit_failure_event_type = event_type
+            continue
+        if event_type != "event_msg":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("type") or "") != "task_complete":
+            continue
+        if not _codex_first_text(payload.get("last_agent_message")).strip():
+            task_complete_without_final_message = True
+
+    if not saw_event:
+        return None
+
+    provider_kind = _codex_provider_kind(metadata)
+    outcome: dict[str, object] | None = None
+    if explicit_failure_message:
+        outcome = {
+            "status": _CODEX_OUTCOME_STATUS_FAILED,
+            "reason": _CODEX_OUTCOME_REASON_TURN_FAILED,
+            "message": f"Codex reported {explicit_failure_event_type}: {explicit_failure_message}",
+        }
+    elif task_complete_without_final_message:
+        context_limit_suspected = _codex_context_limit_suspected(
+            provider_kind=provider_kind,
+            last_token_usage=last_token_usage,
+            model_context_window=model_context_window,
+        )
+        reason = (
+            _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED
+            if context_limit_suspected
+            else _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE
+        )
+        message = "Codex ended without a final agent message."
+        if context_limit_suspected:
+            total_tokens = last_token_usage.get("total_tokens") if last_token_usage else None
+            if total_tokens is not None:
+                message = (
+                    "Codex ended without a final agent message after local model token usage "
+                    f"reached {total_tokens} tokens."
+                )
+            else:
+                message = (
+                    "Codex ended without a final agent message after local model token usage "
+                    "reached the configured warning threshold."
+                )
+        outcome = {
+            "status": _CODEX_OUTCOME_STATUS_FAILED,
+            "reason": reason,
+            "message": message,
+        }
+
+    if outcome is None:
+        return None
+    outcome["thread_ids"] = [thread_id]
+    outcome["provider_kind"] = provider_kind
+    if last_token_usage:
+        outcome["last_token_usage"] = last_token_usage
+    if model_context_window is not None:
+        outcome["model_context_window"] = model_context_window
+    return sanitize_metadata(outcome)
+
+
+def _iter_codex_session_events(
+    agent_home: Path,
+    thread_id: str,
+    *,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+):
+    for path in _codex_session_jsonl_paths(agent_home, thread_id):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw_line in lines:
+            try:
+                event = json.loads(raw_line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if not _codex_event_is_in_window(
+                event,
+                started_at=started_at,
+                finished_at=finished_at,
+            ):
+                continue
+            yield event
+
+
+def _codex_token_count_details(event: dict[str, object]) -> tuple[dict[str, int] | None, int | None]:
+    info = event.get("info")
+    if not isinstance(info, dict):
+        info = event.get("payload")
+    if not isinstance(info, dict):
+        return None, None
+    raw_usage = info.get("last_token_usage") or info.get("usage")
+    usage: dict[str, int] = {}
+    if isinstance(raw_usage, dict):
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = _codex_int(raw_usage.get(key))
+            if value is not None:
+                usage[key] = value
+    model_context_window = _codex_int(
+        info.get("model_context_window")
+        or info.get("context_window")
+        or info.get("context_limit")
+    )
+    return (usage or None), model_context_window
+
+
+def _codex_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _codex_event_error_message(event: dict[str, object]) -> str:
+    payload = event.get("payload")
+    payload_message = ""
+    if isinstance(payload, dict):
+        payload_message = _codex_first_text(
+            payload.get("message"),
+            payload.get("error"),
+            payload.get("detail"),
+        )
+    return _codex_first_text(
+        event.get("message"),
+        event.get("error"),
+        event.get("detail"),
+        payload_message,
+    ).strip()
+
+
+def _codex_provider_kind(metadata: dict[str, object] | None) -> str:
+    if not isinstance(metadata, dict):
+        return "unknown"
+    mode = _codex_first_text(
+        metadata.get("model_provider_mode"),
+        metadata.get("openai_provider_mode"),
+    ).strip().casefold()
+    if mode in _CODEX_LOCAL_MODEL_PROVIDER_MODES:
+        return "local_model"
+    if mode in {"openai_public", "azure_openai", "anthropic"}:
+        return "cloud_or_unknown"
+    return "unknown"
+
+
+def _codex_context_limit_suspected(
+    *,
+    provider_kind: str,
+    last_token_usage: dict[str, int] | None,
+    model_context_window: int | None,
+) -> bool:
+    if provider_kind != "local_model" or not last_token_usage:
+        return False
+    total_tokens = last_token_usage.get("total_tokens")
+    if total_tokens is None:
+        input_tokens = last_token_usage.get("input_tokens")
+        output_tokens = last_token_usage.get("output_tokens")
+        if input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+    if total_tokens is None:
+        return False
+    if total_tokens >= _CODEX_CONTEXT_LIMIT_WARNING_TOTAL_TOKENS:
+        return True
+    if model_context_window is not None and model_context_window > 0:
+        return total_tokens >= int(model_context_window * 0.98)
+    return False
+
+
+def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
+    reason = str(outcome.get("reason") or "").strip()
+    message = str(outcome.get("message") or "").strip()
+    if reason == _CODEX_OUTCOME_REASON_TURN_FAILED:
+        return f"codex failed: {message or 'Codex reported a turn failure.'}"
+    usage = outcome.get("last_token_usage")
+    total_tokens = None
+    if isinstance(usage, dict):
+        total_tokens = usage.get("total_tokens")
+    suffix = f" (last_total_tokens={total_tokens})" if total_tokens is not None else ""
+    if reason == _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED:
+        return (
+            "codex failed: task_complete did not include a final agent message; "
+            f"context limit suspected{suffix}"
+        )
+    return (
+        "codex failed: task_complete did not include a final agent message"
+        f"{suffix}"
+    )
 
 
 def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:

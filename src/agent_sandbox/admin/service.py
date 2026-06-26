@@ -9619,6 +9619,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                             "resume_thread_id": resume_thread_id,
                             "operator_steering": "interrupt_and_resume",
                             "interrupted_execution_id": current_execution_id,
+                            "agent_provider": agent_harness,
+                            "model": resolved_model,
+                            "model_provider_mode": effective_config.model_provider_mode,
                             **(
                                 {"created_by": str(created_by).strip()}
                                 if str(created_by or "").strip()
@@ -10579,6 +10582,25 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return "unknown"
 
     @staticmethod
+    def _container_codex_outcome(record: Any) -> Mapping[str, Any] | None:
+        metadata = getattr(record, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            return None
+        outcome = metadata.get("codex_outcome")
+        if not isinstance(outcome, Mapping):
+            return None
+        return outcome
+
+    @classmethod
+    def _container_execution_status(cls, record: Any) -> str:
+        outcome = cls._container_codex_outcome(record)
+        if outcome is not None:
+            status = str(outcome.get("status") or "").strip().casefold()
+            if status == "failed":
+                return "failed"
+        return cls._container_agent_status(getattr(record, "last_status", None))
+
+    @staticmethod
     def _agent_status_is_active(status: str | None) -> bool:
         return str(status or "").strip().casefold() in {
             "preparing",
@@ -10600,13 +10622,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _container_session_status(cls, records: list[Any]) -> str:
         if not records:
             return "prepared"
-        statuses = [cls._container_agent_status(record.last_status) for record in records]
+        statuses = [cls._container_execution_status(record) for record in records]
         if "running" in statuses:
             return "running"
         if "starting" in statuses:
             return "starting"
         latest = max(records, key=cls._container_execution_sort_key)
-        latest_status = cls._container_agent_status(latest.last_status)
+        latest_status = cls._container_execution_status(latest)
         if latest_status == "failed":
             return "failed"
         return "idle"
@@ -11433,7 +11455,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return reconciled
 
     def _container_execution_payload(self, record: Any) -> dict[str, Any]:
-        status = self._container_agent_status(record.last_status)
+        status = self._container_execution_status(record)
         metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
         image = metadata.get("image")
         return {
@@ -11583,7 +11605,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         reconcile: bool,
         include_effective_tool_policy: bool = True,
     ) -> AgentRecord:
-        status = self._container_agent_status(record.last_status)
+        status = self._container_execution_status(record)
         message: str | None = None
         session = self.runtime.session_repository.get_session(record.session_id)
         if reconcile:
@@ -11596,7 +11618,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 message = str(exc)
             else:
                 record = self._container_worker_execution_repository().resolve(record.execution_id)
-                status = self._container_agent_status(record.last_status)
+                status = self._container_execution_status(record)
         host = {
             "kind": "container_worker",
             "worker_job_id": record.worker_job_id,
@@ -13031,7 +13053,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             for execution in execution_records:
                 header_parts = [
                     f"execution={execution.execution_id}",
-                    f"status={self._container_agent_status(execution.last_status)}",
+                    f"status={self._container_execution_status(execution)}",
                     f"worker_job={execution.worker_job_id}",
                     "log=execution",
                 ]
@@ -13061,7 +13083,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> str:
         header_parts = [
             f"execution={execution.execution_id}",
-            f"status={self._container_agent_status(execution.last_status)}",
+            f"status={self._container_execution_status(execution)}",
             f"worker_job={execution.worker_job_id}",
             f"log={mode}",
         ]

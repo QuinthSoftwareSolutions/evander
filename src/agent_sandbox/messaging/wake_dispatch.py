@@ -719,6 +719,11 @@ class HostWakeDispatcher:
                             "dispatch_id": dispatch_id,
                             "resume_mode": effective_resume_mode,
                             "agent_provider": agent_provider,
+                            "model": (
+                                agent_model
+                                or str(getattr(session, "model", "") or "").strip()
+                            ),
+                            "model_provider_mode": base_config.model_provider_mode,
                         },
                     )
                 )

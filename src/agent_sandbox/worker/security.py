@@ -16,14 +16,24 @@ SENSITIVE_METADATA_KEYS = {
     "env",
     "environment",
 }
+SAFE_TOKEN_USAGE_METADATA_KEYS = {
+    "input_tokens",
+    "last_token_usage",
+    "output_tokens",
+    "total_tokens",
+}
 
 
 def sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key, value in metadata.items():
         normalized = key.lower()
-        if normalized in SENSITIVE_METADATA_KEYS or any(
-            marker in normalized for marker in ("token", "secret", "password", "authorization")
+        if normalized not in SAFE_TOKEN_USAGE_METADATA_KEYS and (
+            normalized in SENSITIVE_METADATA_KEYS
+            or any(
+                marker in normalized
+                for marker in ("token", "secret", "password", "authorization")
+            )
         ):
             sanitized[key] = "[redacted]"
             continue

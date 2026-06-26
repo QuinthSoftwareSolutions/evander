@@ -2858,6 +2858,42 @@ def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
     )
 
 
+def test_codex_json_log_filter_reports_missing_final_message() -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+        {
+            "type": "token_count",
+            "info": {
+                "last_token_usage": {
+                    "input_tokens": 63657,
+                    "output_tokens": 343,
+                    "total_tokens": 64000,
+                }
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "last_agent_message": None,
+            },
+        },
+    ]
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: task_complete did not include a final agent message "
+        "(last_total_tokens=64000)\n"
+    )
+
+
 def test_container_thread_id_from_logs_parses_json_filter_output() -> None:
     logs = "planning\nSession ID: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
 

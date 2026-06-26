@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-26 - Codex Missing Final Message Failure Detection
+
+- Marked completed Codex container-worker executions as failed when Codex emits
+  `task_complete` without a final agent message, including suspected local
+  context-limit diagnostics when local-model token usage supports that cause.
+- Added the same missing-final-message diagnostic to live filtered Codex logs,
+  reconstructed worker logs, container execution metadata, and Admin
+  container-agent status presentation.
+
 ## 2026-06-26 - Evander CLI Rename
 
 - Added `evander-cli` as the preferred host CLI entry point while keeping

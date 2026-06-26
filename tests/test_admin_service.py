@@ -863,6 +863,59 @@ def test_list_agents_groups_container_executions_under_session(
     assert lifecycle.state == ContainerSessionLifecycleState.RUNNING
 
 
+def test_list_agents_prefers_failed_codex_outcome_for_container_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-current",
+            session_id="container-session",
+            worker_job_id="job-current",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="removed",
+            cleanup_status="cleanup_succeeded",
+            metadata={
+                "codex_outcome": {
+                    "status": "failed",
+                    "reason": "codex_no_final_message",
+                    "message": "Codex ended without a final agent message.",
+                }
+            },
+        )
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+
+    assert agents[0].status == "failed"
+    assert agents[0].host["executions"][0]["status"] == "failed"
+    assert agents[0].host["executions"][0]["last_status"] == "removed"
+
+
 def test_list_agents_summary_mode_skips_container_reconciliation_and_omits_vm_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

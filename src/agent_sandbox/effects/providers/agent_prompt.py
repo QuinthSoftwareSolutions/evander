@@ -377,6 +377,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                             "effect_type": self.node_type(),
                             "dispatch_id": dispatch_id,
                             "resume_thread_id": effective_resume_thread_id,
+                            "agent_provider": agent_harness,
+                            "model": resolved_model,
+                            "model_provider_mode": effective_config.model_provider_mode,
                         },
                     )
                 )

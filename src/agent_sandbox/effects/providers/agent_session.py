@@ -1025,6 +1025,7 @@ TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
 ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
 thread_id_printed = False
 printed_messages = set()
+last_token_usage = {}
 
 
 def first_string(*values):
@@ -1075,6 +1076,46 @@ def print_message(message):
         print(message, end="", flush=True)
     else:
         print(message, flush=True)
+
+
+def int_value(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def update_token_usage(event):
+    global last_token_usage
+    info = event.get("info")
+    if not isinstance(info, dict):
+        info = event.get("payload")
+    if not isinstance(info, dict):
+        return
+    raw_usage = info.get("last_token_usage") or info.get("usage")
+    if not isinstance(raw_usage, dict):
+        return
+    usage = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        value = int_value(raw_usage.get(key))
+        if value is not None:
+            usage[key] = value
+    if usage:
+        last_token_usage = usage
+
+
+def no_final_message_diagnostic():
+    total_tokens = last_token_usage.get("total_tokens")
+    suffix = f" (last_total_tokens={total_tokens})" if total_tokens is not None else ""
+    return "codex failed: task_complete did not include a final agent message" + suffix
 
 
 def thread_id_from_event(event):
@@ -1145,6 +1186,10 @@ for raw_line in sys.stdin:
             thread_id_printed = True
         continue
 
+    if event_type == "token_count":
+        update_token_usage(event)
+        continue
+
     if event_type == "event_msg":
         payload = event.get("payload")
         if isinstance(payload, dict):
@@ -1152,7 +1197,11 @@ for raw_line in sys.stdin:
             if payload_type == "agent_message":
                 print_message(first_text(payload.get("message")))
             elif payload_type == "task_complete":
-                print_message(first_text(payload.get("last_agent_message")))
+                message = first_text(payload.get("last_agent_message"))
+                if message:
+                    print_message(message)
+                else:
+                    print_message(no_final_message_diagnostic())
         continue
 
     if event_type == "response_item":
