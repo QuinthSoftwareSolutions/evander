@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-27 - Extracted Admin Service Focused Tests
+
+- Expanded direct tests for extracted operations and workflow configuration admin services using small fake dependencies instead of full runtime configuration.
+- Kept coverage explicit for each delegated method while preserving `AdminService` as the integration/compatibility facade.
+
 ## 2026-06-27 - Admin Service Facade Guidance
 
 - Documented `AdminService` as the legacy/stable integration facade and clarified that new admin domain logic belongs in narrower services under `src/agent_sandbox/admin/services/`.
