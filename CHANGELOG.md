@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Split MCP gateway request, session, tool audit, and approval diagnostic helpers into focused modules while preserving existing helper names.
 - Refactored the MCP gateway into a package with a `server` module and domain registration module placeholders while preserving existing public imports and tool names.
 
 # Changelog
