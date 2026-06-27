@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Moved agent status and log MCP gateway tools into `agent_sandbox.gateway.agent_tools` while preserving behavior.
+
+- Moved issue lifecycle MCP gateway tools into `agent_sandbox.gateway.issue_tools` while preserving behavior.
+
 - Moved admin MCP gateway tools into `agent_sandbox.gateway.admin_tools` while preserving behavior.
 
 - Moved chat and agent-prompt MCP gateway tools into `agent_sandbox.gateway.chat_tools` while preserving behavior.
