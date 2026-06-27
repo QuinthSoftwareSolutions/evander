@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-06-27 - Workflow Run Report Reader Extraction
+
+- Moved workflow run snapshot, search, detail, graph activity, failure cluster, and conformance report readers out of `AdminService` and into `WorkflowReportsAdminService`.
+- Left small `AdminService` compatibility delegates for existing workflow configuration ports and callers.
+
+## 2026-06-27 - Model Usage Admin Service Extraction
+
+- Moved model-usage listing and operator-steering validation/note submission logic out of `AdminService` and into `ModelUsageAdminService`.
+- Tightened workflow report service wiring to call the report implementations directly instead of using extra `AdminService` public-impl shims.
+
+## 2026-06-27 - Capacity Health Service Extraction
+
+- Moved capacity and health telemetry calculation out of `AdminService` and into `CapacityHealthAdminService`.
+- Updated focused capacity-health tests to exercise the extracted service implementation while keeping `AdminService.read_capacity_health()` as the compatibility entry point.
+
 ## 2026-06-27 - Extracted Admin Service Focused Tests
 
 - Expanded direct tests for extracted operations and workflow configuration admin services using small fake dependencies instead of full runtime configuration.

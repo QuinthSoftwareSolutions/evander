@@ -1068,7 +1068,7 @@ def test_capacity_session_statuses_use_summary_agent_listing(
 
     monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
 
-    statuses = service._capacity_session_statuses()
+    statuses = service.capacity_health_admin._capacity_session_statuses()
 
     assert statuses == {"container-session": "running"}
     assert list_agents_calls == [
@@ -1242,7 +1242,9 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.capacity_health_service._utc_now", lambda: now
+    )
 
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -1481,7 +1483,8 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service.ContainerWorkerClient", FakeContainerWorkerClient
+        "agent_sandbox.admin.services.capacity_health_service.ContainerWorkerClient",
+        FakeContainerWorkerClient,
     )
 
     def fake_list_agents(self: AdminService, **_kwargs: object) -> list[AgentRecord]:
@@ -1644,7 +1647,7 @@ def test_capacity_worker_descriptors_ignore_historical_execution_only_worker_url
         )
     )
 
-    descriptors = service._capacity_worker_descriptors(
+    descriptors = service.capacity_health_admin._capacity_worker_descriptors(
         service.runtime.session_repository.list_sessions()
     )
 
