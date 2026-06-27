@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Split the MCP gateway Starlette app and CLI bootstrap into canonical `gateway.app` and `gateway.cli` modules while retaining compatibility exports.
 - Added a shared MCP gateway dependency object for common admin, issue, chat, semantic, and communication artifact services.
 - Split MCP gateway request, session, tool audit, and approval diagnostic helpers into focused modules while preserving existing helper names.
 - Refactored the MCP gateway into a package with a `server` module and domain registration module placeholders while preserving existing public imports and tool names.
