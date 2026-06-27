@@ -62,7 +62,7 @@ def _find_vm_summary(
     directory_path: str | None = None,
     direct_only: bool = False,
 ) -> VmSummary:
-    summaries = service.list_vms(
+    summaries = service.vm_agent_admin.list_vms(
         include_inactive=True,
         directory_path=directory_path,
         direct_only=direct_only,
@@ -74,7 +74,9 @@ def _find_vm_summary(
 
 
 def _issue_setup_default_model(service: AdminService, directory_path: str) -> str | None:
-    effective_result = service.compute_directory_effective_config(directory_path, "issue_setup")
+    effective_result = service.operations_admin.compute_directory_effective_config(
+        directory_path, "issue_setup"
+    )
     if not effective_result.ok or effective_result.data is None:
         return None
     return (
@@ -98,7 +100,7 @@ def _validate_vm_model_configuration(
     selected_directory = directory_path or next(iter(summary.directory_paths), "root")
     session_lookup = {
         item.session_id: item
-        for item in service.list_sessions(
+        for item in service.operations_admin.list_sessions(
             include_expired=True,
             directory_path=selected_directory,
             direct_only=direct_only,
@@ -284,7 +286,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         direct_only = _bool_query(request, "direct_only", default=True)
         include_inactive = _bool_query(request, "include_inactive", default=True)
         summaries = await run_in_threadpool(
-            service.list_vms,
+            service.vm_agent_admin.list_vms,
             include_inactive=include_inactive,
             directory_path=directory_path,
             direct_only=direct_only,
@@ -356,16 +358,16 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
                 if action == "shutdown":
                     return service.shutdown_vm(vm_name)
                 if action == "enable-agent":
-                    return service.enable_agent(vm_name)
+                    return service.vm_agent_admin.enable_agent(vm_name)
                 if action == "disable-agent":
-                    return service.disable_agent(vm_name)
+                    return service.vm_agent_admin.disable_agent(vm_name)
                 if action == "kill-agent":
                     pid = payload.get("pid")
                     if pid in {None, ""}:
                         pid = summary.agent_pid
                     if pid in {None, ""}:
                         raise ValueError("kill-agent requires a running agent pid")
-                    return service.kill_agent(vm_name, int(pid))
+                    return service.vm_agent_admin.kill_agent(vm_name, int(pid))
                 if action == "resume-agent":
                     prompt = str(payload.get("prompt") or "").strip()
                     if not prompt:
@@ -378,7 +380,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
                     )
                     if validation_error:
                         raise ValueError(validation_error)
-                    return service.resume_agent(
+                    return service.vm_agent_admin.resume_agent(
                         vm_name,
                         prompt,
                         model=str(payload.get("model") or "").strip() or None,
@@ -404,7 +406,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
             if not vm_name:
                 raise ValueError("VM name is required.")
             result = await run_in_threadpool(
-                service.create_vm,
+                service.vm_agent_admin.create_vm,
                 vm_name=vm_name,
                 session_id=str(payload.get("session_id") or "").strip() or None,
                 model=str(payload.get("model") or "").strip() or None,
@@ -428,7 +430,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
                 _string_query(request, "state_filter", default="active")
             )
             issues = await run_in_threadpool(
-                service.list_local_issues,
+                service.issue_git_admin.list_local_issues,
                 directory_path=directory_path,
                 direct_only=direct_only,
                 states=states,
@@ -457,7 +459,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
             payload = await _json_body(request)
 
             def _create_issue() -> tuple[LocalIssueRecord, VmActionResult | None]:
-                issue = service.create_local_issue(
+                issue = service.issue_git_admin.create_local_issue(
                     title=str(payload.get("title") or ""),
                     body=str(payload.get("body") or ""),
                     repo_source=str(payload.get("repo_source") or "").strip() or None,
@@ -466,7 +468,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
                 )
                 if not bool(payload.get("start_vm")):
                     return issue, None
-                vm_result = service.create_issue_vm_from_local_issue(
+                vm_result = service.vm_agent_admin.create_issue_vm_from_local_issue(
                     issue.issue_id,
                     model=str(payload.get("model") or "").strip() or None,
                     dotnet=bool(payload.get("dotnet")),
@@ -489,7 +491,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         issue_id = request.path_params["issue_id"]
         try:
             payload = await _json_body(request)
-            issue = service.update_local_issue(
+            issue = service.issue_git_admin.update_local_issue(
                 issue_id,
                 title=str(payload.get("title") or ""),
                 body=str(payload.get("body") or ""),
@@ -502,7 +504,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
 
     async def delete_issue(request: Request) -> JSONResponse:
         issue_id = request.path_params["issue_id"]
-        result = service.delete_local_issue(issue_id)
+        result = service.issue_git_admin.delete_local_issue(issue_id)
         status_code = 200 if result.success else 409
         return JSONResponse(_action_payload(result), status_code=status_code)
 
@@ -536,7 +538,7 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         try:
             payload = await _json_body(request)
             result = await run_in_threadpool(
-                service.create_issue_vm_from_local_issue,
+                service.vm_agent_admin.create_issue_vm_from_local_issue,
                 issue_id,
                 model=str(payload.get("model") or "").strip() or None,
                 dotnet=bool(payload.get("dotnet")),

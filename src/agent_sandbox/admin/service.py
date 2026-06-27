@@ -8634,6 +8634,8 @@ class AdminService:
             "store_path": str(config.teams_delegated_credential_store_path),
         }
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # operations_admin for Teams auth and privileged-operation methods.
     def teams_auth_login(self, *, directory: str = "root") -> DeviceCodeLoginSession:
         return self.operations_admin.teams_auth_login(directory=directory)
 
@@ -9984,6 +9986,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "long_context": long_context,
         }
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # operations_admin for session, wake, directory, and worker operations.
     def list_wake_schedules(
         self,
         *,
@@ -13940,6 +13944,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError(f"VM {agent_id!r} is associated with multiple sessions: {session_ids}")
         return None
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # operations_admin for background-worker operations.
     def list_background_workers(self) -> list[WorkerSummary]:
         return self.operations_admin.list_background_workers()
 
@@ -13998,6 +14004,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             message=message or f"{script_name} exited with code {completed.returncode}",
         )
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # vm_agent_admin for VM and agent-control operations.
     def enable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
         return self.vm_agent_admin.enable_agent(target, vm_user=vm_user)
 
@@ -14202,6 +14210,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             missing_ok=missing_ok,
         )
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # issue_git_admin for issue, approval, and Git/PR operations.
     def pr_create(
         self,
         *,
@@ -15190,6 +15200,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
         return self.issue_git_admin.list_direct_owned_entity_ids(directory_path, kind=kind)
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # operations_admin for directory configuration operations.
     def list_directory_tree(self):
         return self.operations_admin.list_directory_tree()
 
@@ -15210,6 +15222,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def compute_directory_effective_config(self, directory_path: str, domain: str):
         return self.operations_admin.compute_directory_effective_config(directory_path, domain)
 
+    # Deprecated compatibility wrappers: new internal callers should depend on
+    # workflow_config_admin for workflow config and run operations.
     def read_worker_global_config(self, worker_id: str):
         return self.workflow_config_admin.read_worker_global_config(worker_id)
 

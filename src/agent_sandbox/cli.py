@@ -1494,7 +1494,7 @@ def directories_show(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    result = service.get_directory(reference)
+    result = service.operations_admin.get_directory(reference)
     _echo_admin_result_or_exit(result)
     payload = result.data
     assert payload is not None
@@ -1508,7 +1508,7 @@ def directories_create(
     parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
 ) -> None:
     service = AdminService(config)
-    result = service.create_directory_child(parent, name)
+    result = service.operations_admin.create_directory_child(parent, name)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(result.data.details.directory.path)
@@ -1566,8 +1566,10 @@ def directories_config_show(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    raw_result = service.read_directory_domain_config(reference, domain)
-    effective_result = service.compute_directory_effective_config(reference, domain)
+    raw_result = service.operations_admin.read_directory_domain_config(reference, domain)
+    effective_result = service.operations_admin.compute_directory_effective_config(
+        reference, domain
+    )
     _echo_admin_result_or_exit(raw_result)
     _echo_admin_result_or_exit(effective_result)
     assert raw_result.data is not None
@@ -1601,7 +1603,7 @@ def directories_config_set(
     if not isinstance(parsed, dict):
         raise typer.BadParameter("config payload must be a JSON object")
     service = AdminService(config)
-    result = service.write_directory_domain_config(reference, domain, parsed)
+    result = service.operations_admin.write_directory_domain_config(reference, domain, parsed)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
@@ -2782,7 +2784,7 @@ def delete_session(
 ) -> None:
     service = AdminService(config)
     try:
-        result = service.delete_session(target)
+        result = service.operations_admin.delete_session(target)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -2810,7 +2812,7 @@ def delete_expired_sessions(
     skipped: list[str] = []
     for session_id in expired_session_ids:
         try:
-            service.delete_session(session_id)
+            service.operations_admin.delete_session(session_id)
         except ValueError as exc:
             skipped.append(f"{session_id}: {exc}")
             continue
@@ -3015,7 +3017,7 @@ def list_vms(
         service = AdminService(config)
         payload = [
             summary.model_dump(mode="json")
-            for summary in service.list_vms(
+            for summary in service.vm_agent_admin.list_vms(
                 include_inactive=all_vms, omit_state=omit_state, vm_user=vm_user
             )
         ]
@@ -3098,7 +3100,7 @@ def create_issue(
     ] = None,
 ) -> None:
     service = AdminService(config)
-    issue = service.create_issue(
+    issue = service.issue_git_admin.create_issue(
         title=title,
         body=body,
         repo_source=repo_source,
@@ -3138,7 +3140,7 @@ def create_local_issue(
     ] = None,
 ) -> None:
     service = AdminService(config)
-    issue = service.create_local_issue(
+    issue = service.issue_git_admin.create_local_issue(
         title=title,
         body=body,
         repo_source=repo_source,
@@ -3160,7 +3162,7 @@ def list_issues(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    issues = service.list_issues()
+    issues = service.issue_git_admin.list_issues()
     if as_json:
         typer.echo(
             json.dumps(
@@ -3218,7 +3220,7 @@ def get_issue(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.get_issue(
+    payload = service.issue_git_admin.get_issue(
         issue_id,
         include_remote_comments=include_remote_comments,
         sync_proxy_cache=sync_proxy_cache,
@@ -3258,7 +3260,9 @@ def add_issue_comment(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.add_issue_comment(issue_id, comment, sync_proxy_cache=sync_proxy_cache)
+    payload = service.issue_git_admin.add_issue_comment(
+        issue_id, comment, sync_proxy_cache=sync_proxy_cache
+    )
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -3292,7 +3296,9 @@ def set_issue_state(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.set_issue_state(issue_id, state, sync_proxy_cache=sync_proxy_cache)
+    payload = service.issue_git_admin.set_issue_state(
+        issue_id, state, sync_proxy_cache=sync_proxy_cache
+    )
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -3655,7 +3661,7 @@ def create_vm(
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
     service = AdminService(config)
-    result = service.create_vm(
+    result = service.vm_agent_admin.create_vm(
         vm_name=vm_name,
         session_id=session_id,
         vm_user=vm_user,
@@ -3706,7 +3712,7 @@ def clone_repo_into_vm(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
     service = AdminService(config)
-    result = service.clone_repo_into_vm(
+    result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name=vm_name,
         session_id=session_id,
         repo_source=repo_source,
@@ -3743,7 +3749,7 @@ def bootstrap_python_in_vm(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
     service = AdminService(config)
-    result = service.bootstrap_python_in_vm(
+    result = service.vm_agent_admin.bootstrap_python_in_vm(
         vm_name=vm_name,
         session_id=session_id,
         host_checkout=host_checkout,
@@ -3781,7 +3787,7 @@ def bootstrap_frontend_in_vm(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
     service = AdminService(config)
-    result = service.bootstrap_frontend_in_vm(
+    result = service.vm_agent_admin.bootstrap_frontend_in_vm(
         vm_name=vm_name,
         session_id=session_id,
         host_checkout=host_checkout,
@@ -3876,7 +3882,7 @@ def create_issue_vm(
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
     service = AdminService(config)
-    result = service.create_issue_vm(
+    result = service.vm_agent_admin.create_issue_vm(
         issue=issue,
         session_id=session_id,
         vm_user=vm_user,
@@ -4094,7 +4100,7 @@ def approve(
     service = AdminService(config)
     normalized_reason = reason.strip() or ("approved-via-cli" if approve else "denied-via-cli")
     try:
-        request = service.decide_approval_request(
+        request = service.issue_git_admin.decide_approval_request(
             request_id,
             approver=approver,
             approve=approve,
@@ -4136,7 +4142,7 @@ def list_approvals(
 ) -> None:
     service = AdminService(config)
     statuses = set(status) or None
-    health = service.approval_queue_health(
+    health = service.issue_git_admin.approval_queue_health(
         statuses=statuses,
         directory_path=directory_path,
         direct_only=direct_only,
@@ -4151,7 +4157,7 @@ def list_approvals(
         f"denied={health.denied} expired={health.expired} "
         f"oldest_pending_age_seconds={health.oldest_pending_age_seconds}"
     )
-    requests = service.list_approval_requests(
+    requests = service.issue_git_admin.list_approval_requests(
         statuses=statuses,
         directory_path=directory_path,
         direct_only=direct_only,
@@ -4179,7 +4185,7 @@ def list_approvals(
             )
         )
         if show_payload:
-            review = service.get_approval_review(request.request_id)
+            review = service.issue_git_admin.get_approval_review(request.request_id)
             typer.echo(json.dumps(review["redacted_payload"], indent=2, sort_keys=True))
 
 
@@ -4194,7 +4200,7 @@ def show_approval(
 ) -> None:
     service = AdminService(config)
     try:
-        payload = service.get_approval_review(request_id)
+        payload = service.issue_git_admin.get_approval_review(request_id)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -4307,7 +4313,7 @@ def wake_schedule_create(
     service = AdminService(config)
     parsed_resume_at = _parse_utc_datetime(resume_at) if resume_at else None
     try:
-        created = service.create_wake_schedule(
+        created = service.operations_admin.create_wake_schedule(
             session_id=session_id,
             prompt=prompt,
             resume_at=parsed_resume_at,
@@ -4344,7 +4350,7 @@ def wake_schedule_list(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    schedules = service.list_wake_schedules(
+    schedules = service.operations_admin.list_wake_schedules(
         session_id=session_id, include_disabled=include_disabled
     )
     typer.echo(json.dumps(schedules, indent=2, default=str))
@@ -4371,7 +4377,7 @@ def wake_schedule_edit(
     service = AdminService(config)
     parsed_resume_at = _parse_utc_datetime(resume_at) if resume_at else None
     try:
-        updated = service.edit_wake_schedule(
+        updated = service.operations_admin.edit_wake_schedule(
             request_id,
             prompt=prompt,
             resume_at=parsed_resume_at,
@@ -4405,7 +4411,7 @@ def wake_schedule_delete(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    deleted = service.delete_wake_schedule(request_id)
+    deleted = service.operations_admin.delete_wake_schedule(request_id)
     if not deleted:
         raise typer.BadParameter(f"Wake schedule not found: {request_id}")
     typer.echo(f"Deleted wake schedule {request_id}")
