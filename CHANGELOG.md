@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-27 - Admin Service Facade Guidance
+
+- Documented `AdminService` as the legacy/stable integration facade and clarified that new admin domain logic belongs in narrower services under `src/agent_sandbox/admin/services/`.
+
 ## 2026-06-27 - Admin Service Protocol Ports
 
 - Replaced lambda-based admin service wiring for directory ownership, privileged helper state, and workflow configuration callbacks with small protocol-backed port objects.
