@@ -1,3 +1,7 @@
+## Unreleased
+
+- Refactored the MCP gateway into a package with a `server` module and domain registration module placeholders while preserving existing public imports and tool names.
+
 # Changelog
 
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
