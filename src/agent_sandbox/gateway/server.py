@@ -678,7 +678,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         ado_artifacts_for_ids=_ado_artifacts_for_ids,
         ado_artifact_approval_payload=_ado_artifact_approval_payload,
     )
-    register_approval_tools(server, context, deps)
+    register_approval_tools(
+        server,
+        context,
+        deps,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+    )
     register_admin_tools(
         server,
         context,
@@ -2458,51 +2464,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
         teams_cursor_for_target=_teams_cursor_for_target,
     )
 
-    @server.tool()
-    def approval_submit(
-        session_id: str,
-        action_type: str,
-        payload: dict[str, Any],
-        human_summary: str,
-    ) -> dict[str, Any]:
-        args = {
-            "session_id": session_id,
-            "action_type": action_type,
-            "payload": payload,
-            "human_summary": human_summary,
-        }
-        try:
-            context.policy.require_tool(session_id, ToolName.APPROVAL_SUBMIT)
-            approval = context.policy.create_approval(
-                session_id, action_type, payload, human_summary
-            )
-            result = approval.model_dump(mode="json")
-            audit_success(
-                session_id, ToolName.APPROVAL_SUBMIT, args, {"request_id": approval.request_id}
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(session_id, ToolName.APPROVAL_SUBMIT, args, str(exc))
-            raise
-
-    @server.tool()
-    def approval_check(session_id: str, request_id: str) -> dict[str, Any]:
-        args = {"session_id": session_id, "request_id": request_id}
-        try:
-            context.policy.require_tool(session_id, ToolName.APPROVAL_CHECK)
-            approval = context.policy.get_approval(request_id)
-            if approval.session_id != session_id:
-                raise PolicyError(
-                    f"Approval request {request_id} does not belong to session {session_id}"
-                )
-            result = approval.model_dump(mode="json")
-            audit_success(
-                session_id, ToolName.APPROVAL_CHECK, args, {"status": approval.status.value}
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(session_id, ToolName.APPROVAL_CHECK, args, str(exc))
-            raise
 
     @server.tool()
 
