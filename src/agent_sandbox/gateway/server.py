@@ -39,7 +39,6 @@ from agent_sandbox.bootstrap import (
     resolve_runtime_dir,
 )
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
 from agent_sandbox.ado_reports import (
     DEFAULT_DONE_STATES,
     DEFAULT_EFFORT_FIELDS,
@@ -204,7 +203,6 @@ from agent_sandbox.voice_sessions import (
     sanitize_voice_metadata,
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
-from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
     TeamsInlineMediaProvider,
     normalize_pr_feedback_provider,
@@ -214,6 +212,16 @@ from agent_sandbox.services import (
     resolve_teams_send_target,
     teams_target_from_message,
 )
+from agent_sandbox.gateway.dependencies import GatewayToolDependencies
+from agent_sandbox.gateway.admin_tools import register_admin_tools
+from agent_sandbox.gateway.ado_tools import register_ado_tools
+from agent_sandbox.gateway.approval_tools import register_approval_tools
+from agent_sandbox.gateway.chat_tools import register_chat_tools
+from agent_sandbox.gateway.communication_tools import register_communication_tools
+from agent_sandbox.gateway.issue_tools import register_issue_tools
+from agent_sandbox.gateway.mssql_tools import register_mssql_tools
+from agent_sandbox.gateway.pr_tools import register_pr_tools
+from agent_sandbox.gateway.semantic_tools import register_semantic_tools
 from agent_sandbox.gateway.approval_diagnostics import (
     _approval_gate_arguments,
     _approval_gate_blocked_diagnostic,
@@ -842,8 +850,10 @@ def _visible_vm_summaries_for_session(
     session: Any,
     *,
     vm_user: str,
+    admin_service: AdminService | None = None,
 ) -> list[Any]:
-    return AdminService(context.config.runtime_dir).list_vms(
+    service = admin_service or AdminService(context.config.runtime_dir)
+    return service.list_vms(
         include_inactive=True,
         vm_user=vm_user,
         directory_path=session.directory_path,
@@ -909,7 +919,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if bound_session_id:
                 transport_session_map[transport_session_id] = bound_session_id
     setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
-    semantic_adapter = GatewaySemanticAdapter(context)
+    deps = GatewayToolDependencies.from_context(context)
+    semantic_adapter = deps.semantic_adapter
+    for register_tools in (
+        register_admin_tools,
+        register_ado_tools,
+        register_approval_tools,
+        register_chat_tools,
+        register_communication_tools,
+        register_issue_tools,
+        register_mssql_tools,
+        register_pr_tools,
+        register_semantic_tools,
+    ):
+        register_tools(server, context, deps)
     addon_mcp_tool_names: list[str] = []
     addon_catalog = load_addons(context.config.addon_loader)
     for addon in addon_catalog.registrations:
@@ -1316,9 +1339,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
 
     def _communication_artifact_store() -> CommunicationArtifactStore:
-        store = CommunicationArtifactStore(context.config.runtime_dir)
-        store.cleanup_expired()
-        return store
+        return deps.communication_artifact_store_factory()
 
     def _safe_artifact_id(value: str) -> str:
         try:
@@ -2344,7 +2365,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         context.policy.require_inline_media_receive_enabled(
             session, source_kind="ado_backlog"
         )
-        issue_service = IssueService(context.provider_config)
+        issue_service = deps.issue_service_factory()
         payload = issue_service.get_remote_backlog_item_by_id(
             provider=normalize_inline_media_provider(request.provider),
             directory_path=session.directory_path or "root",
@@ -2660,7 +2681,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         _mark_tool_call_audited()
 
     def _admin_service() -> AdminService:
-        return AdminService(context.config.runtime_dir)
+        return deps.admin_service_factory()
 
     @server.tool()
     def assistant_read_status(
@@ -3305,7 +3326,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             normalized_content = str(content or "").strip()
             if not normalized_content:
                 raise ToolError("content is required")
-            store = ChatStore(admin_chat_store_path(context.config.runtime_dir))
+            store = deps.chat_store_factory()
             message = store.append_assistant_reply(
                 thread_id=thread_id,
                 content=normalized_content,
@@ -3750,7 +3771,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.LIST_ISSUES)
             status_filter = _normalize_issue_status_filters(status)
-            issues = AdminService(context.config.runtime_dir).list_local_issues(
+            issues = deps.admin_service_factory().list_local_issues(
                 directory_path=session.directory_path,
                 direct_only=True,
             )
@@ -3811,7 +3832,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.GET_ISSUE)
-            result = AdminService(context.config.runtime_dir).get_issue(
+            result = deps.admin_service_factory().get_issue(
                 issue_id,
                 include_remote_comments=include_remote_comments,
                 sync_proxy_cache=sync_proxy_cache,
@@ -3898,7 +3919,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "session_id": session_id,
                 **request_model.model_dump(mode="json"),
             }
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             description_artifacts = _ado_artifacts_for_ids(
                 session, request_model.description_artifact_ids
             )
@@ -4039,7 +4060,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     request_id=request_model.request_id,
                     payload=_ado_artifact_approval_payload(request_model),
                 )
-            result = IssueService(context.provider_config).post_remote_comment(
+            result = deps.issue_service_factory().post_remote_comment(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
                 directory_path=session.directory_path,
@@ -4097,7 +4118,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, **request_model.model_dump(mode="json")}
         try:
             session = context.policy.require_tool(session_id, ToolName.DELETE_ADO_BACKLOG_ITEM)
-            remote_payload = IssueService(context.provider_config).delete_remote_issue(
+            remote_payload = deps.issue_service_factory().delete_remote_issue(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
                 directory_path=session.directory_path,
@@ -4223,7 +4244,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 field_attachments["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
                     acceptance_artifacts
                 )
-            result = IssueService(context.provider_config).update_remote_issue(
+            result = deps.issue_service_factory().update_remote_issue(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
                 directory_path=session.directory_path,
@@ -4280,7 +4301,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(
                 session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE
             )
-            result = IssueService(context.provider_config).update_remote_issue(
+            result = deps.issue_service_factory().update_remote_issue(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
                 directory_path=session.directory_path,
@@ -4345,7 +4366,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, **request_model.model_dump(mode="json")}
         try:
             session = context.policy.require_tool(session_id, ToolName.UPDATE_ADO_BACKLOG_TAGS)
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             current = issue_service.read_remote_issue(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
@@ -4455,7 +4476,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 skip=skip,
             )
             args = {"session_id": session_id, **request_model.model_dump(mode="json")}
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             remote_payload = issue_service.query_remote_backlog_items(
                 provider="azure_devops",
                 directory_path=session.directory_path,
@@ -4543,7 +4564,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 include_updates=include_updates,
             )
             args = {"session_id": session_id, **request_model.model_dump(mode="json")}
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             remote_payload = issue_service.get_remote_backlog_item_by_id(
                 provider="azure_devops",
                 directory_path=session.directory_path,
@@ -4620,7 +4641,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(
                 request.session_id, ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY
             )
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             remote_payload = issue_service.query_remote_work_item_activity(
                 provider="azure_devops",
                 directory_path=session.directory_path,
@@ -4708,7 +4729,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 skip=skip,
             )
             args = {"session_id": session_id, **request_model.model_dump(mode="json")}
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             remote_payload = issue_service.list_remote_current_iteration_backlog_items(
                 provider="azure_devops",
                 directory_path=session.directory_path,
@@ -4850,7 +4871,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 max_items=max_items,
             )
             args = {"session_id": session_id, **request_model.model_dump(mode="json")}
-            issue_service = IssueService(context.provider_config)
+            issue_service = deps.issue_service_factory()
             first_payload, items, page_count, truncated = _fetch_ado_current_iteration_report_pages(
                 issue_service,
                 directory_path=session.directory_path,
@@ -4935,7 +4956,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
-            admin_service = AdminService(context.config.runtime_dir)
+            admin_service = deps.admin_service_factory()
             metadata = _issue_creation_metadata(session)
             issue_kwargs: dict[str, Any] = {
                 "title": title,
@@ -4994,7 +5015,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
-            result = AdminService(context.config.runtime_dir).set_issue_plan(
+            result = deps.admin_service_factory().set_issue_plan(
                 issue_id, steps, summary=summary
             )
             audit_success(
@@ -5051,7 +5072,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     fields["Reason"] = reason
                 if priority is not None:
                     fields["Priority"] = priority
-            result = AdminService(context.config.runtime_dir).update_issue(
+            result = deps.admin_service_factory().update_issue(
                 issue_id,
                 state="Approved",
                 fields=fields,
@@ -5091,7 +5112,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id}
         try:
             session = context.policy.require_tool(session_id, ToolName.CLAIM_NEXT_ISSUE)
-            result = AdminService(context.config.runtime_dir).claim_next_issue(
+            result = deps.admin_service_factory().claim_next_issue(
                 session_id=session_id
             )
             payload = _payload_from_result(result)
@@ -5136,7 +5157,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "issue_id": issue_id, "summary": summary}
         try:
             session = context.policy.require_tool(session_id, ToolName.COMPLETE_ISSUE)
-            result = AdminService(context.config.runtime_dir).complete_issue(
+            result = deps.admin_service_factory().complete_issue(
                 session_id=session_id,
                 issue_id=issue_id,
                 summary=summary,
@@ -5189,7 +5210,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
-            result = AdminService(context.config.runtime_dir).update_issue(
+            result = deps.admin_service_factory().update_issue(
                 issue_id,
                 state="Closed",
                 fields=fields,
@@ -5239,7 +5260,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
-            result = AdminService(context.config.runtime_dir).update_issue(
+            result = deps.admin_service_factory().update_issue(
                 issue_id,
                 state="Committed",
                 fields=fields,
@@ -5359,7 +5380,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_user=vm_user,
             )
             safe_lines = max(1, min(lines, 1000))
-            logs = AdminService(context.config.runtime_dir).get_agent_log_snapshot(
+            logs = deps.admin_service_factory().get_agent_log_snapshot(
                 vm_name,
                 lines=safe_lines,
                 repo_name=repo_name,
