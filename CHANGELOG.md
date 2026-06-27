@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-27 - Team Review Request Idempotency
+
+- Made Team review requests idempotent for an active deliverable/reviewer pair
+  so duplicate handoffs return the existing review instead of creating another
+  reviewer inbox item.
+
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
 
 - Preserved caller-supplied dispatch ids when busy agent prompts are queued and

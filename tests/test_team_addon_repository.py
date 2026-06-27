@@ -7183,6 +7183,46 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
     }
 
 
+def test_request_review_command_is_idempotent_for_active_reviewer_request(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
+
+    _state, first = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Check the slice carefully.",
+        request_id="request-review-1",
+    )
+    state, second = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Please review the same slice again.",
+        request_id="request-review-2",
+    )
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["review_request_id"] == first["review_request_id"]
+    assert second["created_review_request_ids"] == []
+    assert second["existing_review_request_ids"] == [first["review_request_id"]]
+    assert second["created_inbox_item_ids"] == []
+    assert any("already exists" in hint for hint in second["next_action_hints"])
+    assert list(state.review_requests) == [first["review_request_id"]]
+    review_inbox_items = [
+        item
+        for item in state.inbox.values()
+        if item.payload.get("review_request_id") == first["review_request_id"]
+        and item.payload.get("kind") == "review_request"
+    ]
+    assert len(review_inbox_items) == 1
+
+
 def test_apply_agent_action_review_request_rejected_for_unrelated_agent(
     tmp_path: Path,
 ) -> None:

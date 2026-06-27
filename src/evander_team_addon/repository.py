@@ -3564,7 +3564,8 @@ class TeamStateRepository:
                             "errors": list(review_result["errors"]),
                         },
                     )
-                created_review_ids.append(created_id)
+                if _review_request_was_created(review_result, created_id):
+                    created_review_ids.append(created_id)
             for review_id in created_review_ids:
                 review = state.review_requests[review_id]
                 _mark_agent_work_due(
@@ -3582,6 +3583,9 @@ class TeamStateRepository:
                     "deliverable_id": deliverable_id,
                     "created_deliverable_ids": [deliverable_id],
                     "created_review_request_ids": created_review_ids,
+                    "existing_review_request_ids": list(
+                        review_result.get("existing_review_request_ids", [])
+                    ),
                     "created_inbox_item_ids": created_inbox_ids,
                     "published_artifact_refs": published_refs,
                     "published_deliverable_artifacts": [
@@ -3697,28 +3701,38 @@ class TeamStateRepository:
                     },
                 )
             review = state.review_requests[created_id]
-            _mark_agent_work_due(state, agent_id=review.reviewer_agent_id, now=utc_now())
+            existing_review_ids = list(review_result.get("existing_review_request_ids", []))
+            created_review_ids = (
+                [created_id] if _review_request_was_created(review_result, created_id) else []
+            )
+            if created_review_ids:
+                _mark_agent_work_due(state, agent_id=review.reviewer_agent_id, now=utc_now())
+            created_inbox_ids = list(review_result["created_inbox_item_ids"])
+            if existing_review_ids:
+                next_action_hints = [
+                    "Review request already exists for this deliverable and reviewer; "
+                    "wait for the assigned reviewer to decide it before treating the "
+                    "deliverable or task as accepted."
+                ]
+            else:
+                next_action_hints = [
+                    "Review request created; wait for the assigned reviewer to "
+                    "decide it before treating the deliverable or task as accepted."
+                ]
             return TeamCommandApplyResult(
                 response_payload={
                     "review_request_id": created_id,
-                    "created_review_request_ids": [created_id],
-                    "created_inbox_item_ids": list(
-                        review_result["created_inbox_item_ids"]
-                    ),
+                    "created_review_request_ids": created_review_ids,
+                    "existing_review_request_ids": existing_review_ids,
+                    "created_inbox_item_ids": created_inbox_ids,
                     "deliverable_id": review.deliverable_id,
                     "reviewer_agent_id": review.reviewer_agent_id,
                     "intent_recorded": True,
-                    "async_effect_pending": True,
-                    "next_action_hints": [
-                        "Review request created; wait for the assigned reviewer to "
-                        "decide it before treating the deliverable or task as accepted."
-                    ],
-                    "progress_made": True,
+                    "async_effect_pending": bool(created_inbox_ids),
+                    "next_action_hints": next_action_hints,
+                    "progress_made": bool(created_review_ids or normalized_handled_ids),
                 },
-                created_domain_ids=[
-                    created_id,
-                    *list(review_result["created_inbox_item_ids"]),
-                ],
+                created_domain_ids=[*created_review_ids, *created_inbox_ids],
             )
 
         return self._execute_team_command(
@@ -8598,6 +8612,7 @@ class TeamStateRepository:
             "created_task_ids": [],
             "created_status_request_ids": [],
             "created_review_request_ids": [],
+            "existing_review_request_ids": [],
             "decided_review_request_ids": [],
             "updated_goal_ids": [],
             "operator_escalation_event_ids": [],
@@ -9235,8 +9250,9 @@ class TeamStateRepository:
                     _append_action_item_error(result, "review_requests", index, exc)
                     continue
                 if created_id is not None:
-                    result["created_review_request_ids"].append(created_id)
-                    _mark_progress()
+                    if _review_request_was_created(result, created_id):
+                        result["created_review_request_ids"].append(created_id)
+                        _mark_progress()
 
             for index, decision in enumerate(
                 _list_of_mappings(normalized_action.get("review_decisions"), "review_decisions")
@@ -15486,6 +15502,14 @@ def _apply_review_request(
     if profile_error is not None:
         result["errors"].append(profile_error)
         return None
+    existing_review = _active_review_request_for_reviewer(
+        state,
+        deliverable_id=deliverable_id,
+        reviewer_id=reviewer_id,
+    )
+    if existing_review is not None:
+        result.setdefault("existing_review_request_ids", []).append(existing_review.id)
+        return existing_review.id
     review_id = _optional_text(request.get("id"))
     if review_id is None:
         review_id = _generated_id(
@@ -15559,6 +15583,34 @@ def _apply_review_request(
         now=now,
     )
     return review.id
+
+
+def _active_review_request_for_reviewer(
+    state: TeamState,
+    *,
+    deliverable_id: str,
+    reviewer_id: str,
+) -> ReviewRequest | None:
+    matches = [
+        review
+        for review in state.review_requests.values()
+        if review.deliverable_id == deliverable_id
+        and review.reviewer_agent_id == reviewer_id
+        and review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+    ]
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda review: (
+            review.created_at or datetime.min.replace(tzinfo=UTC),
+            review.id,
+        )
+    )
+    return matches[0]
+
+
+def _review_request_was_created(result: Mapping[str, Any], review_request_id: str) -> bool:
+    return review_request_id not in set(result.get("existing_review_request_ids") or [])
 
 
 def _apply_review_decision(
