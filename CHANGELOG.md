@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-27 - Workflow Reporting Service Ownership
+
+- Moved workflow generation request execution and cooldown state into the extracted workflow generation admin service.
+- Kept AdminService workflow generation/reporting APIs as compatibility delegates and added focused service coverage for cooldown and report dispatch behavior.
+
 ## 2026-06-27 - Skill Admin Service Extraction
 
 - Moved managed Codex skill admin operations into a dedicated `SkillAdminService` backed directly by `SkillLibraryRepository`.

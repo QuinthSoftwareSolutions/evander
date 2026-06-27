@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import math
 import os
 import re
 import shlex
@@ -332,7 +331,6 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
-_WORKFLOW_GENERATION_COOLDOWN_SECONDS = 10.0
 _AGENT_CREATE_OPERATION_MAX_WORKERS = 4
 _CONTAINER_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
@@ -7650,11 +7648,6 @@ class AdminService:
         self.local_issue_create_lock_path = components.local_issue_create_lock_path
         self.admin_config_mutation_lock_path = components.admin_config_mutation_lock_path
         self.local_issue_yaml_dir = components.local_issue_yaml_dir
-        self._workflow_generation_lock = components.workflow_generation_lock
-        self._workflow_generation_in_flight = components.workflow_generation_in_flight
-        self._workflow_generation_last_finished_at_monotonic = (
-            components.workflow_generation_last_finished_at_monotonic
-        )
         self.workflow_generation_transport = components.workflow_generation_transport
         self.use_privileged_helper = components.use_privileged_helper
         self._privileged_helper = components.privileged_helper
@@ -15305,42 +15298,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             include_current_packs=include_current_packs,
         )
 
-    async def _generate_workflow_editor_draft_public_impl(
-        self,
-        *,
-        description: str,
-        directory_path: str | None = None,
-        include_current_packs: bool = True,
-    ) -> WorkflowEditorGeneratedDraftPayload:
-        return await self._generate_workflow_editor_draft(
-            description=description,
-            directory_path=directory_path,
-            include_current_packs=include_current_packs,
-        )
-
-    def _begin_workflow_generation_request(self) -> None:
-        now = time.monotonic()
-        with self._workflow_generation_lock:
-            if self._workflow_generation_in_flight:
-                raise ValueError(
-                    "Workflow generation is already in progress. Wait for it to finish "
-                    "before generating another draft."
-                )
-            last_finished = self._workflow_generation_last_finished_at_monotonic
-            if last_finished is not None:
-                remaining_seconds = _WORKFLOW_GENERATION_COOLDOWN_SECONDS - (now - last_finished)
-                if remaining_seconds > 0:
-                    raise ValueError(
-                        "Workflow generation is cooling down. Try again in "
-                        f"{math.ceil(remaining_seconds)} seconds."
-                    )
-            self._workflow_generation_in_flight = True
-
-    def _finish_workflow_generation_request(self) -> None:
-        with self._workflow_generation_lock:
-            self._workflow_generation_in_flight = False
-            self._workflow_generation_last_finished_at_monotonic = time.monotonic()
-
     def save_workflow_editor_document(
         self,
         *,
@@ -16391,104 +16348,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         finally:
             if temp_path.exists():
                 temp_path.unlink()
-
-    async def _generate_workflow_editor_draft(
-        self,
-        *,
-        description: str,
-        directory_path: str | None = None,
-        include_current_packs: bool = True,
-    ) -> WorkflowEditorGeneratedDraftPayload:
-        normalized_description = str(description or "").strip()
-        if not normalized_description:
-            raise ValueError("description is required")
-        normalized_directory = self._normalize_directory_reference(directory_path)
-        settings = self.read_assistant_settings()
-        model = str(
-            settings.get("workflow_generation_model") or settings.get("default_model") or ""
-        ).strip()
-        if not model:
-            raise ValueError(
-                "Workflow generation requires assistant_settings.workflow_generation_model "
-                "or assistant_settings.default_model."
-            )
-
-        provider_config = ProviderConfigResolver(
-            self.config,
-            directory_store=self.runtime.directories,
-            session_store=as_session_manifest_repository(self.runtime.session_repository),
-        ).resolve_for_directory(normalized_directory)
-        api_key = os.environ.get(provider_config.openai_api_key_env)
-        if not api_key:
-            raise ValueError(
-                f"Host environment variable {provider_config.openai_api_key_env} is not set."
-            )
-
-        catalog = self._read_workflow_editor_catalog(normalized_directory)
-        request_payload = self._workflow_generation_request_payload(
-            description=normalized_description,
-            directory_path=normalized_directory,
-            catalog=catalog,
-            include_current_packs=include_current_packs,
-            model=model,
-        )
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        url = f"{provider_config.openai_api_base_url.rstrip('/')}/responses"
-        self._begin_workflow_generation_request()
-        try:
-            async with httpx.AsyncClient(
-                timeout=provider_config.openai_relay_timeout_seconds,
-                transport=self.workflow_generation_transport,
-            ) as client:
-                try:
-                    response = await client.post(url, headers=headers, json=request_payload)
-                except httpx.HTTPError as exc:
-                    raise ValueError(f"OpenAI workflow generation request failed: {exc}") from exc
-        finally:
-            self._finish_workflow_generation_request()
-        if response.status_code >= 400:
-            detail = response.text.strip()
-            raise ValueError(
-                f"OpenAI workflow generation failed with HTTP {response.status_code}"
-                f"{': ' + detail[:500] if detail else ''}"
-            )
-        try:
-            response_payload = response.json()
-        except ValueError as exc:
-            raise ValueError("OpenAI workflow generation returned non-JSON response.") from exc
-        generated_text = self._workflow_generation_response_text(response_payload)
-        try:
-            generated_payload = json.loads(generated_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"OpenAI workflow generation returned invalid JSON: {exc.msg}"
-            ) from exc
-        if not isinstance(generated_payload, dict):
-            raise ValueError("OpenAI workflow generation response must be a JSON object.")
-
-        config, layout, graphs, warnings = self._workflow_generation_materialize_payload(
-            generated_payload,
-            directory_path=normalized_directory,
-            catalog=catalog,
-        )
-        validation = self._validate_workflow_editor_document(
-            config=config,
-            layout=layout,
-            graphs=[graph.model_dump(mode="json") for graph in graphs],
-            base_config={},
-        )
-        return WorkflowEditorGeneratedDraftPayload(
-            model=model,
-            config=validation.config,
-            layout=validation.layout,
-            graphs=validation.graphs,
-            output_schemas=validation.output_schemas,
-            validation_diagnostics=validation.validation_diagnostics,
-            warnings=warnings,
-        )
 
     def _workflow_generation_request_payload(
         self,

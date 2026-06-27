@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import import_module
@@ -79,9 +78,6 @@ class AdminServiceComponents:
     local_issue_create_lock_path: Path
     admin_config_mutation_lock_path: Path
     local_issue_yaml_dir: Path
-    workflow_generation_lock: threading.Lock
-    workflow_generation_in_flight: bool
-    workflow_generation_last_finished_at_monotonic: float | None
     workflow_generation_transport: httpx.AsyncBaseTransport | None
     use_privileged_helper: bool
     privileged_helper: Any | None
@@ -352,9 +348,6 @@ def build_admin_service_components(
         local_issue_create_lock_path=local_issue_create_lock_path,
         admin_config_mutation_lock_path=admin_config_mutation_lock_path,
         local_issue_yaml_dir=local_issue_yaml_dir,
-        workflow_generation_lock=threading.Lock(),
-        workflow_generation_in_flight=False,
-        workflow_generation_last_finished_at_monotonic=None,
         workflow_generation_transport=None,
         use_privileged_helper=False,
         privileged_helper=None,

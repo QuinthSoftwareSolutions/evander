@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 
 from agent_sandbox.admin.services import (
@@ -38,10 +37,6 @@ class RecordingHost:
     def _submit_operator_steering_note_impl(self, **kwargs):
         self.calls.append(("submit-note", kwargs))
         return {"ok": True}
-
-    async def _generate_workflow_editor_draft_public_impl(self, **kwargs):
-        self.calls.append(("generate", kwargs))
-        return "draft"
 
     def _read_workflow_graph_activity_report_public_impl(self, **kwargs):
         self.calls.append(("activity-report", kwargs))
@@ -100,25 +95,27 @@ def test_model_usage_service_forwards_filters_and_steering_operations() -> None:
     ]
 
 
-def test_workflow_generation_service_delegates_generation_request() -> None:
+def test_workflow_generation_service_enforces_in_flight_and_cooldown() -> None:
     host = RecordingHost()
-    result = asyncio.run(
-        WorkflowGenerationAdminService(host).generate_workflow_editor_draft(
-            description="triage issues", directory_path="root/team", include_current_packs=False
-        )
-    )
+    service = WorkflowGenerationAdminService(host)
 
-    assert result == "draft"
-    assert host.calls == [
-        (
-            "generate",
-            {
-                "description": "triage issues",
-                "directory_path": "root/team",
-                "include_current_packs": False,
-            },
-        )
-    ]
+    service._begin_workflow_generation_request()
+    try:
+        try:
+            service._begin_workflow_generation_request()
+        except ValueError as exc:
+            assert "already in progress" in str(exc)
+        else:  # pragma: no cover - defensive assertion
+            raise AssertionError("expected in-flight workflow generation to be rejected")
+    finally:
+        service._finish_workflow_generation_request()
+
+    try:
+        service._begin_workflow_generation_request()
+    except ValueError as exc:
+        assert "cooling down" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected cooldown workflow generation to be rejected")
 
 
 def test_workflow_reports_service_delegates_report_operations() -> None:
