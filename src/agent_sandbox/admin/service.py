@@ -22565,58 +22565,33 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         metadata: dict[str, Any] | None = None,
         allow_existing_session: bool = False,
     ) -> VmActionResult:
-        payload: dict[str, Any] = {}
-        if provider is not None:
-            payload["provider"] = provider
-        if teams_channel_allowlist is not None:
-            payload["teams_channel_allowlist"] = teams_channel_allowlist
-        if teams_chat_allowlist is not None:
-            payload["teams_chat_allowlist"] = teams_chat_allowlist
-        if teams_user_allowlist is not None:
-            payload["teams_user_allowlist"] = teams_user_allowlist
-        if communication_file_receive_enabled is not None:
-            payload["communication_file_receive_enabled"] = communication_file_receive_enabled
-        if communication_file_send_enabled is not None:
-            payload["communication_file_send_enabled"] = communication_file_send_enabled
-        if communication_file_max_bytes is not None:
-            payload["communication_file_max_bytes"] = communication_file_max_bytes
-        if communication_file_require_approval_for_send is not None:
-            payload["communication_file_require_approval_for_send"] = (
-                communication_file_require_approval_for_send
-            )
-        if web_search_enabled is not None:
-            payload["web_search_enabled"] = web_search_enabled
-        if metadata is not None:
-            payload["metadata"] = metadata
-        resolved_model_provider_mode = normalize_model_provider_mode_override(
-            model_provider_mode
-        )
-        if resolved_model_provider_mode is not None:
-            payload["metadata"] = _deep_merge_mapping(
-                payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                {MODEL_PROVIDER_MODE_METADATA_KEY: resolved_model_provider_mode},
-            )
-        resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
-            self.runtime,
-            session_id=session_id or vm_name,
-            directory_path=directory_path,
-            allowed_contact_ids=allowed_contact_ids,
-        )
         return self.vm_agent_admin.create_vm(
+            provider=provider,
             vm_name=vm_name,
             session_id=session_id,
             labels=labels,
             model=model,
+            model_provider_mode=model_provider_mode,
             vm_user=vm_user,
             ttl_seconds=ttl_seconds,
             ttl_hours=ttl_hours,
             allowed_tools=allowed_tools,
             tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
-            allowed_contact_ids=resolved_allowed_contact_ids,
+            allowed_contact_ids=allowed_contact_ids,
             discord_channels=discord_channels,
+            teams_channel_allowlist=teams_channel_allowlist,
+            teams_chat_allowlist=teams_chat_allowlist,
+            teams_user_allowlist=teams_user_allowlist,
             email_mailboxes=email_mailboxes,
             email_folders=email_folders,
+            communication_file_receive_enabled=communication_file_receive_enabled,
+            communication_file_send_enabled=communication_file_send_enabled,
+            communication_file_max_bytes=communication_file_max_bytes,
+            communication_file_require_approval_for_send=(
+                communication_file_require_approval_for_send
+            ),
+            web_search_enabled=web_search_enabled,
             dotnet=dotnet,
             nuget=nuget,
             mssql=mssql,
@@ -22624,8 +22599,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             playwright=playwright,
             codex_skills=codex_skills,
             directory_path=directory_path,
+            metadata=metadata,
             allow_existing_session=allow_existing_session,
-            **payload,
         )
 
     def resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:

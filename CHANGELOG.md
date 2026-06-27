@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-27 - VM Agent Creation Option Normalization
+
+- Moved AdminService VM creation payload assembly, model-provider metadata normalization, and allowed-contact validation into `VmAgentAdminService`.
+- Kept `AdminService.create_vm` as a compatibility delegate and added direct VM agent service coverage for normalized creation options.
+
 ## 2026-06-27 - Workflow Reporting Service Ownership
 
 - Moved workflow generation request execution and cooldown state into the extracted workflow generation admin service.
