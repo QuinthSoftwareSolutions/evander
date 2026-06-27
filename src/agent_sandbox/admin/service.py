@@ -35,6 +35,11 @@ from pydantic import (
 )
 import yaml
 
+# Preferred admin domain ownership boundaries: operations, issue/git, VM/agent,
+# workflow config, skills, reporting, and PR preflight. Keep new domain logic
+# in the narrower services under ``agent_sandbox.admin.services`` instead of
+# expanding the legacy AdminService facade.
+
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.bootstrap import (
     load_host_bootstrap_config,
@@ -7619,6 +7624,14 @@ def _empty_model_pricing_catalog_payload() -> dict[str, Any]:
 
 
 class AdminService:
+    """Legacy/stable integration facade for host admin surfaces.
+
+    ``AdminService`` remains the compatibility boundary used by CLI, gateway,
+    and Admin Web integrations. New domain logic should live in narrower
+    services under ``src/agent_sandbox/admin/services/`` and be exposed here
+    only when a stable facade method is needed for existing integrations.
+    """
+
     def __init__(
         self,
         runtime_dir: str | Path = DEFAULT_RUNTIME_DIR,
