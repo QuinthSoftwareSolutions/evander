@@ -7628,269 +7628,62 @@ class AdminService:
         legacy_config_path: str | Path | None = None,
         config_path: str | Path | None = None,
     ) -> None:
+        from agent_sandbox.admin.composition import build_admin_service_components
 
-        from agent_sandbox.admin.facades import (
-            SessionAdminDependencies,
-            SessionAdminFacade,
-            TeamsAdminDependencies,
-            TeamsAdminFacade,
-            WorkerAdminDependencies,
-            WorkerAdminFacade,
+        components = build_admin_service_components(
+            self,
+            runtime_dir=runtime_dir,
+            legacy_config_path=legacy_config_path,
+            config_path=config_path,
         )
-
-        from agent_sandbox.admin.services import (
-            CapacityHealthAdminService,
-            IssueGitAdminDependencies,
-            IssueGitAdminService,
-            IssueGitAdminSupport,
-            PrIntegrationPreflightAdminDependencies,
-            PrIntegrationPreflightAdminService,
-            ModelUsageAdminService,
-            OperationsAdminService,
-            SkillsAdminService,
-            VmAgentAdminDependencies,
-            VmAgentAdminService,
-            VmAgentAdminSupport,
-            WorkflowConfigAdminService,
-            WorkflowGenerationAdminService,
-            WorkflowReportsAdminService,
+        self.runtime_dir = components.runtime_dir
+        self.legacy_config_path = components.legacy_config_path
+        self.project_dir = components.project_dir
+        self.config = components.config
+        self.runtime = components.runtime
+        self.tool_call_audit_index = components.tool_call_audit_index
+        self.skill_library = components.skill_library
+        self.agent_control_store = components.agent_control_store
+        self.local_issue_store = components.local_issue_store
+        self.local_issue_identity_resolver = components.local_issue_identity_resolver
+        self.local_issue_counter_path = components.local_issue_counter_path
+        self.local_issue_create_lock_path = components.local_issue_create_lock_path
+        self.admin_config_mutation_lock_path = components.admin_config_mutation_lock_path
+        self.local_issue_yaml_dir = components.local_issue_yaml_dir
+        self._workflow_generation_lock = components.workflow_generation_lock
+        self._workflow_generation_in_flight = components.workflow_generation_in_flight
+        self._workflow_generation_last_finished_at_monotonic = (
+            components.workflow_generation_last_finished_at_monotonic
         )
-
-        candidate_runtime = Path(runtime_dir)
-        explicit_legacy = (
-            Path(legacy_config_path or config_path) if (legacy_config_path or config_path) else None
-        )
-        if explicit_legacy is None and candidate_runtime.suffix.casefold() in {".yaml", ".yml"}:
-            explicit_legacy = candidate_runtime
-            candidate_runtime = resolve_runtime_dir(legacy_config_path=explicit_legacy)
-        self.runtime_dir = candidate_runtime
-        self.legacy_config_path = explicit_legacy
-        self.project_dir = _resolve_project_dir_for_admin_service(
-            runtime_dir=self.runtime_dir,
-            legacy_config_path=self.legacy_config_path,
-        )
-        bootstrap_config = load_host_bootstrap_config(
-            runtime_dir=self.runtime_dir,
-            legacy_config_path=self.legacy_config_path,
-        )
-        directory_store = DirectoryStore(bootstrap_config.directories_store_path)
-        directory_store.ensure_root()
-        DirectoryConfigStore(
-            directory_store, runtime_dir=bootstrap_config.runtime_dir
-        ).ensure_root()
-        self.config = load_runtime_gateway_config(
-            runtime_dir=bootstrap_config.runtime_dir,
-            legacy_config_path=self.legacy_config_path,
-        )
-        self.runtime = build_runtime(self.config)
-        self.tool_call_audit_index: ToolCallAuditIndex | None = ToolCallAuditIndex.for_audit_log(
-            self.config.audit_log_path
-        )
-        try:
-            self.tool_call_audit_index.ensure_schema()
-            self.tool_call_audit_index.import_from_jsonl_tail(
-                self.config.audit_log_path,
-                max_lines=1_000,
-            )
-        except Exception:
-            self.tool_call_audit_index = None
-        self.skill_library = SkillLibraryRepository(self.config.runtime_dir)
-        self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
-        self.local_issue_store = JsonStore(
-            self.config.runtime_dir / "local-issues.json", LocalIssueRecord
-        )
-        self.local_issue_identity_resolver = LocalIssueIdentityResolver(
-            local_issue_store=self.local_issue_store,
-            read_issue_number_from_yaml=_read_issue_number_from_yaml,
-        )
-        self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
-        self.local_issue_create_lock_path = self.config.runtime_dir / "local-issue-create.lock"
-        self.admin_config_mutation_lock_path = (
-            self.config.runtime_dir / "admin-config-mutations.lock"
-        )
-        self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
-        self.local_issue_yaml_dir.mkdir(parents=True, exist_ok=True)
-        self._workflow_generation_lock = threading.Lock()
-        self._workflow_generation_in_flight = False
-        self._workflow_generation_last_finished_at_monotonic: float | None = None
-        self.workflow_generation_transport: httpx.AsyncBaseTransport | None = None
-        self.use_privileged_helper = False
-        self._privileged_helper: PrivilegedHelperSession | None = None
-        self.directory_admin = DirectoryAdminService.from_store(
-            directory_store=self.runtime.directories,
-            gateway_config=self.config,
-        )
-        self.directory_ownership = DirectoryOwnershipQueries(
-            directories=self.directory_admin._directories,
-            sessions=self.runtime.session_repository,
-            pr_map_path=self.config.pr_map_path,
-            ado_processed_store_path=self.config.runtime_dir / "ado-processed-work-items.json",
-        )
-        self.issue_service = IssueService(
-            ProviderConfigResolver(
-                self.config,
-                directory_store=self.runtime.directories,
-                session_store=self.runtime.session_repository,
-            )
-        )
-        self.session_admin = SessionAdminFacade(
-            SessionAdminDependencies(
-                runtime=self.runtime,
-                config=self.config,
-                normalize_directory_path=lambda directory_path: (
-                    self.issue_git_support.normalize_directory_path(directory_path)
-                ),
-                direct_owned_entity_ids=lambda directory_path, **kwargs: (
-                    self.issue_git_support.direct_owned_entity_ids(directory_path, **kwargs)
-                ),
-            )
-        )
-        self.teams_admin = TeamsAdminFacade(
-            TeamsAdminDependencies(
-                runtime=self.runtime,
-                normalize_directory_reference=self._normalize_directory_reference,
-            )
-        )
-        self.worker_admin = WorkerAdminFacade(
-            WorkerAdminDependencies(
-                runtime=self.runtime,
-                config=self.config,
-                agent_control_store=self.agent_control_store,
-                normalize_directory_path=lambda directory_path: (
-                    self.issue_git_support.normalize_directory_path(directory_path)
-                ),
-                direct_owned_entity_ids=lambda directory_path, **kwargs: (
-                    self.issue_git_support.direct_owned_entity_ids(directory_path, **kwargs)
-                ),
-                read_worker_global_config=self._read_worker_global_config,
-                write_worker_global_config=self._write_worker_global_config,
-                read_workflow_editor_document=self._read_workflow_editor_document,
-                read_composed_workflow_editor_document=(
-                    self._read_composed_workflow_editor_document
-                ),
-                read_workflow_editor_catalog=self._read_workflow_editor_catalog,
-                validate_workflow_editor_document=self._validate_workflow_editor_document,
-                save_workflow_editor_document=self._save_workflow_editor_document,
-                read_workflow_run_snapshot=self._read_workflow_run_snapshot,
-                read_workflow_run_detail=self._read_workflow_run_detail,
-                read_workflow_run_search=self._read_workflow_run_search,
-                clear_workflow_run=self._clear_workflow_run,
-                dismiss_workflow_node_failures=self._dismiss_workflow_node_failures,
-                resume_workflow_run=self._resume_workflow_run,
-                workflow_event_journal=self._workflow_event_journal,
-                upsert_trigger_config=self._upsert_trigger_config,
-                delete_trigger_config=self._delete_trigger_config,
-                upsert_effect_config=self._upsert_effect_config,
-                delete_effect_config=self._delete_effect_config,
-            )
-        )
-        self.workflow_config_admin = WorkflowConfigAdminService(self.worker_admin)
-        self.skills_admin = SkillsAdminService(self)
-        self.capacity_health_admin = CapacityHealthAdminService(self)
-        self.model_usage_admin = ModelUsageAdminService(self)
-        self.workflow_generation_admin = WorkflowGenerationAdminService(self)
-        self.workflow_reports_admin = WorkflowReportsAdminService(self)
-        self.issue_git_support = IssueGitAdminSupport(
-            project_dir=self.project_dir,
-            runtime=self.runtime,
-            config=self.config,
-            local_issue_store=self.local_issue_store,
-            local_issue_identity_resolver=self.local_issue_identity_resolver,
-            local_issue_counter_path=self.local_issue_counter_path,
-            local_issue_create_lock_path=self.local_issue_create_lock_path,
-            local_issue_yaml_dir=self.local_issue_yaml_dir,
-            issue_service=self.issue_service,
-            directory_admin=self.directory_admin,
-            directory_ownership=self.directory_ownership,
-        )
-        self.vm_agent_support = VmAgentAdminSupport(
-            config=self.config,
-            runtime=self.runtime,
-            project_dir=self.project_dir,
-            local_issue_store=self.local_issue_store,
-            local_issue_identity_resolver=self.local_issue_identity_resolver,
-            worker_admin=self.worker_admin,
-            workflow_config_admin=self.workflow_config_admin,
-            directory_admin=self.directory_admin,
-            get_privileged_helper=lambda: self._privileged_helper,
-            get_use_privileged_helper=lambda: self.use_privileged_helper,
-        )
-        self.issue_git_admin = IssueGitAdminService(
-            IssueGitAdminDependencies(
-                project_dir=self.issue_git_support.project_dir,
-                runtime=self.issue_git_support.runtime,
-                config=self.issue_git_support.config,
-                local_issue_store=self.issue_git_support.local_issue_store,
-                local_issue_yaml_dir=self.issue_git_support.local_issue_yaml_dir,
-                issue_service=self.issue_git_support.issue_service,
-                normalize_directory_path=self.issue_git_support.normalize_directory_path,
-                local_issue_creation_lock=self.issue_git_support.local_issue_creation_lock,
-                next_local_issue_number=self.issue_git_support.next_local_issue_number,
-                canonical_local_issue_id=self.issue_git_support.canonical_local_issue_id,
-                resolve_local_issue_record=self.local_issue_identity_resolver.resolve_record,
-                resolve_local_issue_key=self.local_issue_identity_resolver.resolve_key,
-                proxy_target_for_issue=self.issue_git_support.proxy_target_for_issue,
-                refresh_proxy_cache_from_remote=self.issue_git_support.refresh_proxy_cache_from_remote,
-                write_local_issue_yaml=self.issue_git_support.write_local_issue_yaml,
-                direct_owned_entity_ids=self.issue_git_support.direct_owned_entity_ids,
-            )
-        )
-        self.vm_agent_admin = VmAgentAdminService(
-            VmAgentAdminDependencies(
-                config=self.vm_agent_support.config,
-                runtime=self.vm_agent_support.runtime,
-                project_dir=self.vm_agent_support.project_dir,
-                local_issue_store=self.vm_agent_support.local_issue_store,
-                worker_admin=self.vm_agent_support.worker_admin,
-                get_privileged_helper=self.vm_agent_support.get_privileged_helper,
-                get_use_privileged_helper=self.vm_agent_support.get_use_privileged_helper,
-                normalize_directory_path=self.vm_agent_support.normalize_directory_path,
-                read_worker_global_config=self.vm_agent_support.read_worker_global_config,
-                resolve_agent_model_for_session=self.vm_agent_support.resolve_agent_model_for_session,
-                resolve_vm_defaults=self.vm_agent_support.resolve_vm_defaults,
-                resolve_issue_setup=self.vm_agent_support.resolve_issue_setup,
-                resolve_local_issue_record=self.local_issue_identity_resolver.resolve_record,
-                resolve_local_issue_key=self.local_issue_identity_resolver.resolve_key,
-                resolve_repo_source=self.vm_agent_support.resolve_repo_source,
-                sync_repo_into_bare_remote=self.vm_agent_support.sync_repo_into_bare_remote,
-                clone_repo_into_vm=self.vm_agent_support.clone_repo_into_vm,
-            )
-        )
-        self.pr_integration_preflight_admin = PrIntegrationPreflightAdminService(
-            PrIntegrationPreflightAdminDependencies(
-                runtime=self.runtime,
-                compute_directory_effective_config=self.compute_directory_effective_config,
-                resolve_repo_source=self.vm_agent_support.resolve_repo_source,
-            )
-        )
-        self.operations_admin = OperationsAdminService(
-            project_dir=self.project_dir,
-            get_privileged_helper=lambda: self._privileged_helper,
-            get_use_privileged_helper=lambda: self.use_privileged_helper,
-            set_privileged_helper=lambda helper: setattr(self, "_privileged_helper", helper),
-            teams_admin=self.teams_admin,
-            session_admin=self.session_admin,
-            worker_admin=self.worker_admin,
-            directory_admin=self.directory_admin,
-            privileged_helper_factory=lambda **kwargs: PrivilegedHelperSession(**kwargs),
-        )
-        self.trigger_repository: TriggerRepository = WorkerConfigTriggerRepository(
-            read_config=self._read_trigger_document,
-            write_config=self._write_trigger_document,
-        )
-        self.trigger_event_repository: TriggerEventRepository = JsonTriggerEventRepository()
-        self.agent_create_operations = JsonStore(
-            self.config.runtime_dir / "agent-create-operations.json",
-            AgentCreateOperation,
-        )
-        self._agent_create_operation_owner_id = f"{os.getpid()}:{uuid4().hex}"
-        self._agent_create_operation_payloads: dict[str, dict[str, Any]] = {}
-        self._agent_create_operation_payloads_lock = threading.Lock()
-        self._agent_create_executor = ThreadPoolExecutor(
-            max_workers=_AGENT_CREATE_OPERATION_MAX_WORKERS,
-            thread_name_prefix="agent-create",
-        )
-        self._execution_backend_instance = None
+        self.workflow_generation_transport = components.workflow_generation_transport
+        self.use_privileged_helper = components.use_privileged_helper
+        self._privileged_helper = components.privileged_helper
+        self.directory_admin = components.directory_admin
+        self.directory_ownership = components.directory_ownership
+        self.issue_service = components.issue_service
+        self.session_admin = components.session_admin
+        self.teams_admin = components.teams_admin
+        self.worker_admin = components.worker_admin
+        self.workflow_config_admin = components.workflow_config_admin
+        self.skills_admin = components.skills_admin
+        self.capacity_health_admin = components.capacity_health_admin
+        self.model_usage_admin = components.model_usage_admin
+        self.workflow_generation_admin = components.workflow_generation_admin
+        self.workflow_reports_admin = components.workflow_reports_admin
+        self.issue_git_support = components.issue_git_support
+        self.vm_agent_support = components.vm_agent_support
+        self.issue_git_admin = components.issue_git_admin
+        self.vm_agent_admin = components.vm_agent_admin
+        self.pr_integration_preflight_admin = components.pr_integration_preflight_admin
+        self.operations_admin = components.operations_admin
+        self.trigger_repository = components.trigger_repository
+        self.trigger_event_repository = components.trigger_event_repository
+        self.agent_create_operations = components.agent_create_operations
+        self._agent_create_operation_owner_id = components.agent_create_operation_owner_id
+        self._agent_create_operation_payloads = components.agent_create_operation_payloads
+        self._agent_create_operation_payloads_lock = components.agent_create_operation_payloads_lock
+        self._agent_create_executor = components.agent_create_executor
+        self._execution_backend_instance = components.execution_backend_instance
 
     @property
     def directory_scoped_config_enabled(self) -> bool:

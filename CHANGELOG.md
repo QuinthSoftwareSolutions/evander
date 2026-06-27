@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-27 - Admin Service Composition Builder
+
+- Extracted AdminService runtime/config/store/facade construction into a dedicated composition module while preserving public AdminService construction for existing callers.
+
 ## 2026-06-27 - Admin Service Domain Extraction
 
 - Kept `AdminService` as the backwards-compatible public facade while routing
