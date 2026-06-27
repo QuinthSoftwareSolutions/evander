@@ -524,6 +524,7 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
         "submit_pr_review",
     }
     registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+    assert {"approval_submit", "approval_check"} <= registered_tool_names
     assert pr_feedback_tool_names <= registered_tool_names
     ado_tool_names = {
         "create_ado_backlog_item",

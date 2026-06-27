@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Moved approval MCP gateway tools into `agent_sandbox.gateway.approval_tools` while preserving behavior.
+
 - Moved communication MCP gateway tools into `agent_sandbox.gateway.communication_tools` while preserving behavior.
 
 - Moved PR/feedback MCP gateway tools into `agent_sandbox.gateway.pr_tools` while preserving behavior.
