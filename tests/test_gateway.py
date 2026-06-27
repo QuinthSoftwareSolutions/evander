@@ -515,15 +515,24 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
-    assert any(tool.name == "resolve_ado_identity" for tool in server._tool_manager.list_tools())
-    assert any(
-        tool.name == "list_ado_pr_comment_activity"
-        for tool in server._tool_manager.list_tools()
-    )
-    assert any(
-        tool.name == "list_ado_pr_commit_activity"
-        for tool in server._tool_manager.list_tools()
-    )
+    ado_tool_names = {
+        "create_ado_backlog_item",
+        "post_ado_backlog_comment",
+        "delete_ado_backlog_item",
+        "update_ado_backlog_text",
+        "update_ado_backlog_title",
+        "update_ado_backlog_tags",
+        "query_ado_backlog_items",
+        "get_ado_backlog_item",
+        "query_ado_work_item_activity",
+        "list_ado_current_iteration_backlog_items",
+        "get_ado_daily_status_report_data",
+        "resolve_ado_identity",
+        "list_ado_pr_comment_activity",
+        "list_ado_pr_commit_activity",
+    }
+    registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+    assert ado_tool_names <= registered_tool_names
     assert any(
         tool.name == "query_ado_work_item_activity"
         for tool in server._tool_manager.list_tools()
