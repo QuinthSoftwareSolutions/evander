@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+from agent_sandbox.admin.services.ports import DirectoryOwnershipPort, WorkflowConfigPort
 from urllib.parse import quote
 
 import httpx
@@ -55,8 +57,7 @@ class TeamsAdminDependencies:
 class SessionAdminDependencies:
     runtime: Any
     config: Any
-    normalize_directory_path: Any
-    direct_owned_entity_ids: Any
+    directory_ownership: DirectoryOwnershipPort
 
 
 @dataclass(frozen=True)
@@ -64,26 +65,8 @@ class WorkerAdminDependencies:
     runtime: Any
     config: Any
     agent_control_store: Any
-    normalize_directory_path: Any
-    direct_owned_entity_ids: Any
-    read_worker_global_config: Any
-    write_worker_global_config: Any
-    read_workflow_editor_document: Any
-    read_composed_workflow_editor_document: Any
-    read_workflow_editor_catalog: Any
-    validate_workflow_editor_document: Any
-    save_workflow_editor_document: Any
-    read_workflow_run_snapshot: Any
-    workflow_event_journal: Any
-    upsert_trigger_config: Any
-    delete_trigger_config: Any
-    upsert_effect_config: Any
-    delete_effect_config: Any
-    read_workflow_run_detail: Any | None = None
-    read_workflow_run_search: Any | None = None
-    clear_workflow_run: Any | None = None
-    dismiss_workflow_node_failures: Any | None = None
-    resume_workflow_run: Any | None = None
+    directory_ownership: DirectoryOwnershipPort
+    workflow_config: WorkflowConfigPort
 
 
 class TeamsAdminFacade:
@@ -337,9 +320,13 @@ class SessionAdminFacade:
             raise ValueError("include_expired and expired_only cannot both be true")
 
         now = admin_service_module._utc_now()
-        normalized_directory_path = self._deps.normalize_directory_path(directory_path)
+        normalized_directory_path = (
+            self._deps.directory_ownership.normalize_directory_path(directory_path)
+        )
         owned_session_ids = (
-            self._deps.direct_owned_entity_ids(normalized_directory_path, kind="session")
+            self._deps.directory_ownership.direct_owned_entity_ids(
+                normalized_directory_path, kind="session"
+            )
             if direct_only
             else set()
         )
@@ -806,9 +793,13 @@ class WorkerAdminFacade:
         session_ids_by_vm = self._session_ids_by_vm()
         labels_by_vm = self._labels_by_vm()
         directory_paths_by_vm = self._directory_paths_by_vm()
-        normalized_directory_path = self._deps.normalize_directory_path(directory_path)
+        normalized_directory_path = (
+            self._deps.directory_ownership.normalize_directory_path(directory_path)
+        )
         owned_vm_ids = (
-            self._deps.direct_owned_entity_ids(normalized_directory_path, kind="vm")
+            self._deps.directory_ownership.direct_owned_entity_ids(
+                normalized_directory_path, kind="vm"
+            )
             if direct_only
             else set()
         )
@@ -974,7 +965,7 @@ class WorkerAdminFacade:
         )
 
     def read_worker_global_config(self, worker_id: str):
-        return self._deps.read_worker_global_config(worker_id)
+        return self._deps.workflow_config.read_worker_global_config(worker_id)
 
     def write_worker_global_config(
         self,
@@ -983,7 +974,7 @@ class WorkerAdminFacade:
         *,
         expected_revision: str | None = None,
     ):
-        return self._deps.write_worker_global_config(
+        return self._deps.workflow_config.write_worker_global_config(
             worker_id, payload, expected_revision=expected_revision
         )
 
@@ -991,16 +982,16 @@ class WorkerAdminFacade:
         self, workflow_pack: str | None = None
     ) -> WorkflowEditorDocumentPayload:
         if workflow_pack is None:
-            return self._deps.read_workflow_editor_document()
-        return self._deps.read_workflow_editor_document(workflow_pack=workflow_pack)
+            return self._deps.workflow_config.read_workflow_editor_document()
+        return self._deps.workflow_config.read_workflow_editor_document(workflow_pack=workflow_pack)
 
     def read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        return self._deps.read_composed_workflow_editor_document()
+        return self._deps.workflow_config.read_composed_workflow_editor_document()
 
     def read_workflow_editor_catalog(
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
-        return self._deps.read_workflow_editor_catalog(directory_path=directory_path)
+        return self._deps.workflow_config.read_workflow_editor_catalog(directory_path=directory_path)
 
     def validate_workflow_editor_document(
         self,
@@ -1011,10 +1002,10 @@ class WorkerAdminFacade:
         workflow_pack: str | None = None,
     ) -> WorkflowEditorValidationPayload:
         if workflow_pack is None:
-            return self._deps.validate_workflow_editor_document(
+            return self._deps.workflow_config.validate_workflow_editor_document(
                 config=config, layout=layout, graphs=graphs
             )
-        return self._deps.validate_workflow_editor_document(
+        return self._deps.workflow_config.validate_workflow_editor_document(
             config=config, layout=layout, graphs=graphs, workflow_pack=workflow_pack
         )
 
@@ -1028,13 +1019,13 @@ class WorkerAdminFacade:
         workflow_pack: str | None = None,
     ) -> WorkflowEditorSavePayload:
         if workflow_pack is None:
-            return self._deps.save_workflow_editor_document(
+            return self._deps.workflow_config.save_workflow_editor_document(
                 config=config,
                 layout=layout,
                 graphs=graphs,
                 expected_revision=expected_revision,
             )
-        return self._deps.save_workflow_editor_document(
+        return self._deps.workflow_config.save_workflow_editor_document(
             config=config,
             layout=layout,
             graphs=graphs,
@@ -1043,7 +1034,7 @@ class WorkerAdminFacade:
         )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
-        return self._deps.read_workflow_run_snapshot()
+        return self._deps.workflow_config.read_workflow_run_snapshot()
 
     def read_workflow_run_detail(
         self,
@@ -1055,11 +1046,7 @@ class WorkerAdminFacade:
         session_id: str | None = None,
         artifact_id: str | None = None,
     ) -> WorkflowRunDetailPayload:
-        if self._deps.read_workflow_run_detail is None:
-            raise NotImplementedError(
-                "read_workflow_run_detail is not configured for this worker admin facade."
-            )
-        return self._deps.read_workflow_run_detail(
+        return self._deps.workflow_config.read_workflow_run_detail(
             run_id=run_id,
             event_id=event_id,
             trigger_event_id=trigger_event_id,
@@ -1077,11 +1064,7 @@ class WorkerAdminFacade:
         include_completed: bool = True,
         limit: int | None = None,
     ) -> WorkflowRunSearchPayload:
-        if self._deps.read_workflow_run_search is None:
-            raise NotImplementedError(
-                "read_workflow_run_search is not configured for this worker admin facade."
-            )
-        return self._deps.read_workflow_run_search(
+        return self._deps.workflow_config.read_workflow_run_search(
             node_id=node_id,
             graph_id=graph_id,
             without_session=without_session,
@@ -1090,44 +1073,32 @@ class WorkerAdminFacade:
         )
 
     def clear_workflow_run(self, event_id: str):
-        if self._deps.clear_workflow_run is None:
-            raise NotImplementedError(
-                "clear_workflow_run is not configured for this worker admin facade."
-            )
-        return self._deps.clear_workflow_run(event_id)
+        return self._deps.workflow_config.clear_workflow_run(event_id)
 
     def dismiss_workflow_node_failures(self, node_id: str):
-        if self._deps.dismiss_workflow_node_failures is None:
-            raise NotImplementedError(
-                "dismiss_workflow_node_failures is not configured for this worker admin facade."
-            )
-        return self._deps.dismiss_workflow_node_failures(node_id)
+        return self._deps.workflow_config.dismiss_workflow_node_failures(node_id)
 
     def resume_workflow_run(self, event_id: str):
-        if self._deps.resume_workflow_run is None:
-            raise NotImplementedError(
-                "resume_workflow_run is not configured for this worker admin facade."
-            )
-        return self._deps.resume_workflow_run(event_id)
+        return self._deps.workflow_config.resume_workflow_run(event_id)
 
     def workflow_event_journal(self) -> WorkflowEventJournal:
-        return self._deps.workflow_event_journal()
+        return self._deps.workflow_config.workflow_event_journal()
 
     def upsert_trigger_config(
         self, trigger_id: str, payload: dict[str, object]
     ) -> TriggerConfigMutationPayload:
-        return self._deps.upsert_trigger_config(trigger_id, payload)
+        return self._deps.workflow_config.upsert_trigger_config(trigger_id, payload)
 
     def delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
-        return self._deps.delete_trigger_config(trigger_id)
+        return self._deps.workflow_config.delete_trigger_config(trigger_id)
 
     def upsert_effect_config(
         self, effect_id: str, payload: dict[str, object]
     ) -> EffectConfigMutationPayload:
-        return self._deps.upsert_effect_config(effect_id, payload)
+        return self._deps.workflow_config.upsert_effect_config(effect_id, payload)
 
     def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
-        return self._deps.delete_effect_config(effect_id)
+        return self._deps.workflow_config.delete_effect_config(effect_id)
 
 
 __all__ = [

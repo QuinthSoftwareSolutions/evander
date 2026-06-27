@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 _SERVICE_EXPORTS = {
+    "WorkflowConfigPort": (".ports", "WorkflowConfigPort"),
+    "PrivilegedHelperPort": (".ports", "PrivilegedHelperPort"),
+    "PrivilegedHelperFactoryPort": (".ports", "PrivilegedHelperFactoryPort"),
+    "DirectoryPathPort": (".ports", "DirectoryPathPort"),
+    "DirectoryOwnershipPort": (".ports", "DirectoryOwnershipPort"),
     "CapacityHealthAdminService": (".capacity_health_service", "CapacityHealthAdminService"),
     "IssueGitAdminDependencies": (".issue_git_service", "IssueGitAdminDependencies"),
     "IssueGitAdminService": (".issue_git_service", "IssueGitAdminService"),

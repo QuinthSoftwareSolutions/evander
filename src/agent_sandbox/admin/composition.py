@@ -60,6 +60,70 @@ from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.storage import JsonStore
 
 
+class AdminServiceDirectoryOwnershipPort:
+    def __init__(self, issue_git_support: Any) -> None:
+        self._issue_git_support = issue_git_support
+
+    def normalize_directory_path(self, directory_path: str | None) -> str:
+        return self._issue_git_support.normalize_directory_path(directory_path)
+
+    def direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
+        return self._issue_git_support.direct_owned_entity_ids(directory_path, kind=kind)
+
+
+class AdminServicePrivilegedHelperPort:
+    def __init__(self, host: Any) -> None:
+        self._host = host
+
+    def get_privileged_helper(self) -> Any | None:
+        return self._host._privileged_helper
+
+    def get_use_privileged_helper(self) -> bool:
+        return bool(self._host.use_privileged_helper)
+
+    def set_privileged_helper(self, helper: Any | None) -> None:
+        self._host._privileged_helper = helper
+
+
+class AdminServicePrivilegedHelperFactoryPort:
+    def __init__(self, helper_cls: Any) -> None:
+        self._helper_cls = helper_cls
+
+    def create_privileged_helper(self, **kwargs: Any) -> Any:
+        return self._helper_cls(**kwargs)
+
+
+class AdminServiceWorkflowConfigPort:
+    def __init__(self, host: Any) -> None:
+        self._host = host
+
+    def __getattr__(self, name: str) -> Any:
+        mapping = {
+            "read_worker_global_config": "_read_worker_global_config",
+            "write_worker_global_config": "_write_worker_global_config",
+            "read_workflow_editor_document": "_read_workflow_editor_document",
+            "read_composed_workflow_editor_document": "_read_composed_workflow_editor_document",
+            "read_workflow_editor_catalog": "_read_workflow_editor_catalog",
+            "validate_workflow_editor_document": "_validate_workflow_editor_document",
+            "save_workflow_editor_document": "_save_workflow_editor_document",
+            "read_workflow_run_snapshot": "_read_workflow_run_snapshot",
+            "read_workflow_run_detail": "_read_workflow_run_detail",
+            "read_workflow_run_search": "_read_workflow_run_search",
+            "clear_workflow_run": "_clear_workflow_run",
+            "dismiss_workflow_node_failures": "_dismiss_workflow_node_failures",
+            "resume_workflow_run": "_resume_workflow_run",
+            "workflow_event_journal": "_workflow_event_journal",
+            "upsert_trigger_config": "_upsert_trigger_config",
+            "delete_trigger_config": "_delete_trigger_config",
+            "upsert_effect_config": "_upsert_effect_config",
+            "delete_effect_config": "_delete_effect_config",
+        }
+        try:
+            return getattr(self._host, mapping[name])
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
 @dataclass(slots=True)
 class AdminServiceComponents:
     runtime_dir: Path
@@ -189,62 +253,6 @@ def build_admin_service_components(
         )
     )
 
-    session_admin = SessionAdminFacade(
-        SessionAdminDependencies(
-            runtime=runtime,
-            config=config,
-            normalize_directory_path=lambda directory_path: (
-                host.issue_git_support.normalize_directory_path(directory_path)
-            ),
-            direct_owned_entity_ids=lambda directory_path, **kwargs: (
-                host.issue_git_support.direct_owned_entity_ids(directory_path, **kwargs)
-            ),
-        )
-    )
-    teams_admin = TeamsAdminFacade(
-        TeamsAdminDependencies(
-            runtime=runtime,
-            normalize_directory_reference=host._normalize_directory_reference,
-        )
-    )
-    worker_admin = WorkerAdminFacade(
-        WorkerAdminDependencies(
-            runtime=runtime,
-            config=config,
-            agent_control_store=agent_control_store,
-            normalize_directory_path=lambda directory_path: (
-                host.issue_git_support.normalize_directory_path(directory_path)
-            ),
-            direct_owned_entity_ids=lambda directory_path, **kwargs: (
-                host.issue_git_support.direct_owned_entity_ids(directory_path, **kwargs)
-            ),
-            read_worker_global_config=host._read_worker_global_config,
-            write_worker_global_config=host._write_worker_global_config,
-            read_workflow_editor_document=host._read_workflow_editor_document,
-            read_composed_workflow_editor_document=host._read_composed_workflow_editor_document,
-            read_workflow_editor_catalog=host._read_workflow_editor_catalog,
-            validate_workflow_editor_document=host._validate_workflow_editor_document,
-            save_workflow_editor_document=host._save_workflow_editor_document,
-            read_workflow_run_snapshot=host._read_workflow_run_snapshot,
-            read_workflow_run_detail=host._read_workflow_run_detail,
-            read_workflow_run_search=host._read_workflow_run_search,
-            clear_workflow_run=host._clear_workflow_run,
-            dismiss_workflow_node_failures=host._dismiss_workflow_node_failures,
-            resume_workflow_run=host._resume_workflow_run,
-            workflow_event_journal=host._workflow_event_journal,
-            upsert_trigger_config=host._upsert_trigger_config,
-            delete_trigger_config=host._delete_trigger_config,
-            upsert_effect_config=host._upsert_effect_config,
-            delete_effect_config=host._delete_effect_config,
-        )
-    )
-    workflow_config_admin = WorkflowConfigAdminService(worker_admin)
-    skill_admin = SkillAdminService(skill_library)
-    capacity_health_admin = CapacityHealthAdminService(host)
-    model_usage_admin = ModelUsageAdminService(host)
-    workflow_generation_admin = WorkflowGenerationAdminService(host)
-    workflow_reports_admin = WorkflowReportsAdminService(host)
-
     issue_git_support = IssueGitAdminSupport(
         project_dir=project_dir,
         runtime=runtime,
@@ -258,6 +266,39 @@ def build_admin_service_components(
         directory_admin=directory_admin,
         directory_ownership=directory_ownership,
     )
+    directory_ownership_port = AdminServiceDirectoryOwnershipPort(issue_git_support)
+    workflow_config_port = AdminServiceWorkflowConfigPort(host)
+    privileged_helper_port = AdminServicePrivilegedHelperPort(host)
+
+    session_admin = SessionAdminFacade(
+        SessionAdminDependencies(
+            runtime=runtime,
+            config=config,
+            directory_ownership=directory_ownership_port,
+        )
+    )
+    teams_admin = TeamsAdminFacade(
+        TeamsAdminDependencies(
+            runtime=runtime,
+            normalize_directory_reference=host._normalize_directory_reference,
+        )
+    )
+    worker_admin = WorkerAdminFacade(
+        WorkerAdminDependencies(
+            runtime=runtime,
+            config=config,
+            agent_control_store=agent_control_store,
+            directory_ownership=directory_ownership_port,
+            workflow_config=workflow_config_port,
+        )
+    )
+    workflow_config_admin = WorkflowConfigAdminService(worker_admin)
+    skill_admin = SkillAdminService(skill_library)
+    capacity_health_admin = CapacityHealthAdminService(host)
+    model_usage_admin = ModelUsageAdminService(host)
+    workflow_generation_admin = WorkflowGenerationAdminService(host)
+    workflow_reports_admin = WorkflowReportsAdminService(host)
+
     vm_agent_support = VmAgentAdminSupport(
         config=config,
         runtime=runtime,
@@ -267,8 +308,7 @@ def build_admin_service_components(
         worker_admin=worker_admin,
         workflow_config_admin=workflow_config_admin,
         directory_admin=directory_admin,
-        get_privileged_helper=lambda: host._privileged_helper,
-        get_use_privileged_helper=lambda: host.use_privileged_helper,
+        privileged_helper=privileged_helper_port,
     )
 
     issue_git_admin = IssueGitAdminService(
@@ -279,7 +319,7 @@ def build_admin_service_components(
             local_issue_store=issue_git_support.local_issue_store,
             local_issue_yaml_dir=issue_git_support.local_issue_yaml_dir,
             issue_service=issue_git_support.issue_service,
-            normalize_directory_path=issue_git_support.normalize_directory_path,
+            directory_path=issue_git_support,
             local_issue_creation_lock=issue_git_support.local_issue_creation_lock,
             next_local_issue_number=issue_git_support.next_local_issue_number,
             canonical_local_issue_id=issue_git_support.canonical_local_issue_id,
@@ -288,7 +328,7 @@ def build_admin_service_components(
             proxy_target_for_issue=issue_git_support.proxy_target_for_issue,
             refresh_proxy_cache_from_remote=issue_git_support.refresh_proxy_cache_from_remote,
             write_local_issue_yaml=issue_git_support.write_local_issue_yaml,
-            direct_owned_entity_ids=issue_git_support.direct_owned_entity_ids,
+            directory_ownership=issue_git_support,
         )
     )
     vm_agent_admin = VmAgentAdminService(
@@ -298,10 +338,9 @@ def build_admin_service_components(
             project_dir=vm_agent_support.project_dir,
             local_issue_store=vm_agent_support.local_issue_store,
             worker_admin=vm_agent_support.worker_admin,
-            get_privileged_helper=vm_agent_support.get_privileged_helper,
-            get_use_privileged_helper=vm_agent_support.get_use_privileged_helper,
-            normalize_directory_path=vm_agent_support.normalize_directory_path,
-            read_worker_global_config=vm_agent_support.read_worker_global_config,
+            privileged_helper=privileged_helper_port,
+            directory_path=vm_agent_support,
+            workflow_config=workflow_config_port,
             resolve_agent_model_for_session=vm_agent_support.resolve_agent_model_for_session,
             resolve_vm_defaults=vm_agent_support.resolve_vm_defaults,
             resolve_issue_setup=vm_agent_support.resolve_issue_setup,
@@ -321,14 +360,14 @@ def build_admin_service_components(
     )
     operations_admin = OperationsAdminService(
         project_dir=project_dir,
-        get_privileged_helper=lambda: host._privileged_helper,
-        get_use_privileged_helper=lambda: host.use_privileged_helper,
-        set_privileged_helper=lambda helper: setattr(host, "_privileged_helper", helper),
+        privileged_helper=privileged_helper_port,
         teams_admin=teams_admin,
         session_admin=session_admin,
         worker_admin=worker_admin,
         directory_admin=directory_admin,
-        privileged_helper_factory=lambda **kwargs: service.PrivilegedHelperSession(**kwargs),
+        privileged_helper_factory=AdminServicePrivilegedHelperFactoryPort(
+            service.PrivilegedHelperSession
+        ),
     )
 
     return AdminServiceComponents(

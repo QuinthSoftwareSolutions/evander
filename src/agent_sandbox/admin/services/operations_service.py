@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from agent_sandbox.admin.services.ports import PrivilegedHelperFactoryPort, PrivilegedHelperPort
 
 from agent_sandbox.models import ToolName
 
@@ -15,19 +17,15 @@ class OperationsAdminService:
         self,
         *,
         project_dir: Path,
-        get_privileged_helper: Callable[[], Any | None],
-        get_use_privileged_helper: Callable[[], bool],
-        set_privileged_helper: Callable[[Any | None], None],
+        privileged_helper: PrivilegedHelperPort,
         teams_admin: Any,
         session_admin: Any,
         worker_admin: Any,
         directory_admin: Any,
-        privileged_helper_factory: Any,
+        privileged_helper_factory: PrivilegedHelperFactoryPort,
     ) -> None:
         self._project_dir = project_dir
-        self._get_privileged_helper = get_privileged_helper
-        self._get_use_privileged_helper = get_use_privileged_helper
-        self._set_privileged_helper = set_privileged_helper
+        self._privileged_helper = privileged_helper
         self._teams_admin = teams_admin
         self._session_admin = session_admin
         self._worker_admin = worker_admin
@@ -35,7 +33,7 @@ class OperationsAdminService:
         self._privileged_helper_factory = privileged_helper_factory
 
     def privileged_helper_required(self) -> bool:
-        return bool(self._get_use_privileged_helper())
+        return bool(self._privileged_helper.get_use_privileged_helper())
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:
@@ -88,24 +86,24 @@ class OperationsAdminService:
     def unlock_privileged_operations(self):
         if not self.privileged_helper_required():
             return "Privileged operations unlocked."
-        helper = self._get_privileged_helper()
+        helper = self._privileged_helper.get_privileged_helper()
         if helper is None:
-            helper = self._privileged_helper_factory(
+            helper = self._privileged_helper_factory.create_privileged_helper(
                 python_executable=sys.executable,
                 project_dir=self._project_dir,
             )
-            self._set_privileged_helper(helper)
+            self._privileged_helper.set_privileged_helper(helper)
         helper.start()
         return "Privileged operations unlocked."
 
     def lock_privileged_operations(self):
-        helper = self._get_privileged_helper()
+        helper = self._privileged_helper.get_privileged_helper()
         if helper is not None:
             helper.close()
-            self._set_privileged_helper(None)
+            self._privileged_helper.set_privileged_helper(None)
 
     def privileged_operations_unlocked(self):
-        helper = self._get_privileged_helper()
+        helper = self._privileged_helper.get_privileged_helper()
         return helper is not None and helper.is_running()
 
     def list_sessions(

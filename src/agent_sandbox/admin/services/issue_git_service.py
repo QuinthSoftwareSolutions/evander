@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from agent_sandbox.admin.services.ports import DirectoryPathPort, DirectoryOwnershipPort
+
 from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.models import (
     ApprovalDecisionRecord,
@@ -204,7 +206,7 @@ class IssueGitAdminDependencies:
     local_issue_store: Any
     local_issue_yaml_dir: Path
     issue_service: Any
-    normalize_directory_path: Any
+    directory_path: DirectoryPathPort
     local_issue_creation_lock: Any
     next_local_issue_number: Any
     canonical_local_issue_id: Any
@@ -213,7 +215,7 @@ class IssueGitAdminDependencies:
     proxy_target_for_issue: Any
     refresh_proxy_cache_from_remote: Any
     write_local_issue_yaml: Any
-    direct_owned_entity_ids: Any
+    directory_ownership: DirectoryOwnershipPort
 
 
 @dataclass
@@ -1604,7 +1606,9 @@ class IssueGitAdminService:
         return actionable
 
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
-        return sorted(self._deps.direct_owned_entity_ids(directory_path, kind=kind))
+        return sorted(
+            self._deps.directory_ownership.direct_owned_entity_ids(directory_path, kind=kind)
+        )
 
     def create_local_issue(
         self,
