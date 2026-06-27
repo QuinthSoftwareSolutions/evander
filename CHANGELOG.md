@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-27 - Admin Service Protocol Ports
+
+- Replaced lambda-based admin service wiring for directory ownership, privileged helper state, and workflow configuration callbacks with small protocol-backed port objects.
+- Added focused unit coverage for services and facades using fake protocol implementations instead of a full `AdminService`.
+
 ## 2026-06-27 - VM Agent Creation Option Normalization
 
 - Moved AdminService VM creation payload assembly, model-provider metadata normalization, and allowed-contact validation into `VmAgentAdminService`.

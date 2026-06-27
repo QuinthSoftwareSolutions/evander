@@ -12265,48 +12265,82 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     assert "plan_summary:" not in yaml_text
 
 
-def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_run() -> None:
+def test_worker_admin_dependencies_accept_protocol_ports() -> None:
+    class DirectoryOwnership:
+        def normalize_directory_path(self, directory_path: str | None) -> str:
+            return directory_path or "root"
+
+        def direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
+            assert directory_path == "root"
+            assert kind == "vm"
+            return set()
+
+    class WorkflowConfig:
+        def read_worker_global_config(self, worker_id: str):
+            return {"worker_id": worker_id}
+
+        def write_worker_global_config(self, worker_id: str, payload: dict[str, object], *, expected_revision: str | None = None):
+            return {"worker_id": worker_id, "payload": payload, "expected_revision": expected_revision}
+
+        def read_workflow_editor_document(self, workflow_pack: str | None = None):
+            return {"kind": "document", "workflow_pack": workflow_pack}
+
+        def read_composed_workflow_editor_document(self):
+            return {"kind": "composed-document"}
+
+        def read_workflow_editor_catalog(self, directory_path: str | None = None):
+            return {"kind": "catalog", "directory_path": directory_path}
+
+        def validate_workflow_editor_document(self, **kwargs):
+            return {"kind": "validation", **kwargs}
+
+        def save_workflow_editor_document(self, **kwargs):
+            return {"kind": "save", **kwargs}
+
+        def read_workflow_run_snapshot(self):
+            return {"kind": "snapshot"}
+
+        def read_workflow_run_detail(self, **kwargs):
+            return {"kind": "detail", **kwargs}
+
+        def read_workflow_run_search(self, **kwargs):
+            return {"kind": "search", **kwargs}
+
+        def clear_workflow_run(self, event_id: str):
+            return {"event_id": event_id}
+
+        def dismiss_workflow_node_failures(self, node_id: str):
+            return {"node_id": node_id}
+
+        def resume_workflow_run(self, event_id: str):
+            return {"event_id": event_id}
+
+        def workflow_event_journal(self):
+            return object()
+
+        def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]):
+            return {"trigger_id": trigger_id, "payload": payload}
+
+        def delete_trigger_config(self, trigger_id: str):
+            return {"trigger_id": trigger_id}
+
+        def upsert_effect_config(self, effect_id: str, payload: dict[str, object]):
+            return {"effect_id": effect_id, "payload": payload}
+
+        def delete_effect_config(self, effect_id: str):
+            return {"effect_id": effect_id}
+
     facade = WorkerAdminFacade(
         WorkerAdminDependencies(
             runtime=object(),
             config=object(),
             agent_control_store=object(),
-            normalize_directory_path=lambda directory_path: directory_path or "root",
-            direct_owned_entity_ids=lambda directory_path, **kwargs: set(),
-            read_worker_global_config=lambda worker_id: {"worker_id": worker_id},
-            write_worker_global_config=lambda worker_id, payload, **kwargs: {
-                "worker_id": worker_id,
-                "payload": payload,
-                **kwargs,
-            },
-            read_workflow_editor_document=lambda **kwargs: {"kind": "document", **kwargs},
-            read_composed_workflow_editor_document=lambda: {"kind": "composed-document"},
-            read_workflow_editor_catalog=lambda: {"kind": "catalog"},
-            validate_workflow_editor_document=lambda **kwargs: {"kind": "validation", **kwargs},
-            save_workflow_editor_document=lambda **kwargs: {"kind": "save", **kwargs},
-            read_workflow_run_snapshot=lambda: {"kind": "snapshot"},
-            workflow_event_journal=lambda: object(),
-            upsert_trigger_config=lambda trigger_id, payload: {
-                "trigger_id": trigger_id,
-                "payload": payload,
-            },
-            delete_trigger_config=lambda trigger_id: {"trigger_id": trigger_id},
-            upsert_effect_config=lambda effect_id, payload: {
-                "effect_id": effect_id,
-                "payload": payload,
-            },
-            delete_effect_config=lambda effect_id: {"effect_id": effect_id},
+            directory_ownership=DirectoryOwnership(),
+            workflow_config=WorkflowConfig(),
         )
     )
 
-    assert facade.read_workflow_editor_document() == {"kind": "document"}
-    assert facade.read_workflow_editor_document(workflow_pack="pack-a.v1.json") == {
-        "kind": "document",
-        "workflow_pack": "pack-a.v1.json",
-    }
-    assert facade.read_composed_workflow_editor_document() == {"kind": "composed-document"}
-    with pytest.raises(NotImplementedError, match="clear_workflow_run is not configured"):
-        facade.clear_workflow_run("evt-1")
+    assert facade.clear_workflow_run("event-1") == {"event_id": "event-1"}
 
 
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:

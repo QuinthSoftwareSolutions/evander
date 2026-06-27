@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from agent_sandbox.admin.services.ports import DirectoryPathPort, PrivilegedHelperPort, WorkflowConfigPort
+
 from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_directory
@@ -175,10 +177,9 @@ class VmAgentAdminDependencies:
     project_dir: Path
     local_issue_store: Any
     worker_admin: Any
-    get_privileged_helper: Any
-    get_use_privileged_helper: Any
-    normalize_directory_path: Any
-    read_worker_global_config: Any
+    privileged_helper: PrivilegedHelperPort
+    directory_path: DirectoryPathPort
+    workflow_config: WorkflowConfigPort
     resolve_agent_model_for_session: Any
     resolve_vm_defaults: Any
     resolve_issue_setup: Any
@@ -187,6 +188,50 @@ class VmAgentAdminDependencies:
     resolve_repo_source: Any
     sync_repo_into_bare_remote: Any
     clone_repo_into_vm: Any
+
+
+@dataclass(frozen=True)
+class _VmProviderRegistryDependencies:
+    runtime: Any
+    directory_path: DirectoryPathPort
+    resolve_vm_defaults: Any
+    resolve_agent_model_for_session: Any
+    privileged_helper: PrivilegedHelperPort
+    directory_ownership: Any
+    agent_control_store: Any
+
+    def normalize_directory_path(self, directory_path: str | None) -> str:
+        return self.directory_path.normalize_directory_path(directory_path)
+
+    def get_privileged_helper(self) -> Any | None:
+        return self.privileged_helper.get_privileged_helper()
+
+    def get_use_privileged_helper(self) -> bool:
+        return self.privileged_helper.get_use_privileged_helper()
+
+    def direct_owned_entity_ids(self, directory_path: str, *, kind: str = "vm") -> set[str]:
+        return self.directory_ownership.direct_owned_entity_ids(directory_path, kind=kind)
+
+    def sync_added_discord_session_cursors(
+        self, *, previous_session: Any, updated_session: Any
+    ) -> None:
+        _admin_service._sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=previous_session,
+            updated_session=updated_session,
+        )
+
+
+class _EmptyDirectoryOwnership:
+    def direct_owned_entity_ids(self, directory_path: str, *, kind: str = "vm") -> set[str]:
+        del directory_path, kind
+        return set()
+
+
+class _EnabledAgentControlStore:
+    def status_for_vm(self, vm_name: str) -> str:
+        del vm_name
+        return "enabled"
 
 
 @dataclass
@@ -199,8 +244,7 @@ class VmAgentAdminSupport:
     worker_admin: Any
     workflow_config_admin: Any
     directory_admin: Any
-    get_privileged_helper: Any
-    get_use_privileged_helper: Any
+    privileged_helper: PrivilegedHelperPort
 
     def normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:
@@ -1191,7 +1235,7 @@ class VmAgentAdminService:
         resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
         if callable(resolve_for_directory):
             resolved_config = resolve_for_directory(
-                self._deps.normalize_directory_path(directory_path)
+                self._deps.directory_path.normalize_directory_path(directory_path)
             )
         else:
             resolved_config = self._deps.config
@@ -1260,32 +1304,20 @@ class VmAgentAdminService:
         raise RuntimeError(detail)
 
     def _provider_registry(self) -> VmProviderRegistry:
-        dependency_view = SimpleNamespace(
+        worker_deps = getattr(self._deps.worker_admin, "_deps", SimpleNamespace())
+        agent_control_store = getattr(worker_deps, "agent_control_store", None)
+        if agent_control_store is None:
+            agent_control_store = _EnabledAgentControlStore()
+        dependency_view = _VmProviderRegistryDependencies(
             runtime=self._deps.runtime,
-            normalize_directory_path=self._deps.normalize_directory_path,
+            directory_path=self._deps.directory_path,
             resolve_vm_defaults=self._deps.resolve_vm_defaults,
             resolve_agent_model_for_session=self._deps.resolve_agent_model_for_session,
-            get_privileged_helper=self._deps.get_privileged_helper,
-            get_use_privileged_helper=self._deps.get_use_privileged_helper,
-            direct_owned_entity_ids=getattr(
-                self._deps.worker_admin, "_deps", SimpleNamespace()
-            ).direct_owned_entity_ids
-            if hasattr(getattr(self._deps.worker_admin, "_deps", None), "direct_owned_entity_ids")
-            else (lambda directory_path, kind="vm": set()),
-            agent_control_store=getattr(
-                getattr(self._deps.worker_admin, "_deps", None),
-                "agent_control_store",
-                SimpleNamespace(status_for_vm=lambda vm_name: "enabled"),
+            privileged_helper=self._deps.privileged_helper,
+            directory_ownership=getattr(
+                worker_deps, "directory_ownership", _EmptyDirectoryOwnership()
             ),
-            sync_added_discord_session_cursors=(
-                lambda *, previous_session, updated_session: (
-                    _admin_service._sync_added_discord_session_cursors(
-                        self._deps.runtime,
-                        previous_session=previous_session,
-                        updated_session=updated_session,
-                    )
-                )
-            ),
+            agent_control_store=agent_control_store,
         )
         return VmProviderRegistry(dependency_view)
 
@@ -2028,7 +2060,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             "--timeout-seconds",
             "172800",
         ]
-        trigger_worker_config = self._deps.read_worker_global_config("trigger-orchestrator").config
+        trigger_worker_config = self._deps.workflow_config.read_worker_global_config(
+            "trigger-orchestrator"
+        ).config
         workflow_runtime_dir = _admin_service._resolve_path_setting(
             base_dir=self._deps.project_dir,
             value=trigger_worker_config.get("runtime_dir"),
@@ -2197,7 +2231,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     )
         resolved_session_id = session_id or _admin_service._default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
-        normalized_directory_path = self._deps.normalize_directory_path(
+        normalized_directory_path = self._deps.directory_path.normalize_directory_path(
             local_issue.directory_path
             if local_issue is not None and directory_path == "root"
             else directory_path
@@ -2312,8 +2346,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 )
 
             helper = (
-                self._deps.get_privileged_helper()
-                if self._deps.get_use_privileged_helper()
+                self._deps.privileged_helper.get_privileged_helper()
+                if self._deps.privileged_helper.get_use_privileged_helper()
                 else None
             )
             if helper is not None and not helper.is_running():
@@ -2938,7 +2972,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
 
         normalized_directory_path = str(
             getattr(session, "directory_path", "") or ""
-        ).strip() or self._deps.normalize_directory_path(directory_path)
+        ).strip() or self._deps.directory_path.normalize_directory_path(directory_path)
         return resolved_session_id, session, normalized_directory_path, None
 
     def destroy_vm(self, target: str) -> VmActionResult:
@@ -2954,7 +2988,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         root_dir = Path(__file__).resolve().parents[4]
         destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
         helper = (
-            self._deps.get_privileged_helper() if self._deps.get_use_privileged_helper() else None
+            self._deps.privileged_helper.get_privileged_helper()
+            if self._deps.privileged_helper.get_use_privileged_helper()
+            else None
         )
         if helper is not None and not helper.is_running():
             helper.start()
