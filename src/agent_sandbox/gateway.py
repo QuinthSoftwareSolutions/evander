@@ -1182,7 +1182,7 @@ def _visible_vm_summaries_for_session(
     *,
     vm_user: str,
 ) -> list[Any]:
-    return AdminService(context.config.runtime_dir).list_vms(
+    return AdminService(context.config.runtime_dir).vm_agent_admin.list_vms(
         include_inactive=True,
         vm_user=vm_user,
         directory_path=session.directory_path,
@@ -3016,7 +3016,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             service = _admin_service()
             settings = service.read_assistant_settings()
-            workflow_runs = service.read_workflow_run_snapshot()
+            workflow_runs = service.workflow_config_admin.read_workflow_run_snapshot()
             result = {
                 "assistant": {
                     "enabled": bool(settings.get("enabled")),
@@ -3132,10 +3132,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             context.policy.require_tool(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT)
             service = _admin_service()
-            document = service.read_workflow_editor_document()
+            document = service.workflow_config_admin.read_workflow_editor_document()
             result = document.model_dump(mode="json")
             if include_runs:
-                runs = service.read_workflow_run_snapshot()
+                runs = service.workflow_config_admin.read_workflow_run_snapshot()
                 result["runs"] = runs.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -3177,14 +3177,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS
             )
             service = _admin_service()
-            document = service.read_workflow_editor_document()
+            document = service.workflow_config_admin.read_workflow_editor_document()
             result = {
                 "config_path": document.config_path,
                 "revision": document.revision,
                 "config": document.config,
             }
             if include_runs:
-                runs = service.read_workflow_run_snapshot()
+                runs = service.workflow_config_admin.read_workflow_run_snapshot()
                 result["runs"] = runs.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -3245,7 +3245,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if target_domain == "gateway":
                 snapshot["raw"] = None
             else:
-                raw_result = service.read_directory_domain_config(
+                raw_result = service.operations_admin.read_directory_domain_config(
                     target_directory, target_domain
                 )
                 raw_payload = _admin_result_payload_or_raise(
@@ -3259,7 +3259,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 }
 
             if include_effective or target_domain == "gateway":
-                effective_result = service.compute_directory_effective_config(
+                effective_result = service.operations_admin.compute_directory_effective_config(
                     target_directory, target_domain
                 )
                 effective_payload = _admin_result_payload_or_raise(
@@ -3346,9 +3346,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     raise ValueError(
                         "worker_id is required for worker_global config reads"
                     )
-                payload = service.read_worker_global_config(target_worker_id).model_dump(
-                    mode="json"
-                )
+                payload = service.workflow_config_admin.read_worker_global_config(
+                    target_worker_id
+                ).model_dump(mode="json")
                 result = {"scope": "worker_global", **payload}
                 audit_success(
                     resolved_session_id,
@@ -3454,10 +3454,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             else:
                 _assistant_require_writable_scope(session, "config/directory")
                 target_directory = directory_path or session.directory_path
-                before_payload = service.read_directory_domain_config(
+                before_payload = service.operations_admin.read_directory_domain_config(
                     target_directory, normalized_domain
                 )
-                write_result = service.write_directory_domain_config(
+                write_result = service.operations_admin.write_directory_domain_config(
                     target_directory, normalized_domain, payload
                 )
                 after_payload = (
@@ -3519,10 +3519,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             _assistant_require_writable_scope(session, "config/workflow")
             service = _admin_service()
-            before = service.read_workflow_editor_document(
+            before = service.workflow_config_admin.read_workflow_editor_document(
                 workflow_pack=workflow_pack
             ).config
-            saved = service.save_workflow_editor_document(
+            saved = service.workflow_config_admin.save_workflow_editor_document(
                 config=config,
                 layout=layout,
                 workflow_pack=workflow_pack,
@@ -3582,9 +3582,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
             params = parameters or {}
             normalized_operation = str(operation or "").strip()
             if normalized_operation == "clear_workflow_run":
-                result_payload = service.clear_workflow_run(str(params.get("event_id") or ""))
+                result_payload = service.workflow_config_admin.clear_workflow_run(
+                    str(params.get("event_id") or "")
+                )
             elif normalized_operation == "resume_workflow_run":
-                result_payload = service.resume_workflow_run(str(params.get("event_id") or ""))
+                result_payload = service.workflow_config_admin.resume_workflow_run(
+                    str(params.get("event_id") or "")
+                )
             else:
                 raise ToolError(f"Unsupported safe operation: {normalized_operation}")
             result = (
@@ -4089,7 +4093,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.LIST_ISSUES)
             status_filter = _normalize_issue_status_filters(status)
-            issues = AdminService(context.config.runtime_dir).list_local_issues(
+            issues = AdminService(context.config.runtime_dir).issue_git_admin.list_local_issues(
                 directory_path=session.directory_path,
                 direct_only=True,
             )
@@ -4150,7 +4154,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.GET_ISSUE)
-            result = AdminService(context.config.runtime_dir).get_issue(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.get_issue(
                 issue_id,
                 include_remote_comments=include_remote_comments,
                 sync_proxy_cache=sync_proxy_cache,
@@ -5283,10 +5287,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "directory_path": session.directory_path,
             }
             if metadata and _method_accepts_keyword_argument(
-                admin_service.create_local_issue, "metadata"
+                admin_service.issue_git_admin.create_local_issue, "metadata"
             ):
                 issue_kwargs["metadata"] = metadata
-            issue = admin_service.create_local_issue(**issue_kwargs)
+            issue = admin_service.issue_git_admin.create_local_issue(**issue_kwargs)
             result = _payload_from_result(issue) or {}
             audit_success(
                 session_id,
@@ -5333,7 +5337,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
-            result = AdminService(context.config.runtime_dir).set_issue_plan(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.set_issue_plan(
                 issue_id, steps, summary=summary
             )
             audit_success(
@@ -5390,7 +5394,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     fields["Reason"] = reason
                 if priority is not None:
                     fields["Priority"] = priority
-            result = AdminService(context.config.runtime_dir).update_issue(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.update_issue(
                 issue_id,
                 state="Approved",
                 fields=fields,
@@ -5430,7 +5434,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id}
         try:
             session = context.policy.require_tool(session_id, ToolName.CLAIM_NEXT_ISSUE)
-            result = AdminService(context.config.runtime_dir).claim_next_issue(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.claim_next_issue(
                 session_id=session_id
             )
             payload = _payload_from_result(result)
@@ -5475,7 +5479,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "issue_id": issue_id, "summary": summary}
         try:
             session = context.policy.require_tool(session_id, ToolName.COMPLETE_ISSUE)
-            result = AdminService(context.config.runtime_dir).complete_issue(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.complete_issue(
                 session_id=session_id,
                 issue_id=issue_id,
                 summary=summary,
@@ -5528,7 +5532,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
-            result = AdminService(context.config.runtime_dir).update_issue(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.update_issue(
                 issue_id,
                 state="Closed",
                 fields=fields,
@@ -5578,7 +5582,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
-            result = AdminService(context.config.runtime_dir).update_issue(
+            result = AdminService(context.config.runtime_dir).issue_git_admin.update_issue(
                 issue_id,
                 state="Committed",
                 fields=fields,

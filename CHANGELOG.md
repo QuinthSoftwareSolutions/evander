@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-27 - Admin Service Narrow Interface Callers
+
+- Moved Admin Web, gateway, and CLI callers off broad `AdminService` pass-through
+  wrappers where practical and onto narrower admin component interfaces.
+- Marked the remaining compatibility wrappers that delegate to operations,
+  workflow config, VM agent, and issue/Git admin services as deprecated for new
+  internal code.
+
 ## 2026-06-27 - Admin Service Composition Builder
 
 - Extracted AdminService runtime/config/store/facade construction into a dedicated composition module while preserving public AdminService construction for existing callers.
