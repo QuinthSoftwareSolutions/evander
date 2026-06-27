@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-27 - Skill Admin Service Extraction
+
+- Moved managed Codex skill admin operations into a dedicated `SkillAdminService` backed directly by `SkillLibraryRepository`.
+- Kept `AdminService` skill APIs as compatibility delegates and added focused service tests.
+
 ## 2026-06-27 - Admin Service Narrow Interface Callers
 
 - Moved Admin Web, gateway, and CLI callers off broad `AdminService` pass-through

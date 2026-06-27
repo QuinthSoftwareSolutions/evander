@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from agent_sandbox.admin.services import (
     CapacityHealthAdminService,
     ModelUsageAdminService,
-    SkillsAdminService,
     WorkflowGenerationAdminService,
     WorkflowReportsAdminService,
 )
@@ -39,30 +38,6 @@ class RecordingHost:
     def _submit_operator_steering_note_impl(self, **kwargs):
         self.calls.append(("submit-note", kwargs))
         return {"ok": True}
-
-    def _list_skills_impl(self):
-        self.calls.append(("list-skills", None))
-        return ["skill-a"]
-
-    def _create_skill_impl(self, payload):
-        self.calls.append(("create-skill", dict(payload)))
-        return "created"
-
-    def _get_skill_impl(self, name):
-        self.calls.append(("get-skill", name))
-        return "entry"
-
-    def _delete_skill_impl(self, name):
-        self.calls.append(("delete-skill", name))
-        return "deleted"
-
-    def _validate_managed_codex_skills_impl(self, skill_names):
-        self.calls.append(("validate-skills", tuple(skill_names or ())))
-        return list(skill_names or ())
-
-    def _resolve_container_codex_skill_files_impl(self, skill_names):
-        self.calls.append(("resolve-skill-files", tuple(skill_names or ())))
-        return [{"name": name} for name in skill_names or ()]
 
     async def _generate_workflow_editor_draft_public_impl(self, **kwargs):
         self.calls.append(("generate", kwargs))
@@ -122,27 +97,6 @@ def test_model_usage_service_forwards_filters_and_steering_operations() -> None:
         "active-context",
         "create-note",
         "submit-note",
-    ]
-
-
-def test_skills_service_delegates_skill_library_operations() -> None:
-    host = RecordingHost()
-    service = SkillsAdminService(host)
-
-    assert service.list_skills() == ["skill-a"]
-    assert service.create_skill({"name": "skill-b", "content": "body"}) == "created"
-    assert service.get_skill("skill-b") == "entry"
-    assert service.delete_skill("skill-b") == "deleted"
-    assert service.validate_managed_codex_skills(["skill-a"]) == ["skill-a"]
-    assert service.resolve_container_codex_skill_files(["skill-a"]) == [{"name": "skill-a"}]
-
-    assert [name for name, _ in host.calls] == [
-        "list-skills",
-        "create-skill",
-        "get-skill",
-        "delete-skill",
-        "validate-skills",
-        "resolve-skill-files",
     ]
 
 

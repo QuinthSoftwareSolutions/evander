@@ -7665,7 +7665,7 @@ class AdminService:
         self.teams_admin = components.teams_admin
         self.worker_admin = components.worker_admin
         self.workflow_config_admin = components.workflow_config_admin
-        self.skills_admin = components.skills_admin
+        self.skill_admin = components.skill_admin
         self.capacity_health_admin = components.capacity_health_admin
         self.model_usage_admin = components.model_usage_admin
         self.workflow_generation_admin = components.workflow_generation_admin
@@ -15256,62 +15256,26 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def list_skills(self) -> list[SkillLibraryMetadata]:
-        return self.skills_admin.list_skills()
+        return self.skill_admin.list_skills()
 
     def create_skill(self, payload: Mapping[str, Any]) -> SkillLibraryMetadata:
-        return self.skills_admin.create_skill(payload)
+        return self.skill_admin.create_skill(payload)
 
     def get_skill(self, name: str) -> SkillLibraryEntry:
-        return self.skills_admin.get_skill(name)
+        return self.skill_admin.get_skill(name)
 
     def delete_skill(self, name: str) -> SkillLibraryMetadata:
-        return self.skills_admin.delete_skill(name)
+        return self.skill_admin.delete_skill(name)
 
     def validate_managed_codex_skills(
         self, skill_names: list[str] | tuple[str, ...] | None
     ) -> list[str]:
-        return self.skills_admin.validate_managed_codex_skills(skill_names)
+        return self.skill_admin.validate_managed_codex_skills(skill_names)
 
     def resolve_container_codex_skill_files(
         self, skill_names: list[str] | tuple[str, ...] | None
     ) -> list[dict[str, Any]]:
-        return self.skills_admin.resolve_container_codex_skill_files(skill_names)
-
-    def _list_skills_impl(self) -> list[SkillLibraryMetadata]:
-        return self.skill_library.list_skills()
-
-    def _create_skill_impl(self, payload: Mapping[str, Any]) -> SkillLibraryMetadata:
-        name = str(payload.get("name") or "").strip()
-        if not name:
-            raise ValueError("Skill name is required.")
-        if "content" not in payload:
-            raise ValueError("Skill content is required.")
-        return self.skill_library.create_skill(
-            name=name,
-            content=payload.get("content"),
-            replace=bool(payload.get("replace", False)),
-        )
-
-    def _get_skill_impl(self, name: str) -> SkillLibraryEntry:
-        return self.skill_library.get_skill(name)
-
-    def _delete_skill_impl(self, name: str) -> SkillLibraryMetadata:
-        return self.skill_library.delete_skill(name)
-
-    def _validate_managed_codex_skills_impl(
-        self, skill_names: list[str] | tuple[str, ...] | None
-    ) -> list[str]:
-        names = normalize_skill_names(skill_names)
-        for name in names:
-            if not self.skill_library.has_skill(name):
-                raise ValueError(f"Unknown Codex skill: {name}")
-        return names
-
-    def _resolve_container_codex_skill_files_impl(
-        self, skill_names: list[str] | tuple[str, ...] | None
-    ) -> list[dict[str, Any]]:
-        names = self.validate_managed_codex_skills(skill_names)
-        return self.skill_library.container_file_specs(names)
+        return self.skill_admin.resolve_container_codex_skill_files(skill_names)
 
     def validate_workflow_editor_document(
         self,
