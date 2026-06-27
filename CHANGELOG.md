@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-27 - Admin Service Domain Extraction
+
+- Kept `AdminService` as the backwards-compatible public facade while routing
+  low-risk domains through narrower services for skills, workflow reports,
+  capacity/health telemetry, model usage, and workflow generation.
+- Added focused unit coverage for the extracted admin service delegation layer.
+
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
 
 - Preserved caller-supplied dispatch ids when busy agent prompts are queued and

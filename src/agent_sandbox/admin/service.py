@@ -7639,16 +7639,21 @@ class AdminService:
         )
 
         from agent_sandbox.admin.services import (
+            CapacityHealthAdminService,
             IssueGitAdminDependencies,
             IssueGitAdminService,
             IssueGitAdminSupport,
             PrIntegrationPreflightAdminDependencies,
             PrIntegrationPreflightAdminService,
+            ModelUsageAdminService,
             OperationsAdminService,
+            SkillsAdminService,
             VmAgentAdminDependencies,
             VmAgentAdminService,
             VmAgentAdminSupport,
             WorkflowConfigAdminService,
+            WorkflowGenerationAdminService,
+            WorkflowReportsAdminService,
         )
 
         candidate_runtime = Path(runtime_dir)
@@ -7780,6 +7785,11 @@ class AdminService:
             )
         )
         self.workflow_config_admin = WorkflowConfigAdminService(self.worker_admin)
+        self.skills_admin = SkillsAdminService(self)
+        self.capacity_health_admin = CapacityHealthAdminService(self)
+        self.model_usage_admin = ModelUsageAdminService(self)
+        self.workflow_generation_admin = WorkflowGenerationAdminService(self)
+        self.workflow_reports_admin = WorkflowReportsAdminService(self)
         self.issue_git_support = IssueGitAdminSupport(
             project_dir=self.project_dir,
             runtime=self.runtime,
@@ -7890,6 +7900,92 @@ class AdminService:
         resolved_config = self.runtime.provider_config.resolve_for_directory(directory_path)
         return str(resolved_config.execution_backend or "libvirt_vm")
 
+    def read_capacity_health(self) -> CapacityHealthPayload:
+        return self.capacity_health_admin.read_capacity_health()
+
+    def list_model_usage_events(
+        self,
+        *,
+        session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        effect_id: str | None = None,
+        dispatch_id: str | None = None,
+        directory_path: str | None = None,
+        include_directory_descendants: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+        agent_harness: str | None = None,
+        execution_backend: str | None = None,
+        normalized_usage_status: str | None = None,
+        request_status: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[ModelInferenceUsageEvent]:
+        return self.model_usage_admin.list_model_usage_events(
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            effect_id=effect_id,
+            dispatch_id=dispatch_id,
+            directory_path=directory_path,
+            include_directory_descendants=include_directory_descendants,
+            provider=provider,
+            model=model,
+            agent_harness=agent_harness,
+            execution_backend=execution_backend,
+            normalized_usage_status=normalized_usage_status,
+            request_status=request_status,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            limit=limit,
+        )
+
+    def operator_steering_directory_path(
+        self, *, session_id: str, dispatch_id: str | None = None
+    ) -> str:
+        return self.model_usage_admin.operator_steering_directory_path(
+            session_id=session_id, dispatch_id=dispatch_id
+        )
+
+    def active_operator_steering_context(
+        self, *, session_id: str
+    ) -> ModelUsageCorrelationContext | None:
+        return self.model_usage_admin.active_operator_steering_context(session_id=session_id)
+
+    def create_operator_steering_note(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        message: str,
+        worker_execution_id: str | None = None,
+        created_by: str | None = None,
+    ) -> OperatorSteeringNote:
+        return self.model_usage_admin.create_operator_steering_note(
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            message=message,
+            worker_execution_id=worker_execution_id,
+            created_by=created_by,
+        )
+
+    def submit_operator_steering_note(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        message: str,
+        worker_execution_id: str | None = None,
+        created_by: str | None = None,
+    ) -> dict[str, Any]:
+        return self.model_usage_admin.submit_operator_steering_note(
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            message=message,
+            worker_execution_id=worker_execution_id,
+            created_by=created_by,
+        )
+
     def read_deployment_status(self) -> DeploymentStatusPayload:
         payload_path = self.config.runtime_dir / "deployment-status.json"
         raw = _read_json_object(payload_path)
@@ -7914,7 +8010,7 @@ class AdminService:
             return status.model_copy(update={"message": "Control plane update in progress."})
         return status
 
-    def read_capacity_health(self) -> CapacityHealthPayload:
+    def _read_capacity_health_impl(self) -> CapacityHealthPayload:
         now = _utc_now()
         sessions = sorted(
             self.runtime.session_repository.list_sessions(),
@@ -9286,7 +9382,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         return [self._session_summary_with_container_lifecycle(summary) for summary in summaries]
 
-    def list_model_usage_events(
+    def _list_model_usage_events_impl(
         self,
         *,
         session_id: str | None = None,
@@ -9323,7 +9419,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             limit=limit,
         )
 
-    def operator_steering_directory_path(
+    def _operator_steering_directory_path_impl(
         self,
         *,
         session_id: str,
@@ -9344,7 +9440,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError(f"unknown session: {normalized_session_id}")
         return self._agent_record_directory_path(session.directory_path)
 
-    def active_operator_steering_context(
+    def _active_operator_steering_context_impl(
         self,
         *,
         session_id: str,
@@ -9356,7 +9452,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             session_id=normalized_session_id,
         )
 
-    def create_operator_steering_note(
+    def _create_operator_steering_note_impl(
         self,
         *,
         session_id: str,
@@ -9387,7 +9483,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             created_by=created_by,
         )
 
-    def submit_operator_steering_note(
+    def _submit_operator_steering_note_impl(
         self,
         *,
         session_id: str,
@@ -15353,9 +15449,31 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def list_skills(self) -> list[SkillLibraryMetadata]:
-        return self.skill_library.list_skills()
+        return self.skills_admin.list_skills()
 
     def create_skill(self, payload: Mapping[str, Any]) -> SkillLibraryMetadata:
+        return self.skills_admin.create_skill(payload)
+
+    def get_skill(self, name: str) -> SkillLibraryEntry:
+        return self.skills_admin.get_skill(name)
+
+    def delete_skill(self, name: str) -> SkillLibraryMetadata:
+        return self.skills_admin.delete_skill(name)
+
+    def validate_managed_codex_skills(
+        self, skill_names: list[str] | tuple[str, ...] | None
+    ) -> list[str]:
+        return self.skills_admin.validate_managed_codex_skills(skill_names)
+
+    def resolve_container_codex_skill_files(
+        self, skill_names: list[str] | tuple[str, ...] | None
+    ) -> list[dict[str, Any]]:
+        return self.skills_admin.resolve_container_codex_skill_files(skill_names)
+
+    def _list_skills_impl(self) -> list[SkillLibraryMetadata]:
+        return self.skill_library.list_skills()
+
+    def _create_skill_impl(self, payload: Mapping[str, Any]) -> SkillLibraryMetadata:
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("Skill name is required.")
@@ -15367,13 +15485,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             replace=bool(payload.get("replace", False)),
         )
 
-    def get_skill(self, name: str) -> SkillLibraryEntry:
+    def _get_skill_impl(self, name: str) -> SkillLibraryEntry:
         return self.skill_library.get_skill(name)
 
-    def delete_skill(self, name: str) -> SkillLibraryMetadata:
+    def _delete_skill_impl(self, name: str) -> SkillLibraryMetadata:
         return self.skill_library.delete_skill(name)
 
-    def validate_managed_codex_skills(
+    def _validate_managed_codex_skills_impl(
         self, skill_names: list[str] | tuple[str, ...] | None
     ) -> list[str]:
         names = normalize_skill_names(skill_names)
@@ -15382,7 +15500,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 raise ValueError(f"Unknown Codex skill: {name}")
         return names
 
-    def resolve_container_codex_skill_files(
+    def _resolve_container_codex_skill_files_impl(
         self, skill_names: list[str] | tuple[str, ...] | None
     ) -> list[dict[str, Any]]:
         names = self.validate_managed_codex_skills(skill_names)
@@ -15404,6 +15522,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     async def generate_workflow_editor_draft(
+        self,
+        *,
+        description: str,
+        directory_path: str | None = None,
+        include_current_packs: bool = True,
+    ) -> WorkflowEditorGeneratedDraftPayload:
+        return await self.workflow_generation_admin.generate_workflow_editor_draft(
+            description=description,
+            directory_path=directory_path,
+            include_current_packs=include_current_packs,
+        )
+
+    async def _generate_workflow_editor_draft_public_impl(
         self,
         *,
         description: str,
@@ -15502,13 +15633,45 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         period_end: datetime | None = None,
         limit: int | None = None,
     ) -> WorkflowGraphActivityReportPayload:
+        return self.workflow_reports_admin.read_workflow_graph_activity_report(
+            period_start=period_start, period_end=period_end, limit=limit
+        )
+
+    def read_workflow_failure_clusters_report(
+        self,
+        *,
+        period_start: datetime | None = None,
+        period_end: datetime | None = None,
+        limit: int | None = None,
+        recent_threshold_seconds: int | None = None,
+    ) -> WorkflowFailureClusterReportPayload:
+        return self.workflow_reports_admin.read_workflow_failure_clusters_report(
+            period_start=period_start,
+            period_end=period_end,
+            limit=limit,
+            recent_threshold_seconds=recent_threshold_seconds,
+        )
+
+    def read_conformance_reports(self) -> ConformanceReportsPayload:
+        return self.workflow_reports_admin.read_conformance_reports()
+
+    def run_conformance_report(self, kind: str) -> ConformanceReportRunPayload:
+        return self.workflow_reports_admin.run_conformance_report(kind)
+
+    def _read_workflow_graph_activity_report_public_impl(
+        self,
+        *,
+        period_start: datetime | None = None,
+        period_end: datetime | None = None,
+        limit: int | None = None,
+    ) -> WorkflowGraphActivityReportPayload:
         return self._read_workflow_graph_activity_report(
             period_start=period_start,
             period_end=period_end,
             limit=limit,
         )
 
-    def read_workflow_failure_clusters_report(
+    def _read_workflow_failure_clusters_report_public_impl(
         self,
         *,
         period_start: datetime | None = None,
@@ -15523,10 +15686,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             recent_threshold_seconds=recent_threshold_seconds,
         )
 
-    def read_conformance_reports(self) -> ConformanceReportsPayload:
+    def _read_conformance_reports_public_impl(self) -> ConformanceReportsPayload:
         return self._read_conformance_reports()
 
-    def run_conformance_report(self, kind: str) -> ConformanceReportRunPayload:
+    def _run_conformance_report_public_impl(self, kind: str) -> ConformanceReportRunPayload:
         return self._run_conformance_report(kind)
 
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
