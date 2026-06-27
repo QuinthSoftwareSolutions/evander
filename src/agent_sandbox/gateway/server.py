@@ -26,7 +26,6 @@ from agent_sandbox.addons import (
     load_addons,
     register_addon_mcp_tools,
 )
-from agent_sandbox.bootstrap import load_host_bootstrap_config
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.ado_reports import (
     DEFAULT_DONE_STATES,
@@ -34,7 +33,6 @@ from agent_sandbox.ado_reports import (
     DEFAULT_IN_PROGRESS_STATES,
     build_ado_daily_status_report_data,
 )
-from agent_sandbox.directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES
 from agent_sandbox.communication_artifacts import (
     CommunicationArtifactStore,
     normalize_safe_filename,
@@ -525,22 +523,6 @@ def _payload_from_result(result: Any) -> dict[str, Any] | None:
     return {"value": result}
 
 
-def _admin_result_payload_or_raise(result: Any, action: str) -> dict[str, Any]:
-    payload = _payload_from_result(result) or {}
-    if payload.get("ok", True):
-        return payload
-    errors = payload.get("errors")
-    messages: list[str] = []
-    if isinstance(errors, list):
-        for error in errors:
-            if isinstance(error, dict):
-                message = str(error.get("message") or "").strip()
-                if message:
-                    messages.append(message)
-    detail = "; ".join(messages) or f"{action} failed"
-    raise ValueError(detail)
-
-
 def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
@@ -595,26 +577,6 @@ def _assistant_mutation_audit_result(
     )
     return audit_result
 
-
-
-def _assistant_require_writable_scope(session: Any, requested_scope: str) -> None:
-    metadata = getattr(session, "metadata", {}) if session is not None else {}
-    mutation_policy = metadata.get("assistant_mutation_policy") if isinstance(metadata, dict) else None
-    if not isinstance(mutation_policy, dict):
-        raise PolicyError(
-            f"Session {getattr(session, 'session_id', '<unknown>')} is missing metadata.assistant_mutation_policy"
-        )
-    raw_scopes = mutation_policy.get("writable_scopes")
-    if not isinstance(raw_scopes, list):
-        raise PolicyError(
-            f"Session {getattr(session, 'session_id', '<unknown>')} has no assistant writable scopes"
-        )
-    normalized_scope = str(requested_scope or "").strip()
-    allowed_scopes = [str(scope or "").strip() for scope in raw_scopes if str(scope or "").strip()]
-    if normalized_scope not in allowed_scopes:
-        raise PolicyError(
-            f"Assistant mutation scope {normalized_scope!r} is not writable for session {getattr(session, 'session_id', '<unknown>')}"
-        )
 
 
 def _filter_discord_commands_for_session(
@@ -782,18 +744,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
     setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
     deps = GatewayToolDependencies.from_context(context)
     for register_tools in (
-        register_admin_tools,
         register_ado_tools,
         register_approval_tools,
     ):
         register_tools(server, context, deps)
+    register_admin_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+        payload_from_result=_payload_from_result,
+    )
     register_chat_tools(
         server,
         context,
         deps,
         transport_session_map=transport_session_map,
-        audit_success=audit_success,
-        audit_failure=audit_failure,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
         require_vm_visible_in_session_directory=_require_vm_visible_in_session_directory,
         require_target_session_visible_within_directory=(
             _require_target_session_visible_within_directory
@@ -809,8 +779,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         context,
         deps,
         transport_session_map=transport_session_map,
-        audit_success=audit_success,
-        audit_failure=audit_failure,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
     register_pr_tools(server, context, deps)
     register_semantic_tools(
@@ -818,8 +788,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         context,
         deps,
         transport_session_map=transport_session_map,
-        audit_success=audit_success,
-        audit_failure=audit_failure,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
     addon_mcp_tool_names: list[str] = []
     addon_catalog = load_addons(context.config.addon_loader)
@@ -2555,625 +2525,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
         )
         _mark_tool_call_audited()
-
-    def _admin_service() -> AdminService:
-        return deps.admin_service_factory()
-
-    @server.tool()
-    def assistant_read_status(
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {"session_id": resolved_session_id}
-        try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_READ_STATUS
-            )
-            service = _admin_service()
-            settings = service.read_assistant_settings()
-            workflow_runs = service.read_workflow_run_snapshot()
-            result = {
-                "assistant": {
-                    "enabled": bool(settings.get("enabled")),
-                    "read_only": bool(settings.get("read_only", True)),
-                    "default_model": settings.get("default_model"),
-                    "capability_profile": session.metadata.get("capability_profile"),
-                },
-                "session_id": session.session_id,
-                "directory_path": session.directory_path,
-                "active_workflow_runs": len(workflow_runs.runs),
-            }
-            audit_success(resolved_session_id, ToolName.ASSISTANT_READ_STATUS, args, result)
-            return result
-        except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.ASSISTANT_READ_STATUS, args, str(exc))
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_READ_STATUS,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def assistant_list_agents(
-        backend: str | None = None,
-        include_inactive: bool = True,
-        directory_path: str | None = None,
-        all_directories: bool = True,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {
-            "session_id": resolved_session_id,
-            "backend": backend,
-            "include_inactive": include_inactive,
-            "directory_path": directory_path,
-            "all_directories": all_directories,
-        }
-        try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_LIST_AGENTS
-            )
-            list_all_directories = bool(all_directories and not directory_path)
-            target_directory = directory_path or session.directory_path
-            records = _admin_service().list_agents(
-                directory_path=target_directory,
-                direct_only=False,
-                include_inactive=include_inactive,
-                backend=backend,
-                all_directories=list_all_directories,
-                include_prompt_queue=False,
-            )
-            agents = [
-                record.model_dump(mode="json", exclude={"prompt_queue"})
-                if hasattr(record, "model_dump")
-                else {
-                    key: value
-                    for key, value in dict(record).items()
-                    if key != "prompt_queue"
-                }
-                for record in records
-            ]
-            result = {
-                "agents": agents,
-                "count": len(agents),
-                "directory_path": None if list_all_directories else target_directory,
-                "all_directories": list_all_directories,
-            }
-            audit_success(
-                resolved_session_id,
-                ToolName.ASSISTANT_LIST_AGENTS,
-                args,
-                {
-                    "count": len(agents),
-                    "directory_path": result["directory_path"],
-                    "all_directories": list_all_directories,
-                },
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.ASSISTANT_LIST_AGENTS, args, str(exc))
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_LIST_AGENTS,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def get_workflow_snapshot(
-        include_runs: bool = False,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        """Return the current workflow configuration snapshot."""
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {"session_id": resolved_session_id, "include_runs": include_runs}
-        try:
-            context.policy.require_tool(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT)
-            service = _admin_service()
-            document = service.read_workflow_editor_document()
-            result = document.model_dump(mode="json")
-            if include_runs:
-                runs = service.read_workflow_run_snapshot()
-                result["runs"] = runs.model_dump(mode="json")
-            audit_success(
-                resolved_session_id,
-                ToolName.GET_WORKFLOW_SNAPSHOT,
-                args,
-                {
-                    "revision": document.revision,
-                    "include_runs": include_runs,
-                    "graph_count": len(document.graphs),
-                },
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT, args, str(exc))
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.GET_WORKFLOW_SNAPSHOT,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def assistant_inspect_workflows(
-        include_runs: bool = True,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {"session_id": resolved_session_id, "include_runs": include_runs}
-        try:
-            context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS
-            )
-            service = _admin_service()
-            document = service.read_workflow_editor_document()
-            result = {
-                "config_path": document.config_path,
-                "revision": document.revision,
-                "config": document.config,
-            }
-            if include_runs:
-                runs = service.read_workflow_run_snapshot()
-                result["runs"] = runs.model_dump(mode="json")
-            audit_success(
-                resolved_session_id,
-                ToolName.ASSISTANT_INSPECT_WORKFLOWS,
-                args,
-                {"revision": document.revision, "include_runs": include_runs},
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(
-                resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS, args, str(exc)
-            )
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_INSPECT_WORKFLOWS,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def assistant_read_config(
-        scope: Literal["directory", "global", "worker_global"] = "directory",
-        domain: str | None = None,
-        directory_path: str | None = None,
-        worker_id: str | None = None,
-        include_effective: bool = True,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        """Read directory-scoped, assistant/global, or worker-global config."""
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {
-            "session_id": resolved_session_id,
-            "scope": scope,
-            "domain": domain,
-            "directory_path": directory_path,
-            "worker_id": worker_id,
-            "include_effective": include_effective,
-        }
-
-        def directory_snapshot(
-            service: AdminService,
-            target_directory: str,
-            target_domain: str,
-        ) -> dict[str, Any]:
-            snapshot: dict[str, Any] = {
-                "scope": "directory",
-                "domain": target_domain,
-                "directory_path": target_directory,
-            }
-            if target_domain == "gateway":
-                snapshot["raw"] = None
-            else:
-                raw_result = service.read_directory_domain_config(
-                    target_directory, target_domain
-                )
-                raw_payload = _admin_result_payload_or_raise(
-                    raw_result, f"read directory config {target_domain!r}"
-                )
-                raw_data = raw_payload.get("data") if isinstance(raw_payload, dict) else None
-                snapshot["raw"] = {
-                    "exists": bool(raw_data.get("exists")) if isinstance(raw_data, dict) else False,
-                    "config": raw_data.get("config") if isinstance(raw_data, dict) else None,
-                    "result": raw_payload,
-                }
-
-            if include_effective or target_domain == "gateway":
-                effective_result = service.compute_directory_effective_config(
-                    target_directory, target_domain
-                )
-                effective_payload = _admin_result_payload_or_raise(
-                    effective_result,
-                    f"compute effective directory config {target_domain!r}",
-                )
-                effective_data = (
-                    effective_payload.get("data")
-                    if isinstance(effective_payload, dict)
-                    else None
-                )
-                resolution = (
-                    effective_data.get("resolution")
-                    if isinstance(effective_data, dict)
-                    else None
-                )
-                effective_config = (
-                    resolution.get("effective_config")
-                    if isinstance(resolution, dict)
-                    else None
-                )
-                snapshot["effective"] = {
-                    "config": effective_config,
-                    "resolution": resolution,
-                    "result": effective_payload,
-                }
-                snapshot["validation_diagnostics"] = effective_payload.get(
-                    "validation_diagnostics", []
-                )
-            return snapshot
-
-        try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_READ_CONFIG
-            )
-            service = _admin_service()
-            normalized_scope = str(scope or "directory").strip() or "directory"
-            normalized_domain = str(domain or "").strip()
-
-            if normalized_scope == "global":
-                target_domain = normalized_domain or "assistant_settings"
-                if target_domain == "assistant_settings":
-                    path = service.assistant_settings_path()
-                    result = {
-                        "scope": "global",
-                        "domain": target_domain,
-                        "path": str(path),
-                        "exists": path.exists(),
-                        "config": service.read_assistant_settings(),
-                    }
-                elif target_domain == "host":
-                    host_config = load_host_bootstrap_config(
-                        runtime_dir=service.config.runtime_dir
-                    )
-                    result = {
-                        "scope": "global",
-                        "domain": target_domain,
-                        "path": str(host_config.runtime_dir / "host-config.json"),
-                        "config": host_config.model_dump(mode="json"),
-                    }
-                elif target_domain == "gateway":
-                    result = {
-                        "scope": "global",
-                        "domain": target_domain,
-                        "config_kind": "effective_root_gateway",
-                        "config": service.config.model_dump(mode="json"),
-                    }
-                else:
-                    raise ValueError(
-                        "Unsupported global config domain. Use one of: "
-                        "assistant_settings, host, gateway."
-                    )
-                audit_success(
-                    resolved_session_id,
-                    ToolName.ASSISTANT_READ_CONFIG,
-                    args,
-                    {"scope": "global", "domain": target_domain},
-                )
-                return result
-
-            if normalized_scope == "worker_global":
-                target_worker_id = str(worker_id or normalized_domain or "").strip()
-                if not target_worker_id:
-                    raise ValueError(
-                        "worker_id is required for worker_global config reads"
-                    )
-                payload = service.read_worker_global_config(target_worker_id).model_dump(
-                    mode="json"
-                )
-                result = {"scope": "worker_global", **payload}
-                audit_success(
-                    resolved_session_id,
-                    ToolName.ASSISTANT_READ_CONFIG,
-                    args,
-                    {
-                        "scope": "worker_global",
-                        "worker_id": target_worker_id,
-                        "exists": payload.get("exists"),
-                    },
-                )
-                return result
-
-            if normalized_scope != "directory":
-                raise ValueError(
-                    "Unsupported config scope. Use one of: directory, global, worker_global."
-                )
-
-            target_directory = directory_path or session.directory_path
-            if normalized_domain:
-                result = directory_snapshot(service, target_directory, normalized_domain)
-                audit_result = {
-                    "scope": "directory",
-                    "directory_path": target_directory,
-                    "domain": normalized_domain,
-                    "include_effective": include_effective,
-                }
-            else:
-                snapshots = {
-                    target_domain: directory_snapshot(
-                        service,
-                        target_directory,
-                        target_domain,
-                    )
-                    for target_domain in sorted(DIRECTORY_CONFIG_DOMAIN_FILENAMES)
-                }
-                result = {
-                    "scope": "directory",
-                    "directory_path": target_directory,
-                    "domains": list(snapshots),
-                    "snapshots": snapshots,
-                }
-                audit_result = {
-                    "scope": "directory",
-                    "directory_path": target_directory,
-                    "domain_count": len(snapshots),
-                    "include_effective": include_effective,
-                }
-            audit_success(
-                resolved_session_id,
-                ToolName.ASSISTANT_READ_CONFIG,
-                args,
-                audit_result,
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.ASSISTANT_READ_CONFIG, args, str(exc))
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_READ_CONFIG,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def assistant_upsert_config(
-        domain: str,
-        payload: dict[str, Any],
-        directory_path: str | None = None,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {
-            "session_id": resolved_session_id,
-            "domain": domain,
-            "directory_path": directory_path,
-            "after": payload,
-        }
-        try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_UPSERT_CONFIG
-            )
-            service = _admin_service()
-            normalized_domain = str(domain or "").strip()
-            if normalized_domain == "assistant_settings":
-                _assistant_require_writable_scope(session, "config/assistant")
-                before = service.read_assistant_settings()
-                after = service.write_assistant_settings(payload)
-                result = {
-                    "status": "success",
-                    "domain": normalized_domain,
-                    "config": after,
-                    "before_after_summary": {"before": before, "after": after},
-                }
-            else:
-                _assistant_require_writable_scope(session, "config/directory")
-                target_directory = directory_path or session.directory_path
-                before_payload = service.read_directory_domain_config(
-                    target_directory, normalized_domain
-                )
-                write_result = service.write_directory_domain_config(
-                    target_directory, normalized_domain, payload
-                )
-                after_payload = (
-                    write_result.model_dump(mode="json")
-                    if hasattr(write_result, "model_dump")
-                    else _payload_from_result(write_result)
-                )
-                result = {
-                    "status": "success",
-                    "domain": normalized_domain,
-                    "directory_path": target_directory,
-                    "config": after_payload,
-                    "before_after_summary": {
-                        "before": _payload_from_result(before_payload),
-                        "after": after_payload,
-                    },
-                }
-            args["before"] = result["before_after_summary"]["before"]
-            audit_success(
-                resolved_session_id,
-                ToolName.ASSISTANT_UPSERT_CONFIG,
-                args,
-                result,
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.ASSISTANT_UPSERT_CONFIG, args, str(exc))
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_UPSERT_CONFIG,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def assistant_create_workflow(
-        config: dict[str, Any],
-        layout: dict[str, Any] | None = None,
-        workflow_pack: str | None = None,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {
-            "session_id": resolved_session_id,
-            "workflow_pack": workflow_pack,
-            "after": config,
-        }
-        try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW
-            )
-            _assistant_require_writable_scope(session, "config/workflow")
-            service = _admin_service()
-            before = service.read_workflow_editor_document(
-                workflow_pack=workflow_pack
-            ).config
-            saved = service.save_workflow_editor_document(
-                config=config,
-                layout=layout,
-                workflow_pack=workflow_pack,
-            )
-            result = {
-                "status": "success",
-                "config_path": saved.config_path,
-                "revision": saved.revision,
-                "config": saved.config,
-                "before_after_summary": {"before": before, "after": saved.config},
-            }
-            args["before"] = before
-            audit_success(
-                resolved_session_id,
-                ToolName.ASSISTANT_CREATE_WORKFLOW,
-                args,
-                result,
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(
-                resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW, args, str(exc)
-            )
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_CREATE_WORKFLOW,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
-    def assistant_run_safe_operation(
-        operation: str,
-        parameters: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(
-            session_id, ctx, transport_session_map=transport_session_map
-        )
-        args = {
-            "session_id": resolved_session_id,
-            "operation": operation,
-            "parameters": parameters or {},
-        }
-        try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_RUN_SAFE_OPERATION
-            )
-            _assistant_require_writable_scope(session, "runtime/agents")
-            service = _admin_service()
-            params = parameters or {}
-            normalized_operation = str(operation or "").strip()
-            if normalized_operation == "clear_workflow_run":
-                result_payload = service.clear_workflow_run(str(params.get("event_id") or ""))
-            elif normalized_operation == "resume_workflow_run":
-                result_payload = service.resume_workflow_run(str(params.get("event_id") or ""))
-            else:
-                raise ToolError(f"Unsupported safe operation: {normalized_operation}")
-            result = (
-                result_payload.model_dump(mode="json")
-                if hasattr(result_payload, "model_dump")
-                else _payload_from_result(result_payload) or {}
-            )
-            result.setdefault("status", "success")
-            audit_success(
-                resolved_session_id,
-                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
-                args,
-                result,
-            )
-            return result
-        except PolicyError as exc:
-            audit_failure(
-                resolved_session_id, ToolName.ASSISTANT_RUN_SAFE_OPERATION, args, str(exc)
-            )
-            raise
-        except Exception as exc:
-            audit_failure(
-                resolved_session_id,
-                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
 
     @server.tool()
     def list_issues(
