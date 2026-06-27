@@ -508,13 +508,23 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     )
     server = create_server(context)
 
-    assert any(tool.name == "schedule_resume" for tool in server._tool_manager.list_tools())
-    assert any(
-        tool.name == "cancel_scheduled_wake" for tool in server._tool_manager.list_tools()
-    )
-    assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
-    assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
-    assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+    pr_feedback_tool_names = {
+        "list_pull_requests",
+        "get_pull_request",
+        "has_pending_feedback",
+        "list_unread_feedback",
+        "list_all_feedback",
+        "schedule_resume",
+        "cancel_scheduled_wake",
+        "run_script",
+        "post_pr_feedback_reply",
+        "request_pr_review",
+        "post_pr_comment",
+        "post_pr_inline_comment",
+        "submit_pr_review",
+    }
+    registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+    assert pr_feedback_tool_names <= registered_tool_names
     ado_tool_names = {
         "create_ado_backlog_item",
         "post_ado_backlog_comment",
@@ -531,7 +541,6 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
         "list_ado_pr_comment_activity",
         "list_ado_pr_commit_activity",
     }
-    registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
     assert ado_tool_names <= registered_tool_names
     assert any(
         tool.name == "query_ado_work_item_activity"

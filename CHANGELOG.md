@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Moved PR/feedback MCP gateway tools into `agent_sandbox.gateway.pr_tools` while preserving behavior.
+
 - Moved Azure DevOps backlog, work-item, report, identity, and activity MCP gateway tools into `agent_sandbox.gateway.ado_tools` while preserving behavior.
 
 - Moved agent status and log MCP gateway tools into `agent_sandbox.gateway.agent_tools` while preserving behavior.
