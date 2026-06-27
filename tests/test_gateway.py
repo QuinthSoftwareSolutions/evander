@@ -1592,7 +1592,7 @@ def test_mssql_tools_call_container_worker_backend_and_redact_audit(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.gateway.ContainerWorkerVmExecutionBackend",
+        "agent_sandbox.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
         FakeContainerWorkerBackend,
     )
     server = create_server(context)
@@ -1703,7 +1703,7 @@ def test_mssql_tools_reuse_mapped_transport_session(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.gateway.ContainerWorkerVmExecutionBackend",
+        "agent_sandbox.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
         FakeContainerWorkerBackend,
     )
     server = create_server(context)

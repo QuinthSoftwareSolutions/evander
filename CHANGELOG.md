@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Moved MSSQL MCP gateway tool registration into `agent_sandbox.gateway.mssql_tools` and added registration coverage while preserving existing tool names and request/response behavior.
 - Split the MCP gateway Starlette app and CLI bootstrap into canonical `gateway.app` and `gateway.cli` modules while retaining compatibility exports.
 - Added a shared MCP gateway dependency object for common admin, issue, chat, semantic, and communication artifact services.
 - Split MCP gateway request, session, tool audit, and approval diagnostic helpers into focused modules while preserving existing helper names.
