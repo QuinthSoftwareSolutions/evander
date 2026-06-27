@@ -9,12 +9,11 @@ import logging
 from hashlib import sha256
 import os
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from inspect import Parameter, signature
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import httpx
@@ -41,7 +40,6 @@ from agent_sandbox.bootstrap import (
 )
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
-from agent_sandbox.approval_diagnostics import build_payload_diagnostic
 from agent_sandbox.ado_reports import (
     DEFAULT_DONE_STATES,
     DEFAULT_EFFORT_FIELDS,
@@ -216,15 +214,46 @@ from agent_sandbox.services import (
     resolve_teams_send_target,
     teams_target_from_message,
 )
+from agent_sandbox.gateway.approval_diagnostics import (
+    _approval_gate_arguments,
+    _approval_gate_blocked_diagnostic,
+    _approval_gate_human_summary,
+    _approval_gate_intended_effect,
+    _approval_gate_payload,
+    _approval_gate_pending_diagnostic,
+)
+from agent_sandbox.gateway.request_context import (
+    _first_string_in_payload,
+    _request_from_context,
+    _string_from_headers,
+    _string_from_query_params,
+    _string_from_raw_query,
+)
+from agent_sandbox.gateway.session_context import (
+    _SESSION_ID_CONTEXT_CONFLICT_MESSAGE,
+    _SESSION_ID_PARAMETER_DESCRIPTION,
+    _ambient_session_id_from_context,
+    _ambient_session_id_from_request,
+    _resolve_bound_session_id,
+    _resolve_session_id_from_context,
+    _resolve_session_id_from_request,
+)
+from agent_sandbox.gateway.tool_audit import (
+    _TOOL_CALL_AUDIT_CONTEXT,
+    _ToolCallAuditContext,
+    _mark_tool_call_audited,
+    _redact_args,
+    _redact_nested_value,
+    _tool_call_arguments_dict,
+    _tool_call_audit_fields,
+    _tool_call_context,
+    _tool_call_duration_ms,
+)
 
 logger = logging.getLogger(__name__)
 
 _WORKSPACE_FILE_PAYLOAD_BEGIN = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_BEGIN__"
 _WORKSPACE_FILE_PAYLOAD_END = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_END__"
-_TOOL_CALL_AUDIT_CONTEXT: ContextVar["_ToolCallAuditContext | None"] = ContextVar(
-    "agent_sandbox_tool_call_audit_context",
-    default=None,
-)
 _MCP_REQUEST_CONTEXT: ContextVar[Request | None] = ContextVar(
     "agent_sandbox_mcp_request_context",
     default=None,
@@ -311,31 +340,6 @@ except Exception as exc:
 """.strip()
 
 
-@dataclass(slots=True)
-class _ToolCallAuditContext:
-    tool_name: str
-    started_at: float
-    raw_args: dict[str, Any]
-    session_id: str | None = None
-    argument_session_id: str | None = None
-    ambient_session_id: str | None = None
-    request_id: str | None = None
-    correlation_id: str | None = None
-    transport_session_id: str | None = None
-    workflow_run_id: str | None = None
-    mcp_tool_approval_lease_id: str | None = None
-    audit_emitted: bool = False
-
-
-_TOOL_CALL_APPROVAL_NAMES = {
-    ToolName.APPROVAL_SUBMIT.value,
-    ToolName.APPROVAL_CHECK.value,
-    ToolName.EMAIL_SEND_APPROVED.value,
-    ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS.value,
-    ToolName.DISCORD_POST_FILE.value,
-    ToolName.TEAMS_POST_FILE.value,
-}
-
 _APPROVAL_REQUEST_ID_PARAMETER_SCHEMA = {
     "anyOf": [{"type": "string"}, {"type": "null"}],
     "default": None,
@@ -349,169 +353,6 @@ _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS = {
     ToolName.APPROVAL_SUBMIT.value,
     ToolName.APPROVAL_CHECK.value,
 }
-
-_SESSION_ID_CONTEXT_CONFLICT_MESSAGE = (
-    "session_id is bound by the MCP connection; omit it or use the connected session"
-)
-_SESSION_ID_PARAMETER_DESCRIPTION = (
-    "Optional legacy caller session id. Agents should omit this field; the MCP gateway supplies "
-    "the connected session id and rejects conflicting values."
-)
-
-
-def _approval_gate_arguments(args: dict[str, Any]) -> dict[str, Any]:
-    sanitized = dict(args)
-    sanitized.pop("approval_request_id", None)
-    return sanitized
-
-
-def _approval_gate_payload(
-    *,
-    tool_name: str,
-    session_id: str,
-    arguments: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "tool_name": tool_name,
-        "session_id": session_id,
-        "arguments": arguments,
-    }
-
-
-def _approval_gate_human_summary(tool_name: str, session_id: str) -> str:
-    return f"Approve MCP tool {tool_name} for session {session_id}"
-
-
-def _approval_gate_intended_effect(tool_name: str, session_id: str) -> str:
-    return (
-        f"Execute the exact approved MCP tool invocation {tool_name!r} "
-        f"for session {session_id!r}."
-    )
-
-
-def _approval_gate_pending_diagnostic(
-    *,
-    approval_request_id: str,
-    approval_payload: dict[str, Any],
-    redacted_keys: set[str],
-    status: str,
-    reason: str,
-) -> dict[str, Any]:
-    diagnostic = build_payload_diagnostic(
-        approved_payload=approval_payload,
-        attempted_payload=approval_payload,
-        redacted_keys=redacted_keys,
-        status=status,
-        reason=reason,
-        approved_payload_digest=digest_payload(approval_payload),
-        attempted_payload_digest=digest_payload(approval_payload),
-    )
-    diagnostic["approval_request_id"] = approval_request_id
-    return diagnostic
-
-
-def _approval_gate_blocked_diagnostic(
-    *,
-    approval_request_id: str,
-    attempted_payload: dict[str, Any],
-    error: PolicyError,
-) -> dict[str, Any]:
-    diagnostic = getattr(error, "approval_diagnostic", None)
-    if isinstance(diagnostic, dict):
-        result = dict(diagnostic)
-    else:
-        approval_request = getattr(error, "approval_request", None)
-        status = None
-        if approval_request is not None:
-            approval_status = getattr(approval_request, "status", None)
-            status = getattr(approval_status, "value", approval_status)
-        result = {
-            "approval_request_id": approval_request_id,
-            "rejection_kind": getattr(error, "rejection_kind", None) or "blocked",
-            "status": status,
-            "reason": str(error),
-            "attempted_payload_digest": digest_payload(attempted_payload),
-        }
-    result.setdefault("approval_request_id", approval_request_id)
-    rejection_kind = getattr(error, "rejection_kind", None)
-    if rejection_kind and not result.get("rejection_kind"):
-        result["rejection_kind"] = rejection_kind
-    if "reason" not in result:
-        result["reason"] = str(error)
-    if "attempted_payload_digest" not in result:
-        result["attempted_payload_digest"] = digest_payload(attempted_payload)
-    return result
-
-
-def _tool_call_context() -> _ToolCallAuditContext | None:
-    return _TOOL_CALL_AUDIT_CONTEXT.get()
-
-
-def _mark_tool_call_audited() -> None:
-    current = _tool_call_context()
-    if current is not None:
-        current.audit_emitted = True
-
-
-def _string_from_headers(headers: Any, *names: str) -> str | None:
-    if headers is None:
-        return None
-    for name in names:
-        try:
-            candidate = headers.get(name)
-        except AttributeError:
-            candidate = None
-        text = str(candidate or "").strip()
-        if text:
-            return text
-    return None
-
-
-def _string_from_query_params(query_params: Any, *names: str) -> str | None:
-    if query_params is None:
-        return None
-    for name in names:
-        try:
-            candidate = query_params.get(name)
-        except AttributeError:
-            candidate = None
-        text = str(candidate or "").strip()
-        if text:
-            return text
-    return None
-
-
-def _string_from_raw_query(query: str | None, *names: str) -> str | None:
-    if not query:
-        return None
-    parsed = parse_qs(query, keep_blank_values=True)
-    for name in names:
-        candidates = parsed.get(name)
-        if not candidates:
-            continue
-        text = str(candidates[0] or "").strip()
-        if text:
-            return text
-    return None
-
-
-def _first_string_in_payload(value: Any, keys: tuple[str, ...]) -> str | None:
-    if isinstance(value, dict):
-        for key in keys:
-            candidate = value.get(key)
-            text = str(candidate or "").strip()
-            if text:
-                return text
-        for nested in value.values():
-            found = _first_string_in_payload(nested, keys)
-            if found:
-                return found
-    elif isinstance(value, list):
-        for item in value:
-            found = _first_string_in_payload(item, keys)
-            if found:
-                return found
-    return None
 
 
 def _session_actor_role(session: Any) -> str | None:
@@ -530,73 +371,6 @@ def _session_actor_user_id(session: Any) -> str | None:
         if candidate:
             return candidate
     return None
-
-
-def _request_from_context(ctx: Any | None) -> Any | None:
-    request_context = None
-    if ctx is not None:
-        try:
-            request_context = ctx.request_context
-        except ValueError:
-            request_context = getattr(ctx, "_request_context", None)
-        except AttributeError:
-            request_context = getattr(ctx, "request_context", None)
-    return getattr(request_context, "request", None) if request_context is not None else None
-
-
-def _ambient_session_id_from_request(
-    request: Any | None,
-    transport_session_map: dict[str, str] | None = None,
-) -> str | None:
-    if request is None:
-        return None
-    headers = getattr(request, "headers", None)
-    query_params = getattr(request, "query_params", None)
-    raw_query = str(getattr(getattr(request, "url", None), "query", "") or "").strip()
-    transport_session_id = _string_from_headers(headers, "mcp-session-id")
-    declared_session_id: str | None = None
-    if query_params is not None:
-        candidate = str(query_params.get("session_id") or "").strip()
-        if candidate:
-            declared_session_id = candidate
-    if declared_session_id is None:
-        declared_session_id = _string_from_raw_query(raw_query, "session_id")
-    if declared_session_id is None:
-        declared_session_id = _string_from_headers(headers, "x-agent-sandbox-session-id")
-    if transport_session_id and transport_session_map is not None:
-        bound_session_id = str(transport_session_map.get(transport_session_id) or "").strip()
-        if bound_session_id:
-            if declared_session_id and declared_session_id != bound_session_id:
-                raise ToolError(_SESSION_ID_CONTEXT_CONFLICT_MESSAGE)
-            return bound_session_id
-        if declared_session_id:
-            transport_session_map[transport_session_id] = declared_session_id
-            return declared_session_id
-    if declared_session_id:
-        return declared_session_id
-    return None
-
-
-def _ambient_session_id_from_context(
-    ctx: Any | None,
-    transport_session_map: dict[str, str] | None = None,
-) -> str | None:
-    return _ambient_session_id_from_request(
-        _request_from_context(ctx),
-        transport_session_map=transport_session_map,
-    )
-
-
-def _resolve_bound_session_id(argument_session_id: str | None, ambient_session_id: str | None) -> str:
-    explicit = str(argument_session_id or "").strip()
-    ambient = str(ambient_session_id or "").strip()
-    if ambient and explicit and explicit != ambient:
-        raise ToolError(_SESSION_ID_CONTEXT_CONFLICT_MESSAGE)
-    if ambient:
-        return ambient
-    if explicit:
-        return explicit
-    raise ToolError("session_id is required")
 
 
 def _tool_call_context_from_request(
@@ -704,97 +478,6 @@ def _tool_policy_context_from_request(
             "x-mcp-tool-approval-lease-id",
         )
     return session_id, workflow_run_id, mcp_tool_approval_lease_id
-
-
-def _tool_call_arguments_dict(arguments: Any) -> dict[str, Any]:
-    if arguments is None:
-        return {}
-    if isinstance(arguments, dict):
-        return dict(arguments)
-    if hasattr(arguments, "model_dump"):
-        dumped = arguments.model_dump(mode="json")
-        return dict(dumped) if isinstance(dumped, dict) else {}
-    try:
-        return dict(arguments)
-    except Exception:
-        return {"value": arguments}
-
-
-def _tool_call_duration_ms(current: _ToolCallAuditContext | None) -> int | None:
-    if current is None:
-        return None
-    elapsed_ms = int((time.perf_counter() - current.started_at) * 1000)
-    return max(elapsed_ms, 0)
-
-
-def _tool_call_audit_fields(
-    *,
-    session: Any | None,
-    tool_name: McpToolName | None,
-    args: dict[str, Any],
-    result: dict[str, Any],
-) -> dict[str, Any]:
-    current = _tool_call_context()
-    metadata = session.metadata if isinstance(getattr(session, "metadata", None), dict) else {}
-    approval_request_id = _first_string_in_payload(args, ("approval_request_id",))
-    if approval_request_id is None:
-        approval_request_id = _first_string_in_payload(result, ("approval_request_id",))
-    if approval_request_id is None and current is not None:
-        approval_request_id = _first_string_in_payload(
-            current.raw_args,
-            ("approval_request_id",),
-        )
-    current_tool_name = tool_name_value(tool_name) if tool_name is not None else ""
-    if approval_request_id is None and current_tool_name in _TOOL_CALL_APPROVAL_NAMES:
-        approval_request_id = _first_string_in_payload(args, ("request_id",))
-        if approval_request_id is None:
-            approval_request_id = _first_string_in_payload(result, ("request_id",))
-    mcp_tool_approval_lease_id = _first_string_in_payload(
-        args,
-        ("mcp_tool_approval_lease_id", "tool_approval_lease_id"),
-    )
-    if mcp_tool_approval_lease_id is None:
-        mcp_tool_approval_lease_id = _first_string_in_payload(
-            result,
-            ("mcp_tool_approval_lease_id", "tool_approval_lease_id"),
-        )
-    if mcp_tool_approval_lease_id is None and current is not None:
-        mcp_tool_approval_lease_id = current.mcp_tool_approval_lease_id
-    request_id = (
-        current.request_id
-        if current is not None and current.request_id
-        else _first_string_in_payload(args, ("request_id",))
-    )
-    if request_id is None:
-        request_id = _first_string_in_payload(result, ("request_id",))
-    correlation_id = (
-        current.correlation_id
-        if current is not None and current.correlation_id
-        else _first_string_in_payload(args, ("correlation_id",))
-    )
-    if correlation_id is None:
-        correlation_id = _first_string_in_payload(result, ("correlation_id",))
-    workflow_run_id = _first_string_in_payload(args, ("workflow_run_id",))
-    if workflow_run_id is None:
-        workflow_run_id = _first_string_in_payload(result, ("workflow_run_id",))
-    if workflow_run_id is None and current is not None:
-        workflow_run_id = current.workflow_run_id
-    if workflow_run_id is None:
-        workflow_run_id = str(metadata.get("workflow_run_id") or "").strip() or None
-    trace_id = _first_string_in_payload(args, ("workflow_trace_id", "trace_id"))
-    if trace_id is None:
-        trace_id = _first_string_in_payload(result, ("workflow_trace_id", "trace_id"))
-    if trace_id is None:
-        trace_id = str(metadata.get("workflow_trace_id") or metadata.get("trace_id") or "").strip() or None
-    return {
-        "request_id": request_id,
-        "correlation_id": correlation_id,
-        "approval_request_id": approval_request_id,
-        "mcp_tool_approval_lease_id": mcp_tool_approval_lease_id,
-        "workflow_run_id": workflow_run_id,
-        "trace_id": trace_id,
-        "duration_ms": _tool_call_duration_ms(current),
-    }
 
 
 def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
@@ -1063,28 +746,6 @@ def _assistant_require_writable_scope(session: Any, requested_scope: str) -> Non
         raise PolicyError(
             f"Assistant mutation scope {normalized_scope!r} is not writable for session {getattr(session, 'session_id', '<unknown>')}"
         )
-
-
-def _resolve_session_id_from_context(
-    session_id: str | None,
-    ctx: Context | None,
-    *,
-    transport_session_map: dict[str, str] | None = None,
-) -> str:
-    return _resolve_bound_session_id(
-        session_id,
-        _ambient_session_id_from_context(ctx, transport_session_map=transport_session_map),
-    )
-
-
-def _resolve_session_id_from_request(request: Request) -> str:
-    candidate = str(request.headers.get("x-agent-sandbox-session-id") or "").strip()
-    if candidate:
-        return candidate
-    candidate = str(request.query_params.get("session_id") or "").strip()
-    if candidate:
-        return candidate
-    raise PolicyError("session_id is required")
 
 
 def _filter_discord_commands_for_session(
