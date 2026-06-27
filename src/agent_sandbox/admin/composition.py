@@ -30,7 +30,7 @@ from agent_sandbox.admin.services import (
     OperationsAdminService,
     PrIntegrationPreflightAdminDependencies,
     PrIntegrationPreflightAdminService,
-    SkillsAdminService,
+    SkillAdminService,
     VmAgentAdminDependencies,
     VmAgentAdminService,
     VmAgentAdminSupport,
@@ -92,7 +92,7 @@ class AdminServiceComponents:
     teams_admin: TeamsAdminFacade
     worker_admin: WorkerAdminFacade
     workflow_config_admin: WorkflowConfigAdminService
-    skills_admin: SkillsAdminService
+    skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
     model_usage_admin: ModelUsageAdminService
     workflow_generation_admin: WorkflowGenerationAdminService
@@ -243,7 +243,7 @@ def build_admin_service_components(
         )
     )
     workflow_config_admin = WorkflowConfigAdminService(worker_admin)
-    skills_admin = SkillsAdminService(host)
+    skill_admin = SkillAdminService(skill_library)
     capacity_health_admin = CapacityHealthAdminService(host)
     model_usage_admin = ModelUsageAdminService(host)
     workflow_generation_admin = WorkflowGenerationAdminService(host)
@@ -365,7 +365,7 @@ def build_admin_service_components(
         teams_admin=teams_admin,
         worker_admin=worker_admin,
         workflow_config_admin=workflow_config_admin,
-        skills_admin=skills_admin,
+        skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
         model_usage_admin=model_usage_admin,
         workflow_generation_admin=workflow_generation_admin,

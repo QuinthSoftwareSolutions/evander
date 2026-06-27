@@ -15,7 +15,7 @@ _SERVICE_EXPORTS = {
         ".pr_preflight_service",
         "PrIntegrationPreflightAdminService",
     ),
-    "SkillsAdminService": (".skills_service", "SkillsAdminService"),
+    "SkillAdminService": (".skill_admin_service", "SkillAdminService"),
     "VmAgentAdminDependencies": (".vm_agent_service", "VmAgentAdminDependencies"),
     "VmAgentAdminService": (".vm_agent_service", "VmAgentAdminService"),
     "VmAgentAdminSupport": (".vm_agent_service", "VmAgentAdminSupport"),
