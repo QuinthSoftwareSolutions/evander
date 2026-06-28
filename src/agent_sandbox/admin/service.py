@@ -7721,7 +7721,26 @@ class AdminService:
         occurred_before: datetime | None = None,
         limit: int | None = None,
     ) -> list[ModelInferenceUsageEvent]:
-        return self.model_usage_admin.list_model_usage_events(
+        model_usage_admin = getattr(self, "model_usage_admin", None)
+        if model_usage_admin is not None:
+            return model_usage_admin.list_model_usage_events(
+                session_id=session_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect_id,
+                dispatch_id=dispatch_id,
+                directory_path=directory_path,
+                include_directory_descendants=include_directory_descendants,
+                provider=provider,
+                model=model,
+                agent_harness=agent_harness,
+                execution_backend=execution_backend,
+                normalized_usage_status=normalized_usage_status,
+                request_status=request_status,
+                occurred_after=occurred_after,
+                occurred_before=occurred_before,
+                limit=limit,
+            )
+        return model_usage_store(self.config.runtime_dir).list_events(
             session_id=session_id,
             workflow_run_id=workflow_run_id,
             effect_id=effect_id,

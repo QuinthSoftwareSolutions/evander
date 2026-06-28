@@ -15,7 +15,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent_sandbox.admin.services.ports import DirectoryPathPort, PrivilegedHelperPort, WorkflowConfigPort
+from agent_sandbox.admin.services.ports import (
+    DirectoryPathPort,
+    PrivilegedHelperPort,
+    WorkflowConfigPort,
+)
 
 from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
@@ -234,6 +238,25 @@ class _EnabledAgentControlStore:
         return "enabled"
 
 
+class _CallbackPrivilegedHelperPort:
+    def __init__(
+        self,
+        get_privileged_helper: Any | None,
+        get_use_privileged_helper: Any | None,
+    ) -> None:
+        self._get_privileged_helper = get_privileged_helper or (lambda: None)
+        self._get_use_privileged_helper = get_use_privileged_helper or (lambda: False)
+
+    def get_privileged_helper(self) -> Any | None:
+        return self._get_privileged_helper()
+
+    def get_use_privileged_helper(self) -> bool:
+        return bool(self._get_use_privileged_helper())
+
+    def set_privileged_helper(self, helper: Any | None) -> None:
+        self._get_privileged_helper = lambda: helper
+
+
 @dataclass
 class VmAgentAdminSupport:
     config: Any
@@ -244,7 +267,16 @@ class VmAgentAdminSupport:
     worker_admin: Any
     workflow_config_admin: Any
     directory_admin: Any
-    privileged_helper: PrivilegedHelperPort
+    privileged_helper: PrivilegedHelperPort | None = None
+    get_privileged_helper: Any | None = None
+    get_use_privileged_helper: Any | None = None
+
+    def __post_init__(self) -> None:
+        if self.privileged_helper is None:
+            self.privileged_helper = _CallbackPrivilegedHelperPort(
+                self.get_privileged_helper,
+                self.get_use_privileged_helper,
+            )
 
     def normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:

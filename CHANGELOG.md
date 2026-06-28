@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Preserved lightweight `AdminService.list_model_usage_events` and legacy
+  `VmAgentAdminSupport` privileged-helper construction compatibility after the AdminService
+  extraction.
+
 - Kept Admin Web approvals, session policy, wake schedule, worker/config, user-contact,
   privileged-operation routes, CLI directory/wake commands, and admin MCP config tools on the
   `AdminService` compatibility facade instead of extracted subservice attributes.
