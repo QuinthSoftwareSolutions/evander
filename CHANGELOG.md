@@ -12,6 +12,13 @@
   completed container-worker wakes no longer block follow-up inbox work until the
   lease TTL expires.
 
+## 2026-06-26 - Team Normal Inbox Wake Fix
+
+- Treated normal/high priority Team inbox items as wakeable even when they do
+  not request a reply, keeping low-priority FYI updates batched.
+- Cleared completed Team chat dispatch leases before leasing later work so
+  replied chat wakes cannot suppress subsequent inbox wakes.
+
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
 
 - Preserved caller-supplied dispatch ids when busy agent prompts are queued and

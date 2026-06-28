@@ -7871,6 +7871,12 @@ class TeamStateRepository:
                 if _active_stand_downs_for_agent(state_model, agent.id):
                     continue
                 runtime = state_model.agent_runtimes.get(agent.id)
+                if runtime is not None:
+                    _clear_completed_chat_dispatch_lease(
+                        state_model,
+                        runtime,
+                        now=effective_now,
+                    )
                 if (
                     runtime is not None
                     and runtime.wake_leased_until is not None
@@ -7895,6 +7901,11 @@ class TeamStateRepository:
                 runtime = state_model.agent_runtimes.setdefault(
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
+                )
+                _clear_completed_chat_dispatch_lease(
+                    state_model,
+                    runtime,
+                    now=effective_now,
                 )
                 if (
                     runtime.wake_leased_until is not None
@@ -13467,7 +13478,11 @@ def _runtime_attention_payloads_for_agent(
 
 
 def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
-    return [item for item in items if item.response_requested]
+    return [item for item in items if _inbox_item_can_wake(item)]
+
+
+def _inbox_item_can_wake(item: AgentInboxItem) -> bool:
+    return item.response_requested or item.priority != TeamInboxPriority.LOW
 
 
 def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
@@ -13873,6 +13888,7 @@ def _mark_agent_work_due(
     now: datetime,
 ) -> None:
     runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
+    _clear_completed_chat_dispatch_lease(state, runtime, now=now)
     runtime.no_progress_count = 0
     runtime.next_wake_at = None
     _clear_low_priority_batch(runtime)
@@ -13952,7 +13968,7 @@ def _append_agent_wake_requested_event_for_inbox_item(
     result: dict[str, Any],
     now: datetime,
 ) -> None:
-    if not item.response_requested or item.priority == TeamInboxPriority.LOW:
+    if not _inbox_item_can_wake(item) or item.priority == TeamInboxPriority.LOW:
         return
     _append_agent_wake_requested_event(
         state,
@@ -14014,6 +14030,7 @@ def _agent_immediate_wake_request(
     runtime = state.agent_runtimes.get(agent.id)
     if runtime is None:
         runtime = AgentRuntime(agent_id=agent.id)
+    _clear_completed_chat_dispatch_lease(state, runtime, now=now)
     if (
         runtime.wake_leased_until is not None
         and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
@@ -14559,6 +14576,34 @@ def _mark_chat_dispatch_message_replied_from_activity(
                 preview=f"Replied: {_chat_preview(source_message.body)}",
             )
     return source_message.id
+
+
+def _clear_completed_chat_dispatch_lease(
+    state: TeamState,
+    runtime: AgentRuntime,
+    *,
+    now: datetime,
+) -> bool:
+    dispatch_id = _optional_text(runtime.active_dispatch_id)
+    if dispatch_id is None or not dispatch_id.startswith("team-chat:"):
+        return False
+    message = next(
+        (
+            item
+            for item in state.conversation_messages.values()
+            if item.dispatch_id == dispatch_id
+            and item.sender == "operator"
+            and item.status in {"replied", "failed"}
+        ),
+        None,
+    )
+    if message is None:
+        return False
+    runtime.active_dispatch_id = None
+    runtime.wake_leased_until = None
+    runtime.wake_reason = None
+    runtime.updated_at = now
+    return True
 
 
 def _chat_dispatch_finalization_error(
