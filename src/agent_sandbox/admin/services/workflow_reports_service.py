@@ -59,7 +59,7 @@ class WorkflowReportsAdminService:
         period_end: datetime | None = None,
         limit: int | None = None,
     ) -> "WorkflowGraphActivityReportPayload":
-        return self._read_workflow_graph_activity_report(
+        return self._host._read_workflow_graph_activity_report(
             period_start=period_start, period_end=period_end, limit=limit
         )
 
@@ -71,7 +71,7 @@ class WorkflowReportsAdminService:
         limit: int | None = None,
         recent_threshold_seconds: int | None = None,
     ) -> "WorkflowFailureClusterReportPayload":
-        return self._read_workflow_failure_clusters_report(
+        return self._host._read_workflow_failure_clusters_report(
             period_start=period_start,
             period_end=period_end,
             limit=limit,
@@ -79,10 +79,10 @@ class WorkflowReportsAdminService:
         )
 
     def read_conformance_reports(self) -> "ConformanceReportsPayload":
-        return self._read_conformance_reports()
+        return self._host._read_conformance_reports()
 
     def run_conformance_report(self, kind: str) -> "ConformanceReportRunPayload":
-        return self._run_conformance_report(kind)
+        return self._host._run_conformance_report(kind)
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()

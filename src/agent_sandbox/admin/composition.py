@@ -87,11 +87,11 @@ class AdminServicePrivilegedHelperPort:
 
 
 class AdminServicePrivilegedHelperFactoryPort:
-    def __init__(self, helper_cls: Any) -> None:
-        self._helper_cls = helper_cls
+    def __init__(self, helper_cls_provider: Any) -> None:
+        self._helper_cls_provider = helper_cls_provider
 
     def create_privileged_helper(self, **kwargs: Any) -> Any:
-        return self._helper_cls(**kwargs)
+        return self._helper_cls_provider()(**kwargs)
 
 
 class AdminServiceWorkflowConfigPort:
@@ -367,7 +367,7 @@ def build_admin_service_components(
         worker_admin=worker_admin,
         directory_admin=directory_admin,
         privileged_helper_factory=AdminServicePrivilegedHelperFactoryPort(
-            service.PrivilegedHelperSession
+            lambda: service.PrivilegedHelperSession
         ),
     )
 

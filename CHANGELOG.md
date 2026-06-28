@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-28 - Admin Compatibility Contract Fixes
+
+- Restored Admin Web VM creation through the `AdminService` facade so wrappers,
+  subclasses, and compatibility logic remain honored.
+- Routed Admin Web VM and local-issue operations through the `AdminService`
+  facade instead of direct subservice calls.
+- Delegated workflow report public methods through the host contract and made
+  privileged-helper construction resolve the helper class lazily.
+
 ## 2026-06-28 - Admin Session Facade Integration Fixes
 
 - Kept Admin Web and CLI session deletion on the `AdminService` facade so
