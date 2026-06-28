@@ -4,6 +4,7 @@ import getpass
 import json
 from pathlib import Path
 
+import click
 import typer
 
 from agent_sandbox.setup.engine import (
@@ -30,11 +31,13 @@ def run_setup_tui(*, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR)
             raise typer.Exit(1)
 
     while True:
+        _clear_screen()
         _render_checklist(manager, state)
         choice = typer.prompt(
             "Select item number, L to launch when ready, P for plan, D for doctor, Q to quit",
             default="q",
         ).strip().lower()
+        _clear_screen()
         if choice in {"q", "quit"}:
             return
         if choice == "p":
@@ -66,13 +69,35 @@ def _render_checklist(manager: SetupManager, state) -> None:
     typer.echo(f"\nLaunch: {launch_status}")
 
 
+def _echo_guidance(*lines: str) -> None:
+    typer.echo("")
+    for line in lines:
+        typer.echo(line)
+    typer.echo("")
+
+
+def _clear_screen() -> None:
+    click.clear()
+
+
 def _configure_item(manager: SetupManager, state, item_id: str):
     if item_id == "secret_storage":
+        _echo_guidance(
+            "Evander keeps real provider credentials on the control-plane host.",
+            "Agents receive only narrow relay access, not your API keys.",
+            "For v1 the setup flow uses one local env file for those host secrets.",
+        )
         typer.echo(f"Host secret file: {state.secret_file}")
         if typer.confirm("Use this secret file?", default=True):
             return manager.acknowledge_secret_storage(state)
         return state
     if item_id == "setup_profile":
+        _echo_guidance(
+            "This choice tells Evander whether to optimize defaults for a developer machine",
+            "or for a host that is meant to run the control plane continuously.",
+            "Choose local workstation when you are evaluating Evander or running it for yourself.",
+            "Choose dedicated single-machine host when this machine is the durable Evander host.",
+        )
         typer.echo("1. Local workstation / evaluation")
         typer.echo("2. Dedicated single-machine host")
         profile = typer.prompt("Choose setup profile", default="1").strip()
@@ -80,6 +105,12 @@ def _configure_item(manager: SetupManager, state, item_id: str):
         manager.save_state(state)
         return state
     if item_id == "admin_web":
+        _echo_guidance(
+            "Admin Web is the operator UI for configuring Evander and monitoring agents.",
+            "Use 127.0.0.1 when you only want browser access from this machine.",
+            "Use 0.0.0.0 only when you intentionally want it reachable through the network",
+            "or through a reverse proxy you control.",
+        )
         host = typer.prompt(
             "Admin Web host", default=str(state.admin_web.get("host") or DEFAULT_ADMIN_HOST)
         )
@@ -95,6 +126,14 @@ def _configure_item(manager: SetupManager, state, item_id: str):
             state, host=host, port=port, username=username, password=password
         )
     if item_id == "execution_model":
+        _echo_guidance(
+            "The execution model decides where agent work runs and what isolation boundary",
+            "separates agents from the control plane.",
+            "Containers on this host are fastest to set up, but put the weakest outer boundary",
+            "between agents and the control plane.",
+            "Containers on a separate worker host are a practical middle ground.",
+            "VM-backed agents give the strongest isolation, with higher setup and resource cost.",
+        )
         typer.echo("1. Containers on this host")
         typer.echo("2. Containers on a separate worker host")
         typer.echo("3. VM-backed agents")
@@ -104,6 +143,12 @@ def _configure_item(manager: SetupManager, state, item_id: str):
         )
         return manager.configure_execution(state, model=model)
     if item_id == "ai_providers":
+        _echo_guidance(
+            "AI providers are the model backends Evander can route agent and assistant work to.",
+            "You can select more than one provider now and choose the default model next.",
+            "OpenAI and Anthropic need API keys stored in the host secret file.",
+            "Ollama is for a local OpenAI-compatible Ollama server.",
+        )
         raw = typer.prompt(
             "Select providers (comma-separated: openai, anthropic, ollama)",
             default=", ".join(state.ai_providers) if state.ai_providers else "openai",
@@ -131,6 +176,12 @@ def _configure_item(manager: SetupManager, state, item_id: str):
         if not state.ai_providers:
             typer.echo("Select at least one AI provider first.")
             return state
+        _echo_guidance(
+            "The default model is used when an agent, assistant, or workflow does not",
+            "request a more specific model.",
+            "Pick the provider and model you want Evander to use for the first smoke path.",
+            "You can change this later in directory-scoped configuration.",
+        )
         provider = typer.prompt(
             f"Default provider ({', '.join(state.ai_providers)})",
             default=state.default_provider or state.ai_providers[0],
@@ -141,6 +192,11 @@ def _configure_item(manager: SetupManager, state, item_id: str):
         if not manager.configuration_ready(state):
             typer.echo("Complete required configuration items before running preflight.")
             return state
+        _echo_guidance(
+            "Preflight writes the selected local config files and checks that the host",
+            "has the pieces needed for the selected setup.",
+            "It does not start the control-plane services.",
+        )
         if typer.confirm("Run install preflight now?", default=True):
             return manager.run_install_preflight(state)
         return state
@@ -154,6 +210,11 @@ def _launch(manager: SetupManager, state):
     if not manager.required_ready(state):
         typer.echo("Launch is blocked until required items and preflight are complete.")
         return state
+    _echo_guidance(
+        "Launch applies the setup plan, installs the systemd units, starts the core",
+        "control-plane services, waits for Admin Web, and queues an Admin Assistant",
+        "smoke message to prove the first agent path is wired.",
+    )
     typer.echo(json.dumps(manager.plan(), indent=2, sort_keys=True))
     if not typer.confirm("Apply this setup plan and verify the Admin Assistant?", default=False):
         return state

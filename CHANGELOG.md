@@ -10,6 +10,10 @@
 - Added `./scripts/setup` as a one-step checkout bootstrap that installs Python
   prerequisites, creates `.venv`, installs Evander, and starts the guided setup
   checklist.
+- Added inline guidance before first-run setup decisions so new users understand
+  what each choice means before selecting an option.
+- Cleared the terminal between first-run setup menu selections so each checklist
+  or decision screen starts cleanly.
 - Stored setup draft state under `runtime/setup-wizard/state.json` while keeping
   entered secret values in a host-local secret env file.
 

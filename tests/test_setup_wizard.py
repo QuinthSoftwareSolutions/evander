@@ -98,6 +98,32 @@ def test_setup_doctor_json_reports_initial_checklist(tmp_path: Path) -> None:
     assert statuses["launch_verify"] == "blocked"
 
 
+def test_setup_tui_explains_setup_profile_choice(tmp_path: Path, monkeypatch) -> None:
+    clear_calls = []
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: clear_calls.append(True))
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "setup",
+            "--config",
+            str(tmp_path / "runtime"),
+            "--project-dir",
+            str(ROOT),
+        ],
+        input="y\n2\n1\nq\n",
+    )
+
+    assert result.exit_code == 0
+    assert "This choice tells Evander whether to optimize defaults" in result.output
+    assert "Choose local workstation when you are evaluating Evander" in result.output
+    assert "Choose dedicated single-machine host" in result.output
+    assert result.output.index("This choice tells Evander") < result.output.index(
+        "1. Local workstation / evaluation"
+    )
+    assert len(clear_calls) >= 4
+
+
 def test_setup_admin_assistant_verification_queues_smoke_message(
     tmp_path: Path, monkeypatch
 ) -> None:
