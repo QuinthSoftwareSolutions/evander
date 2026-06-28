@@ -6140,10 +6140,10 @@ function applyPendingChatScroll(conversationId) {
   if (!pending || text(pending.conversationId) !== text(conversationId)) {
     return;
   }
-  window.requestAnimationFrame(() => {
+  const applyScroll = () => {
     const list = chatMessageListElement(conversationId);
     if (!list || pendingChatScroll !== pending) {
-      return;
+      return false;
     }
     if (pending.mode === "bottom") {
       list.scrollTop = list.scrollHeight;
@@ -6152,7 +6152,18 @@ function applyPendingChatScroll(conversationId) {
     } else {
       list.scrollTop = pending.scrollTop;
     }
-    pendingChatScroll = null;
+    return true;
+  };
+  window.requestAnimationFrame(() => {
+    if (!applyScroll()) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      applyScroll();
+      if (pendingChatScroll === pending) {
+        pendingChatScroll = null;
+      }
+    });
   });
 }
 

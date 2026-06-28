@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Restored Team Add-on UI smoke coverage for exact revision payloads, chat
+  scroll preservation, and post-review timeline refreshes, and kept chat
+  scroll application stable across layout settling.
+
 - Added `effect:team:create-task` so workflows can directly create or update
   operator-authored Team Add-on tasks for a project owner.
 

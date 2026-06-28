@@ -2297,8 +2297,7 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
     request.method === "POST" && request.pathname === "/api/addons/team-addon/review-profiles"
   );
   assert.ok(profileRequest);
-  assert.equal(typeof profileRequest.payload.expected_revision, "number");
-  assert.ok(profileRequest.payload.expected_revision >= 8);
+  assert.equal(profileRequest.payload.expected_revision, 8);
   assert.deepEqual(profileRequest.payload.criteria, [
     {
       id: "authorization",
@@ -2353,14 +2352,14 @@ test("team add-on Projects tab reveals project and review profile forms on deman
     request.method === "POST" && request.pathname === "/api/addons/team-addon/review-profiles"
   );
   assert.ok(profileRequest);
-  assert.ok(profileRequest.payload.expected_revision >= 8);
+  assert.equal(profileRequest.payload.expected_revision, 8);
   assert.equal(profileRequest.payload.project_id, "project");
 
   const projectRequest = requests.find((request) =>
     request.method === "POST" && request.pathname === "/api/addons/team-addon/projects"
   );
   assert.ok(projectRequest);
-  assert.equal(projectRequest.payload.expected_revision, profileRequest.payload.expected_revision + 1);
+  assert.equal(projectRequest.payload.expected_revision, 9);
   assert.equal(projectRequest.payload.name, "Follow-up project");
 });
 
@@ -2569,14 +2568,13 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   await teamGroup.locator(`[data-agent-id="${backendId}"]`).waitFor({ state: "visible" });
 
   const mutationRequests = requests.filter((request) => request.method !== "GET");
-  const firstExpectedRevision = mutationRequests[0].payload.expected_revision;
   assert.deepEqual(
     mutationRequests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
     [
-      ["POST", "/api/addons/team-addon/teams", firstExpectedRevision],
-      ["POST", "/api/addons/team-addon/projects", firstExpectedRevision + 1],
-      ["POST", "/api/addons/team-addon/roles", firstExpectedRevision + 2],
-      ["POST", "/api/addons/team-addon/agents", firstExpectedRevision + 3],
+      ["POST", "/api/addons/team-addon/teams", 0],
+      ["POST", "/api/addons/team-addon/projects", 1],
+      ["POST", "/api/addons/team-addon/roles", 2],
+      ["POST", "/api/addons/team-addon/agents", 3],
     ],
   );
   assert.equal(mutationRequests[0].payload.manager_display_name, "Team Manager");
@@ -4174,13 +4172,26 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
     "expected initial chat load to request selected conversation messages in a collection payload",
   );
 
-  await page.waitForFunction(() => {
-    const list = document.querySelector(".chat-message-list");
-    if (!(list instanceof HTMLElement)) {
-      return false;
-    }
-    return list.scrollHeight > list.clientHeight;
-  });
+  let initialChatScrollMetrics = null;
+  try {
+    await waitForCondition(async () => {
+      initialChatScrollMetrics = await messageList.evaluate((element) => {
+        const bottomGap = element.scrollHeight - element.clientHeight - element.scrollTop;
+        return {
+          bottomGap,
+          clientHeight: element.clientHeight,
+          scrollHeight: element.scrollHeight,
+          scrollTop: element.scrollTop,
+        };
+      });
+      return initialChatScrollMetrics.scrollHeight > initialChatScrollMetrics.clientHeight &&
+        initialChatScrollMetrics.bottomGap <= 4;
+    }, "expected selected chat thread to settle at the bottom");
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify(initialChatScrollMetrics)}`,
+    );
+  }
 
   const viewport = page.viewportSize();
   assert.ok(viewport, "expected viewport size");
@@ -4219,6 +4230,21 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
     Array.from(document.querySelectorAll(".chat-message")).map((element) => element.textContent || ""),
   );
   assert.ok(renderedMessages.some((message) => message.includes("Message 020")));
+  let afterPrependMetrics = null;
+  try {
+    await waitForCondition(async () => {
+      afterPrependMetrics = await messageList.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+      }));
+      return afterPrependMetrics.scrollTop > 0;
+    }, "expected scroll position to be preserved after prepend");
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify(afterPrependMetrics)}`,
+    );
+  }
   const gridPlacement = await page.evaluate(() => {
     const thread = document.querySelector(".chat-thread");
     const list = document.querySelector(".chat-message-list");
@@ -5052,6 +5078,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
+  await waitForCondition(
+    () => timelineRequests.length > 0,
+    "expected initial timeline request",
+  );
+  const timelineRequestsBeforeTabRefresh = timelineRequests.length;
   await page.getByRole("tab", { name: "Timeline" }).click();
   const timelinePage = page.locator("#team-timeline-page");
   await timelinePage.waitFor({ state: "visible" });
@@ -5061,6 +5092,10 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await timelinePage.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
   await timelinePage.locator(".timeline-entry").first().waitFor({ state: "visible" });
   assert.ok((await timelinePage.locator(".timeline-entry").count()) >= 10);
+  await waitForCondition(
+    () => timelineRequests.length > timelineRequestsBeforeTabRefresh,
+    "expected timeline tab refresh request",
+  );
   const timelineRequestsBeforeDecision = timelineRequests.length;
 
   await page.getByRole("tab", { name: "Delivery" }).click();
