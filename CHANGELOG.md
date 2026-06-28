@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Kept Teams inbox retention compaction from deleting historical messages before
+  a channel cursor has advanced into the retained window.
+
 - Preserved lightweight `AdminService.list_model_usage_events` and legacy
   `VmAgentAdminSupport` privileged-helper construction compatibility after the AdminService
   extraction.
