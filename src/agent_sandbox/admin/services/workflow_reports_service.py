@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 
 from pydantic import BaseModel
@@ -26,14 +26,18 @@ from agent_sandbox.admin.service import (
     AgentRecord,
     ApprovalRequest,
     ConformanceReportPayload,
+    ConformanceReportRunPayload,
     ConformanceRequirementSnippetPayload,
+    ConformanceReportsPayload,
     SessionManifest,
     ToolCallAuditEntryPayload,
     WorkflowFailureClusterExamplePayload,
     WorkflowFailureClusterPayload,
+    WorkflowFailureClusterReportPayload,
     WorkflowFailureClusterSourceKind,
     WorkflowGraphActivityGraphPayload,
     WorkflowGraphActivityNodePayload,
+    WorkflowGraphActivityReportPayload,
     WorkflowRunAgentLinkPayload,
     WorkflowRunApprovalLinkPayload,
     WorkflowRunCandidateMatchPayload,
@@ -76,16 +80,6 @@ from agent_sandbox.admin.service import (
     ensure_orchestration_schema,
     json_loads_object,
 )
-
-
-if TYPE_CHECKING:
-    from agent_sandbox.admin.service import (
-        ConformanceReportRunPayload,
-        ConformanceReportsPayload,
-        WorkflowFailureClusterReportPayload,
-        WorkflowGraphActivityReportPayload,
-    )
-
 
 class _WorkflowReportsAdminServiceHost(Protocol):
     def _read_workflow_graph_activity_report(

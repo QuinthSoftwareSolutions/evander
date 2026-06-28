@@ -4,6 +4,9 @@
   privileged-operation routes, CLI directory/wake commands, and admin MCP config tools on the
   `AdminService` compatibility facade instead of extracted subservice attributes.
 
+- Restored Admin Web workflow report endpoints after AdminService report extraction by keeping
+  runtime report payload classes available to the extracted workflow reports service.
+
 - Extracted shared MCP gateway communication, inline media, email draft, artifact, attachment,
   and VM visibility helper implementations into focused modules while preserving compatibility
   exports and behavior.
