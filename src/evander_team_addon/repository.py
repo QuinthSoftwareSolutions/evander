@@ -6478,17 +6478,60 @@ class TeamStateRepository:
         dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        state_model, _effective_task_id, _created = self.create_or_reprioritize_task_with_result(
+            task_id=task_id,
+            owner_agent_id=owner_agent_id,
+            project_id=project_id,
+            case_id=case_id,
+            priority=priority,
+            title=title,
+            description=description,
+            created_by_agent_id=created_by_agent_id,
+            created_by_actor=created_by_actor,
+            state=state,
+            parent_task_id=parent_task_id,
+            set_parent_task_id=set_parent_task_id,
+            set_case_id=set_case_id,
+            dependency_task_ids=dependency_task_ids,
+            expected_revision=expected_revision,
+        )
+        return state_model
+
+    def create_or_reprioritize_task_with_result(
+        self,
+        *,
+        task_id: str | None,
+        owner_agent_id: str,
+        project_id: str,
+        case_id: str | None = None,
+        priority: int,
+        title: str,
+        description: str,
+        created_by_agent_id: str | None = None,
+        created_by_actor: str | None = None,
+        state: TeamTaskState = TeamTaskState.PENDING,
+        parent_task_id: str | None = None,
+        set_parent_task_id: bool = False,
+        set_case_id: bool = False,
+        dependency_task_ids: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, str, bool]:
         normalized_task_id = _optional_text(task_id)
         normalized_case_id = _optional_text(case_id)
         normalized_title = _required_text(title, "title")
         normalized_description = _required_text(description, "description")
         normalized_owner_agent_id = _required_text(owner_agent_id, "owner_agent_id")
         normalized_project_id = _required_text(project_id, "project_id")
+        effective_task_id: str | None = None
+        created = False
 
         def _mutate(state_model: TeamState) -> TeamState:
+            nonlocal created, effective_task_id
             now = utc_now()
             if normalized_task_id is not None and normalized_task_id in state_model.tasks:
                 task = state_model.tasks[normalized_task_id]
+                effective_task_id = task.id
+                created = False
                 task.priority = priority
                 task.title = normalized_title
                 task.description = normalized_description
@@ -6525,6 +6568,7 @@ class TeamStateRepository:
                 labels=[normalized_project_id, normalized_title],
                 existing_ids=state_model.tasks,
             )
+            created = True
             _require_absent(state_model.tasks, effective_task_id, "task")
             state_model.tasks[effective_task_id] = AgentTask(
                 id=effective_task_id,
@@ -6560,7 +6604,10 @@ class TeamStateRepository:
                 )
             return state_model
 
-        return self.update(_mutate, expected_revision=expected_revision)
+        state_model = self.update(_mutate, expected_revision=expected_revision)
+        if effective_task_id is None:
+            raise RuntimeError("task mutation completed without resolving an effective task id")
+        return state_model, effective_task_id, created
 
     def update_task(
         self,

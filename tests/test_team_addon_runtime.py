@@ -4182,6 +4182,66 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     assert reread.cases["case"].task_ids == ["workflow-task"]
 
 
+def test_create_task_effect_reports_generated_id_from_atomic_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_team(tmp_path)
+
+    class RacingTaskRepository(TeamStateRepository):
+        injected = False
+
+        def create_or_reprioritize_task_with_result(self, **kwargs) -> tuple[TeamState, str, bool]:
+            if not self.__class__.injected:
+                self.__class__.injected = True
+                super().create_or_reprioritize_task_with_result(
+                    task_id=None,
+                    owner_agent_id="backend",
+                    project_id="project",
+                    priority=1,
+                    title="AAA competing task",
+                    description="Created after the provider pre-read.",
+                    created_by_actor="workflow:competitor",
+                )
+            return super().create_or_reprioritize_task_with_result(**kwargs)
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.TeamStateRepository",
+        RacingTaskRepository,
+    )
+    provider = TeamCreateTaskEffectProvider()
+    provider.initialize(
+        TeamCreateTaskEffectDefinition(
+            id="create-task",
+            display_name="Create task",
+            type="effect:team:create-task",
+            team_id="team",
+            project_id="project",
+            owner_agent_id="backend",
+            priority=2,
+            title="ZZZ workflow task",
+            description="Task created by the provider under test.",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["created"] is True
+    assert result["task"]["title"] == "ZZZ workflow task"
+    reread = TeamStateRepository(tmp_path).read()
+    competing_ids = [
+        task.id for task in reread.tasks.values() if task.title == "AAA competing task"
+    ]
+    workflow_ids = [
+        task.id for task in reread.tasks.values() if task.title == "ZZZ workflow task"
+    ]
+    assert competing_ids
+    assert workflow_ids == [result["task_id"]]
+    assert result["task_id"] != competing_ids[0]
+
+
 def test_create_task_effect_updates_existing_task(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     provider = TeamCreateTaskEffectProvider()

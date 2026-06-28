@@ -1779,8 +1779,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 definition_fields=definition_fields,
                 resolved_fields=resolved_fields,
             )
-            before_task_ids = set(current_state.tasks)
-            state = repo.create_or_reprioritize_task(
+            state, effective_task_id, created = repo.create_or_reprioritize_task_with_result(
                 task_id=task_id,
                 owner_agent_id=normalized_owner_id,
                 project_id=normalized_project_id,
@@ -1821,18 +1820,10 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 owner_agent_id=owner_agent_id,
                 error=str(exc),
             )
-        created_task_ids = sorted(set(state.tasks) - before_task_ids)
-        effective_task_id = (
-            task_id
-            if task_id is not None and task_id in state.tasks
-            else created_task_ids[0]
-            if created_task_ids
-            else task_id
-        )
         return _task_effect_success_result(
             state,
             task_id=effective_task_id,
-            created=bool(created_task_ids),
+            created=created,
         )
 
 
