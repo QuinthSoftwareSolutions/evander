@@ -127,6 +127,48 @@ def test_ado_comment_tool_schemas_describe_mentions(tmp_path: Path) -> None:
         assert "plain @name text" in mentions["description"]
 
 
+
+def test_create_server_registers_extracted_communication_tools(tmp_path: Path) -> None:
+    server = create_server(make_context(tmp_path))
+    registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+
+    expected_tool_names = {
+        "discord_get_commands",
+        "discord_post_status",
+        "teams_get_messages",
+        "has_pending_discord_messages",
+        "list_unread_discord_messages",
+        "list_all_discord_messages",
+        "add_message_reaction",
+        "list_contacts",
+        "make_phone_call",
+        "get_phone_call_result",
+        "submit_voice_query_response",
+        "teams_post_status",
+        "teams_meeting_get_events",
+        "teams_meeting_speak",
+        "teams_meeting_stop",
+        "email_list_unread",
+        "email_get_message",
+        "email_create_draft",
+        "list_inline_media",
+        "download_inline_media",
+        "communication_list_attachments",
+        "communication_download_attachment",
+        "stage_artifact",
+        "communication_copy_artifact_to_workspace",
+        "communication_stage_workspace_file",
+        "discord_post_file",
+        "teams_post_file",
+        "email_create_draft_with_attachments",
+        "email_send",
+        "email_send_with_attachments",
+        "email_send_approved_with_attachments",
+        "email_send_approved",
+    }
+
+    assert expected_tool_names <= registered_tool_names
+
 def workspace_file_stdout(
     *,
     source_path: str,

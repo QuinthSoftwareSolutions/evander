@@ -6187,8 +6187,16 @@ function agentAwakeState(agentData) {
       detail: sessionHealthRuntimeLine(agentData.sessionHealth, agentData.sessionId) || "session expired",
     };
   }
+  const executionState = agentExecutionAwakeState(agentData);
   const runtimeRow = runtimeOperationForAgent(agentData.id);
   const activeDispatchId = text(runtimeRow?.active_dispatch_id || agentData.runtime?.activeDispatchId);
+  if (executionState.known && !executionState.active && activeDispatchId) {
+    return {
+      kind: "idle",
+      label: "Idle",
+      detail: `${executionState.detail} - stale dispatch ${activeDispatchId}`,
+    };
+  }
   if (activeDispatchId) {
     return {
       kind: "awake",
@@ -6196,7 +6204,21 @@ function agentAwakeState(agentData) {
       detail: `dispatch ${activeDispatchId}`,
     };
   }
+  if (executionState.active) {
+    return {
+      kind: "awake",
+      label: "Awake",
+      detail: executionState.detail,
+    };
+  }
   if (Boolean(runtimeRow?.lease_active) || isFutureTimestamp(agentData.runtime?.wakeLeasedUntil)) {
+    if (executionState.known && !executionState.active) {
+      return {
+        kind: "idle",
+        label: "Idle",
+        detail: `${executionState.detail} - stale lease`,
+      };
+    }
     return {
       kind: "awake",
       label: "Awake",
@@ -6221,6 +6243,34 @@ function agentAwakeState(agentData) {
     kind: "unknown",
     label: "No runtime",
     detail: "no runtime snapshot",
+  };
+}
+
+function agentExecutionAwakeState(agentData) {
+  const health = agentData?.sessionHealth || {};
+  const activeExecutionCount = Number(health.activeExecutionCount);
+  if (Number.isFinite(activeExecutionCount) && activeExecutionCount > 0) {
+    return {
+      known: true,
+      active: true,
+      detail: `${activeExecutionCount} active execution${activeExecutionCount === 1 ? "" : "s"}`,
+    };
+  }
+  const executionStatus = text(health.agentExecutionStatus).toLowerCase();
+  if (!executionStatus) {
+    return { known: false, active: false, detail: "" };
+  }
+  if (["preparing", "starting", "running"].includes(executionStatus)) {
+    return {
+      known: true,
+      active: true,
+      detail: `execution ${executionStatus}`,
+    };
+  }
+  return {
+    known: true,
+    active: false,
+    detail: `execution ${executionStatus}`,
   };
 }
 

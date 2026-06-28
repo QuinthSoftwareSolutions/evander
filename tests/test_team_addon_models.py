@@ -1183,6 +1183,33 @@ def test_runtime_operations_wake_due_ignores_no_reply_inbox() -> None:
     assert ui["severity"] == "info"
 
 
+def test_runtime_operations_wake_due_includes_normal_no_reply_inbox() -> None:
+    state = _valid_state()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state.agent_runtimes["ui"] = AgentRuntime(
+        agent_id="ui",
+        last_wake_at=now - timedelta(minutes=20),
+        next_wake_at=now + timedelta(minutes=15),
+        updated_at=now,
+    )
+    state.inbox["normal-note"] = AgentInboxItem(
+        id="normal-note",
+        recipient_agent_id="ui",
+        sender_agent_id="lead",
+        task_id="task",
+        item_type=TeamInboxItemType.PROGRESS_REPORT,
+        response_requested=False,
+        priority=TeamInboxPriority.NORMAL,
+        state=TeamInboxItemState.PENDING,
+    )
+
+    payload = runtime_operations_payload(state, now=now)
+
+    ui = next(row for row in payload["agents"] if row["id"] == "ui")
+    assert ui["wake_due"] is True
+    assert ui["severity"] == "warning"
+
+
 def test_runtime_attention_hides_failed_action_after_later_success() -> None:
     state = _state_with_runtime_operations()
     state.action_records["action-2"] = AgentActionRecord(

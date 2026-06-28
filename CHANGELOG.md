@@ -1,3 +1,34 @@
+## Unreleased
+
+- Extracted shared MCP gateway communication, inline media, email draft, artifact, attachment,
+  and VM visibility helper implementations into focused modules while preserving compatibility
+  exports and behavior.
+
+- Fixed MCP gateway refactor regressions that prevented server construction, miswired extracted
+  communication and ADO helpers, and pointed the gateway CLI at `src/runtime`.
+
+- Moved approval MCP gateway tools into `agent_sandbox.gateway.approval_tools` while preserving behavior.
+
+- Moved communication MCP gateway tools into `agent_sandbox.gateway.communication_tools` while preserving behavior.
+
+- Moved PR/feedback MCP gateway tools into `agent_sandbox.gateway.pr_tools` while preserving behavior.
+
+- Moved Azure DevOps backlog, work-item, report, identity, and activity MCP gateway tools into `agent_sandbox.gateway.ado_tools` while preserving behavior.
+
+- Moved agent status and log MCP gateway tools into `agent_sandbox.gateway.agent_tools` while preserving behavior.
+
+- Moved issue lifecycle MCP gateway tools into `agent_sandbox.gateway.issue_tools` while preserving behavior.
+
+- Moved admin MCP gateway tools into `agent_sandbox.gateway.admin_tools` while preserving behavior.
+
+- Moved chat and agent-prompt MCP gateway tools into `agent_sandbox.gateway.chat_tools` while preserving behavior.
+- Moved semantic MCP gateway tool registration into `agent_sandbox.gateway.semantic_tools` while preserving existing behavior.
+- Moved MSSQL MCP gateway tool registration into `agent_sandbox.gateway.mssql_tools` and added registration coverage while preserving existing tool names and request/response behavior.
+- Split the MCP gateway Starlette app and CLI bootstrap into canonical `gateway.app` and `gateway.cli` modules while retaining compatibility exports.
+- Added a shared MCP gateway dependency object for common admin, issue, chat, semantic, and communication artifact services.
+- Split MCP gateway request, session, tool audit, and approval diagnostic helpers into focused modules while preserving existing helper names.
+- Refactored the MCP gateway into a package with a `server` module and domain registration module placeholders while preserving existing public imports and tool names.
+
 # Changelog
 
 ## 2026-06-28 - Admin Compatibility Contract Fixes
@@ -85,6 +116,48 @@
   low-risk domains through narrower services for skills, workflow reports,
   capacity/health telemetry, model usage, and workflow generation.
 - Added focused unit coverage for the extracted admin service delegation layer.
+
+## 2026-06-28 - Team Queued Retry Finalization Guard
+
+- Ignored queued prompt retry markers when finalizing Team dispatch leases, so
+  normal queue replay can remove queued records without causing old failed
+  enqueue attempts to close the active dispatch.
+
+## 2026-06-28 - Team Chat Live Lease Guard
+
+- Kept active Team Chat dispatch leases live after `team_reply_to_chat` marks an
+  operator message replied, preventing scheduled or inbox wakes from minting an
+  overlapping dispatch before finalization releases the original lease.
+
+## 2026-06-28 - Evander Manual Operational Corrections
+
+- Corrected Evander user manual guidance for Workers-managed services, Bokio
+  prepared-action approvals, and add-on loader configuration boundaries.
+
+## 2026-06-28 - Team Duplicate Review Progress Accounting
+
+- Classified duplicate-only Team review request commands as non-progress in
+  dispatch activity records, keeping dispatch finalization from resetting
+  no-progress counters when no review or inbox item was created.
+
+## 2026-06-27 - Team Review Request Idempotency
+
+- Made Team review requests idempotent for an active deliverable/reviewer pair
+  so duplicate handoffs return the existing review instead of creating another
+  reviewer inbox item.
+
+## 2026-06-27 - Team Wake Lease Release Fix
+
+- Released Team wake leases when standalone agent prompt executions finish, so
+  completed container-worker wakes no longer block follow-up inbox work until the
+  lease TTL expires.
+
+## 2026-06-26 - Team Normal Inbox Wake Fix
+
+- Treated normal/high priority Team inbox items as wakeable even when they do
+  not request a reply, keeping low-priority FYI updates batched.
+- Cleared completed Team chat dispatch leases before leasing later work so
+  replied chat wakes cannot suppress subsequent inbox wakes.
 
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
 
