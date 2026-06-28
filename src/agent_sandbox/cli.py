@@ -2784,7 +2784,7 @@ def delete_session(
 ) -> None:
     service = AdminService(config)
     try:
-        result = service.operations_admin.delete_session(target)
+        result = service.delete_session(target)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -2812,7 +2812,7 @@ def delete_expired_sessions(
     skipped: list[str] = []
     for session_id in expired_session_ids:
         try:
-            service.operations_admin.delete_session(session_id)
+            service.delete_session(session_id)
         except ValueError as exc:
             skipped.append(f"{session_id}: {exc}")
             continue

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-28 - Admin Session Facade Integration Fixes
+
+- Kept Admin Web and CLI session deletion on the `AdminService` facade so
+  associated agent-session guards and detached worker/chat/approval cleanup run.
+- Restored Admin Web session listing and detail lookup through the facade so
+  container-worker lifecycle summaries remain available to the UI.
+
 ## 2026-06-28 - Admin Service Composition Startup Fixes
 
 - Fixed extracted admin service imports and composition locking so `AdminService`

@@ -701,7 +701,7 @@ def session_approval_routes(
     async def list_sessions(request: Request) -> JSONResponse:
         params = request.query_params
         try:
-            items = service.operations_admin.list_sessions(
+            items = service.list_sessions(
                 include_expired=_parse_bool(params.get("include_expired")),
                 expired_only=_parse_bool(params.get("expired_only")),
                 directory_path=params.get("directory_path"),
@@ -725,7 +725,7 @@ def session_approval_routes(
         )
 
     def _get_session_summary(session_id: str) -> SessionSummary:
-        for item in service.operations_admin.list_sessions(include_expired=True):
+        for item in service.list_sessions(include_expired=True):
             if item.session_id == session_id:
                 return item
         raise ValueError(f"Unknown session: {session_id}")
@@ -774,7 +774,7 @@ def session_approval_routes(
     async def delete_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
-            result = service.operations_admin.delete_session(session_id)
+            result = service.delete_session(session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
         return JSONResponse(result.model_dump(mode="json"))
