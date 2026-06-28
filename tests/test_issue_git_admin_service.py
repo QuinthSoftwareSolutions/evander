@@ -140,8 +140,10 @@ def _issue_git_dependencies(admin: SimpleNamespace) -> IssueGitAdminDependencies
         local_issue_store=admin.local_issue_store,
         local_issue_yaml_dir=admin.local_issue_yaml_dir,
         issue_service=admin.issue_service,
-        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
-            directory_path
+        directory_path=SimpleNamespace(
+            normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
+                directory_path
+            )
         ),
         local_issue_creation_lock=lambda: admin._local_issue_creation_lock(),
         next_local_issue_number=lambda: admin._next_local_issue_number(),
@@ -161,8 +163,10 @@ def _issue_git_dependencies(admin: SimpleNamespace) -> IssueGitAdminDependencies
         write_local_issue_yaml=lambda issue, **kwargs: admin._write_local_issue_yaml(
             issue, **kwargs
         ),
-        direct_owned_entity_ids=lambda directory_path, **kwargs: admin._direct_owned_entity_ids(
-            directory_path, **kwargs
+        directory_ownership=SimpleNamespace(
+            direct_owned_entity_ids=lambda directory_path, **kwargs: admin._direct_owned_entity_ids(
+                directory_path, **kwargs
+            )
         ),
     )
 

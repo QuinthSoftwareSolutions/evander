@@ -1006,7 +1006,10 @@ def request_has_privileged_operations(
 ) -> bool:
     if not auth.privileged_for_request(request):
         return False
-    return not service.privileged_helper_required() or service.privileged_operations_unlocked()
+    return (
+        not service.privileged_helper_required()
+        or service.privileged_operations_unlocked()
+    )
 
 
 def json_error(

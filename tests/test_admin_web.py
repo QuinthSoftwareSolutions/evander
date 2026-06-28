@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import agent_sandbox.admin.web.vms_issues as vms_issues_module
 from agent_sandbox.admin.service import AgentCreateOperation, AdminService
 from agent_sandbox.admin.service import (
@@ -41,7 +41,7 @@ from agent_sandbox.admin.service import (
 from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
-from agent_sandbox.admin.web.shared import AdminWebConfig
+from agent_sandbox.admin.web.shared import AdminWebConfig, request_has_privileged_operations
 from agent_sandbox.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     AUDITOR_GROUP_ID,
@@ -2873,10 +2873,10 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
 
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "json",
@@ -3001,10 +3001,10 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     runtime_dir.mkdir(parents=True, exist_ok=True)
     _write_trigger_orchestrator_sqlite_config(tmp_path)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
 
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "sqlite",
@@ -10916,6 +10916,22 @@ def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkey
     assert unlocked_state.json()["privileged_operations"]["unlocked"] is True
     assert relocked_response.status_code == 200
     assert relocked_response.json()["privileged_operations"]["unlocked"] is False
+
+
+def test_request_has_privileged_operations_uses_admin_service_facade() -> None:
+    calls: list[str] = []
+
+    service = SimpleNamespace(
+        privileged_helper_required=lambda: calls.append("required") or True,
+        privileged_operations_unlocked=lambda: calls.append("unlocked") or True,
+    )
+    auth = SimpleNamespace(privileged_for_request=lambda _request: True)
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+
+    assert (
+        request_has_privileged_operations(auth=auth, service=service, request=request) is True
+    )
+    assert calls == ["required", "unlocked"]
 
 
 def test_admin_web_unlocks_without_starting_helper_when_helper_is_not_required(

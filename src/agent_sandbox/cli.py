@@ -3327,7 +3327,9 @@ def add_issue_comment(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.add_issue_comment(issue_id, comment, sync_proxy_cache=sync_proxy_cache)
+    payload = service.add_issue_comment(
+        issue_id, comment, sync_proxy_cache=sync_proxy_cache
+    )
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -3361,7 +3363,9 @@ def set_issue_state(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.set_issue_state(issue_id, state, sync_proxy_cache=sync_proxy_cache)
+    payload = service.set_issue_state(
+        issue_id, state, sync_proxy_cache=sync_proxy_cache
+    )
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return

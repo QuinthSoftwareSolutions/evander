@@ -1,13 +1,18 @@
 from __future__ import annotations
+
+import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MethodType
 
 import pytest
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.admin.web.teams_auth import teams_auth_routes
 from agent_sandbox.messaging.teams_auth import DeviceCodeLoginSession
 
 _SENSITIVE_KEY_NAMES = {
@@ -62,6 +67,161 @@ def _assert_no_sensitive_fields(payload: object) -> None:
         assert value != "should-not-leak"
 
     walk(payload)
+
+
+class _PrivilegedFakeAuth:
+    def require(self, _request: Request) -> dict[str, str]:
+        return {"sid": "test-session", "sub": "test"}
+
+    def privileged_for_request(self, _request: Request) -> bool:
+        return True
+
+
+def test_admin_web_teams_auth_routes_use_facade_methods_without_internal_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("agent_sandbox.admin.web.teams_auth.run_in_threadpool", run_inline)
+
+    class FacadeOnlyService:
+        def _normalize_directory_reference(self, value: str) -> str:
+            return value
+
+        def privileged_helper_required(self) -> bool:
+            calls.append(("privileged_helper_required",))
+            return True
+
+        def privileged_operations_unlocked(self) -> bool:
+            calls.append(("privileged_operations_unlocked",))
+            return True
+
+        def teams_auth_status(self, *, directory: str = "root") -> dict[str, object]:
+            calls.append(("status", directory))
+            return {"directory_path": directory, "status": "authenticated"}
+
+        def teams_auth_list(self) -> list[dict[str, object]]:
+            calls.append(("list",))
+            return [{"directory_path": "root/team-a", "status": "authenticated"}]
+
+        def teams_auth_login(self, *, directory: str = "root") -> dict[str, object]:
+            calls.append(("login", directory))
+            return {
+                "tenant_id": "tenant-123",
+                "scopes": ["scope-a"],
+                "message": "Use code TEST-CODE",
+                "user_code": "TEST-CODE",
+                "metadata": {"identity_id": "teams-identity"},
+            }
+
+        def teams_auth_complete_login(
+            self,
+            login_session,
+            *,
+            directory: str = "root",
+            timeout_seconds: float | None = None,
+        ) -> dict[str, object]:
+            calls.append(("complete", directory, timeout_seconds, login_session["user_code"]))
+            return {
+                "directory_path": directory,
+                "status": "authenticated",
+                "authenticated": True,
+            }
+
+        def teams_auth_logout(self, *, directory: str = "root") -> dict[str, object]:
+            calls.append(("logout", directory))
+            return {"directory_path": directory, "status": "logged_out"}
+
+        def teams_auth_list_channels(
+            self,
+            *,
+            directory: str = "root",
+            team_id: str,
+            channel_name: str | None = None,
+            include_all: bool = False,
+        ) -> dict[str, object]:
+            calls.append(("channels", directory, team_id, channel_name, include_all))
+            return {"directory_path": directory, "channels": []}
+
+    endpoints = {
+        route.path: route.endpoint
+        for route in teams_auth_routes(FacadeOnlyService(), _PrivilegedFakeAuth())
+    }
+
+    def request(
+        path: str,
+        *,
+        method: str = "GET",
+        json_payload: dict[str, object] | None = None,
+    ) -> Request:
+        route_path, _, query_string = path.partition("?")
+        body = b"" if json_payload is None else json.dumps(json_payload).encode("utf-8")
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        return Request(
+            {
+                "type": "http",
+                "method": method,
+                "path": route_path,
+                "query_string": query_string.encode("ascii"),
+                "headers": [(b"content-type", b"application/json")],
+            },
+            receive,
+        )
+
+    async def call(
+        path: str,
+        *,
+        method: str = "GET",
+        json_payload: dict[str, object] | None = None,
+    ):
+        route_path = path.partition("?")[0]
+        return await endpoints[route_path](request(path, method=method, json_payload=json_payload))
+
+    status = asyncio.run(call("/api/teams-auth/status?directory_path=root/team-a"))
+    identities = asyncio.run(call("/api/teams-auth/identities"))
+    login = asyncio.run(call("/api/teams-auth/login?directory_path=root/team-a", method="POST"))
+    login_session_id = json.loads(login.body)["login_session_id"]
+    complete = asyncio.run(
+        call(
+            "/api/teams-auth/complete?directory_path=root/team-a",
+            method="POST",
+            json_payload={"login_session_id": login_session_id},
+        )
+    )
+    logout = asyncio.run(call("/api/teams-auth/logout?directory_path=root/team-a", method="POST"))
+    channels = asyncio.run(
+        call(
+            "/api/teams-auth/channels?directory_path=root/team-a&team_id=team-123&channel_name=General"
+        )
+    )
+
+    assert status.status_code == 200
+    assert identities.status_code == 200
+    assert login.status_code == 200
+    assert complete.status_code == 200
+    assert logout.status_code == 200
+    assert channels.status_code == 200
+
+    assert calls == [
+        ("status", "root/team-a"),
+        ("list",),
+        ("privileged_helper_required",),
+        ("privileged_operations_unlocked",),
+        ("login", "root/team-a"),
+        ("privileged_helper_required",),
+        ("privileged_operations_unlocked",),
+        ("complete", "root/team-a", 5.0, "TEST-CODE"),
+        ("privileged_helper_required",),
+        ("privileged_operations_unlocked",),
+        ("logout", "root/team-a"),
+        ("channels", "root/team-a", "team-123", "General", False),
+    ]
 
 
 def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields(
