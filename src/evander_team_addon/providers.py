@@ -4575,6 +4575,7 @@ def _completed_agent_prompt_records(worker: Any) -> list[Any]:
         == "effect:agent:enqueue-prompt"
         and _optional_text(getattr(record, "status", None)) in {"succeeded", "failed"}
         and _record_outputs(record)
+        and not _record_is_queued_prompt_marker(record)
     ]
     candidates.sort(
         key=lambda record: (
@@ -4583,6 +4584,12 @@ def _completed_agent_prompt_records(worker: Any) -> list[Any]:
         )
     )
     return candidates
+
+
+def _record_is_queued_prompt_marker(record: Any) -> bool:
+    # Queue replay deletes queue entries, so this must rely on the immutable
+    # execution outputs instead of current queued-agent-prompts state.
+    return _record_outputs(record).get("queued") is True
 
 
 def _record_outputs(record: Any) -> dict[str, Any]:

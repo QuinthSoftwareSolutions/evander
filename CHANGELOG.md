@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-28 - Team Queued Retry Finalization Guard
+
+- Ignored queued prompt retry markers when finalizing Team dispatch leases, so
+  normal queue replay can remove queued records without causing old failed
+  enqueue attempts to close the active dispatch.
+
 ## 2026-06-28 - Team Chat Live Lease Guard
 
 - Kept active Team Chat dispatch leases live after `team_reply_to_chat` marks an

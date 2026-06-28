@@ -4010,6 +4010,41 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
     assert hook.on_post_completion_dispatch(worker=worker) == 0
 
 
+def test_agent_prompt_completion_hook_ignores_queued_retry_marker(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = leases[0]["dispatch_id"]
+    record = SimpleNamespace(
+        execution_id="exec-queued-team-prompt-failure",
+        effect_type="effect:agent:enqueue-prompt",
+        status="failed",
+        finished_at=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
+            "success": False,
+            "queued": True,
+            "failed_phase": "dispatch",
+            "queue_key": "vm-backend",
+        },
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        queued_agent_prompt_store=SimpleNamespace(read_all=lambda: {}),
+        provider_factory=SimpleNamespace(admin_service=FakeSessionStore()),
+    )
+
+    hook = TeamAgentPromptCompletionFinalizeHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    runtime = repo.read().agent_runtimes["backend"]
+    assert runtime.active_dispatch_id == dispatch_id
+    assert runtime.wake_leased_until is not None
+
+
 def test_deliverable_artifact_publish_reuses_existing_key_without_duplicate_version(
     tmp_path: Path, monkeypatch
 ) -> None:
