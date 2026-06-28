@@ -4,8 +4,8 @@
   create forms, collapsed paged deliverable/release sections, and default-hidden
   rejected delivery records.
 
-- Kept the Admin Web built-in chat anchored at the bottom when an SSE snapshot arrives while an
-  older-history fetch is in flight.
+- Kept the Admin Web built-in chat anchored when SSE snapshots or operator scroll changes race an
+  older-history fetch.
 
 - Kept Teams inbox retention compaction from deleting historical messages before
   a channel cursor has advanced into the retained window.

@@ -127,6 +127,19 @@ export function ChatLauncher({
     setMessages(nextMessages);
   };
 
+  const captureOlderScrollRestore = (element: HTMLDivElement, anchorMessageId?: string) => {
+    const resolvedAnchorMessageId = anchorMessageId ?? messagesRef.current[0]?.id;
+    if (!resolvedAnchorMessageId) {
+      pendingOlderScrollRestoreRef.current = null;
+      return;
+    }
+    pendingOlderScrollRestoreRef.current = {
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+      anchorMessageId: resolvedAnchorMessageId,
+    };
+  };
+
   const applyLatestTranscript = (transcript: ChatTranscript) => {
     const current = messagesRef.current;
     const incoming = transcript.messages;
@@ -146,20 +159,18 @@ export function ChatLauncher({
     const nearBottom = chatIsNearBottom(element);
     const nearTop = element.scrollTop <= CHAT_SCROLL_TOP_LOAD_THRESHOLD_PX;
     stickToBottomRef.current = nearBottom;
-    if (nearBottom && pendingOlderScrollRestoreRef.current) {
+    const pendingOlderScrollRestore = pendingOlderScrollRestoreRef.current;
+    if (nearBottom && pendingOlderScrollRestore) {
       pendingOlderScrollRestoreRef.current = null;
-    } else if (pendingOlderScrollRestoreRef.current && loadingOlderMessagesRef.current) {
-      pendingOlderScrollRestoreRef.current = {
-        ...pendingOlderScrollRestoreRef.current,
-        scrollHeight: element.scrollHeight,
-        scrollTop: element.scrollTop,
-      };
+    } else if (loadingOlderMessagesRef.current && !nearBottom) {
+      captureOlderScrollRestore(element, pendingOlderScrollRestore?.anchorMessageId);
     }
     if (
       nearTop &&
       !nearBottom &&
       !forceScrollToBottomRef.current &&
-      !pendingOlderScrollRestoreRef.current
+      !pendingOlderScrollRestoreRef.current &&
+      !loadingOlderMessagesRef.current
     ) {
       void loadOlderMessages();
     }
@@ -304,11 +315,7 @@ export function ChatLauncher({
     const targetThreadId = threadId;
     const element = scrollRef.current;
     if (element) {
-      pendingOlderScrollRestoreRef.current = {
-        scrollHeight: element.scrollHeight,
-        scrollTop: element.scrollTop,
-        anchorMessageId: oldestMessage.id,
-      };
+      captureOlderScrollRestore(element, oldestMessage.id);
     }
     loadingOlderMessagesRef.current = true;
     setLoadingOlderMessages(true);

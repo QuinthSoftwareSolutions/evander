@@ -303,6 +303,7 @@ test(
 
         await page.locator(".chat-messages").evaluate((element) => {
           element.scrollTop = 0;
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
         });
         await olderMessagesSeen;
         await page.locator(".chat-messages").evaluate((element) => {
@@ -318,6 +319,104 @@ test(
         await waitForChatNearBottom(page);
       } finally {
         releaseSnapshot();
+        releaseOlderMessages();
+      }
+    });
+  },
+);
+
+test(
+  "chat launcher recreates the older-history scroll restore when leaving bottom mid-fetch",
+  { timeout: 30000 },
+  async () => {
+    await withChatLauncherHarness(async ({ page, baseUrl }) => {
+      const latestMessages = buildMessages(40, 120);
+      const olderMessages = buildMessages(20, 40);
+      let releaseOlderMessages = () => {};
+      let olderMessagesRequested = () => {};
+      const olderMessagesAllowed = new Promise((resolve) => {
+        releaseOlderMessages = resolve;
+      });
+      const olderMessagesSeen = new Promise((resolve) => {
+        olderMessagesRequested = resolve;
+      });
+
+      await page.addInitScript(() => {
+        window.localStorage.setItem("admin-web:chat:ui", "expanded");
+      });
+      await page.route("**/api/chat/session", async (route) => {
+        await route.fulfill(
+          jsonResponse({
+            user_id: "admin",
+            thread_id: "thread-1",
+            assistant_capability_mode: "read-only",
+            assistant_session: {
+              status: "ready",
+              error: null,
+              updated_at: "2026-06-09T12:00:00Z",
+            },
+          }),
+        );
+      });
+      await page.route("**/api/chat/transcript/thread-1**", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get("before") === "msg-040") {
+          olderMessagesRequested();
+          await olderMessagesAllowed;
+          await route.fulfill(jsonResponse(transcriptWithMessages(olderMessages, true)));
+          return;
+        }
+        await route.fulfill(jsonResponse(transcriptWithMessages(latestMessages, true)));
+      });
+      await page.route("**/api/chat/stream/thread-1**", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          headers: { "Cache-Control": "no-cache" },
+          body: `event: snapshot\ndata: ${JSON.stringify(transcriptWithMessages(latestMessages, true))}\n\n`,
+        });
+      });
+
+      try {
+        await page.goto(`${baseUrl}/chat-launcher-smoke.html`);
+        await page.locator(".chat-panel").waitFor();
+        await page.waitForFunction(() => document.querySelectorAll(".chat-message").length >= 80);
+        await waitForChatNearBottom(page);
+
+        await page.locator(".chat-messages").evaluate((element) => {
+          element.scrollTop = 0;
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+        await olderMessagesSeen;
+        await page.locator(".chat-messages").evaluate((element) => {
+          element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+        await waitForChatNearBottom(page);
+
+        const beforePrepend = await page.locator(".chat-messages").evaluate((element) => {
+          const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+          element.scrollTop = Math.max(64, Math.floor(maxTop / 2));
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+          return {
+            scrollHeight: element.scrollHeight,
+            scrollTop: element.scrollTop,
+          };
+        });
+
+        releaseOlderMessages();
+        await page.waitForFunction(() => document.querySelectorAll(".chat-message").length >= 100);
+        const afterPrepend = await page.locator(".chat-messages").evaluate((element) => ({
+          scrollHeight: element.scrollHeight,
+          scrollTop: element.scrollTop,
+        }));
+        const expectedScrollTop =
+          afterPrepend.scrollHeight - beforePrepend.scrollHeight + beforePrepend.scrollTop;
+        assert.ok(
+          Math.abs(afterPrepend.scrollTop - expectedScrollTop) <= 8,
+          `expected older-message prepend to preserve the mid-fetch viewport, got ${afterPrepend.scrollTop}, expected ${expectedScrollTop}`,
+        );
+      } finally {
         releaseOlderMessages();
       }
     });
