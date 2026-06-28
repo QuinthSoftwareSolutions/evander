@@ -1037,6 +1037,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "helper scripts" in guidance
     assert "task creation mandate in your wake prompt" in guidance
     assert "Core MCP surface:" in guidance
+    assert "a superior may set state: finished on a subordinate non-terminal task" in guidance
     assert "Do not accept or reject someone else's task" in guidance
     assert "Use team_decide_review only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
@@ -3653,6 +3654,9 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
     assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert "a superior may set state: finished on a subordinate non-terminal task" in str(
+        copied_file["content"]
+    )
     assert session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"][
         "guidance_version"
     ] == TEAM_AGENT_GUIDANCE_VERSION

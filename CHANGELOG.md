@@ -5,6 +5,8 @@
 - Allowed Team supervisors to mark claimable subordinate tasks `finished`
   directly, including in the same `team_update_task` call that claims the task,
   while keeping other non-owner state/detail edits blocked.
+- Bumped live Team agent guidance so persistent supervisor agents are reseeded
+  with the new subordinate task finish permission.
 
 ## 2026-06-28 - Git Mirror Pinned Branch Fast-Forward Fix
 
