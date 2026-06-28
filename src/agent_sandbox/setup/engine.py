@@ -26,6 +26,7 @@ DEFAULT_RUNTIME_DIR = Path("runtime")
 DEFAULT_ADMIN_PORT = "8100"
 DEFAULT_ADMIN_HOST = "127.0.0.1"
 DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_AUTH_MODE = "local_password"
 DEFAULT_CONTAINER_WORKER_URL = "http://127.0.0.1:11888"
 DEFAULT_CONTAINER_WORKER_TOKEN_ENV = "AGENT_SANDBOX_WORKER_TOKEN"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
@@ -58,12 +59,11 @@ class SetupState:
     version: int = SETUP_STATE_VERSION
     secret_file: str = str(DEFAULT_SECRET_FILE)
     secret_storage_acknowledged: bool = False
-    setup_profile: str = "local_workstation"
     admin_web: dict[str, Any] = field(
         default_factory=lambda: {
             "host": DEFAULT_ADMIN_HOST,
             "port": DEFAULT_ADMIN_PORT,
-            "auth_mode": "local_password",
+            "auth_mode": DEFAULT_ADMIN_AUTH_MODE,
             "username": getpass.getuser() or DEFAULT_ADMIN_USERNAME,
             "password_configured": False,
             "session_secret_configured": False,
@@ -307,20 +307,14 @@ class SetupManager:
                 details="Provider secrets are stored on the control-plane host.",
             )
         )
-        items.append(
-            ChecklistItem(
-                "setup_profile",
-                "Setup profile",
-                "completed" if state.setup_profile else "needs input",
-                state.setup_profile.replace("_", " ") if state.setup_profile else "Not selected",
-            )
-        )
-        admin_ready = bool(state.admin_web.get("password_configured")) and bool(
-            state.admin_web.get("session_secret_configured")
+        admin_auth_mode = str(state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE)
+        admin_session_ready = bool(state.admin_web.get("session_secret_configured"))
+        admin_ready = admin_session_ready and (
+            admin_auth_mode == "none" or bool(state.admin_web.get("password_configured"))
         )
         admin_summary = (
             f"{state.admin_web.get('host')}:{state.admin_web.get('port')}, "
-            f"{state.admin_web.get('auth_mode')}"
+            f"{_admin_auth_label(admin_auth_mode)}"
         )
         items.append(
             ChecklistItem(
@@ -436,7 +430,6 @@ class SetupManager:
         state = state or self.load_state()
         required_config_ids = {
             "secret_storage",
-            "setup_profile",
             "admin_web",
             "execution_model",
             "ai_providers",
@@ -514,23 +507,29 @@ class SetupManager:
         host: str,
         port: str,
         username: str,
-        password: str,
+        password: str = "",
+        auth_mode: str = DEFAULT_ADMIN_AUTH_MODE,
     ) -> SetupState:
+        normalized_auth_mode = auth_mode.strip().lower() or DEFAULT_ADMIN_AUTH_MODE
+        if normalized_auth_mode not in {"local_password", "none"}:
+            raise ValueError("Setup currently supports local_password and none Admin Web auth.")
         state.admin_web = {
             "host": host.strip() or DEFAULT_ADMIN_HOST,
             "port": port.strip() or DEFAULT_ADMIN_PORT,
-            "auth_mode": "local_password",
+            "auth_mode": normalized_auth_mode,
             "username": username.strip() or DEFAULT_ADMIN_USERNAME,
-            "password_configured": bool(password),
+            "password_configured": normalized_auth_mode == "local_password" and bool(password),
             "session_secret_configured": True,
         }
-        if password:
+        secret_updates = {
+            "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET": secrets.token_urlsafe(32),
+        }
+        if normalized_auth_mode == "local_password" and password:
+            secret_updates["AGENT_SANDBOX_ADMIN_WEB_PASSWORD"] = password
+        if secret_updates:
             _upsert_env_file(
                 self.secret_file_path(state),
-                {
-                    "AGENT_SANDBOX_ADMIN_WEB_PASSWORD": password,
-                    "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET": secrets.token_urlsafe(32),
-                },
+                secret_updates,
                 root_owned=self.secret_file_path(state).is_absolute()
                 and str(self.secret_file_path(state)).startswith("/etc/"),
             )
@@ -669,10 +668,14 @@ class SetupManager:
         admin_updates = {
             "ADMIN_WEB_HOST": str(state.admin_web.get("host") or DEFAULT_ADMIN_HOST),
             "ADMIN_WEB_PORT": str(state.admin_web.get("port") or DEFAULT_ADMIN_PORT),
-            "AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE": "local_password",
+            "AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE": str(
+                state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE
+            ),
             "AGENT_SANDBOX_ADMIN_WEB_USERNAME": str(
                 state.admin_web.get("username") or DEFAULT_ADMIN_USERNAME
             ),
+            "AGENT_SANDBOX_ADMIN_WEB_PASSWORD": "",
+            "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET": "",
             "AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE": "false",
         }
         _merge_env_file(admin_env, admin_updates)
@@ -794,6 +797,13 @@ def _execution_label(value: str) -> str:
         "container_same_host": "containers on this host",
         "container_worker_host": "containers on a separate worker host",
         "libvirt_vm": "VM-backed agents",
+    }.get(value, value)
+
+
+def _admin_auth_label(value: str) -> str:
+    return {
+        "local_password": "local password",
+        "none": "no authentication",
     }.get(value, value)
 
 

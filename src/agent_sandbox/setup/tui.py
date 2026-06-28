@@ -8,6 +8,7 @@ import click
 import typer
 
 from agent_sandbox.setup.engine import (
+    DEFAULT_ADMIN_AUTH_MODE,
     DEFAULT_ADMIN_HOST,
     DEFAULT_ADMIN_PORT,
     DEFAULT_OLLAMA_BASE_URL,
@@ -91,25 +92,14 @@ def _configure_item(manager: SetupManager, state, item_id: str):
         if typer.confirm("Use this secret file?", default=True):
             return manager.acknowledge_secret_storage(state)
         return state
-    if item_id == "setup_profile":
-        _echo_guidance(
-            "This choice tells Evander whether to optimize defaults for a developer machine",
-            "or for a host that is meant to run the control plane continuously.",
-            "Choose local workstation when you are evaluating Evander or running it for yourself.",
-            "Choose dedicated single-machine host when this machine is the durable Evander host.",
-        )
-        typer.echo("1. Local workstation / evaluation")
-        typer.echo("2. Dedicated single-machine host")
-        profile = typer.prompt("Choose setup profile", default="1").strip()
-        state.setup_profile = "dedicated_single_host" if profile == "2" else "local_workstation"
-        manager.save_state(state)
-        return state
     if item_id == "admin_web":
         _echo_guidance(
             "Admin Web is the operator UI for configuring Evander and monitoring agents.",
             "Use 127.0.0.1 when you only want browser access from this machine.",
             "Use 0.0.0.0 only when you intentionally want it reachable through the network",
             "or through a reverse proxy you control.",
+            "Local password auth is recommended. No-auth mode is supported for isolated",
+            "local evaluation only and gives anyone with network access full admin access.",
         )
         host = typer.prompt(
             "Admin Web host", default=str(state.admin_web.get("host") or DEFAULT_ADMIN_HOST)
@@ -121,9 +111,28 @@ def _configure_item(manager: SetupManager, state, item_id: str):
             "Admin username",
             default=str(state.admin_web.get("username") or getpass.getuser() or "admin"),
         )
-        password = typer.prompt("Admin password", hide_input=True, confirmation_prompt=True)
+        typer.echo("")
+        typer.echo("1. Local password (recommended)")
+        typer.echo("2. No authentication (discouraged)")
+        raw_auth = typer.prompt(
+            "Choose Admin Web authentication",
+            default="2"
+            if str(state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE) == "none"
+            else "1",
+        ).strip()
+        auth_mode = "none" if raw_auth == "2" else "local_password"
+        password = ""
+        if auth_mode == "none":
+            typer.echo("")
+            typer.echo("No-auth mode disables sign-in and grants full admin access to anyone")
+            typer.echo("who can reach Admin Web. Use it only on an isolated test host or")
+            typer.echo("with Admin Web bound to localhost.")
+            if not typer.confirm("Use Admin Web without authentication?", default=False):
+                return state
+        else:
+            password = typer.prompt("Admin password", hide_input=True, confirmation_prompt=True)
         return manager.configure_admin_web(
-            state, host=host, port=port, username=username, password=password
+            state, host=host, port=port, username=username, password=password, auth_mode=auth_mode
         )
     if item_id == "execution_model":
         _echo_guidance(

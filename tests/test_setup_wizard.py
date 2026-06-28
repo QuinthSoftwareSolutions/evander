@@ -42,6 +42,29 @@ def test_setup_checklist_requires_provider_secret_without_storing_value(tmp_path
     assert "OPENAI_API_KEY" in (tmp_path / "local-secrets.env").read_text(encoding="utf-8")
 
 
+def test_setup_admin_web_can_use_no_auth_without_password(tmp_path: Path) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+
+    state = manager.configure_admin_web(
+        state,
+        host="127.0.0.1",
+        port="8100",
+        username="operator",
+        auth_mode="none",
+    )
+
+    checklist = {item.id: item for item in manager.checklist(state)}
+    secret_text = (tmp_path / "local-secrets.env").read_text(encoding="utf-8")
+    assert checklist["admin_web"].status == "completed"
+    assert checklist["admin_web"].summary == "127.0.0.1:8100, no authentication"
+    assert state.admin_web["auth_mode"] == "none"
+    assert state.admin_web["password_configured"] is False
+    assert "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET" in secret_text
+    assert "AGENT_SANDBOX_ADMIN_WEB_PASSWORD" not in secret_text
+
+
 def test_setup_plan_is_ready_after_required_items_and_preflight(tmp_path: Path) -> None:
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -93,12 +116,47 @@ def test_setup_doctor_json_reports_initial_checklist(tmp_path: Path) -> None:
     payload = json.loads(result.output)
     statuses = {item["id"]: item["status"] for item in payload["checklist"]}
     assert payload["paths"]["project_dir"] == str(ROOT)
+    assert "setup_profile" not in statuses
     assert statuses["secret_storage"] == "needs input"
     assert statuses["execution_model"] == "needs input"
     assert statuses["launch_verify"] == "blocked"
 
 
-def test_setup_tui_explains_setup_profile_choice(tmp_path: Path, monkeypatch) -> None:
+def test_setup_writes_admin_web_no_auth_config_without_placeholder_password(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    config_dir = project_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "admin-web.env.example").write_text(
+        (ROOT / "config" / "admin-web.env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (config_dir / "firewall.env.example").write_text("", encoding="utf-8")
+    manager = SetupManager(project_dir=project_dir, runtime_dir=project_dir / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    state = manager.configure_admin_web(
+        state,
+        host="127.0.0.1",
+        port="8100",
+        username="operator",
+        auth_mode="none",
+    )
+
+    manager._write_config_files(state)
+
+    admin_env = (config_dir / "admin-web.env").read_text(encoding="utf-8")
+    assert 'AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE="none"' in admin_env
+    assert 'AGENT_SANDBOX_ADMIN_WEB_USERNAME="operator"' in admin_env
+    assert 'AGENT_SANDBOX_ADMIN_WEB_PASSWORD=""' in admin_env
+    assert 'AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET=""' in admin_env
+    assert "replace-with-real-password" not in admin_env
+
+
+def test_setup_tui_omits_nonfunctional_setup_profile_choice(
+    tmp_path: Path, monkeypatch
+) -> None:
     clear_calls = []
     monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: clear_calls.append(True))
     runner = CliRunner()
@@ -111,17 +169,43 @@ def test_setup_tui_explains_setup_profile_choice(tmp_path: Path, monkeypatch) ->
             "--project-dir",
             str(ROOT),
         ],
-        input="y\n2\n1\nq\n",
+        input="y\nq\n",
     )
 
     assert result.exit_code == 0
-    assert "This choice tells Evander whether to optimize defaults" in result.output
-    assert "Choose local workstation when you are evaluating Evander" in result.output
-    assert "Choose dedicated single-machine host" in result.output
-    assert result.output.index("This choice tells Evander") < result.output.index(
-        "1. Local workstation / evaluation"
+    assert "Setup profile" not in result.output
+    assert "Local workstation / evaluation" not in result.output
+    assert "Dedicated single-machine host" not in result.output
+    assert len(clear_calls) >= 2
+
+
+def test_setup_tui_supports_discouraged_no_auth_admin_web(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    manager.save_state(state)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "setup",
+            "--config",
+            str(tmp_path / "runtime"),
+            "--project-dir",
+            str(ROOT),
+        ],
+        input="y\n2\n\n\noperator\n2\ny\nq\n",
     )
-    assert len(clear_calls) >= 4
+
+    assert result.exit_code == 0
+    assert "No authentication (discouraged)" in result.output
+    assert "grants full admin access to anyone" in result.output
+    payload = json.loads((tmp_path / "runtime" / "setup-wizard" / "state.json").read_text())
+    assert payload["admin_web"]["auth_mode"] == "none"
+    assert payload["admin_web"]["password_configured"] is False
 
 
 def test_setup_admin_assistant_verification_queues_smoke_message(

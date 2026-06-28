@@ -14,6 +14,9 @@
   what each choice means before selecting an option.
 - Cleared the terminal between first-run setup menu selections so each checklist
   or decision screen starts cleanly.
+- Added an explicit discouraged Admin Web no-auth setup option for isolated
+  evaluation hosts.
+- Removed the setup profile prompt because it did not yet change setup behavior.
 - Stored setup draft state under `runtime/setup-wizard/state.json` while keeping
   entered secret values in a host-local secret env file.
 
