@@ -206,6 +206,7 @@ class TeamCommandApplyResult:
     created_domain_ids: list[str] = field(default_factory=list)
     created_event_ids: list[str] = field(default_factory=list)
     outbox_records: list[TeamOutboxRecord | Mapping[str, Any]] = field(default_factory=list)
+    progress_classification: str | None = None
 
 
 TeamDeliverableArtifactPublisher = Callable[..., Mapping[str, Any]]
@@ -3564,7 +3565,8 @@ class TeamStateRepository:
                             "errors": list(review_result["errors"]),
                         },
                     )
-                created_review_ids.append(created_id)
+                if _review_request_was_created(review_result, created_id):
+                    created_review_ids.append(created_id)
             for review_id in created_review_ids:
                 review = state.review_requests[review_id]
                 _mark_agent_work_due(
@@ -3582,6 +3584,9 @@ class TeamStateRepository:
                     "deliverable_id": deliverable_id,
                     "created_deliverable_ids": [deliverable_id],
                     "created_review_request_ids": created_review_ids,
+                    "existing_review_request_ids": list(
+                        review_result.get("existing_review_request_ids", [])
+                    ),
                     "created_inbox_item_ids": created_inbox_ids,
                     "published_artifact_refs": published_refs,
                     "published_deliverable_artifacts": [
@@ -3697,28 +3702,40 @@ class TeamStateRepository:
                     },
                 )
             review = state.review_requests[created_id]
-            _mark_agent_work_due(state, agent_id=review.reviewer_agent_id, now=utc_now())
+            existing_review_ids = list(review_result.get("existing_review_request_ids", []))
+            created_review_ids = (
+                [created_id] if _review_request_was_created(review_result, created_id) else []
+            )
+            if created_review_ids:
+                _mark_agent_work_due(state, agent_id=review.reviewer_agent_id, now=utc_now())
+            created_inbox_ids = list(review_result["created_inbox_item_ids"])
+            if existing_review_ids:
+                next_action_hints = [
+                    "Review request already exists for this deliverable and reviewer; "
+                    "wait for the assigned reviewer to decide it before treating the "
+                    "deliverable or task as accepted."
+                ]
+            else:
+                next_action_hints = [
+                    "Review request created; wait for the assigned reviewer to "
+                    "decide it before treating the deliverable or task as accepted."
+                ]
+            progress_made = bool(created_review_ids or normalized_handled_ids)
             return TeamCommandApplyResult(
                 response_payload={
                     "review_request_id": created_id,
-                    "created_review_request_ids": [created_id],
-                    "created_inbox_item_ids": list(
-                        review_result["created_inbox_item_ids"]
-                    ),
+                    "created_review_request_ids": created_review_ids,
+                    "existing_review_request_ids": existing_review_ids,
+                    "created_inbox_item_ids": created_inbox_ids,
                     "deliverable_id": review.deliverable_id,
                     "reviewer_agent_id": review.reviewer_agent_id,
                     "intent_recorded": True,
-                    "async_effect_pending": True,
-                    "next_action_hints": [
-                        "Review request created; wait for the assigned reviewer to "
-                        "decide it before treating the deliverable or task as accepted."
-                    ],
-                    "progress_made": True,
+                    "async_effect_pending": bool(created_inbox_ids),
+                    "next_action_hints": next_action_hints,
+                    "progress_made": progress_made,
                 },
-                created_domain_ids=[
-                    created_id,
-                    *list(review_result["created_inbox_item_ids"]),
-                ],
+                created_domain_ids=[*created_review_ids, *created_inbox_ids],
+                progress_classification="review_request" if progress_made else "none",
             )
 
         return self._execute_team_command(
@@ -4010,6 +4027,10 @@ class TeamStateRepository:
                 handled_inbox_item_ids=normalized_handled_ids,
                 apply_result=apply_result,
             )
+            activity_progress_classification = (
+                _optional_text(apply_result.progress_classification)
+                or normalized_context.progress_classification
+            )
             _append_response_outbox_record_ids(response, stored_outbox_records)
             tx.append_dispatch_activity(
                 TeamDispatchActivity(
@@ -4025,7 +4046,7 @@ class TeamStateRepository:
                     correlation_id=normalized_context.correlation_id,
                     causation_id=normalized_context.causation_id,
                     status=TeamDispatchActivityStatus.SUCCESS,
-                    progress_classification=normalized_context.progress_classification,
+                    progress_classification=activity_progress_classification,
                     action_record_id=_optional_text(response.get("action_record_id")),
                     audit_record_id=_optional_text(response.get("audit_record_id")),
                 )
@@ -7857,6 +7878,12 @@ class TeamStateRepository:
                 if _active_stand_downs_for_agent(state_model, agent.id):
                     continue
                 runtime = state_model.agent_runtimes.get(agent.id)
+                if runtime is not None:
+                    _clear_completed_chat_dispatch_lease(
+                        state_model,
+                        runtime,
+                        now=effective_now,
+                    )
                 if (
                     runtime is not None
                     and runtime.wake_leased_until is not None
@@ -7881,6 +7908,11 @@ class TeamStateRepository:
                 runtime = state_model.agent_runtimes.setdefault(
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
+                )
+                _clear_completed_chat_dispatch_lease(
+                    state_model,
+                    runtime,
+                    now=effective_now,
                 )
                 if (
                     runtime.wake_leased_until is not None
@@ -8598,6 +8630,7 @@ class TeamStateRepository:
             "created_task_ids": [],
             "created_status_request_ids": [],
             "created_review_request_ids": [],
+            "existing_review_request_ids": [],
             "decided_review_request_ids": [],
             "updated_goal_ids": [],
             "operator_escalation_event_ids": [],
@@ -9235,8 +9268,9 @@ class TeamStateRepository:
                     _append_action_item_error(result, "review_requests", index, exc)
                     continue
                 if created_id is not None:
-                    result["created_review_request_ids"].append(created_id)
-                    _mark_progress()
+                    if _review_request_was_created(result, created_id):
+                        result["created_review_request_ids"].append(created_id)
+                        _mark_progress()
 
             for index, decision in enumerate(
                 _list_of_mappings(normalized_action.get("review_decisions"), "review_decisions")
@@ -13451,7 +13485,11 @@ def _runtime_attention_payloads_for_agent(
 
 
 def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
-    return [item for item in items if item.response_requested]
+    return [item for item in items if _inbox_item_can_wake(item)]
+
+
+def _inbox_item_can_wake(item: AgentInboxItem) -> bool:
+    return item.response_requested or item.priority != TeamInboxPriority.LOW
 
 
 def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
@@ -13857,6 +13895,7 @@ def _mark_agent_work_due(
     now: datetime,
 ) -> None:
     runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
+    _clear_completed_chat_dispatch_lease(state, runtime, now=now)
     runtime.no_progress_count = 0
     runtime.next_wake_at = None
     _clear_low_priority_batch(runtime)
@@ -13936,7 +13975,7 @@ def _append_agent_wake_requested_event_for_inbox_item(
     result: dict[str, Any],
     now: datetime,
 ) -> None:
-    if not item.response_requested or item.priority == TeamInboxPriority.LOW:
+    if not _inbox_item_can_wake(item) or item.priority == TeamInboxPriority.LOW:
         return
     _append_agent_wake_requested_event(
         state,
@@ -13998,6 +14037,7 @@ def _agent_immediate_wake_request(
     runtime = state.agent_runtimes.get(agent.id)
     if runtime is None:
         runtime = AgentRuntime(agent_id=agent.id)
+    _clear_completed_chat_dispatch_lease(state, runtime, now=now)
     if (
         runtime.wake_leased_until is not None
         and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
@@ -14543,6 +14583,39 @@ def _mark_chat_dispatch_message_replied_from_activity(
                 preview=f"Replied: {_chat_preview(source_message.body)}",
             )
     return source_message.id
+
+
+def _clear_completed_chat_dispatch_lease(
+    state: TeamState,
+    runtime: AgentRuntime,
+    *,
+    now: datetime,
+) -> bool:
+    dispatch_id = _optional_text(runtime.active_dispatch_id)
+    if dispatch_id is None or not dispatch_id.startswith("team-chat:"):
+        return False
+    if (
+        runtime.wake_leased_until is not None
+        and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
+    ):
+        return False
+    message = next(
+        (
+            item
+            for item in state.conversation_messages.values()
+            if item.dispatch_id == dispatch_id
+            and item.sender == "operator"
+            and item.status in {"replied", "failed"}
+        ),
+        None,
+    )
+    if message is None:
+        return False
+    runtime.active_dispatch_id = None
+    runtime.wake_leased_until = None
+    runtime.wake_reason = None
+    runtime.updated_at = now
+    return True
 
 
 def _chat_dispatch_finalization_error(
@@ -15486,6 +15559,14 @@ def _apply_review_request(
     if profile_error is not None:
         result["errors"].append(profile_error)
         return None
+    existing_review = _active_review_request_for_reviewer(
+        state,
+        deliverable_id=deliverable_id,
+        reviewer_id=reviewer_id,
+    )
+    if existing_review is not None:
+        result.setdefault("existing_review_request_ids", []).append(existing_review.id)
+        return existing_review.id
     review_id = _optional_text(request.get("id"))
     if review_id is None:
         review_id = _generated_id(
@@ -15559,6 +15640,34 @@ def _apply_review_request(
         now=now,
     )
     return review.id
+
+
+def _active_review_request_for_reviewer(
+    state: TeamState,
+    *,
+    deliverable_id: str,
+    reviewer_id: str,
+) -> ReviewRequest | None:
+    matches = [
+        review
+        for review in state.review_requests.values()
+        if review.deliverable_id == deliverable_id
+        and review.reviewer_agent_id == reviewer_id
+        and review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
+    ]
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda review: (
+            review.created_at or datetime.min.replace(tzinfo=UTC),
+            review.id,
+        )
+    )
+    return matches[0]
+
+
+def _review_request_was_created(result: Mapping[str, Any], review_request_id: str) -> bool:
+    return review_request_id not in set(result.get("existing_review_request_ids") or [])
 
 
 def _apply_review_decision(

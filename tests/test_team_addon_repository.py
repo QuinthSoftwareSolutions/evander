@@ -2615,6 +2615,120 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
     assert state.agent_runtimes["backend"].wake_leased_until is None
 
 
+def test_live_replied_chat_dispatch_lease_blocks_normal_inbox_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you summarize the blocker?",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    state, message = repo.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id="team-chat:live",
+        lease_seconds=3600,
+    )
+
+    state, result = repo.reply_to_chat_command(
+        session_id="session-backend",
+        conversation_id=conversation.id,
+        message_id=message.id,
+        body="The dependency task is still open.",
+        request_id="request-chat-reply-live",
+    )
+
+    def _pin_live_chat_lease(state):
+        state.agent_runtimes["backend"].wake_leased_until = now + timedelta(minutes=10)
+        state.inbox["normal-note"] = AgentInboxItem(
+            id="normal-note",
+            recipient_agent_id="backend",
+            sender_agent_id="worker",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+            created_at=now + timedelta(minutes=1),
+            updated_at=now + timedelta(minutes=1),
+        )
+        return state
+
+    repo.update(_pin_live_chat_lease)
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(minutes=2),
+    )
+
+    assert result["success"] is True
+    assert state.conversation_messages[message.id].status == "replied"
+    assert leases == []
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-chat:live"
+    assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
+def test_completed_chat_dispatch_lease_does_not_block_normal_inbox_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you summarize the blocker?",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    state, message = repo.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id="team-chat:stale",
+        lease_seconds=3600,
+    )
+
+    def _leave_replied_chat_dispatch_stale(state):
+        state.conversation_messages[message.id].status = "replied"
+        state.conversation_messages[message.id].updated_at = datetime(
+            2026, 1, 1, 0, 1, tzinfo=UTC
+        )
+        state.agent_runtimes["backend"].wake_leased_until = datetime(
+            2026, 1, 1, 0, 2, tzinfo=UTC
+        )
+        state.inbox["normal-note"] = AgentInboxItem(
+            id="normal-note",
+            recipient_agent_id="backend",
+            sender_agent_id="worker",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+            created_at=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+            updated_at=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_leave_replied_chat_dispatch_stale)
+
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, 0, 3, tzinfo=UTC),
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "inbox"
+    assert [item["id"] for item in leases[0]["inbox"]] == ["normal-note"]
+    assert state.agent_runtimes["backend"].active_dispatch_id != "team-chat:stale"
+    assert state.agent_runtimes["backend"].wake_reason == "inbox"
+
+
 def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     tmp_path: Path,
 ) -> None:
@@ -6288,6 +6402,35 @@ def test_no_reply_inbox_does_not_wake_waiting_review_producer(
     assert runtime.low_priority_batch_cycle_count == 0
 
 
+def test_normal_no_reply_inbox_wakes_recipient(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _add_normal_note(state):
+        state.inbox["normal-note"] = AgentInboxItem(
+            id="normal-note",
+            recipient_agent_id="backend",
+            sender_agent_id="worker",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_add_normal_note)
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "inbox"
+    assert [item["id"] for item in leases[0]["inbox"]] == ["normal-note"]
+
+
 def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     tmp_path: Path,
 ) -> None:
@@ -7004,8 +7147,11 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
     assert result["success"] is True
     assert len(result["operator_escalation_event_ids"]) == 1
     assert state.agent_runtimes["manager"].no_progress_count == 0
-    assert len(result["events"]) == 1
-    event = result["events"][0]
+    event = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.operator.escalation_requested"
+    )
     assert event["event_type"] == "team.operator.escalation_requested"
     assert event["payload"] == {
         "team_id": "team",
@@ -7016,6 +7162,14 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
         "urgency": "high",
         "project_id": "project",
     }
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "manager"
+    assert wake_events[0]["payload"]["reason"] == "inbox"
     escalation_items = [
         item
         for item in state.inbox.values()
@@ -7181,6 +7335,108 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
         "summary": "Only schema checks ran before review.",
         "evidence_refs": [],
     }
+
+
+def test_request_review_command_is_idempotent_for_active_reviewer_request(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
+
+    _state, first = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Check the slice carefully.",
+        request_id="request-review-1",
+    )
+    state, second = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Please review the same slice again.",
+        request_id="request-review-2",
+    )
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["review_request_id"] == first["review_request_id"]
+    assert second["created_review_request_ids"] == []
+    assert second["existing_review_request_ids"] == [first["review_request_id"]]
+    assert second["created_inbox_item_ids"] == []
+    assert any("already exists" in hint for hint in second["next_action_hints"])
+    assert list(state.review_requests) == [first["review_request_id"]]
+    review_inbox_items = [
+        item
+        for item in state.inbox.values()
+        if item.payload.get("review_request_id") == first["review_request_id"]
+        and item.payload.get("kind") == "review_request"
+    ]
+    assert len(review_inbox_items) == 1
+
+
+def test_duplicate_request_review_command_counts_as_no_progress_on_finalize(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _state, created = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Check the slice carefully.",
+                }
+            ],
+        },
+    )
+    assert created["success"] is True
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-duplicate-review",
+    )
+
+    def _set_no_progress_count(state):
+        state.agent_runtimes["lead"].no_progress_count = 2
+        return state
+
+    repo.update(_set_no_progress_count)
+
+    _state, duplicate = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Please review the same slice again.",
+        request_id="request-review-duplicate",
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["progress_made"] is False
+    activities = repo.list_dispatch_activity(
+        dispatch_id="dispatch-duplicate-review",
+        request_id="request-review-duplicate",
+    )
+    assert len(activities) == 1
+    assert activities[0].progress_classification == "none"
+
+    state, finalized = repo.finalize_agent_dispatch_from_activity(
+        session_id="session-lead",
+        dispatch_id="dispatch-duplicate-review",
+    )
+
+    assert finalized["success"] is True
+    assert finalized["progress_made"] is False
+    runtime = state.agent_runtimes["lead"]
+    assert runtime.no_progress_count == 3
+    assert runtime.last_progress_at is None
 
 
 def test_apply_agent_action_review_request_rejected_for_unrelated_agent(

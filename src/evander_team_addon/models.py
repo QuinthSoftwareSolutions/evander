@@ -3448,7 +3448,7 @@ def _runtime_agent_wake_due(
         for item in state.inbox.values()
         if item.recipient_agent_id == agent.id and item.state == TeamInboxItemState.PENDING
     ]
-    wake_inbox = [item for item in pending_inbox if item.response_requested]
+    wake_inbox = [item for item in pending_inbox if _runtime_inbox_item_can_wake(item)]
     immediate_inbox = [item for item in wake_inbox if item.priority != TeamInboxPriority.LOW]
     low_priority_inbox = [item for item in wake_inbox if item.priority == TeamInboxPriority.LOW]
     action_feedback = _latest_undelivered_action_feedback_for_agent(state, agent.id)
@@ -3547,6 +3547,10 @@ def _runtime_low_priority_batch_due(runtime: AgentRuntime) -> bool:
         else _DEFAULT_LOW_PRIORITY_WAKE_AFTER_CYCLES
     )
     return runtime.low_priority_batch_cycle_count >= due_after_cycles
+
+
+def _runtime_inbox_item_can_wake(item: AgentInboxItem) -> bool:
+    return item.response_requested or item.priority != TeamInboxPriority.LOW
 
 
 def team_session_health_payload(

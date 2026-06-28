@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-06-28 - Team Queued Retry Finalization Guard
+
+- Ignored queued prompt retry markers when finalizing Team dispatch leases, so
+  normal queue replay can remove queued records without causing old failed
+  enqueue attempts to close the active dispatch.
+
+## 2026-06-28 - Team Chat Live Lease Guard
+
+- Kept active Team Chat dispatch leases live after `team_reply_to_chat` marks an
+  operator message replied, preventing scheduled or inbox wakes from minting an
+  overlapping dispatch before finalization releases the original lease.
+
+## 2026-06-28 - Evander Manual Operational Corrections
+
+- Corrected Evander user manual guidance for Workers-managed services, Bokio
+  prepared-action approvals, and add-on loader configuration boundaries.
+
+## 2026-06-28 - Team Duplicate Review Progress Accounting
+
+- Classified duplicate-only Team review request commands as non-progress in
+  dispatch activity records, keeping dispatch finalization from resetting
+  no-progress counters when no review or inbox item was created.
+
+## 2026-06-27 - Team Review Request Idempotency
+
+- Made Team review requests idempotent for an active deliverable/reviewer pair
+  so duplicate handoffs return the existing review instead of creating another
+  reviewer inbox item.
+
+## 2026-06-27 - Team Wake Lease Release Fix
+
+- Released Team wake leases when standalone agent prompt executions finish, so
+  completed container-worker wakes no longer block follow-up inbox work until the
+  lease TTL expires.
+
+## 2026-06-26 - Team Normal Inbox Wake Fix
+
+- Treated normal/high priority Team inbox items as wakeable even when they do
+  not request a reply, keeping low-priority FYI updates batched.
+- Cleared completed Team chat dispatch leases before leasing later work so
+  replied chat wakes cannot suppress subsequent inbox wakes.
+
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
 
 - Preserved caller-supplied dispatch ids when busy agent prompts are queued and
