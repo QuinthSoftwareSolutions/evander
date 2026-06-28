@@ -291,7 +291,7 @@ def _require_workflow_run_control_access(
 def _workflow_run_graphs_for_document(
     service: AdminService, auth: AdminWebAuth, request: Request
 ) -> tuple[list[object], list[dict[str, Any]], set[str]]:
-    document = service.workflow_config_admin.read_composed_workflow_editor_document()
+    document = service.read_composed_workflow_editor_document()
     readable_graphs, readable_node_ids = _require_workflow_run_read_access(
         auth=auth, request=request, graphs=document.graphs
     )
@@ -425,18 +425,18 @@ async def workflow_run_events(
     auth: AdminWebAuth | None = None,
 ) -> AsyncIterator[str]:
     last_state_key: str | None = None
-    journal = service.workflow_config_admin.workflow_event_journal()
+    journal = service.workflow_event_journal()
     cursor = journal.cursor()
 
     async def snapshot_event() -> tuple[str, str] | None:
         if await request.is_disconnected():
             return None
         try:
-            snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
+            snapshot = service.read_workflow_run_snapshot()
             if auth is None:
                 payload = json.dumps(snapshot.model_dump(mode="json"))
             else:
-                document = service.workflow_config_admin.read_composed_workflow_editor_document()
+                document = service.read_composed_workflow_editor_document()
                 _, readable_graphs, readable_node_ids = _workflow_run_graphs_for_document(
                     service, auth, request
                 )
@@ -517,7 +517,7 @@ def workflow_routes(
             requested_workflow_pack = request.query_params.get("workflow_pack")
             if requested_workflow_pack is None:
                 composed_document = (
-                    service.workflow_config_admin.read_composed_workflow_editor_document()
+                    service.read_composed_workflow_editor_document()
                 )
                 document = composed_document
                 readable_graphs = _readable_graphs_for_document(
@@ -526,7 +526,7 @@ def workflow_routes(
                     graphs=document.graphs,
                 )
                 for pack in composed_document.workflow_packs:
-                    candidate = service.workflow_config_admin.read_workflow_editor_document(
+                    candidate = service.read_workflow_editor_document(
                         workflow_pack=pack.reference
                     )
                     candidate_readable_graphs = _readable_graphs_for_document(
@@ -545,7 +545,7 @@ def workflow_routes(
                     readable_graphs = candidate_readable_graphs
                     break
             else:
-                document = service.workflow_config_admin.read_workflow_editor_document(
+                document = service.read_workflow_editor_document(
                     workflow_pack=requested_workflow_pack
                 )
                 readable_graphs = _readable_graphs_for_document(
@@ -576,7 +576,7 @@ def workflow_routes(
                 request.query_params.get("directory_path") or "root"
             )
             auth.require_permission(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path)
-            catalog = service.workflow_config_admin.read_workflow_editor_catalog(
+            catalog = service.read_workflow_editor_catalog(
                 directory_path=directory_path
             )
         except ValueError as exc:
@@ -587,8 +587,8 @@ def workflow_routes(
 
     async def get_runs(request: Request) -> JSONResponse:
         try:
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
-            snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
+            document = service.read_composed_workflow_editor_document()
+            snapshot = service.read_workflow_run_snapshot()
             if not document.graphs:
                 auth.require_permission(request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root")
                 return JSONResponse(snapshot.model_dump(mode="json"))
@@ -608,7 +608,7 @@ def workflow_routes(
     async def get_run_search(request: Request) -> JSONResponse:
         query = request.query_params
         try:
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
+            document = service.read_composed_workflow_editor_document()
             graph_id = query.get("graph_id")
             node_id = query.get("node_id")
             if not document.graphs:
@@ -637,7 +637,7 @@ def workflow_routes(
                     auth.require_permission(
                         request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
                     )
-            payload = service.workflow_config_admin.read_workflow_run_search(
+            payload = service.read_workflow_run_search(
                 node_id=node_id,
                 graph_id=graph_id,
                 without_session=optional_bool_from_query(
@@ -660,7 +660,7 @@ def workflow_routes(
     async def get_run_detail(request: Request) -> JSONResponse:
         query = request.query_params
         try:
-            payload = service.workflow_config_admin.read_workflow_run_detail(
+            payload = service.read_workflow_run_detail(
                 run_id=query.get("run_id"),
                 event_id=query.get("event_id"),
                 trigger_event_id=query.get("trigger_event_id"),
@@ -668,7 +668,7 @@ def workflow_routes(
                 session_id=query.get("session_id"),
                 artifact_id=query.get("artifact_id"),
             )
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
+            document = service.read_composed_workflow_editor_document()
             if not document.graphs:
                 auth.require_permission(
                     request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
@@ -697,15 +697,15 @@ def workflow_routes(
     async def clear_run(request: Request) -> JSONResponse:
         event_id = request.path_params.get("event_id", "")
         try:
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
-            payload = service.workflow_config_admin.read_workflow_run_detail(event_id=event_id)
+            document = service.read_composed_workflow_editor_document()
+            payload = service.read_workflow_run_detail(event_id=event_id)
             _require_workflow_run_control_access(
                 auth=auth,
                 request=request,
                 graphs=document.graphs,
                 node_ids=_workflow_run_detail_node_ids(payload),
             )
-            payload = service.workflow_config_admin.clear_workflow_run(event_id)
+            payload = service.clear_workflow_run(event_id)
         except ValueError as exc:
             status_code = 404 if "not found or already inactive" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)
@@ -716,14 +716,14 @@ def workflow_routes(
     async def dismiss_node_failures(request: Request) -> JSONResponse:
         node_id = request.path_params.get("node_id", "")
         try:
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
+            document = service.read_composed_workflow_editor_document()
             _require_workflow_run_control_access(
                 auth=auth,
                 request=request,
                 graphs=document.graphs,
                 node_ids=[node_id],
             )
-            payload = service.workflow_config_admin.dismiss_workflow_node_failures(node_id)
+            payload = service.dismiss_workflow_node_failures(node_id)
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:
@@ -733,15 +733,15 @@ def workflow_routes(
     async def resume_run(request: Request) -> JSONResponse:
         event_id = request.path_params.get("event_id", "")
         try:
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
-            payload = service.workflow_config_admin.read_workflow_run_detail(event_id=event_id)
+            document = service.read_composed_workflow_editor_document()
+            payload = service.read_workflow_run_detail(event_id=event_id)
             _require_workflow_run_control_access(
                 auth=auth,
                 request=request,
                 graphs=document.graphs,
                 node_ids=_workflow_run_detail_node_ids(payload),
             )
-            payload = service.workflow_config_admin.resume_workflow_run(event_id)
+            payload = service.resume_workflow_run(event_id)
         except ValueError as exc:
             status_code = 404 if "not resumable" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)
@@ -751,7 +751,7 @@ def workflow_routes(
 
     async def stream_runs(request: Request) -> StreamingResponse:
         try:
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
+            document = service.read_composed_workflow_editor_document()
             if document.graphs:
                 _require_workflow_run_read_access(auth=auth, request=request, graphs=document.graphs)
             else:
@@ -774,7 +774,7 @@ def workflow_routes(
             payload = await json_body(request)
             fallback_graphs = None
             if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
-                fallback_graphs = service.workflow_config_admin.read_workflow_editor_document(
+                fallback_graphs = service.read_workflow_editor_document(
                     workflow_pack=(
                         str(payload.get("workflow_pack"))
                         if payload.get("workflow_pack") is not None
@@ -789,7 +789,7 @@ def workflow_routes(
                 auth.require_permission(
                     request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path
                 )
-            validation = service.workflow_config_admin.validate_workflow_editor_document(
+            validation = service.validate_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
                 graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,
@@ -832,7 +832,7 @@ def workflow_routes(
             payload = await json_body(request)
             fallback_graphs = None
             if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
-                fallback_graphs = service.workflow_config_admin.read_workflow_editor_document(
+                fallback_graphs = service.read_workflow_editor_document(
                     workflow_pack=(
                         str(payload.get("workflow_pack"))
                         if payload.get("workflow_pack") is not None
@@ -850,7 +850,7 @@ def workflow_routes(
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
             expected_revision = expected_revision_from_payload(payload)
-            save_result = service.workflow_config_admin.save_workflow_editor_document(
+            save_result = service.save_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
                 graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,

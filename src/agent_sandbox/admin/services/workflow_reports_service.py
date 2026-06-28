@@ -1,15 +1,81 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import quote
 
-from agent_sandbox.admin import service as _admin_service
+from pydantic import BaseModel
 
-# Reuse AdminService payload models and workflow helper functions while the
-# model definitions remain in the compatibility module.
-for _name in dir(_admin_service):
-    if _name not in globals():
-        globals()[_name] = getattr(_admin_service, _name)
+from agent_sandbox.admin.service import (
+    CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
+    CONFORMANCE_REPORT_SNIPPET_LIMIT,
+    CONFORMANCE_REPORT_SPECS,
+    CONFORMANCE_REPORT_STALE_AFTER,
+    WORKFLOW_FAILURE_CLUSTER_DEFAULT_RECENT_THRESHOLD_SECONDS,
+    WORKFLOW_FAILURE_CLUSTER_EXAMPLE_LIMIT,
+    WORKFLOW_FAILURE_CLUSTER_LIMIT_MAX,
+    WORKFLOW_FAILURE_CLUSTER_STATE_PRIORITY,
+    WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT,
+    AgentRecord,
+    ApprovalRequest,
+    ConformanceReportPayload,
+    ConformanceRequirementSnippetPayload,
+    SessionManifest,
+    ToolCallAuditEntryPayload,
+    WorkflowFailureClusterExamplePayload,
+    WorkflowFailureClusterPayload,
+    WorkflowFailureClusterSourceKind,
+    WorkflowGraphActivityGraphPayload,
+    WorkflowGraphActivityNodePayload,
+    WorkflowRunAgentLinkPayload,
+    WorkflowRunApprovalLinkPayload,
+    WorkflowRunCandidateMatchPayload,
+    WorkflowRunCommunicationArtifactLinkPayload,
+    WorkflowRunDataAvailabilityPayload,
+    WorkflowRunDetailPayload,
+    WorkflowRunGraphPayload,
+    WorkflowRunGraphSnapshotPayload,
+    WorkflowRunLookupPayload,
+    WorkflowRunNodeActivityPayload,
+    WorkflowRunNodeDetailPayload,
+    WorkflowRunNodeRecordPayload,
+    WorkflowRunRecentNodeActivityPayload,
+    WorkflowRunRecoveryActionPayload,
+    WorkflowRunRecoveryPayload,
+    WorkflowRunSearchFilterPayload,
+    WorkflowRunSearchItemPayload,
+    WorkflowRunSearchPayload,
+    WorkflowRunSnapshotPayload,
+    WorkflowRunSummaryPayload,
+    WorkflowRunToolCallLinkPayload,
+    WorkflowRunTriggerEventPayload,
+    _as_utc,
+    _coerce_optional_datetime,
+    _coerce_optional_string,
+    _collect_workflow_artifact_ids,
+    _collect_workflow_keyed_values,
+    _iter_file_lines_reverse,
+    _join_conformance_process_output,
+    _merge_run_node_activity,
+    _normalize_workflow_failure_signature,
+    _read_json_object,
+    _read_merged_json_objects,
+    _tool_call_audit_entry_from_payload,
+    _trim_conformance_process_output,
+    _trim_conformance_text,
+    _utc_now,
+    connect_orchestration_db,
+    datetime_to_storage,
+    ensure_orchestration_schema,
+    json_loads_object,
+)
 
 
 if TYPE_CHECKING:

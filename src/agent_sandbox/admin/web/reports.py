@@ -115,7 +115,7 @@ def report_routes(
                 request.query_params.get("recent_seconds")
             )
 
-            document = service.workflow_config_admin.read_composed_workflow_editor_document()
+            document = service.read_composed_workflow_editor_document()
             readable_node_ids: set[str] | None = None
             if not document.graphs:
                 auth.require_permission(

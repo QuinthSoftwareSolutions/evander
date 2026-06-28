@@ -85,7 +85,7 @@ def register_admin_tools(
             )
             service = _admin_service()
             settings = service.read_assistant_settings()
-            workflow_runs = service.workflow_config_admin.read_workflow_run_snapshot()
+            workflow_runs = service.read_workflow_run_snapshot()
             result = {
                 "assistant": {
                     "enabled": bool(settings.get("enabled")),
@@ -201,10 +201,10 @@ def register_admin_tools(
         try:
             context.policy.require_tool(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT)
             service = _admin_service()
-            document = service.workflow_config_admin.read_workflow_editor_document()
+            document = service.read_workflow_editor_document()
             result = document.model_dump(mode="json")
             if include_runs:
-                runs = service.workflow_config_admin.read_workflow_run_snapshot()
+                runs = service.read_workflow_run_snapshot()
                 result["runs"] = runs.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -246,14 +246,14 @@ def register_admin_tools(
                 resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS
             )
             service = _admin_service()
-            document = service.workflow_config_admin.read_workflow_editor_document()
+            document = service.read_workflow_editor_document()
             result = {
                 "config_path": document.config_path,
                 "revision": document.revision,
                 "config": document.config,
             }
             if include_runs:
-                runs = service.workflow_config_admin.read_workflow_run_snapshot()
+                runs = service.read_workflow_run_snapshot()
                 result["runs"] = runs.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -416,7 +416,7 @@ def register_admin_tools(
                     raise ValueError(
                         "worker_id is required for worker_global config reads"
                     )
-                payload = service.workflow_config_admin.read_worker_global_config(
+                payload = service.read_worker_global_config(
                     target_worker_id
                 ).model_dump(mode="json")
                 result = {"scope": "worker_global", **payload}
@@ -589,10 +589,10 @@ def register_admin_tools(
             )
             _assistant_require_writable_scope(session, "config/workflow")
             service = _admin_service()
-            before = service.workflow_config_admin.read_workflow_editor_document(
+            before = service.read_workflow_editor_document(
                 workflow_pack=workflow_pack
             ).config
-            saved = service.workflow_config_admin.save_workflow_editor_document(
+            saved = service.save_workflow_editor_document(
                 config=config,
                 layout=layout,
                 workflow_pack=workflow_pack,
@@ -652,11 +652,11 @@ def register_admin_tools(
             params = parameters or {}
             normalized_operation = str(operation or "").strip()
             if normalized_operation == "clear_workflow_run":
-                result_payload = service.workflow_config_admin.clear_workflow_run(
+                result_payload = service.clear_workflow_run(
                     str(params.get("event_id") or "")
                 )
             elif normalized_operation == "resume_workflow_run":
-                result_payload = service.workflow_config_admin.resume_workflow_run(
+                result_payload = service.resume_workflow_run(
                     str(params.get("event_id") or "")
                 )
             else:

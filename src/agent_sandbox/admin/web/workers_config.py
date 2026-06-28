@@ -835,7 +835,7 @@ def _worker_detail(service: AdminService, worker_id: str) -> dict[str, Any]:
     summary = next((entry for entry in summaries if entry.worker_id == worker_id), None)
     if summary is None:
         raise ValueError(f"Unknown worker: {worker_id}")
-    config = service.workflow_config_admin.read_worker_global_config(worker_id)
+    config = service.read_worker_global_config(worker_id)
     return {
         "summary": _normalize_worker_summary(summary),
         "config": _json_payload(config),
@@ -1317,7 +1317,7 @@ def worker_config_routes(
         if expected_revision is None:
             return _error_response("expected_revision is required", status_code=428)
         try:
-            service.workflow_config_admin.write_worker_global_config(
+            service.write_worker_global_config(
                 worker_id, config, expected_revision=expected_revision
             )
             detail = _worker_detail(service, worker_id)

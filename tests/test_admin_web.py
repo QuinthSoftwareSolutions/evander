@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import agent_sandbox.admin.web.vms_issues as vms_issues_module
 from agent_sandbox.admin.service import AgentCreateOperation, AdminService
 from agent_sandbox.admin.service import (
@@ -2873,10 +2873,10 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
 
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "json",
@@ -3001,10 +3001,10 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     runtime_dir.mkdir(parents=True, exist_ok=True)
     _write_trigger_orchestrator_sqlite_config(tmp_path)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
 
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "sqlite",
