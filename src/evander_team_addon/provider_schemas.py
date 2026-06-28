@@ -71,6 +71,30 @@ class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamCreateTaskEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-task"]
+    team_id: ConfigValue
+    project_id: ConfigValue
+    owner_agent_id: ConfigValue
+    priority: ConfigValue
+    title: ConfigValue
+    description: ConfigValue
+    task_id: ConfigValue | None = None
+    case_id: ConfigValue | None = None
+    state: ConfigValue | None = None
+    parent_task_id: ConfigValue | None = None
+    dependency_task_ids: ConfigValue | None = None
+    created_by: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("dependency_task_ids")
+    @classmethod
+    def validate_dependency_task_ids(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:create-task dependency_task_ids must be a JSON array")
+
+
 class TeamCreateCaseEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-case"]
     case_id: ConfigValue | None = None
@@ -328,6 +352,17 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "team_id": {"type": ["string", "null"]},
         "project_id": {"type": ["string", "null"]},
         "task_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-task": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "task_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "owner_agent_id": {"type": ["string", "null"]},
+        "created": {"type": "boolean"},
+        "task": {"type": ["object", "null"]},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-case": {

@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Added `effect:team:create-task` so workflows can directly create or update
+  operator-authored Team Add-on tasks for a project owner.
+
 - Cleaned up the Team Add-on Projects tab with horizontal project tabs, hidden
   create forms, collapsed paged deliverable/release sections, and default-hidden
   rejected delivery records.

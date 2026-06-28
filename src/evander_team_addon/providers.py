@@ -87,6 +87,7 @@ from .mcp import (
 from .models import (
     RolePermission,
     TeamState,
+    TeamTaskState,
     team_session_health_payload,
     team_state_payload,
 )
@@ -96,6 +97,7 @@ from .provider_schemas import (
     TeamConsolidateGitBranchesEffectDefinition,
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
+    TeamCreateTaskEffectDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
@@ -479,6 +481,102 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Requesting session ID",
                 "string",
                 description="Optional Truman session that requested the directive.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:create-task",
+        "Create Team task",
+        "Create or update an operator-authored Team task for a project agent.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                required=True,
+                description="Team that owns the project receiving the task.",
+                placeholder="team-accounting",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                required=True,
+                description="Team project that owns the task.",
+                placeholder="project-month-end",
+            ),
+            _catalog_field(
+                "owner_agent_id",
+                "Owner agent ID",
+                "string",
+                required=True,
+                description="Persistent Team agent responsible for the task.",
+            ),
+            _catalog_field(
+                "priority",
+                "Priority",
+                "number",
+                required=True,
+                description="Task queue priority; lower numbers sort earlier.",
+                default_value=1,
+                placeholder="1",
+            ),
+            _catalog_field(
+                "title",
+                "Title",
+                "string",
+                required=True,
+                description="Short task title shown in project and agent task lists.",
+            ),
+            _catalog_field(
+                "description",
+                "Description",
+                "string",
+                required=True,
+                multiline=True,
+                description="Work instructions for the owning agent.",
+            ),
+            _catalog_field(
+                "task_id",
+                "Task ID",
+                "string",
+                description="Optional stable task id. Existing ids update the matching task.",
+            ),
+            _catalog_field(
+                "case_id",
+                "Case ID",
+                "string",
+                description="Optional Team case to link to the task.",
+            ),
+            _catalog_field(
+                "state",
+                "Initial state",
+                "string",
+                description="Initial task state for new tasks. Leave blank for pending.",
+                default_value="pending",
+                placeholder="pending",
+            ),
+            _catalog_field(
+                "parent_task_id",
+                "Parent task ID",
+                "string",
+                description="Optional parent task in the same project.",
+            ),
+            _catalog_field(
+                "dependency_task_ids",
+                "Dependency task IDs",
+                "json",
+                description="Optional same-project task ids that must be satisfied first.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "created_by",
+                "Created by",
+                "string",
+                description="Operator or workflow actor recorded as the task creator.",
+                placeholder="workflow",
             ),
             _revision_field(),
         ],
@@ -1614,6 +1712,128 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
             "task_id": item.task_id,
             "error": None,
         }
+
+
+class TeamCreateTaskEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateTaskEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "team_id",
+            "project_id",
+            "owner_agent_id",
+            "priority",
+            "title",
+            "description",
+            "task_id",
+            "case_id",
+            "state",
+            "parent_task_id",
+            "dependency_task_ids",
+            "created_by",
+            "expected_revision",
+        )
+        definition_fields = _configured_definition_fields(self.effect_definition)
+        resolved_fields: set[str] = set()
+        if resolved_config:
+            resolved_fields = {str(key) for key in resolved_config}
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        task_id = _optional_text(payload.get("task_id"))
+        team_id = _optional_text(payload.get("team_id"))
+        project_id = _optional_text(payload.get("project_id"))
+        owner_agent_id = _optional_text(payload.get("owner_agent_id"))
+        current_state: TeamState | None = None
+        try:
+            current_state = repo.read()
+            normalized_team_id = _required_text(team_id, "team_id")
+            normalized_project_id = _required_text(project_id, "project_id")
+            normalized_owner_id = _required_text(owner_agent_id, "owner_agent_id")
+            normalized_priority = _optional_int(payload.get("priority"), default=None)
+            if normalized_priority is None:
+                raise ValueError("priority is required")
+            _validate_create_task_effect_scope(
+                current_state,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                owner_agent_id=normalized_owner_id,
+                task_id=task_id,
+            )
+            case_configured = _payload_field_configured(
+                "case_id",
+                definition_fields=definition_fields,
+                resolved_fields=resolved_fields,
+            )
+            parent_configured = _payload_field_configured(
+                "parent_task_id",
+                definition_fields=definition_fields,
+                resolved_fields=resolved_fields,
+            )
+            dependencies_configured = _payload_field_configured(
+                "dependency_task_ids",
+                definition_fields=definition_fields,
+                resolved_fields=resolved_fields,
+            )
+            before_task_ids = set(current_state.tasks)
+            state = repo.create_or_reprioritize_task(
+                task_id=task_id,
+                owner_agent_id=normalized_owner_id,
+                project_id=normalized_project_id,
+                case_id=_optional_text(payload.get("case_id")),
+                set_case_id=case_configured,
+                priority=normalized_priority,
+                title=_required_text(payload.get("title"), "title"),
+                description=_required_text(payload.get("description"), "description"),
+                created_by_actor=_optional_text(payload.get("created_by")) or "workflow",
+                state=TeamTaskState(_optional_text(payload.get("state")) or "pending"),
+                parent_task_id=_optional_text(payload.get("parent_task_id")),
+                set_parent_task_id=parent_configured,
+                dependency_task_ids=(
+                    _string_list(payload.get("dependency_task_ids"), "dependency_task_ids")
+                    if dependencies_configured
+                    else None
+                ),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _task_effect_error_result(
+                revision=exc.current_revision,
+                task_id=task_id,
+                team_id=team_id,
+                project_id=project_id,
+                owner_agent_id=owner_agent_id,
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            revision = current_state.revision if current_state is not None else repo.read().revision
+            return _task_effect_error_result(
+                revision=revision,
+                task_id=task_id,
+                team_id=team_id,
+                project_id=project_id,
+                owner_agent_id=owner_agent_id,
+                error=str(exc),
+            )
+        created_task_ids = sorted(set(state.tasks) - before_task_ids)
+        effective_task_id = (
+            task_id
+            if task_id is not None and task_id in state.tasks
+            else created_task_ids[0]
+            if created_task_ids
+            else task_id
+        )
+        return _task_effect_success_result(
+            state,
+            task_id=effective_task_id,
+            created=bool(created_task_ids),
+        )
 
 
 class TeamCreateCaseEffectProvider(EffectProviderBase):
@@ -2821,6 +3041,7 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:create-operator-directive": (
                 TeamCreateOperatorDirectiveEffectProvider
             ),
+            "effect:team:create-task": TeamCreateTaskEffectProvider,
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
@@ -2866,6 +3087,9 @@ def register_providers() -> ProviderPluginRegistration:
                     TeamCreateOperatorDirectiveEffectDefinition,
                     node,
                 )
+            ),
+            "effect:team:create-task": (
+                lambda node: _materialize(TeamCreateTaskEffectDefinition, node)
             ),
             "effect:team:create-case": (
                 lambda node: _materialize(TeamCreateCaseEffectDefinition, node)
@@ -4519,6 +4743,92 @@ def _case_effect_error_result(
     if current_revision is not None:
         result["current_revision"] = current_revision
     return result
+
+
+def _task_effect_success_result(
+    state: TeamState,
+    *,
+    task_id: str | None,
+    created: bool,
+) -> dict[str, Any]:
+    task = state.tasks.get(task_id or "")
+    task_payload = task.model_dump(mode="json") if task is not None else None
+    project = state.projects.get(task.project_id) if task is not None else None
+    return {
+        "success": task is not None,
+        "revision": state.revision,
+        "task_id": task.id if task is not None else task_id,
+        "team_id": project.team_id if project is not None else None,
+        "project_id": task.project_id if task is not None else None,
+        "owner_agent_id": task.owner_agent_id if task is not None else None,
+        "created": created,
+        "task": task_payload,
+        "error": None if task is not None else "task was not found after mutation",
+    }
+
+
+def _task_effect_error_result(
+    *,
+    revision: int,
+    task_id: str | None,
+    team_id: str | None,
+    project_id: str | None,
+    owner_agent_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "task_id": task_id,
+        "team_id": team_id,
+        "project_id": project_id,
+        "owner_agent_id": owner_agent_id,
+        "created": False,
+        "task": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
+
+
+def _validate_create_task_effect_scope(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str,
+    owner_agent_id: str,
+    task_id: str | None,
+) -> None:
+    if team_id not in state.teams:
+        raise ValueError(f"team {team_id} does not exist")
+    project = state.projects.get(project_id)
+    if project is None:
+        raise ValueError(f"project {project_id} does not exist")
+    if project.team_id != team_id:
+        raise ValueError(f"project {project_id} does not belong to team {team_id}")
+    owner = state.agents.get(owner_agent_id)
+    if owner is None:
+        raise ValueError(f"task owner {owner_agent_id} does not exist")
+    if owner.team_id != team_id:
+        raise ValueError(f"task owner {owner_agent_id} does not belong to team {team_id}")
+    if task_id is None:
+        return
+    existing_task = state.tasks.get(task_id)
+    if existing_task is None:
+        return
+    if existing_task.project_id != project_id:
+        raise ValueError(
+            f"task {task_id} belongs to project {existing_task.project_id}, not {project_id}"
+        )
+    if existing_task.owner_agent_id != owner_agent_id:
+        raise ValueError(
+            f"task {task_id} is owned by {existing_task.owner_agent_id}, not {owner_agent_id}"
+        )
 
 
 def _result_outputs_payload(payload: Mapping[str, Any]) -> Any:

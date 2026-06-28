@@ -65,6 +65,7 @@ from evander_team_addon.models import (
 from evander_team_addon.provider_schemas import (
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
+    TeamCreateTaskEffectDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
@@ -83,6 +84,7 @@ from evander_team_addon.providers import (
     TEAM_GOVERNANCE_GUIDANCE_VERSION,
     TeamCreateCaseEffectProvider,
     TeamCreateOperatorDirectiveEffectProvider,
+    TeamCreateTaskEffectProvider,
     TeamFinalizeAgentDispatchEffectProvider,
     TeamAgentPromptCompletionFinalizeHook,
     TeamMarkEphemeralCleanedUpEffectProvider,
@@ -4129,6 +4131,151 @@ def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
     assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
     assert item.payload["message"] == "Ask the lead for a status report."
     assert reread.agent_runtimes["manager"].next_wake_at is None
+
+
+def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_case(
+        case_id="case",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        expected_revision=repo.read().revision,
+    )
+    provider = TeamCreateTaskEffectProvider()
+    provider.initialize(
+        TeamCreateTaskEffectDefinition(
+            id="create-task",
+            display_name="Create task",
+            type="effect:team:create-task",
+            team_id="team",
+            project_id="project",
+            owner_agent_id="backend",
+            priority=2,
+            title="Investigate ticket",
+            description="Inspect the customer ticket and summarize next steps.",
+            task_id="workflow-task",
+            case_id="case",
+            state="pending",
+            parent_task_id="task",
+            dependency_task_ids=["task"],
+            created_by="workflow:intake",
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["created"] is True
+    assert result["task_id"] == "workflow-task"
+    assert result["team_id"] == "team"
+    assert result["project_id"] == "project"
+    assert result["owner_agent_id"] == "backend"
+    assert result["task"]["created_by_actor"] == "workflow:intake"
+    reread = TeamStateRepository(tmp_path).read()
+    task = reread.tasks["workflow-task"]
+    assert task.case_id == "case"
+    assert task.parent_task_id == "task"
+    assert task.dependency_task_ids == ["task"]
+    assert reread.cases["case"].task_ids == ["workflow-task"]
+
+
+def test_create_task_effect_updates_existing_task(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    provider = TeamCreateTaskEffectProvider()
+    provider.initialize(
+        TeamCreateTaskEffectDefinition(
+            id="create-task",
+            display_name="Create task",
+            type="effect:team:create-task",
+            team_id="team",
+            project_id="project",
+            owner_agent_id="backend",
+            priority=7,
+            title="Updated backend task",
+            description="Updated workflow instructions.",
+            task_id="task",
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["created"] is False
+    assert result["task_id"] == "task"
+    reread = TeamStateRepository(tmp_path).read()
+    task = reread.tasks["task"]
+    assert task.priority == 7
+    assert task.title == "Updated backend task"
+    assert task.description == "Updated workflow instructions."
+    assert task.owner_agent_id == "backend"
+    assert task.project_id == "project"
+
+
+def test_create_task_effect_rejects_project_team_mismatch(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    repo.create_team(
+        team_id="other-team",
+        name="Other team",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        expected_revision=repo.read().revision,
+    )
+    provider = TeamCreateTaskEffectProvider()
+    provider.initialize(
+        TeamCreateTaskEffectDefinition(
+            id="create-task",
+            display_name="Create task",
+            type="effect:team:create-task",
+            team_id="other-team",
+            project_id="project",
+            owner_agent_id="backend",
+            priority=1,
+            title="Invalid task",
+            description="Should not be created.",
+            task_id="invalid-task",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert "project project does not belong to team other-team" in result["error"]
+    assert "invalid-task" not in TeamStateRepository(tmp_path).read().tasks
+
+
+def test_create_task_effect_returns_revision_conflict(tmp_path: Path) -> None:
+    _seed_team(tmp_path)
+    provider = TeamCreateTaskEffectProvider()
+    provider.initialize(
+        TeamCreateTaskEffectDefinition(
+            id="create-task",
+            display_name="Create task",
+            type="effect:team:create-task",
+            team_id="team",
+            project_id="project",
+            owner_agent_id="backend",
+            priority=1,
+            title="Conflicting task",
+            description="Should not be created.",
+            task_id="conflicting-task",
+            expected_revision=0,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["task_id"] == "conflicting-task"
+    assert result["expected_revision"] == 0
+    assert result["current_revision"] == TeamStateRepository(tmp_path).read().revision
+    assert "conflicting-task" not in TeamStateRepository(tmp_path).read().tasks
 
 
 def test_create_case_effect_links_existing_tasks(tmp_path: Path) -> None:
