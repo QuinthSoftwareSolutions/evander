@@ -7316,6 +7316,68 @@ def test_request_review_command_is_idempotent_for_active_reviewer_request(
     assert len(review_inbox_items) == 1
 
 
+def test_duplicate_request_review_command_counts_as_no_progress_on_finalize(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _state, created = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Check the slice carefully.",
+                }
+            ],
+        },
+    )
+    assert created["success"] is True
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-duplicate-review",
+    )
+
+    def _set_no_progress_count(state):
+        state.agent_runtimes["lead"].no_progress_count = 2
+        return state
+
+    repo.update(_set_no_progress_count)
+
+    _state, duplicate = repo.request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Please review the same slice again.",
+        request_id="request-review-duplicate",
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["progress_made"] is False
+    activities = repo.list_dispatch_activity(
+        dispatch_id="dispatch-duplicate-review",
+        request_id="request-review-duplicate",
+    )
+    assert len(activities) == 1
+    assert activities[0].progress_classification == "none"
+
+    state, finalized = repo.finalize_agent_dispatch_from_activity(
+        session_id="session-lead",
+        dispatch_id="dispatch-duplicate-review",
+    )
+
+    assert finalized["success"] is True
+    assert finalized["progress_made"] is False
+    runtime = state.agent_runtimes["lead"]
+    assert runtime.no_progress_count == 3
+    assert runtime.last_progress_at is None
+
+
 def test_apply_agent_action_review_request_rejected_for_unrelated_agent(
     tmp_path: Path,
 ) -> None:

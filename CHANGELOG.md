@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-28 - Team Duplicate Review Progress Accounting
+
+- Classified duplicate-only Team review request commands as non-progress in
+  dispatch activity records, keeping dispatch finalization from resetting
+  no-progress counters when no review or inbox item was created.
+
 ## 2026-06-27 - Team Review Request Idempotency
 
 - Made Team review requests idempotent for an active deliverable/reviewer pair

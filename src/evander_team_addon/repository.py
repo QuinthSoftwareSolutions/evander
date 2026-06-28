@@ -206,6 +206,7 @@ class TeamCommandApplyResult:
     created_domain_ids: list[str] = field(default_factory=list)
     created_event_ids: list[str] = field(default_factory=list)
     outbox_records: list[TeamOutboxRecord | Mapping[str, Any]] = field(default_factory=list)
+    progress_classification: str | None = None
 
 
 TeamDeliverableArtifactPublisher = Callable[..., Mapping[str, Any]]
@@ -3719,6 +3720,7 @@ class TeamStateRepository:
                     "Review request created; wait for the assigned reviewer to "
                     "decide it before treating the deliverable or task as accepted."
                 ]
+            progress_made = bool(created_review_ids or normalized_handled_ids)
             return TeamCommandApplyResult(
                 response_payload={
                     "review_request_id": created_id,
@@ -3730,9 +3732,10 @@ class TeamStateRepository:
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "next_action_hints": next_action_hints,
-                    "progress_made": bool(created_review_ids or normalized_handled_ids),
+                    "progress_made": progress_made,
                 },
                 created_domain_ids=[*created_review_ids, *created_inbox_ids],
+                progress_classification="review_request" if progress_made else "none",
             )
 
         return self._execute_team_command(
@@ -4024,6 +4027,10 @@ class TeamStateRepository:
                 handled_inbox_item_ids=normalized_handled_ids,
                 apply_result=apply_result,
             )
+            activity_progress_classification = (
+                _optional_text(apply_result.progress_classification)
+                or normalized_context.progress_classification
+            )
             _append_response_outbox_record_ids(response, stored_outbox_records)
             tx.append_dispatch_activity(
                 TeamDispatchActivity(
@@ -4039,7 +4046,7 @@ class TeamStateRepository:
                     correlation_id=normalized_context.correlation_id,
                     causation_id=normalized_context.causation_id,
                     status=TeamDispatchActivityStatus.SUCCESS,
-                    progress_classification=normalized_context.progress_classification,
+                    progress_classification=activity_progress_classification,
                     action_record_id=_optional_text(response.get("action_record_id")),
                     audit_record_id=_optional_text(response.get("audit_record_id")),
                 )
