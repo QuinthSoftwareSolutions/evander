@@ -178,7 +178,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         directory_path = _directory_path_from_request(service, request)
         try:
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_status, directory=directory_path
+                service.teams_auth_status, directory=directory_path
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -194,7 +194,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
     async def identities(request: Request) -> JSONResponse:
         auth.require(request)
         try:
-            result = await run_in_threadpool(service.operations_admin.teams_auth_list)
+            result = await run_in_threadpool(service.teams_auth_list)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse({"items": _sanitize_teams_auth_payload(result)})
@@ -206,7 +206,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         directory_path = _directory_path_from_request(service, request)
         try:
             session = await run_in_threadpool(
-                service.operations_admin.teams_auth_login, directory=directory_path
+                service.teams_auth_login, directory=directory_path
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -252,7 +252,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
             return json_error("Unknown login_session_id", status_code=404)
         try:
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_complete_login,
+                service.teams_auth_complete_login,
                 login_session,
                 directory=directory_path,
                 timeout_seconds=timeout_seconds,
@@ -302,7 +302,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         directory_path = _directory_path_from_request(service, request)
         try:
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_logout, directory=directory_path
+                service.teams_auth_logout, directory=directory_path
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -329,7 +329,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
             return json_error(str(exc))
         try:
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_list_channels,
+                service.teams_auth_list_channels,
                 directory=directory_path,
                 team_id=team_id,
                 channel_name=channel_name,

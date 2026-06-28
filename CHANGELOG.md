@@ -19,6 +19,9 @@
 
 - Moved issue lifecycle MCP gateway tools into `agent_sandbox.gateway.issue_tools` while preserving behavior.
 
+- Kept gateway VM visibility, VM-oriented CLI commands, and Admin Web Teams auth routes on the
+  `AdminService` compatibility facade instead of extracted subservice attributes.
+
 - Moved admin MCP gateway tools into `agent_sandbox.gateway.admin_tools` while preserving behavior.
 
 - Moved chat and agent-prompt MCP gateway tools into `agent_sandbox.gateway.chat_tools` while preserving behavior.

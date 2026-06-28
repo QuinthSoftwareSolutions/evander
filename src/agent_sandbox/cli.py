@@ -3017,7 +3017,7 @@ def list_vms(
         service = AdminService(config)
         payload = [
             summary.model_dump(mode="json")
-            for summary in service.vm_agent_admin.list_vms(
+            for summary in service.list_vms(
                 include_inactive=all_vms, omit_state=omit_state, vm_user=vm_user
             )
         ]
@@ -3661,7 +3661,7 @@ def create_vm(
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
     service = AdminService(config)
-    result = service.vm_agent_admin.create_vm(
+    result = service.create_vm(
         vm_name=vm_name,
         session_id=session_id,
         vm_user=vm_user,
@@ -3712,7 +3712,7 @@ def clone_repo_into_vm(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
     service = AdminService(config)
-    result = service.vm_agent_admin.clone_repo_into_vm(
+    result = service.clone_repo_into_vm(
         vm_name=vm_name,
         session_id=session_id,
         repo_source=repo_source,
@@ -3749,7 +3749,7 @@ def bootstrap_python_in_vm(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
     service = AdminService(config)
-    result = service.vm_agent_admin.bootstrap_python_in_vm(
+    result = service.bootstrap_python_in_vm(
         vm_name=vm_name,
         session_id=session_id,
         host_checkout=host_checkout,
@@ -3787,7 +3787,7 @@ def bootstrap_frontend_in_vm(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
     service = AdminService(config)
-    result = service.vm_agent_admin.bootstrap_frontend_in_vm(
+    result = service.bootstrap_frontend_in_vm(
         vm_name=vm_name,
         session_id=session_id,
         host_checkout=host_checkout,
@@ -3882,7 +3882,7 @@ def create_issue_vm(
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
     service = AdminService(config)
-    result = service.vm_agent_admin.create_issue_vm(
+    result = service.create_issue_vm(
         issue=issue,
         session_id=session_id,
         vm_user=vm_user,

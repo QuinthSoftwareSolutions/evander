@@ -19,7 +19,7 @@ def _visible_vm_summaries_for_session(
     admin_service: AdminService | None = None,
 ) -> list[Any]:
     service = admin_service or AdminService(context.config.runtime_dir)
-    return service.vm_agent_admin.list_vms(
+    return service.list_vms(
         include_inactive=True,
         vm_user=vm_user,
         directory_path=session.directory_path,
