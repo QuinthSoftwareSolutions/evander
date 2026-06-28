@@ -1868,6 +1868,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         if not active_dispatches:
             return 0
 
+        context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
         finalized_count = 0
         for record in _completed_agent_prompt_records(worker):
             dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
@@ -1888,7 +1889,6 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             active_dispatches.pop(dispatch_id, None)
             agent = state.agents.get(agent_id)
             if agent is not None:
-                context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
                 _mirror_session_metadata(
                     context,
                     repo=repo,
@@ -1896,6 +1896,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                     agent_id=agent_id,
                     session_id=agent.session_id,
                 )
+            _publish_team_events(context, result.get("events"))
             if not active_dispatches:
                 break
         return finalized_count

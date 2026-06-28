@@ -98,6 +98,7 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.repository import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     TeamStateRepository,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1
@@ -3950,6 +3951,24 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
             progress_classification="progress",
         )
     )
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please handle this after the current wake.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+    queued_dispatch_id = f"team-chat:{message.id}"
+    repo.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=queued_dispatch_id,
+        reason="agent backend already has an active dispatch",
+    )
     session_store = FakeSessionStore()
     record = SimpleNamespace(
         execution_id="exec-standalone-team-prompt",
@@ -3981,6 +4000,13 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
         session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"]
         == "backend"
     )
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    chat_events = [
+        event for event in events if event.event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
+    ]
+    assert len(chat_events) == 1
+    assert chat_events[0].payload["dispatch_id"] == queued_dispatch_id
+    assert chat_events[0].payload["message_id"] == message.id
     assert hook.on_post_completion_dispatch(worker=worker) == 0
 
 
