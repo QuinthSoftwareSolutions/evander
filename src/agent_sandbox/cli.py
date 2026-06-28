@@ -1494,7 +1494,7 @@ def directories_show(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    result = service.operations_admin.get_directory(reference)
+    result = service.get_directory(reference)
     _echo_admin_result_or_exit(result)
     payload = result.data
     assert payload is not None
@@ -1508,7 +1508,7 @@ def directories_create(
     parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
 ) -> None:
     service = AdminService(config)
-    result = service.operations_admin.create_directory_child(parent, name)
+    result = service.create_directory_child(parent, name)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(result.data.details.directory.path)
@@ -1566,10 +1566,8 @@ def directories_config_show(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    raw_result = service.operations_admin.read_directory_domain_config(reference, domain)
-    effective_result = service.operations_admin.compute_directory_effective_config(
-        reference, domain
-    )
+    raw_result = service.read_directory_domain_config(reference, domain)
+    effective_result = service.compute_directory_effective_config(reference, domain)
     _echo_admin_result_or_exit(raw_result)
     _echo_admin_result_or_exit(effective_result)
     assert raw_result.data is not None
@@ -1603,7 +1601,7 @@ def directories_config_set(
     if not isinstance(parsed, dict):
         raise typer.BadParameter("config payload must be a JSON object")
     service = AdminService(config)
-    result = service.operations_admin.write_directory_domain_config(reference, domain, parsed)
+    result = service.write_directory_domain_config(reference, domain, parsed)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
@@ -4313,7 +4311,7 @@ def wake_schedule_create(
     service = AdminService(config)
     parsed_resume_at = _parse_utc_datetime(resume_at) if resume_at else None
     try:
-        created = service.operations_admin.create_wake_schedule(
+        created = service.create_wake_schedule(
             session_id=session_id,
             prompt=prompt,
             resume_at=parsed_resume_at,
@@ -4350,7 +4348,7 @@ def wake_schedule_list(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    schedules = service.operations_admin.list_wake_schedules(
+    schedules = service.list_wake_schedules(
         session_id=session_id, include_disabled=include_disabled
     )
     typer.echo(json.dumps(schedules, indent=2, default=str))
@@ -4377,7 +4375,7 @@ def wake_schedule_edit(
     service = AdminService(config)
     parsed_resume_at = _parse_utc_datetime(resume_at) if resume_at else None
     try:
-        updated = service.operations_admin.edit_wake_schedule(
+        updated = service.edit_wake_schedule(
             request_id,
             prompt=prompt,
             resume_at=parsed_resume_at,
@@ -4411,7 +4409,7 @@ def wake_schedule_delete(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    deleted = service.operations_admin.delete_wake_schedule(request_id)
+    deleted = service.delete_wake_schedule(request_id)
     if not deleted:
         raise typer.BadParameter(f"Wake schedule not found: {request_id}")
     typer.echo(f"Deleted wake schedule {request_id}")

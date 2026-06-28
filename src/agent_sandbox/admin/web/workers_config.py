@@ -831,7 +831,7 @@ def _worker_config_schema(worker_id: str) -> dict[str, Any] | None:
 
 
 def _worker_detail(service: AdminService, worker_id: str) -> dict[str, Any]:
-    summaries = service.operations_admin.list_background_workers()
+    summaries = service.list_background_workers()
     summary = next((entry for entry in summaries if entry.worker_id == worker_id), None)
     if summary is None:
         raise ValueError(f"Unknown worker: {worker_id}")
@@ -881,7 +881,7 @@ def _approval_notification_target_options(
     service: AdminService, directory_path: str
 ) -> tuple[str, ...]:
     try:
-        result = service.operations_admin.compute_directory_effective_config(
+        result = service.compute_directory_effective_config(
             directory_path, COMMUNICATION_TARGETS_DOMAIN
         )
     except Exception:
@@ -1009,13 +1009,11 @@ def _directory_tab_metadata(
 
 
 def _domain_snapshot(service: AdminService, directory_path: str, domain: str) -> dict[str, Any]:
-    raw_result = service.operations_admin.read_directory_domain_config(directory_path, domain)
-    effective_result = service.operations_admin.compute_directory_effective_config(
-        directory_path, domain
-    )
+    raw_result = service.read_directory_domain_config(directory_path, domain)
+    effective_result = service.compute_directory_effective_config(directory_path, domain)
     parent_directory_path = _parent_directory_path(directory_path)
     parent_result = (
-        service.operations_admin.compute_directory_effective_config(parent_directory_path, domain)
+        service.compute_directory_effective_config(parent_directory_path, domain)
         if parent_directory_path is not None
         else None
     )
@@ -1271,7 +1269,7 @@ def worker_config_routes(
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
             _normalize_worker_summary(summary)
-            for summary in service.operations_admin.list_background_workers()
+            for summary in service.list_background_workers()
         ]
         return JSONResponse({"workers": workers})
 
@@ -1291,7 +1289,7 @@ def worker_config_routes(
             return _error_response("lines must be an integer", status_code=400)
         try:
             detail = _worker_detail(service, worker_id)
-            text = service.operations_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
+            text = service.get_background_worker_log_snapshot(worker_id, lines=lines)
         except ValueError as exc:
             return _error_response(str(exc), status_code=404)
         return JSONResponse(
@@ -1333,9 +1331,9 @@ def worker_config_routes(
         worker_id = str(request.path_params.get("worker_id") or "").strip()
         action = str(request.path_params.get("action") or "").strip()
         if action == "start":
-            result = service.operations_admin.start_background_worker(worker_id)
+            result = service.start_background_worker(worker_id)
         elif action == "stop":
-            result = service.operations_admin.stop_background_worker(worker_id)
+            result = service.stop_background_worker(worker_id)
         else:
             return _error_response(f"Unsupported worker action: {action}", status_code=404)
         status_code = (
@@ -1351,8 +1349,8 @@ def worker_config_routes(
 
     async def configuration_state(request: Request) -> JSONResponse:
         directory_path = _directory_path_from_request(request)
-        tree_result = service.operations_admin.list_directory_tree()
-        directory_result = service.operations_admin.get_directory(directory_path)
+        tree_result = service.list_directory_tree()
+        directory_result = service.get_directory(directory_path)
         selected_path = (
             directory_result.data.details.directory.path
             if directory_result.ok and directory_result.data is not None
@@ -1432,7 +1430,7 @@ def worker_config_routes(
         name = str(payload.get("name") or "").strip()
         if not name:
             return _error_response("name is required", status_code=400)
-        result = service.operations_admin.create_directory_child(parent_path, name)
+        result = service.create_directory_child(parent_path, name)
         status_code = 200 if result.ok else 400
         return JSONResponse(_normalize_admin_result(result), status_code=status_code)
 
@@ -1510,7 +1508,7 @@ def worker_config_routes(
                         if field_name not in tab_fields_by_source[source_domain]
                     }
                     merged_payload.update(source_payload)
-                    result = service.operations_admin.write_directory_domain_config(
+                    result = service.write_directory_domain_config(
                         directory_path, source_domain, merged_payload
                     )
                     if not result.ok:
@@ -1557,9 +1555,7 @@ def worker_config_routes(
                         "snapshot": current_snapshot,
                     },
                 )
-            result = service.operations_admin.write_directory_domain_config(
-                directory_path, domain, config
-            )
+            result = service.write_directory_domain_config(directory_path, domain, config)
             status_code = 200 if result.ok else 400
             response_payload = {
                 "write_result": _normalize_admin_result(result),

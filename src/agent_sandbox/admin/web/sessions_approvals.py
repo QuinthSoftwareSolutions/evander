@@ -589,7 +589,7 @@ def session_approval_routes(
             statuses = _parse_statuses(params.get("statuses"))
             direct_only = _parse_bool(params.get("direct_only"))
             min_age_seconds = _parse_int(params.get("min_age_seconds"))
-            items = service.issue_git_admin.list_approval_requests(
+            items = service.list_approval_requests(
                 statuses=statuses,
                 directory_path=params.get("directory_path"),
                 direct_only=direct_only,
@@ -598,7 +598,7 @@ def session_approval_routes(
                 tool_name=params.get("tool_name"),
                 min_age_seconds=min_age_seconds,
             )
-            health = service.issue_git_admin.approval_queue_health(
+            health = service.approval_queue_health(
                 statuses=statuses,
                 directory_path=params.get("directory_path"),
                 direct_only=direct_only,
@@ -622,7 +622,7 @@ def session_approval_routes(
     async def get_approval_detail(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
         try:
-            review = service.issue_git_admin.get_approval_review(request_id)
+            review = service.get_approval_review(request_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
         return JSONResponse(_approval_review_payload(review))
@@ -645,7 +645,7 @@ def session_approval_routes(
         if not isinstance(approve_raw, bool):
             return json_error("approve must be a boolean.")
         try:
-            updated = service.issue_git_admin.decide_approval_request(
+            updated = service.decide_approval_request(
                 request_id,
                 approver=approver,
                 approve=approve_raw,
@@ -671,7 +671,7 @@ def session_approval_routes(
         if not reason:
             return json_error("Reason is required.")
         try:
-            updated = service.issue_git_admin.revoke_approval_request(
+            updated = service.revoke_approval_request(
                 request_id,
                 approver=approver,
                 reason=reason,
@@ -734,7 +734,7 @@ def session_approval_routes(
         session_id = request.path_params.get("session_id", "")
         try:
             summary = _get_session_summary(session_id)
-            wake_schedules = service.operations_admin.list_wake_schedules(session_id=session_id)
+            wake_schedules = service.list_wake_schedules(session_id=session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
         return JSONResponse(
@@ -756,7 +756,7 @@ def session_approval_routes(
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
         try:
-            result = service.operations_admin.renew_session(
+            result = service.renew_session(
                 session_id, extension=str(payload.get("extension") or "1d")
             )
         except ValueError as exc:
@@ -766,7 +766,7 @@ def session_approval_routes(
     async def revoke_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
-            result = service.operations_admin.revoke_session(session_id)
+            result = service.revoke_session(session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
         return JSONResponse(result.model_dump(mode="json"))
@@ -807,7 +807,7 @@ def session_approval_routes(
         if not model:
             return json_error("Model is required.")
         try:
-            result = service.operations_admin.set_session_model(session_id, model)
+            result = service.set_session_model(session_id, model)
             summary = _get_session_summary(session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
@@ -830,7 +830,7 @@ def session_approval_routes(
         if not isinstance(raw_tools, list):
             return json_error("allowed_tools must be a list.")
         try:
-            result = service.operations_admin.set_session_allowed_tools(
+            result = service.set_session_allowed_tools(
                 session_id, [str(item) for item in raw_tools]
             )
             summary = _get_session_summary(session_id)
@@ -852,7 +852,7 @@ def session_approval_routes(
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
         try:
-            result = service.operations_admin.update_session_policy(session_id, payload)
+            result = service.update_session_policy(session_id, payload)
             summary = _get_session_summary(session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
@@ -864,7 +864,7 @@ def session_approval_routes(
         )
 
     def _mcp_tools_payload(directory_path: str) -> dict[str, Any]:
-        raw_result = service.operations_admin.read_directory_domain_config(directory_path, "policy")
+        raw_result = service.read_directory_domain_config(directory_path, "policy")
         raw_config = (
             raw_result.data.config
             if raw_result.ok and raw_result.data is not None and raw_result.data.config is not None
@@ -962,16 +962,14 @@ def session_approval_routes(
             }
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
-        raw_result = service.operations_admin.read_directory_domain_config(directory_path, "policy")
+        raw_result = service.read_directory_domain_config(directory_path, "policy")
         raw_config = (
             dict(raw_result.data.config)
             if raw_result.ok and raw_result.data is not None and raw_result.data.config is not None
             else {}
         )
         raw_config["mcp_tool_policies"] = validated_policies
-        result = service.operations_admin.write_directory_domain_config(
-            directory_path, "policy", raw_config
-        )
+        result = service.write_directory_domain_config(directory_path, "policy", raw_config)
         if not result.ok:
             message = result.errors[0].message if result.errors else "Unable to save MCP tool policy."
             return json_error(message, status_code=400)
@@ -980,7 +978,7 @@ def session_approval_routes(
     async def list_wake_schedules(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
-            items = service.operations_admin.list_wake_schedules(
+            items = service.list_wake_schedules(
                 session_id=session_id,
                 include_disabled=_parse_bool(
                     request.query_params.get("include_disabled"), default=True
@@ -1015,7 +1013,7 @@ def session_approval_routes(
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
         try:
-            created = service.operations_admin.create_wake_schedule(
+            created = service.create_wake_schedule(
                 session_id=session_id,
                 prompt=str(payload.get("prompt") or ""),
                 resume_at=_parse_datetime(payload.get("resume_at")),
@@ -1038,7 +1036,7 @@ def session_approval_routes(
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
         try:
-            updated = service.operations_admin.edit_wake_schedule(
+            updated = service.edit_wake_schedule(
                 request_id,
                 resume_at=_parse_datetime(payload.get("resume_at"))
                 if "resume_at" in payload
@@ -1098,7 +1096,7 @@ def session_approval_routes(
     async def remove_wake_schedule(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
         try:
-            deleted = service.operations_admin.delete_wake_schedule(request_id)
+            deleted = service.delete_wake_schedule(request_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404 if "not found" in str(exc).lower() else 400)
         if not deleted:

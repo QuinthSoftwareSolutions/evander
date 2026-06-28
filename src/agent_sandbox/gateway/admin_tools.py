@@ -314,7 +314,7 @@ def register_admin_tools(
             if target_domain == "gateway":
                 snapshot["raw"] = None
             else:
-                raw_result = service.operations_admin.read_directory_domain_config(
+                raw_result = service.read_directory_domain_config(
                     target_directory, target_domain
                 )
                 raw_payload = _admin_result_payload_or_raise(
@@ -328,7 +328,7 @@ def register_admin_tools(
                 }
 
             if include_effective or target_domain == "gateway":
-                effective_result = service.operations_admin.compute_directory_effective_config(
+                effective_result = service.compute_directory_effective_config(
                     target_directory, target_domain
                 )
                 effective_payload = _admin_result_payload_or_raise(
@@ -524,10 +524,10 @@ def register_admin_tools(
             else:
                 _assistant_require_writable_scope(session, "config/directory")
                 target_directory = directory_path or session.directory_path
-                before_payload = service.operations_admin.read_directory_domain_config(
+                before_payload = service.read_directory_domain_config(
                     target_directory, normalized_domain
                 )
-                write_result = service.operations_admin.write_directory_domain_config(
+                write_result = service.write_directory_domain_config(
                     target_directory, normalized_domain, payload
                 )
                 after_payload = (

@@ -236,7 +236,7 @@ def _directory_path_from_request(service: AdminService, request: Request) -> str
 def _contacts_config_for_directory(
     service: AdminService, directory_path: str
 ) -> ContactDirectoryConfig:
-    result = service.operations_admin.compute_directory_effective_config(directory_path, "contacts")
+    result = service.compute_directory_effective_config(directory_path, "contacts")
     if not result.ok or result.data is None:
         return ContactDirectoryConfig()
     return ContactDirectoryConfig.model_validate(result.data.resolution.effective_config)
@@ -266,9 +266,7 @@ def _write_user_contact_link(
         raise ValueError(
             "directory-scoped config is disabled; user contact attachments are read-only"
         )
-    existing_result = service.operations_admin.read_directory_domain_config(
-        directory_path, "contacts"
-    )
+    existing_result = service.read_directory_domain_config(directory_path, "contacts")
     existing_config = (
         dict(existing_result.data.config)
         if existing_result.ok
@@ -286,9 +284,7 @@ def _write_user_contact_link(
         existing_config["user_contact_links"] = links
     else:
         existing_config.pop("user_contact_links", None)
-    result = service.operations_admin.write_directory_domain_config(
-        directory_path, "contacts", existing_config
-    )
+    result = service.write_directory_domain_config(directory_path, "contacts", existing_config)
     if not result.ok:
         raise ValueError(result.errors[0].message if result.errors else "Unable to save contact link")
 

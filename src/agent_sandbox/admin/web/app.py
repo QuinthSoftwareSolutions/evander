@@ -280,7 +280,7 @@ def create_app(service: AdminService) -> Starlette:
 
     async def logout(request: Request) -> JSONResponse:
         if auth.privileged_for_request(request):
-            service.operations_admin.lock_privileged_operations()
+            service.lock_privileged_operations()
         auth.logout(request)
         permissions = (
             list(auth.effective_permissions(auth.config.username))
@@ -421,7 +421,7 @@ def create_app(service: AdminService) -> Starlette:
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
         try:
-            message = service.operations_admin.unlock_privileged_operations()
+            message = service.unlock_privileged_operations()
         except ValueError as exc:
             return json_error(str(exc))
         auth.mark_privileged_for_request(request)
@@ -436,7 +436,7 @@ def create_app(service: AdminService) -> Starlette:
 
     async def lock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
-        service.operations_admin.lock_privileged_operations()
+        service.lock_privileged_operations()
         auth.clear_privileged_for_request(request)
         return JSONResponse(
             {

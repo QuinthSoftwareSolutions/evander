@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Kept Admin Web approvals, session policy, wake schedule, worker/config, user-contact,
+  privileged-operation routes, CLI directory/wake commands, and admin MCP config tools on the
+  `AdminService` compatibility facade instead of extracted subservice attributes.
+
 - Extracted shared MCP gateway communication, inline media, email draft, artifact, attachment,
   and VM visibility helper implementations into focused modules while preserving compatibility
   exports and behavior.
