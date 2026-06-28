@@ -324,7 +324,7 @@ Arguments:
 | Name | Type | Required | Semantics |
 | --- | --- | --- | --- |
 | `task_id` | string | yes | Existing task id. |
-| `state` | enum | no | `pending`, `in_progress`, `blocked`, `waiting_for_review`, `finished`, `accepted`, `rejected`. Owner-only. |
+| `state` | enum | no | `pending`, `in_progress`, `blocked`, `waiting_for_review`, `finished`. Owner-only, except a superior may set `finished` on claimable subordinate work. |
 | `priority` | integer | no | Owner-only. |
 | `title` | string | no | Owner-only. |
 | `description` | string | no | Owner-only. |
@@ -335,7 +335,8 @@ Arguments:
 
 Semantics:
 
-- State, priority, title, and description remain owner-only.
+- State, priority, title, and description remain owner-only, except a superior
+  may set `state: finished` on subordinate work they could otherwise claim.
 - A superior may claim or reassign non-terminal subordinate tasks within the
   same project/team rules.
 - Dependency edits are allowed for owner, supervisor, project lead, or team

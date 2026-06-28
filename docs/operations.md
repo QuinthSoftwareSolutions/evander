@@ -2829,11 +2829,11 @@ Or mirror the default host repo into an issue-numbered bare remote:
 
 Freshness behavior for `mirror_issue_repo.sh`:
 
-- local repo source path: default is **upstream fetch + divergence check**
+- local repo source path: default is **upstream fetch + safe fast-forward + divergence check**
 - remote URL source: default is **always fetch latest refs** into cache before mirror update
-- `--sync-remote`: explicitly force that fetch/divergence-check behavior for local source
+- `--sync-remote`: explicitly force that fetch/fast-forward/divergence-check behavior for local source
 - `--no-sync-remote`: skip upstream fetch for local/offline-only mirroring
-- `--force-local`: continue even when local default branch is behind upstream
+- `--force-local`: continue even when local and remote default branches diverged
 - optional pinning: `--branch <name>` or `--refspec <src:dst>`
 
 Examples:

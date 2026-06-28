@@ -14,6 +14,7 @@ from types import MethodType, SimpleNamespace
 from typing import Any, Mapping
 
 import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import httpx
 import pytest
 from agent_sandbox.admin import privileged_helper
@@ -1068,7 +1069,7 @@ def test_capacity_session_statuses_use_summary_agent_listing(
 
     monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
 
-    statuses = service._capacity_session_statuses()
+    statuses = service.capacity_health_admin._capacity_session_statuses()
 
     assert statuses == {"container-session": "running"}
     assert list_agents_calls == [
@@ -1242,7 +1243,9 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.capacity_health_service._utc_now", lambda: now
+    )
 
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -1481,7 +1484,8 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service.ContainerWorkerClient", FakeContainerWorkerClient
+        "agent_sandbox.admin.services.capacity_health_service.ContainerWorkerClient",
+        FakeContainerWorkerClient,
     )
 
     def fake_list_agents(self: AdminService, **_kwargs: object) -> list[AgentRecord]:
@@ -1644,7 +1648,7 @@ def test_capacity_worker_descriptors_ignore_historical_execution_only_worker_url
         )
     )
 
-    descriptors = service._capacity_worker_descriptors(
+    descriptors = service.capacity_health_admin._capacity_worker_descriptors(
         service.runtime.session_repository.list_sessions()
     )
 
@@ -9043,7 +9047,7 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
         / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
         workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
@@ -9136,7 +9140,7 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
@@ -9267,7 +9271,7 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
@@ -9371,11 +9375,11 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "json",
@@ -9493,7 +9497,7 @@ def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "json-runtime"
     stores = {
         "runtime_dir": runtime_dir,
@@ -9533,11 +9537,11 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "sqlite",
@@ -12265,48 +12269,82 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     assert "plan_summary:" not in yaml_text
 
 
-def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_run() -> None:
+def test_worker_admin_dependencies_accept_protocol_ports() -> None:
+    class DirectoryOwnership:
+        def normalize_directory_path(self, directory_path: str | None) -> str:
+            return directory_path or "root"
+
+        def direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
+            assert directory_path == "root"
+            assert kind == "vm"
+            return set()
+
+    class WorkflowConfig:
+        def read_worker_global_config(self, worker_id: str):
+            return {"worker_id": worker_id}
+
+        def write_worker_global_config(self, worker_id: str, payload: dict[str, object], *, expected_revision: str | None = None):
+            return {"worker_id": worker_id, "payload": payload, "expected_revision": expected_revision}
+
+        def read_workflow_editor_document(self, workflow_pack: str | None = None):
+            return {"kind": "document", "workflow_pack": workflow_pack}
+
+        def read_composed_workflow_editor_document(self):
+            return {"kind": "composed-document"}
+
+        def read_workflow_editor_catalog(self, directory_path: str | None = None):
+            return {"kind": "catalog", "directory_path": directory_path}
+
+        def validate_workflow_editor_document(self, **kwargs):
+            return {"kind": "validation", **kwargs}
+
+        def save_workflow_editor_document(self, **kwargs):
+            return {"kind": "save", **kwargs}
+
+        def read_workflow_run_snapshot(self):
+            return {"kind": "snapshot"}
+
+        def read_workflow_run_detail(self, **kwargs):
+            return {"kind": "detail", **kwargs}
+
+        def read_workflow_run_search(self, **kwargs):
+            return {"kind": "search", **kwargs}
+
+        def clear_workflow_run(self, event_id: str):
+            return {"event_id": event_id}
+
+        def dismiss_workflow_node_failures(self, node_id: str):
+            return {"node_id": node_id}
+
+        def resume_workflow_run(self, event_id: str):
+            return {"event_id": event_id}
+
+        def workflow_event_journal(self):
+            return object()
+
+        def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]):
+            return {"trigger_id": trigger_id, "payload": payload}
+
+        def delete_trigger_config(self, trigger_id: str):
+            return {"trigger_id": trigger_id}
+
+        def upsert_effect_config(self, effect_id: str, payload: dict[str, object]):
+            return {"effect_id": effect_id, "payload": payload}
+
+        def delete_effect_config(self, effect_id: str):
+            return {"effect_id": effect_id}
+
     facade = WorkerAdminFacade(
         WorkerAdminDependencies(
             runtime=object(),
             config=object(),
             agent_control_store=object(),
-            normalize_directory_path=lambda directory_path: directory_path or "root",
-            direct_owned_entity_ids=lambda directory_path, **kwargs: set(),
-            read_worker_global_config=lambda worker_id: {"worker_id": worker_id},
-            write_worker_global_config=lambda worker_id, payload, **kwargs: {
-                "worker_id": worker_id,
-                "payload": payload,
-                **kwargs,
-            },
-            read_workflow_editor_document=lambda **kwargs: {"kind": "document", **kwargs},
-            read_composed_workflow_editor_document=lambda: {"kind": "composed-document"},
-            read_workflow_editor_catalog=lambda: {"kind": "catalog"},
-            validate_workflow_editor_document=lambda **kwargs: {"kind": "validation", **kwargs},
-            save_workflow_editor_document=lambda **kwargs: {"kind": "save", **kwargs},
-            read_workflow_run_snapshot=lambda: {"kind": "snapshot"},
-            workflow_event_journal=lambda: object(),
-            upsert_trigger_config=lambda trigger_id, payload: {
-                "trigger_id": trigger_id,
-                "payload": payload,
-            },
-            delete_trigger_config=lambda trigger_id: {"trigger_id": trigger_id},
-            upsert_effect_config=lambda effect_id, payload: {
-                "effect_id": effect_id,
-                "payload": payload,
-            },
-            delete_effect_config=lambda effect_id: {"effect_id": effect_id},
+            directory_ownership=DirectoryOwnership(),
+            workflow_config=WorkflowConfig(),
         )
     )
 
-    assert facade.read_workflow_editor_document() == {"kind": "document"}
-    assert facade.read_workflow_editor_document(workflow_pack="pack-a.v1.json") == {
-        "kind": "document",
-        "workflow_pack": "pack-a.v1.json",
-    }
-    assert facade.read_composed_workflow_editor_document() == {"kind": "composed-document"}
-    with pytest.raises(NotImplementedError, match="clear_workflow_run is not configured"):
-        facade.clear_workflow_run("evt-1")
+    assert facade.clear_workflow_run("event-1") == {"event_id": "event-1"}
 
 
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:

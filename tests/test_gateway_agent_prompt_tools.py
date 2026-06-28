@@ -88,6 +88,20 @@ def write_provider_overlay(context, directory_path: str, payload: dict[str, obje
     )
 
 
+def test_chat_and_agent_prompt_tools_are_registered(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    server = create_server(context)
+
+    registered_tool_names = set(server._tool_manager._tools)
+
+    assert {
+        "assistant_post_chat_reply",
+        "prompt_agent",
+        "list_pending_agent_prompts",
+        "respond_to_agent",
+    }.issubset(registered_tool_names)
+
+
 def test_prompt_agent_and_respond_to_agent_round_trip(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

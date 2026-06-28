@@ -1,4 +1,190 @@
+## Unreleased
+
+- Kept Teams inbox retention compaction from deleting historical messages before
+  a channel cursor has advanced into the retained window.
+
+- Preserved lightweight `AdminService.list_model_usage_events` and legacy
+  `VmAgentAdminSupport` privileged-helper construction compatibility after the AdminService
+  extraction.
+
+- Kept Admin Web approvals, session policy, wake schedule, worker/config, user-contact,
+  privileged-operation routes, CLI directory/wake commands, and admin MCP config tools on the
+  `AdminService` compatibility facade instead of extracted subservice attributes.
+
+- Restored Admin Web workflow report endpoints after AdminService report extraction by keeping
+  runtime report payload classes available to the extracted workflow reports service.
+
+- Extracted shared MCP gateway communication, inline media, email draft, artifact, attachment,
+  and VM visibility helper implementations into focused modules while preserving compatibility
+  exports and behavior.
+
+- Fixed MCP gateway refactor regressions that prevented server construction, miswired extracted
+  communication and ADO helpers, and pointed the gateway CLI at `src/runtime`.
+
+- Moved approval MCP gateway tools into `agent_sandbox.gateway.approval_tools` while preserving behavior.
+
+- Moved communication MCP gateway tools into `agent_sandbox.gateway.communication_tools` while preserving behavior.
+
+- Moved PR/feedback MCP gateway tools into `agent_sandbox.gateway.pr_tools` while preserving behavior.
+
+- Moved Azure DevOps backlog, work-item, report, identity, and activity MCP gateway tools into `agent_sandbox.gateway.ado_tools` while preserving behavior.
+
+- Moved agent status and log MCP gateway tools into `agent_sandbox.gateway.agent_tools` while preserving behavior.
+
+- Moved issue lifecycle MCP gateway tools into `agent_sandbox.gateway.issue_tools` while preserving behavior.
+
+- Kept gateway VM visibility, VM-oriented CLI commands, issue/approval CLI commands, and Admin
+  Web Teams auth routes on the `AdminService` compatibility facade instead of extracted
+  subservice attributes.
+
+- Replaced dynamic workflow report helper imports with explicit imports and kept workflow
+  Admin Web/gateway entry points on the `AdminService` compatibility facade.
+
+- Moved admin MCP gateway tools into `agent_sandbox.gateway.admin_tools` while preserving behavior.
+
+- Moved chat and agent-prompt MCP gateway tools into `agent_sandbox.gateway.chat_tools` while preserving behavior.
+- Moved semantic MCP gateway tool registration into `agent_sandbox.gateway.semantic_tools` while preserving existing behavior.
+- Moved MSSQL MCP gateway tool registration into `agent_sandbox.gateway.mssql_tools` and added registration coverage while preserving existing tool names and request/response behavior.
+- Split the MCP gateway Starlette app and CLI bootstrap into canonical `gateway.app` and `gateway.cli` modules while retaining compatibility exports.
+- Added a shared MCP gateway dependency object for common admin, issue, chat, semantic, and communication artifact services.
+- Split MCP gateway request, session, tool audit, and approval diagnostic helpers into focused modules while preserving existing helper names.
+- Refactored the MCP gateway into a package with a `server` module and domain registration module placeholders while preserving existing public imports and tool names.
+
 # Changelog
+
+## 2026-06-28 - First-Run Setup TUI
+
+- Added `evander-cli setup` as an interactive first-run checklist for choosing
+  host secret storage, Admin Web access, execution model, AI providers, default
+  model routing, install preflight, and launch verification.
+- Added `evander-cli setup doctor --json` and `evander-cli setup plan --json`
+  for scriptable setup readiness and launch-plan inspection.
+- Added `./scripts/setup` as a one-step checkout bootstrap that installs Python
+  prerequisites, creates `.venv`, installs Evander, and starts the guided setup
+  checklist.
+- Added inline guidance before first-run setup decisions so new users understand
+  what each choice means before selecting an option.
+- Cleared the terminal between first-run setup menu selections so each checklist
+  or decision screen starts cleanly.
+- Added an explicit discouraged Admin Web no-auth setup option for isolated
+  evaluation hosts.
+- Removed the setup profile prompt because it did not yet change setup behavior.
+- Stored setup draft state under `runtime/setup-wizard/state.json` while keeping
+  entered secret values in a host-local secret env file.
+
+## 2026-06-28 - Team Subordinate Task Finish Permission
+
+- Allowed Team supervisors to mark claimable subordinate tasks `finished`
+  directly, including in the same `team_update_task` call that claims the task,
+  while keeping other non-owner state/detail edits blocked.
+- Bumped live Team agent guidance so persistent supervisor agents are reseeded
+  with the new subordinate task finish permission.
+
+## 2026-06-28 - Git Mirror Pinned Branch Fast-Forward Fix
+
+- Preferred explicit pinned mirror branches and stored mirror base branches
+  before the current checkout fallback when fast-forwarding stale local refs,
+  preventing pinned `main` mirrors from publishing stale refs while another
+  remote branch is checked out.
+
+## 2026-06-28 - Team MCP Artifact Publisher Config Fix
+
+- Resolved effect provider configuration from gateway MCP runtime contexts so
+  Team deliverable artifact publication for container-worker sessions keeps the
+  configured `container_worker_base_url` instead of failing with a missing
+  worker URL.
+
+## 2026-06-28 - Git Mirror Fast-Forward Sync
+
+- Fast-forwarded stale local branches before refreshing container-worker and
+  SSH-backed Git mirrors when the remote has only additive commits, while still
+  refusing divergent local branches that would require a merge decision.
+
+## 2026-06-28 - Admin Compatibility Contract Fixes
+
+- Restored Admin Web VM creation through the `AdminService` facade so wrappers,
+  subclasses, and compatibility logic remain honored.
+- Routed Admin Web VM and local-issue operations through the `AdminService`
+  facade instead of direct subservice calls.
+- Delegated workflow report public methods through the host contract and made
+  privileged-helper construction resolve the helper class lazily.
+
+## 2026-06-28 - Admin Session Facade Integration Fixes
+
+- Kept Admin Web and CLI session deletion on the `AdminService` facade so
+  associated agent-session guards and detached worker/chat/approval cleanup run.
+- Restored Admin Web session listing and detail lookup through the facade so
+  container-worker lifecycle summaries remain available to the UI.
+
+## 2026-06-28 - Admin Service Composition Startup Fixes
+
+- Fixed extracted admin service imports and composition locking so `AdminService`
+  can be constructed by web, gateway, and CLI callers.
+- Routed issue/Git directory normalization through the injected directory path
+  port and updated focused service tests for the refactored dependency shape.
+
+## 2026-06-27 - Workflow Run Report Reader Extraction
+
+- Moved workflow run snapshot, search, detail, graph activity, failure cluster, and conformance report readers out of `AdminService` and into `WorkflowReportsAdminService`.
+- Left small `AdminService` compatibility delegates for existing workflow configuration ports and callers.
+
+## 2026-06-27 - Model Usage Admin Service Extraction
+
+- Moved model-usage listing and operator-steering validation/note submission logic out of `AdminService` and into `ModelUsageAdminService`.
+- Tightened workflow report service wiring to call the report implementations directly instead of using extra `AdminService` public-impl shims.
+
+## 2026-06-27 - Capacity Health Service Extraction
+
+- Moved capacity and health telemetry calculation out of `AdminService` and into `CapacityHealthAdminService`.
+- Updated focused capacity-health tests to exercise the extracted service implementation while keeping `AdminService.read_capacity_health()` as the compatibility entry point.
+
+## 2026-06-27 - Extracted Admin Service Focused Tests
+
+- Expanded direct tests for extracted operations and workflow configuration admin services using small fake dependencies instead of full runtime configuration.
+- Kept coverage explicit for each delegated method while preserving `AdminService` as the integration/compatibility facade.
+
+## 2026-06-27 - Admin Service Facade Guidance
+
+- Documented `AdminService` as the legacy/stable integration facade and clarified that new admin domain logic belongs in narrower services under `src/agent_sandbox/admin/services/`.
+
+## 2026-06-27 - Admin Service Protocol Ports
+
+- Replaced lambda-based admin service wiring for directory ownership, privileged helper state, and workflow configuration callbacks with small protocol-backed port objects.
+- Added focused unit coverage for services and facades using fake protocol implementations instead of a full `AdminService`.
+
+## 2026-06-27 - VM Agent Creation Option Normalization
+
+- Moved AdminService VM creation payload assembly, model-provider metadata normalization, and allowed-contact validation into `VmAgentAdminService`.
+- Kept `AdminService.create_vm` as a compatibility delegate and added direct VM agent service coverage for normalized creation options.
+
+## 2026-06-27 - Workflow Reporting Service Ownership
+
+- Moved workflow generation request execution and cooldown state into the extracted workflow generation admin service.
+- Kept AdminService workflow generation/reporting APIs as compatibility delegates and added focused service coverage for cooldown and report dispatch behavior.
+
+## 2026-06-27 - Skill Admin Service Extraction
+
+- Moved managed Codex skill admin operations into a dedicated `SkillAdminService` backed directly by `SkillLibraryRepository`.
+- Kept `AdminService` skill APIs as compatibility delegates and added focused service tests.
+
+## 2026-06-27 - Admin Service Narrow Interface Callers
+
+- Moved Admin Web, gateway, and CLI callers off broad `AdminService` pass-through
+  wrappers where practical and onto narrower admin component interfaces.
+- Marked the remaining compatibility wrappers that delegate to operations,
+  workflow config, VM agent, and issue/Git admin services as deprecated for new
+  internal code.
+
+## 2026-06-27 - Admin Service Composition Builder
+
+- Extracted AdminService runtime/config/store/facade construction into a dedicated composition module while preserving public AdminService construction for existing callers.
+
+## 2026-06-27 - Admin Service Domain Extraction
+
+- Kept `AdminService` as the backwards-compatible public facade while routing
+  low-risk domains through narrower services for skills, workflow reports,
+  capacity/health telemetry, model usage, and workflow generation.
+- Added focused unit coverage for the extracted admin service delegation layer.
 
 ## 2026-06-28 - Team Queued Retry Finalization Guard
 

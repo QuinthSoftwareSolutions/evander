@@ -18,7 +18,7 @@ Options:
   --remote-name NAME  Upstream remote name for fetch/divergence checks. Default: origin
   --refspec SPEC      Mirror only the provided refspec (repeatable). Optional.
   --branch NAME       Convenience alias for --refspec refs/heads/<NAME>:refs/heads/<NAME>
-  --force-local       Allow mirroring even when local default branch is behind upstream.
+  --force-local       Allow mirroring divergent local default branches without fast-forwarding.
   -h, --help          Show this help message.
 
 Arguments:
@@ -57,6 +57,78 @@ is_remote_source() {
     return 0
   fi
   return 1
+}
+
+fast_forward_local_branch() {
+  local repo_path="$1"
+  local branch="$2"
+  local local_ref="$3"
+  local remote_ref="$4"
+  local current_branch=""
+
+  current_branch="$(git -C "${repo_path}" branch --show-current 2>/dev/null || true)"
+  if [[ "${current_branch}" == "${branch}" ]]; then
+    git -C "${repo_path}" merge --ff-only "${remote_ref}"
+    return 0
+  fi
+
+  git -C "${repo_path}" update-ref "${local_ref}" "${remote_ref}" "${local_ref}"
+}
+
+default_base_branch_for_remote() {
+  local repo_path="$1"
+  local remote_name="$2"
+  local preferred_branch="${3:-}"
+  local branch=""
+
+  if [[ -n "${preferred_branch}" ]] \
+    && {
+      git -C "${repo_path}" show-ref --verify --quiet "refs/remotes/${remote_name}/${preferred_branch}" \
+        || git -C "${repo_path}" show-ref --verify --quiet "refs/heads/${preferred_branch}"
+    }; then
+    printf '%s\n' "${preferred_branch}"
+    return 0
+  fi
+
+  branch="$(
+    git -C "${repo_path}" symbolic-ref --quiet --short "refs/remotes/${remote_name}/HEAD" 2>/dev/null \
+      | sed "s#^${remote_name}/##" || true
+  )"
+  if [[ -n "${branch}" ]]; then
+    printf '%s\n' "${branch}"
+    return 0
+  fi
+
+  branch="$(git -C "${repo_path}" branch --show-current 2>/dev/null || true)"
+  if [[ -n "${branch}" ]] \
+    && git -C "${repo_path}" show-ref --verify --quiet "refs/remotes/${remote_name}/${branch}"; then
+    printf '%s\n' "${branch}"
+    return 0
+  fi
+
+  git -C "${repo_path}" for-each-ref --format='%(refname:strip=3)' "refs/remotes/${remote_name}" \
+    | awk '$0 != "HEAD" { print; exit }'
+}
+
+preferred_branch_from_refspecs() {
+  local refspec normalized source_ref destination_ref branch
+
+  for refspec in "$@"; do
+    [[ -n "${refspec}" ]] || continue
+    normalized="${refspec#+}"
+    if [[ "${normalized}" != *:* ]]; then
+      continue
+    fi
+    source_ref="${normalized%%:*}"
+    destination_ref="${normalized#*:}"
+    if [[ "${source_ref}" == refs/heads/* ]]; then
+      branch="${source_ref#refs/heads/}"
+      if [[ "${destination_ref}" == "refs/heads/${branch}" ]]; then
+        printf '%s\n' "${branch}"
+        return 0
+      fi
+    fi
+  done
 }
 
 resolve_canonical_origin_url() {
@@ -259,6 +331,7 @@ MIRROR_REMOTE_NAME="${ISSUE_NUMBER}-mirror"
 BARE_REPO_PATH="${ROOT_DIR}/git-remotes/${BARE_REPO_NAME}.git"
 
 RESOLVED_REPO_PATH="$(${SCRIPT_DIR}/resolve_repo_source.sh "${REPO_SOURCE}")"
+PREFERRED_BASE_BRANCH="$(preferred_branch_from_refspecs "${REFSPECS[@]}")"
 
 if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
   if ! git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
@@ -270,8 +343,7 @@ if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
   git -C "${RESOLVED_REPO_PATH}" fetch --prune "${REMOTE_NAME}"
 
   DEFAULT_REMOTE_BRANCH="$(
-    git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${REMOTE_NAME}/HEAD" 2>/dev/null \
-      | sed "s#^${REMOTE_NAME}/##" || true
+    default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}" "${PREFERRED_BASE_BRANCH}"
   )"
   if [[ -n "${DEFAULT_REMOTE_BRANCH}" ]]; then
     LOCAL_DEFAULT_REF="refs/heads/${DEFAULT_REMOTE_BRANCH}"
@@ -288,11 +360,19 @@ if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
         echo "Divergence detected for ${DEFAULT_REMOTE_BRANCH}:" >&2
         echo "  local branch ${DEFAULT_REMOTE_BRANCH} is behind ${REMOTE_NAME}/${DEFAULT_REMOTE_BRANCH}" >&2
         echo "  ahead=${LOCAL_AHEAD} behind=${REMOTE_AHEAD}" >&2
-        if (( FORCE_LOCAL == 0 )); then
-          echo "Refusing to mirror stale local refs. Rebase/merge first or rerun with --force-local." >&2
+        if (( FORCE_LOCAL == 0 && LOCAL_AHEAD == 0 )); then
+          echo "Fast-forwarding local ${DEFAULT_REMOTE_BRANCH} from ${REMOTE_NAME}/${DEFAULT_REMOTE_BRANCH}..." >&2
+          fast_forward_local_branch \
+            "${RESOLVED_REPO_PATH}" \
+            "${DEFAULT_REMOTE_BRANCH}" \
+            "${LOCAL_DEFAULT_REF}" \
+            "${REMOTE_DEFAULT_REF}"
+        elif (( FORCE_LOCAL == 0 )); then
+          echo "Refusing to mirror divergent local refs. Rebase/merge first or rerun with --force-local." >&2
           exit 1
+        else
+          echo "Continuing due to --force-local." >&2
         fi
-        echo "Continuing due to --force-local." >&2
       fi
     fi
   fi
@@ -323,16 +403,8 @@ if (( ${#REFSPECS[@]} > 0 )); then
 fi
 
 DEFAULT_BASE_BRANCH="$(
-  git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${REMOTE_NAME}/HEAD" 2>/dev/null \
-    | sed "s#^${REMOTE_NAME}/##" || true
+  default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}" "${PREFERRED_BASE_BRANCH}"
 )"
-if [[ -z "${DEFAULT_BASE_BRANCH}" ]]; then
-  DEFAULT_BASE_BRANCH="$(
-    git -C "${RESOLVED_REPO_PATH}" for-each-ref --format='%(refname:strip=3)' "refs/remotes/${REMOTE_NAME}" \
-      | grep -v '^HEAD$' \
-      | head -n 1 || true
-  )"
-fi
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
   git --git-dir="${BARE_REPO_PATH}" symbolic-ref HEAD "refs/heads/${DEFAULT_BASE_BRANCH}"

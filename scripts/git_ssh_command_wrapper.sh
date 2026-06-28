@@ -83,6 +83,78 @@ is_remote_source() {
   return 1
 }
 
+fast_forward_local_branch() {
+  local repo_path="$1"
+  local branch="$2"
+  local local_ref="$3"
+  local remote_ref="$4"
+  local current_branch=""
+
+  current_branch="$(git -C "${repo_path}" branch --show-current 2>/dev/null || true)"
+  if [[ "${current_branch}" == "${branch}" ]]; then
+    git -C "${repo_path}" merge --ff-only "${remote_ref}" >/dev/null
+    return 0
+  fi
+
+  git -C "${repo_path}" update-ref "${local_ref}" "${remote_ref}" "${local_ref}"
+}
+
+default_base_branch_for_remote() {
+  local repo_path="$1"
+  local remote_name="$2"
+  local preferred_branch="${3:-}"
+  local branch=""
+
+  if [[ -n "${preferred_branch}" ]] \
+    && {
+      git -C "${repo_path}" show-ref --verify --quiet "refs/remotes/${remote_name}/${preferred_branch}" \
+        || git -C "${repo_path}" show-ref --verify --quiet "refs/heads/${preferred_branch}"
+    }; then
+    printf '%s\n' "${preferred_branch}"
+    return 0
+  fi
+
+  branch="$(
+    git -C "${repo_path}" symbolic-ref --quiet --short "refs/remotes/${remote_name}/HEAD" 2>/dev/null \
+      | sed "s#^${remote_name}/##" || true
+  )"
+  if [[ -n "${branch}" ]]; then
+    printf '%s\n' "${branch}"
+    return 0
+  fi
+
+  branch="$(git -C "${repo_path}" branch --show-current 2>/dev/null || true)"
+  if [[ -n "${branch}" ]] \
+    && git -C "${repo_path}" show-ref --verify --quiet "refs/remotes/${remote_name}/${branch}"; then
+    printf '%s\n' "${branch}"
+    return 0
+  fi
+
+  git -C "${repo_path}" for-each-ref --format='%(refname:strip=3)' "refs/remotes/${remote_name}" \
+    | awk '$0 != "HEAD" { print; exit }'
+}
+
+preferred_branch_from_refspecs() {
+  local refspec normalized source_ref destination_ref branch
+
+  for refspec in "$@"; do
+    [[ -n "${refspec}" ]] || continue
+    normalized="${refspec#+}"
+    if [[ "${normalized}" != *:* ]]; then
+      continue
+    fi
+    source_ref="${normalized%%:*}"
+    destination_ref="${normalized#*:}"
+    if [[ "${source_ref}" == refs/heads/* ]]; then
+      branch="${source_ref#refs/heads/}"
+      if [[ "${destination_ref}" == "refs/heads/${branch}" ]]; then
+        printf '%s\n' "${branch}"
+        return 0
+      fi
+    fi
+  done
+}
+
 reset_mirrored_repo_refs() {
   local bare_repo_path="$1"
   local -a refs=()
@@ -284,7 +356,7 @@ auto_refresh_mirror() {
   local repo_real="$1"
   local original_command="$2"
   local mirror_source mirror_remote_name mirror_sync_remote mirror_force_local mirror_auto_refresh source_mode resolved_repo_path
-  local default_base_branch local_default_ref remote_default_ref
+  local stored_base_branch preferred_base_branch default_base_branch local_default_ref remote_default_ref
   local local_ahead remote_ahead
   local sync_failed=0
   local stage_namespace="refs/agent-sandbox/staged-mirror"
@@ -316,7 +388,12 @@ auto_refresh_mirror() {
   mirror_remote_name="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorRemoteName || true)"
   mirror_sync_remote="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorSyncRemote || true)"
   mirror_force_local="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorForceLocal || true)"
+  stored_base_branch="$(git --git-dir="${repo_real}" config --get agent-sandbox.baseBranch || true)"
   mapfile -t mirror_refspecs < <(git --git-dir="${repo_real}" config --get-all agent-sandbox.mirrorRefspec || true)
+  preferred_base_branch="$(preferred_branch_from_refspecs "${mirror_refspecs[@]}")"
+  if [[ -z "${preferred_base_branch}" ]]; then
+    preferred_base_branch="${stored_base_branch}"
+  fi
 
   if [[ -n "${mirror_remote_name}" ]]; then
     mirror_args+=(--remote-name "${mirror_remote_name}")
@@ -373,8 +450,7 @@ auto_refresh_mirror() {
     fi
 
     default_base_branch="$(
-      git -C "${resolved_repo_path}" symbolic-ref --quiet --short "refs/remotes/${mirror_remote_name}/HEAD" 2>/dev/null \
-        | sed "s#^${mirror_remote_name}/##" || true
+      default_base_branch_for_remote "${resolved_repo_path}" "${mirror_remote_name}" "${preferred_base_branch}"
     )"
     if (( sync_failed == 0 )) && [[ -n "${default_base_branch}" ]]; then
       local_default_ref="refs/heads/${default_base_branch}"
@@ -385,15 +461,22 @@ auto_refresh_mirror() {
           git -C "${resolved_repo_path}" rev-list --left-right --count "${local_default_ref}...${remote_default_ref}"
         )
         if (( remote_ahead > 0 )) && [[ ! "${mirror_force_local}" =~ ^(1|true|yes|on)$ ]]; then
-          echo "Refusing to mirror stale local refs from ${resolved_repo_path}; local ${default_base_branch} is behind ${mirror_remote_name}/${default_base_branch}." >&2
-          exit 1
+          if (( local_ahead == 0 )); then
+            fast_forward_local_branch \
+              "${resolved_repo_path}" \
+              "${default_base_branch}" \
+              "${local_default_ref}" \
+              "${remote_default_ref}"
+          else
+            echo "Refusing to mirror divergent local refs from ${resolved_repo_path}; local ${default_base_branch} is behind ${mirror_remote_name}/${default_base_branch}." >&2
+            exit 1
+          fi
         fi
       fi
     fi
   else
     default_base_branch="$(
-      git -C "${resolved_repo_path}" symbolic-ref --quiet --short "refs/remotes/${mirror_remote_name}/HEAD" 2>/dev/null \
-        | sed "s#^${mirror_remote_name}/##" || true
+      default_base_branch_for_remote "${resolved_repo_path}" "${mirror_remote_name}" "${preferred_base_branch}"
     )"
   fi
 

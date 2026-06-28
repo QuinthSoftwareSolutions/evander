@@ -179,20 +179,31 @@ def normalize_teams_user_allowlist(value: list[str] | None) -> list[str]:
 def runtime_session_repository(context: EffectRuntimeContext, config: GatewayConfig):
     runtime = getattr(context.admin_service, "runtime", None)
     repository = getattr(runtime, "session_repository", None)
+    if repository is None:
+        repository = getattr(context.admin_service, "session_repository", None)
     if repository is not None:
         return as_session_manifest_repository(repository)
     return JsonSessionManifestRepository(config.session_store_path)
+
+
+def _provider_config_resolvers(context: EffectRuntimeContext) -> tuple[Any, ...]:
+    runtime = getattr(context.admin_service, "runtime", None)
+    resolvers = (
+        getattr(runtime, "provider_config", None),
+        getattr(context.admin_service, "provider_config", None),
+        getattr(context, "provider_config_resolver", None),
+    )
+    return tuple(resolver for resolver in resolvers if resolver is not None)
 
 
 def effective_config_for_directory(
     context: EffectRuntimeContext,
     directory_path: str | None,
 ) -> GatewayConfig:
-    runtime = getattr(context.admin_service, "runtime", None)
-    resolver = getattr(runtime, "provider_config", None)
-    resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
-    if callable(resolve_for_directory):
-        return resolve_for_directory(directory_path)
+    for resolver in _provider_config_resolvers(context):
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            return resolve_for_directory(directory_path)
     return GatewayConfig.model_validate(dict(context.provider_config))
 
 
@@ -200,17 +211,12 @@ def contacts_config_for_directory(
     context: EffectRuntimeContext,
     directory_path: str | None,
 ) -> ContactDirectoryConfig:
-    runtime = getattr(context.admin_service, "runtime", None)
-    resolver = getattr(runtime, "provider_config", None)
-    resolve_contacts_for_directory = getattr(resolver, "resolve_contacts_for_directory", None)
-    if callable(resolve_contacts_for_directory):
-        return resolve_contacts_for_directory(directory_path)
-    provider_config_resolver = getattr(context, "provider_config_resolver", None)
-    resolve_contacts_for_directory = getattr(
-        provider_config_resolver, "resolve_contacts_for_directory", None
-    )
-    if callable(resolve_contacts_for_directory):
-        return resolve_contacts_for_directory(directory_path)
+    for resolver in _provider_config_resolvers(context):
+        resolve_contacts_for_directory = getattr(
+            resolver, "resolve_contacts_for_directory", None
+        )
+        if callable(resolve_contacts_for_directory):
+            return resolve_contacts_for_directory(directory_path)
     raise RuntimeError("contacts_config_for_directory is not available")
 
 
@@ -220,14 +226,13 @@ def effective_config_for_session(
     *,
     fallback_directory_path: str | None = None,
 ) -> GatewayConfig:
-    runtime = getattr(context.admin_service, "runtime", None)
-    resolver = getattr(runtime, "provider_config", None)
-    resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
-    if callable(resolve_for_session_id):
-        try:
-            return resolve_for_session_id(session_id)
-        except ValueError:
-            pass
+    for resolver in _provider_config_resolvers(context):
+        resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
+        if callable(resolve_for_session_id):
+            try:
+                return resolve_for_session_id(session_id)
+            except ValueError:
+                pass
     config = effective_config_for_directory(context, fallback_directory_path)
     repository = runtime_session_repository(context, config)
     session = repository.get_session(session_id)

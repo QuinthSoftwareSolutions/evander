@@ -275,12 +275,19 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
         project_dir=admin.project_dir,
         local_issue_store=admin.local_issue_store,
         worker_admin=admin.worker_admin,
-        get_privileged_helper=lambda: admin._privileged_helper,
-        get_use_privileged_helper=lambda: admin.use_privileged_helper,
-        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
-            directory_path
+        privileged_helper=SimpleNamespace(
+            get_privileged_helper=lambda: admin._privileged_helper,
+            get_use_privileged_helper=lambda: admin.use_privileged_helper,
+            set_privileged_helper=lambda helper: setattr(admin, "_privileged_helper", helper),
         ),
-        read_worker_global_config=lambda worker_id: admin._read_worker_global_config(worker_id),
+        directory_path=SimpleNamespace(
+            normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
+                directory_path
+            )
+        ),
+        workflow_config=SimpleNamespace(
+            read_worker_global_config=lambda worker_id: admin._read_worker_global_config(worker_id)
+        ),
         resolve_agent_model_for_session=lambda session_or_id: (
             admin._resolve_agent_model_for_session(session_or_id)
         ),
@@ -981,10 +988,12 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
             "create_vm",
             (),
             {
+                "provider": None,
                 "vm_name": "vm-11",
                 "session_id": "session-2",
                 "labels": {"team": "infra"},
                 "model": "gpt-5",
+                "model_provider_mode": None,
                 "vm_user": "service",
                 "ttl_seconds": None,
                 "ttl_hours": 48,
@@ -993,8 +1002,16 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "allowed_script_names": ["script-a"],
                 "allowed_contact_ids": None,
                 "discord_channels": ["chan"],
+                "teams_channel_allowlist": None,
+                "teams_chat_allowlist": None,
+                "teams_user_allowlist": None,
                 "email_mailboxes": ["mailbox"],
                 "email_folders": ["folder"],
+                "communication_file_receive_enabled": None,
+                "communication_file_send_enabled": None,
+                "communication_file_max_bytes": None,
+                "communication_file_require_approval_for_send": None,
+                "web_search_enabled": None,
                 "dotnet": True,
                 "nuget": True,
                 "mssql": True,
@@ -1002,6 +1019,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "playwright": True,
                 "codex_skills": ["skill"],
                 "directory_path": "root/team",
+                "metadata": None,
                 "allow_existing_session": False,
             },
         ),
@@ -1507,3 +1525,86 @@ def test_vm_agent_admin_service_create_issue_vm_from_local_issue_rejects_unknown
 
     assert result.success is False
     assert result.message == "Unknown local issue identifier: proxy:ado/999"
+
+
+def test_vm_agent_admin_service_create_vm_normalizes_payload_and_contacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = FakeAdmin()
+    admin.runtime.provider_config = SimpleNamespace(
+        resolve_contacts_for_directory=lambda directory_path: SimpleNamespace(
+            contacts={"ops": object(), "sec": object()}
+        )
+    )
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    captured: dict[str, Any] = {}
+
+    class CapturingProvider:
+        def create_vm(self, **kwargs: Any) -> VmActionResult:
+            captured.update(kwargs)
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="created",
+                provider=str(kwargs["provider"]),
+            )
+
+    class CapturingRegistry:
+        def get(self, provider: str) -> CapturingProvider:
+            captured["registry_provider"] = provider
+            return CapturingProvider()
+
+    monkeypatch.setattr(service, "_provider_registry", lambda: CapturingRegistry())
+
+    result = service.create_vm(
+        provider="libvirt",
+        vm_name="vm-contacts",
+        session_id=None,
+        model_provider_mode=" local_openai ",
+        allowed_contact_ids=["ops", "ops", "sec"],
+        teams_channel_allowlist=["team/channel"],
+        communication_file_receive_enabled=True,
+        web_search_enabled=False,
+        directory_path="root/team",
+        metadata={"existing": {"keep": True}},
+    )
+
+    assert result.success is True
+    assert captured["registry_provider"] == "libvirt"
+    assert captured["provider"] == "libvirt"
+    assert captured["allowed_contact_ids"] == ["ops", "sec"]
+    assert captured["teams_channel_allowlist"] == ["team/channel"]
+    assert captured["communication_file_receive_enabled"] is True
+    assert captured["web_search_enabled"] is False
+    assert captured["metadata"] == {
+        "existing": {"keep": True},
+        "model_provider_mode": "local_openai",
+    }
+
+
+def test_vm_agent_admin_service_create_vm_rejects_unknown_allowed_contact_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = FakeAdmin()
+    admin.runtime.provider_config = SimpleNamespace(
+        resolve_contacts_for_directory=lambda directory_path: SimpleNamespace(
+            contacts={"ops": object()}
+        )
+    )
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    class UnexpectedRegistry:
+        def get(self, provider: str) -> Any:
+            raise AssertionError(
+                "provider should not be called when contact validation fails"
+            )
+
+    monkeypatch.setattr(service, "_provider_registry", lambda: UnexpectedRegistry())
+
+    with pytest.raises(ValueError, match="unknown contact ids: missing"):
+        service.create_vm(
+            vm_name="vm-missing-contact",
+            allowed_contact_ids=["missing"],
+            directory_path="root/team",
+        )

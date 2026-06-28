@@ -360,6 +360,10 @@ Do not leave stalled test processes running while continuing work.
 
 ## Guidance For Future Changes
 
+- Treat `src/agent_sandbox/admin/service.py::AdminService` as the legacy/stable facade for
+  CLI, gateway, and Admin Web integration. Prefer placing new admin domain logic in narrower
+  services under `src/agent_sandbox/admin/services/` with clear ownership boundaries for
+  operations, issue/git, VM/agent, workflow config, skills, reporting, and PR preflight.
 - Keep base VMs minimal; prefer post-launch bootstraps for optional toolchains.
 - Prefer host-seeded artifacts over guest internet installs.
 - If adding a new guest capability, update the bootstrap script, `README.md`,

@@ -187,7 +187,17 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
         text=True,
         capture_output=True,
     )
-
+    _git(source_repo, "checkout", "-b", "work")
+    (source_repo / "work.txt").write_text("work\n", encoding="utf-8")
+    _git(source_repo, "add", "work.txt", env=env)
+    _git(source_repo, "commit", "-m", "Work branch", env=env)
+    _git(source_repo, "push", "-u", "origin", "work", env=env)
+    subprocess.run(
+        ["git", "-C", str(source_repo), "update-ref", "-d", "refs/remotes/origin/HEAD"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
     create_remote_script = scripts_dir / "create_git_remote.sh"
     subprocess.run(
         [str(create_remote_script), "shared-repo"],
@@ -213,14 +223,21 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
-    initial_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
-    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == initial_sha
+    initial_main_sha = _git(source_repo, "rev-parse", "main").stdout.strip()
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == initial_main_sha
 
-    (source_repo / "README.md").write_text("v2\n", encoding="utf-8")
-    _git(source_repo, "add", "README.md", env=env)
-    _git(source_repo, "commit", "-m", "Update commit", env=env)
-    _git(source_repo, "push", "origin", "main", env=env)
-    updated_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
+    upstream_worktree = tmp_path / "upstream-worktree"
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(upstream_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    (upstream_worktree / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(upstream_worktree, "add", "README.md", env=env)
+    _git(upstream_worktree, "commit", "-m", "Update commit", env=env)
+    _git(upstream_worktree, "push", "origin", "main", env=env)
+    updated_sha = _git(upstream_worktree, "rev-parse", "HEAD").stdout.strip()
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -245,6 +262,8 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     )
 
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
+    assert _git(source_repo, "branch", "--show-current").stdout.strip() == "work"
+    assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
 
 
@@ -642,7 +661,6 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
         text=True,
         capture_output=True,
     )
-
     create_remote_script = scripts_dir / "create_git_remote.sh"
     subprocess.run(
         [str(create_remote_script), "shared-repo"],
@@ -866,6 +884,17 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
         text=True,
         capture_output=True,
     )
+    _git(source_repo, "checkout", "-b", "work")
+    (source_repo / "work.txt").write_text("work\n", encoding="utf-8")
+    _git(source_repo, "add", "work.txt", env=env)
+    _git(source_repo, "commit", "-m", "Work branch", env=env)
+    _git(source_repo, "push", "-u", "origin", "work", env=env)
+    subprocess.run(
+        ["git", "-C", str(source_repo), "update-ref", "-d", "refs/remotes/origin/HEAD"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
     subprocess.run(
@@ -899,11 +928,18 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
     _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
-    (source_repo / "README.md").write_text("v2\n", encoding="utf-8")
-    _git(source_repo, "add", "README.md", env=env)
-    _git(source_repo, "commit", "-m", "Update commit", env=env)
-    _git(source_repo, "push", "origin", "main", env=env)
-    updated_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
+    upstream_worktree = tmp_path / "upstream-worktree"
+    subprocess.run(
+        ["git", "clone", "--branch", "main", str(origin_bare), str(upstream_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    (upstream_worktree / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(upstream_worktree, "add", "README.md", env=env)
+    _git(upstream_worktree, "commit", "-m", "Update commit", env=env)
+    _git(upstream_worktree, "push", "origin", "main", env=env)
+    updated_sha = _git(upstream_worktree, "rev-parse", "HEAD").stdout.strip()
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -923,6 +959,8 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
         [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
     )
 
+    assert _git(source_repo, "branch", "--show-current").stdout.strip() == "work"
+    assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
 
 

@@ -516,7 +516,9 @@ def workflow_routes(
         try:
             requested_workflow_pack = request.query_params.get("workflow_pack")
             if requested_workflow_pack is None:
-                composed_document = service.read_composed_workflow_editor_document()
+                composed_document = (
+                    service.read_composed_workflow_editor_document()
+                )
                 document = composed_document
                 readable_graphs = _readable_graphs_for_document(
                     auth=auth,
@@ -574,7 +576,9 @@ def workflow_routes(
                 request.query_params.get("directory_path") or "root"
             )
             auth.require_permission(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path)
-            catalog = service.read_workflow_editor_catalog(directory_path=directory_path)
+            catalog = service.read_workflow_editor_catalog(
+                directory_path=directory_path
+            )
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:

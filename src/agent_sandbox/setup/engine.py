@@ -1,0 +1,819 @@
+from __future__ import annotations
+
+import getpass
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.bootstrap import load_runtime_gateway_config
+from agent_sandbox.runtime import build_runtime
+
+UTC = timezone.utc
+
+SETUP_STATE_VERSION = 1
+DEFAULT_SECRET_FILE = Path("/etc/agent-sandbox/local-secrets.env")
+DEFAULT_RUNTIME_DIR = Path("runtime")
+DEFAULT_ADMIN_PORT = "8100"
+DEFAULT_ADMIN_HOST = "127.0.0.1"
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_AUTH_MODE = "local_password"
+DEFAULT_CONTAINER_WORKER_URL = "http://127.0.0.1:11888"
+DEFAULT_CONTAINER_WORKER_TOKEN_ENV = "AGENT_SANDBOX_WORKER_TOKEN"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
+
+PROVIDER_ENV_VARS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+PROVIDER_DEFAULT_MODELS = {
+    "openai": "gpt-5.4",
+    "anthropic": "claude-sonnet-4-6",
+    "ollama": "qwen2.5-coder:14b",
+}
+
+ESSENTIAL_SERVICES = [
+    "agent-sandbox-firewall.service",
+    "agent-sandbox-gateway.service",
+    "agent-sandbox-admin-web.service",
+    "agent-sandbox-openai-relay.service",
+    "agent-sandbox-nuget-relay.service",
+    "agent-sandbox-http-target-relay.service",
+    "agent-sandbox-trigger-orchestrator.service",
+    "agent-sandbox-effect-orchestrator.service",
+]
+
+
+@dataclass
+class SetupState:
+    version: int = SETUP_STATE_VERSION
+    secret_file: str = str(DEFAULT_SECRET_FILE)
+    secret_storage_acknowledged: bool = False
+    admin_web: dict[str, Any] = field(
+        default_factory=lambda: {
+            "host": DEFAULT_ADMIN_HOST,
+            "port": DEFAULT_ADMIN_PORT,
+            "auth_mode": DEFAULT_ADMIN_AUTH_MODE,
+            "username": getpass.getuser() or DEFAULT_ADMIN_USERNAME,
+            "password_configured": False,
+            "session_secret_configured": False,
+        }
+    )
+    execution: dict[str, Any] = field(default_factory=dict)
+    ai_providers: list[str] = field(default_factory=list)
+    provider_config: dict[str, Any] = field(default_factory=dict)
+    provider_secrets_configured: dict[str, bool] = field(default_factory=dict)
+    default_provider: str = ""
+    default_model: str = ""
+    install_preflight_passed_at: str = ""
+    launched_at: str = ""
+    assistant_verified_at: str = ""
+    assistant_verification_error: str = ""
+    assistant_session_id: str = ""
+    assistant_smoke_event_id: str = ""
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "SetupState":
+        known = {field.name for field in cls.__dataclass_fields__.values()}
+        kwargs = {key: value for key, value in payload.items() if key in known}
+        state = cls(**kwargs)
+        state.version = SETUP_STATE_VERSION
+        return state
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["admin_web"] = _redact_secretish_mapping(payload.get("admin_web"))
+        return payload
+
+
+@dataclass(frozen=True)
+class ChecklistItem:
+    id: str
+    label: str
+    status: str
+    summary: str
+    required: bool = True
+    details: str = ""
+
+    def to_payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _redact_secretish_mapping(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    redacted: dict[str, object] = {}
+    for key, item in value.items():
+        if "password" in str(key).lower() or "secret" in str(key).lower():
+            redacted[key] = bool(item)
+        else:
+            redacted[key] = item
+    return redacted
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return payload
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    try:
+        if not path.is_file():
+            return {}
+    except PermissionError:
+        return {}
+    return _parse_env_content(path.read_text(encoding="utf-8"))
+
+
+def _parse_env_content(content: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _quote_env_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def _read_env_for_update(path: Path, *, root_owned: bool) -> dict[str, str]:
+    if not root_owned or os.geteuid() == 0:
+        return _parse_env_file(path)
+    result = subprocess.run(
+        ["sudo", "cat", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return _parse_env_content(result.stdout)
+    if "No such file" in result.stderr or "cannot open" in result.stderr:
+        return {}
+    result.check_returncode()
+    return {}
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except PermissionError:
+        return False
+
+
+def _upsert_env_file(path: Path, updates: dict[str, str], *, root_owned: bool = False) -> None:
+    existing = _read_env_for_update(path, root_owned=root_owned)
+    existing.update(updates)
+    content = "".join(
+        f"{key}={_quote_env_value(value)}\n" for key, value in sorted(existing.items())
+    )
+    if root_owned and os.geteuid() != 0:
+        tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"evander-secrets-{secrets.token_hex(8)}.env"
+        tmp.write_text(content, encoding="utf-8")
+        tmp.chmod(0o600)
+        try:
+            subprocess.run(
+                [
+                    "sudo",
+                    "install",
+                    "-d",
+                    "-o",
+                    "root",
+                    "-g",
+                    "root",
+                    "-m",
+                    "0700",
+                    str(path.parent),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["sudo", "install", "-o", "root", "-g", "root", "-m", "0600", str(tmp), str(path)],
+                check=True,
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _copy_if_missing(source: Path, destination: Path) -> bool:
+    if destination.exists():
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return True
+
+
+def _merge_env_file(path: Path, updates: dict[str, str]) -> None:
+    existing = _parse_env_file(path)
+    existing.update(updates)
+    content = "".join(
+        f"{key}={_quote_env_value(value)}\n" for key, value in sorted(existing.items())
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _command_status(command: str) -> dict[str, object]:
+    path = shutil.which(command)
+    return {"command": command, "present": bool(path), "path": path}
+
+
+class SetupManager:
+    def __init__(self, *, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR) -> None:
+        self.project_dir = project_dir.expanduser().resolve()
+        self.runtime_dir = (
+            runtime_dir
+            if runtime_dir.is_absolute()
+            else (self.project_dir / runtime_dir).expanduser().resolve()
+        )
+        self.state_path = self.runtime_dir / "setup-wizard" / "state.json"
+
+    def load_state(self) -> SetupState:
+        return SetupState.from_payload(_read_json(self.state_path))
+
+    def save_state(self, state: SetupState) -> None:
+        _write_json(self.state_path, asdict(state))
+
+    def secret_file_path(self, state: SetupState) -> Path:
+        return Path(state.secret_file).expanduser()
+
+    def secret_status(self, state: SetupState) -> dict[str, object]:
+        path = self.secret_file_path(state)
+        values = _parse_env_file(path)
+        selected = set(state.ai_providers)
+        required = {
+            provider: PROVIDER_ENV_VARS[provider]
+            for provider in selected
+            if provider in PROVIDER_ENV_VARS
+        }
+        return {
+            "path": str(path),
+            "exists": _is_file(path),
+            "required": {
+                provider: {
+                    "env_var": env_var,
+                    "set": bool(
+                        values.get(env_var) or state.provider_secrets_configured.get(provider)
+                    ),
+                }
+                for provider, env_var in required.items()
+            },
+        }
+
+    def checklist(self, state: SetupState | None = None) -> list[ChecklistItem]:
+        state = state or self.load_state()
+        secret_status = self.secret_status(state)
+        items: list[ChecklistItem] = []
+        items.append(
+            ChecklistItem(
+                "secret_storage",
+                "Host secret storage",
+                "completed" if state.secret_storage_acknowledged else "needs input",
+                state.secret_file,
+                details="Provider secrets are stored on the control-plane host.",
+            )
+        )
+        admin_auth_mode = str(state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE)
+        admin_session_ready = bool(state.admin_web.get("session_secret_configured"))
+        admin_ready = admin_session_ready and (
+            admin_auth_mode == "none" or bool(state.admin_web.get("password_configured"))
+        )
+        admin_summary = (
+            f"{state.admin_web.get('host')}:{state.admin_web.get('port')}, "
+            f"{_admin_auth_label(admin_auth_mode)}"
+        )
+        items.append(
+            ChecklistItem(
+                "admin_web",
+                "Admin Web access",
+                "completed" if admin_ready else "needs input",
+                admin_summary,
+            )
+        )
+        execution_model = str(state.execution.get("model") or "")
+        items.append(
+            ChecklistItem(
+                "execution_model",
+                "Execution model",
+                "completed" if execution_model else "needs input",
+                _execution_label(execution_model) if execution_model else "Not selected",
+            )
+        )
+        provider_missing = [
+            provider
+            for provider, payload in dict(secret_status.get("required") or {}).items()
+            if not payload.get("set")
+        ]
+        provider_status = "needs input"
+        provider_summary = "Not selected"
+        if state.ai_providers and not provider_missing:
+            provider_status = "completed"
+            provider_summary = ", ".join(state.ai_providers)
+        elif state.ai_providers:
+            provider_summary = (
+                f"{', '.join(state.ai_providers)}; "
+                f"missing secrets: {', '.join(provider_missing)}"
+            )
+        items.append(
+            ChecklistItem(
+                "ai_providers",
+                "AI providers",
+                provider_status,
+                provider_summary,
+            )
+        )
+        default_ready = bool(state.default_provider and state.default_model)
+        default_blocked = not state.ai_providers
+        items.append(
+            ChecklistItem(
+                "default_model",
+                "Default model routing",
+                "blocked" if default_blocked else ("completed" if default_ready else "needs input"),
+                (
+                    f"{state.default_provider}: {state.default_model}"
+                    if default_ready
+                    else "Needs AI provider first"
+                    if default_blocked
+                    else "Not selected"
+                ),
+            )
+        )
+        required_ready = all(
+            item.status == "completed"
+            for item in items
+            if item.required and item.id not in {"install_preflight", "launch_verify"}
+        )
+        items.append(
+            ChecklistItem(
+                "install_preflight",
+                "Install preflight",
+                (
+                    "completed"
+                    if state.install_preflight_passed_at
+                    else "blocked"
+                    if not required_ready
+                    else "needs input"
+                ),
+                (
+                    f"Passed {state.install_preflight_passed_at}"
+                    if state.install_preflight_passed_at
+                    else "Waiting for required choices"
+                    if not required_ready
+                    else "Ready to run"
+                ),
+            )
+        )
+        launch_ready = required_ready and bool(state.install_preflight_passed_at)
+        items.append(
+            ChecklistItem(
+                "launch_verify",
+                "Launch and Admin Assistant verification",
+                "completed"
+                if state.assistant_verified_at
+                else "blocked"
+                if not launch_ready
+                else "needs input",
+                (
+                    f"Verified {state.assistant_verified_at}"
+                    if state.assistant_verified_at
+                    else "Ready to launch"
+                    if launch_ready
+                    else "Needs completed required items and preflight"
+                ),
+            )
+        )
+        return items
+
+    def required_ready(self, state: SetupState | None = None) -> bool:
+        state = state or self.load_state()
+        return all(
+            item.status == "completed"
+            for item in self.checklist(state)
+            if item.required and item.id not in {"launch_verify"}
+        )
+
+    def configuration_ready(self, state: SetupState | None = None) -> bool:
+        state = state or self.load_state()
+        required_config_ids = {
+            "secret_storage",
+            "admin_web",
+            "execution_model",
+            "ai_providers",
+            "default_model",
+        }
+        return all(
+            item.status == "completed"
+            for item in self.checklist(state)
+            if item.id in required_config_ids
+        )
+
+    def doctor(self) -> dict[str, object]:
+        state = self.load_state()
+        commands = [
+            _command_status(command)
+            for command in ("python3", "uv", "virsh", "virt-install", "cloud-localds", "qemu-img")
+        ]
+        paths = {
+            "project_dir": str(self.project_dir),
+            "runtime_dir": str(self.runtime_dir),
+            "state_path": str(self.state_path),
+            "admin_web_env": str(self.project_dir / "config" / "admin-web.env"),
+            "firewall_env": str(self.project_dir / "config" / "firewall.env"),
+        }
+        return {
+            "ok": self.required_ready(state),
+            "checklist": [item.to_payload() for item in self.checklist(state)],
+            "commands": commands,
+            "paths": paths,
+            "secret_status": self.secret_status(state),
+        }
+
+    def plan(self) -> dict[str, object]:
+        state = self.load_state()
+        files = [
+            "runtime/setup-wizard/state.json",
+            "runtime/host-config.json",
+            "runtime/directory-config/root/providers.json",
+            "runtime/directory-config/root/issue-setup.json",
+            "runtime/assistant-settings.json",
+            "config/admin-web.env",
+            "config/firewall.env",
+            state.secret_file,
+        ]
+        steps = [
+            "initialize runtime state",
+            "write Admin Web and firewall config",
+            "write root provider/default-model config",
+            "run systemd install preflight",
+            "install/start persistent control-plane services",
+            "create or reuse the Admin Assistant session",
+            "queue one Admin Assistant smoke message",
+        ]
+        return {
+            "ready": self.required_ready(state),
+            "execution_model": state.execution.get("model") or None,
+            "ai_providers": list(state.ai_providers),
+            "default_provider": state.default_provider or None,
+            "default_model": state.default_model or None,
+            "files": files,
+            "steps": steps,
+            "secrets": self.secret_status(state),
+            "checklist": [item.to_payload() for item in self.checklist(state)],
+        }
+
+    def acknowledge_secret_storage(self, state: SetupState) -> SetupState:
+        state.secret_storage_acknowledged = True
+        self.save_state(state)
+        return state
+
+    def configure_admin_web(
+        self,
+        state: SetupState,
+        *,
+        host: str,
+        port: str,
+        username: str,
+        password: str = "",
+        auth_mode: str = DEFAULT_ADMIN_AUTH_MODE,
+    ) -> SetupState:
+        normalized_auth_mode = auth_mode.strip().lower() or DEFAULT_ADMIN_AUTH_MODE
+        if normalized_auth_mode not in {"local_password", "none"}:
+            raise ValueError("Setup currently supports local_password and none Admin Web auth.")
+        state.admin_web = {
+            "host": host.strip() or DEFAULT_ADMIN_HOST,
+            "port": port.strip() or DEFAULT_ADMIN_PORT,
+            "auth_mode": normalized_auth_mode,
+            "username": username.strip() or DEFAULT_ADMIN_USERNAME,
+            "password_configured": normalized_auth_mode == "local_password" and bool(password),
+            "session_secret_configured": True,
+        }
+        secret_updates = {
+            "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET": secrets.token_urlsafe(32),
+        }
+        if normalized_auth_mode == "local_password" and password:
+            secret_updates["AGENT_SANDBOX_ADMIN_WEB_PASSWORD"] = password
+        if secret_updates:
+            _upsert_env_file(
+                self.secret_file_path(state),
+                secret_updates,
+                root_owned=self.secret_file_path(state).is_absolute()
+                and str(self.secret_file_path(state)).startswith("/etc/"),
+            )
+        self.save_state(state)
+        return state
+
+    def configure_execution(self, state: SetupState, *, model: str) -> SetupState:
+        normalized = model.strip()
+        if normalized not in {"container_same_host", "container_worker_host", "libvirt_vm"}:
+            raise ValueError("Unsupported execution model")
+        state.execution = {"model": normalized}
+        if normalized == "container_same_host":
+            state.execution.update(
+                {
+                    "execution_backend": "container_worker_vm",
+                    "container_worker_base_url": DEFAULT_CONTAINER_WORKER_URL,
+                    "container_worker_token_env": DEFAULT_CONTAINER_WORKER_TOKEN_ENV,
+                }
+            )
+        elif normalized == "container_worker_host":
+            state.execution.update(
+                {
+                    "execution_backend": "container_worker_vm",
+                    "container_worker_token_env": DEFAULT_CONTAINER_WORKER_TOKEN_ENV,
+                }
+            )
+        else:
+            state.execution.update({"execution_backend": "libvirt_vm"})
+        self.save_state(state)
+        return state
+
+    def configure_ai_providers(
+        self,
+        state: SetupState,
+        *,
+        providers: list[str],
+        secrets_by_env: dict[str, str] | None = None,
+        ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    ) -> SetupState:
+        normalized = [
+            provider for provider in providers if provider in {"openai", "anthropic", "ollama"}
+        ]
+        if not normalized:
+            raise ValueError("At least one AI provider is required")
+        state.ai_providers = list(dict.fromkeys(normalized))
+        config = dict(state.provider_config)
+        if "openai" in normalized:
+            config["openai_api_key_env"] = PROVIDER_ENV_VARS["openai"]
+        if "anthropic" in normalized:
+            config["anthropic_api_key_env"] = PROVIDER_ENV_VARS["anthropic"]
+        if "ollama" in normalized:
+            config["local_openai_api_base_url"] = ollama_base_url.strip() or DEFAULT_OLLAMA_BASE_URL
+            config["local_openai_api_key"] = "ollama"
+            config["local_openai_provider_name"] = "local_openai"
+        secrets_by_env = secrets_by_env or {}
+        secret_updates = {key: value for key, value in secrets_by_env.items() if value}
+        if secret_updates:
+            _upsert_env_file(
+                self.secret_file_path(state),
+                secret_updates,
+                root_owned=self.secret_file_path(state).is_absolute()
+                and str(self.secret_file_path(state)).startswith("/etc/"),
+            )
+        state.provider_config = config
+        existing_values = _parse_env_file(self.secret_file_path(state))
+        state.provider_secrets_configured = {
+            provider: bool(
+                existing_values.get(env_var)
+                or secret_updates.get(env_var)
+                or state.provider_secrets_configured.get(provider)
+            )
+            for provider, env_var in PROVIDER_ENV_VARS.items()
+            if provider in state.ai_providers
+        }
+        if not state.default_provider or state.default_provider not in state.ai_providers:
+            state.default_provider = state.ai_providers[0]
+            state.default_model = PROVIDER_DEFAULT_MODELS[state.default_provider]
+        self.save_state(state)
+        return state
+
+    def configure_default_model(
+        self,
+        state: SetupState,
+        *,
+        provider: str,
+        model: str,
+    ) -> SetupState:
+        if provider not in state.ai_providers:
+            raise ValueError("Default provider must be one of the selected AI providers")
+        if not model.strip():
+            raise ValueError("Default model is required")
+        state.default_provider = provider
+        state.default_model = model.strip()
+        self.save_state(state)
+        return state
+
+    def run_install_preflight(self, state: SetupState) -> SetupState:
+        self._write_config_files(state)
+        subprocess.run(
+            [str(self.project_dir / "scripts" / "install_systemd_units.sh"), "--preflight"],
+            cwd=self.project_dir,
+            check=True,
+        )
+        state.install_preflight_passed_at = _now()
+        self.save_state(state)
+        return state
+
+    def launch(self, state: SetupState) -> SetupState:
+        if not self.required_ready(state):
+            raise ValueError("Setup checklist is not ready to launch")
+        self._write_config_files(state)
+        subprocess.run(
+            ["sudo", str(self.project_dir / "scripts" / "install_systemd_units.sh")],
+            cwd=self.project_dir,
+            check=True,
+        )
+        self._install_secret_dropins(state)
+        for service in ESSENTIAL_SERVICES:
+            subprocess.run(["sudo", "systemctl", "start", service], check=True)
+        self._wait_admin_web(state)
+        self._verify_admin_assistant(state)
+        state.launched_at = state.launched_at or _now()
+        state.assistant_verified_at = _now()
+        state.assistant_verification_error = ""
+        self.save_state(state)
+        return state
+
+    def _write_config_files(self, state: SetupState) -> None:
+        build_runtime(load_runtime_gateway_config(runtime_dir=self.runtime_dir)).directories.ensure_root()
+        _copy_if_missing(
+            self.project_dir / "config" / "firewall.env.example",
+            self.project_dir / "config" / "firewall.env",
+        )
+        admin_env = self.project_dir / "config" / "admin-web.env"
+        _copy_if_missing(self.project_dir / "config" / "admin-web.env.example", admin_env)
+        admin_updates = {
+            "ADMIN_WEB_HOST": str(state.admin_web.get("host") or DEFAULT_ADMIN_HOST),
+            "ADMIN_WEB_PORT": str(state.admin_web.get("port") or DEFAULT_ADMIN_PORT),
+            "AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE": str(
+                state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE
+            ),
+            "AGENT_SANDBOX_ADMIN_WEB_USERNAME": str(
+                state.admin_web.get("username") or DEFAULT_ADMIN_USERNAME
+            ),
+            "AGENT_SANDBOX_ADMIN_WEB_PASSWORD": "",
+            "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET": "",
+            "AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE": "false",
+        }
+        _merge_env_file(admin_env, admin_updates)
+        provider_payload = self._provider_payload(state)
+        issue_payload = {"default_model": state.default_model}
+        service = AdminService(self.runtime_dir)
+        service.write_directory_domain_config("root", "providers", provider_payload)
+        service.write_directory_domain_config("root", "issue_setup", issue_payload)
+        service.write_assistant_settings(
+            {
+                "enabled": True,
+                "read_only": True,
+                "default_model": state.default_model,
+                "show_launcher_when_disabled": False,
+            }
+        )
+
+    def _install_secret_dropins(self, state: SetupState) -> None:
+        secret_file = str(self.secret_file_path(state))
+        content = f"[Service]\nEnvironmentFile=-{secret_file}\n"
+        tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"evander-secret-dropin-{secrets.token_hex(8)}.conf"
+        tmp.write_text(content, encoding="utf-8")
+        try:
+            for service in ESSENTIAL_SERVICES:
+                dropin_dir = f"/etc/systemd/system/{service}.d"
+                subprocess.run(["sudo", "install", "-d", "-m", "0755", dropin_dir], check=True)
+                subprocess.run(
+                    [
+                        "sudo",
+                        "install",
+                        "-m",
+                        "0644",
+                        str(tmp),
+                        f"{dropin_dir}/20-evander-setup-secrets.conf",
+                    ],
+                    check=True,
+                )
+            subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _provider_payload(self, state: SetupState) -> dict[str, object]:
+        payload: dict[str, object] = dict(state.provider_config)
+        payload["execution_backend"] = state.execution.get("execution_backend") or "libvirt_vm"
+        provider_mode = {
+            "openai": "openai_public",
+            "anthropic": "anthropic",
+            "ollama": "local_openai",
+        }.get(state.default_provider, "openai_public")
+        payload["model_provider_mode"] = provider_mode
+        if payload["execution_backend"] == "container_worker_vm":
+            payload.setdefault(
+                "container_worker_base_url",
+                state.execution.get("container_worker_base_url") or DEFAULT_CONTAINER_WORKER_URL,
+            )
+            payload.setdefault(
+                "container_worker_token_env",
+                state.execution.get("container_worker_token_env") or DEFAULT_CONTAINER_WORKER_TOKEN_ENV,
+            )
+            payload.setdefault("container_worker_default_image", "agent-sandbox-runner:latest")
+            payload.setdefault(
+                "container_worker_images",
+                {
+                    "default": "agent-sandbox-runner:latest",
+                    "claude": "agent-sandbox-runner-claude:latest",
+                },
+            )
+        return payload
+
+    def _wait_admin_web(self, state: SetupState) -> None:
+        host = str(state.admin_web.get("host") or DEFAULT_ADMIN_HOST)
+        url_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        url = f"http://{url_host}:{state.admin_web.get('port') or DEFAULT_ADMIN_PORT}/healthz"
+        deadline = time.monotonic() + 60
+        last_exc: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                with httpx.Client(timeout=3) as client:
+                    response = client.get(url)
+                if response.status_code == 200:
+                    return
+            except Exception as exc:
+                last_exc = exc
+            time.sleep(2)
+        raise RuntimeError(f"Admin Web did not become healthy at {url}: {last_exc}")
+
+    def _verify_admin_assistant(self, state: SetupState) -> None:
+        service = AdminService(self.runtime_dir)
+        backend = str(state.execution.get("execution_backend") or "libvirt_vm")
+        user_id = str(state.admin_web.get("username") or "admin")
+        thread_id = "setup-smoke"
+        assistant_session = service.vm_agent_admin.resolve_chat_assistant_session(
+            user_id=user_id,
+            backend=backend,
+            assistant_scope="admin_chat",
+            settings={
+                "enabled": True,
+                "read_only": True,
+                "default_model": state.default_model,
+            },
+            thread_id=thread_id,
+            user_message_id=None,
+        )
+        message_id = f"setup-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
+        smoke_event = service.publish_chat_assistant_message(
+            user_id=user_id,
+            thread_id=thread_id,
+            user_message_id=message_id,
+            content="Setup smoke check: confirm that the Admin Assistant path is receiving messages.",
+            backend=backend,
+            assistant_capability_mode="read-only",
+        )
+        state.assistant_session_id = str(assistant_session.get("session_id") or "")
+        state.assistant_smoke_event_id = str(smoke_event.get("event_id") or "")
+
+
+def _execution_label(value: str) -> str:
+    return {
+        "container_same_host": "containers on this host",
+        "container_worker_host": "containers on a separate worker host",
+        "libvirt_vm": "VM-backed agents",
+    }.get(value, value)
+
+
+def _admin_auth_label(value: str) -> str:
+    return {
+        "local_password": "local password",
+        "none": "no authentication",
+    }.get(value, value)
+
+
+def setup_doctor_payload(
+    *, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR
+) -> dict[str, object]:
+    return SetupManager(project_dir=project_dir, runtime_dir=runtime_dir).doctor()
+
+
+def setup_plan_payload(
+    *, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR
+) -> dict[str, object]:
+    return SetupManager(project_dir=project_dir, runtime_dir=runtime_dir).plan()

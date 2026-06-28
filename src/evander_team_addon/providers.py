@@ -112,7 +112,7 @@ from .provider_schemas import (
 )
 from .repository import TeamStateConflictError, TeamStateRepository
 
-TEAM_AGENT_GUIDANCE_VERSION = 11
+TEAM_AGENT_GUIDANCE_VERSION = 12
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -2925,9 +2925,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "files, helper scripts, or finish commands.\n\n"
         "Core MCP surface:\n"
         f"- Use {TEAM_UPDATE_TASK_TOOL} for tasks you own. State, priority, title, "
-        "and description edits are owner-only. Superior agents may use the same "
-        "tool to claim a subordinate's non-terminal task or reassign it within "
-        "the same project. Do not accept or reject someone else's task through "
+        "and description edits are owner-only except that a superior may set "
+        "state: finished on a subordinate non-terminal task they could otherwise "
+        "claim. Superior agents may use the same tool to claim a subordinate's "
+        "non-terminal task or reassign it within the same project. Do not accept "
+        "or reject someone else's task through "
         f"{TEAM_UPDATE_TASK_TOOL}.\n"
         f"- Use {TEAM_CREATE_CASE_TOOL} and {TEAM_UPDATE_CASE_TOOL} for intake, "
         "source references, priority, owner, lifecycle, and case-task links.\n"

@@ -5692,6 +5692,43 @@ def test_agent_followup_routing_uses_libvirt_session_provider_over_container_def
     assert execution_backend == "libvirt_vm"
 
 
+def test_agent_followup_routing_uses_gateway_provider_config_for_container_session(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id="session-container",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(tmp_path)},
+        admin_service=SimpleNamespace(
+            provider_config=_ContainerResolverStub(config),
+            session_repository=session_repository,
+        ),
+        metadata={"directory_path": "root"},
+    )
+
+    execution_backend, resolved_config = selected_execution_backend_for_target(
+        context,
+        {"session_id": "session-container"},
+        directory_path="root",
+    )
+
+    assert execution_backend == "container_worker_vm"
+    assert resolved_config.container_worker_base_url == "http://worker.test"
+
+
 def test_agent_copy_files_vm_name_only_uses_resolved_vm_name_as_copy_target(
     tmp_path,
 ) -> None:

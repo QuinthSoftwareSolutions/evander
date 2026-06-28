@@ -367,6 +367,7 @@ class TeamsInboxStore:
                   FROM teams_inbox_cursors AS cursors
                   WHERE cursors.channel_target = teams_inbox_messages.channel_target
                     AND cursors.created_at IS NOT NULL
+                    AND cursors.created_at >= ?
                     AND (
                         teams_inbox_messages.created_at < cursors.created_at
                         OR (
@@ -376,7 +377,7 @@ class TeamsInboxStore:
                     )
               )
             """,
-            (cutoff,),
+            (cutoff, cutoff),
         )
 
     def _message_row(

@@ -41,11 +41,11 @@ naming convention, use:
 
 Freshness controls:
 
-- local source path: defaults to upstream fetch + divergence check
+- local source path: defaults to upstream fetch, safe fast-forward, and divergence check
 - remote URL source: always refreshes latest refs in `runtime/repo-cache` first
-- `--sync-remote`: explicitly force that fetch/divergence-check behavior for local source
+- `--sync-remote`: explicitly force that fetch/fast-forward/divergence-check behavior for local source
 - `--no-sync-remote`: skip upstream fetch for local/offline-only mirroring
-- `--force-local`: continue even if local default branch is behind remote default branch
+- `--force-local`: continue even if local and remote default branches diverged
 - optional pinning: `--branch <name>` or `--refspec <src:dst>`
 
 Examples:

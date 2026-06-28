@@ -497,15 +497,16 @@ def _sync_and_validate_local_remote(
         return
 
     resolver._run(["git", "-C", repo_path, "fetch", "--prune", remote_name])
-    _refuse_stale_local_branches(resolver, repo_path, remote_name)
+    _fast_forward_stale_local_branches(resolver, repo_path, remote_name)
 
 
-def _refuse_stale_local_branches(
+def _fast_forward_stale_local_branches(
     resolver: ContainerGitMirrorResolver,
     repo_path: str,
     remote_name: str,
 ) -> None:
     remote_prefix = f"refs/remotes/{remote_name}/"
+    current_branch = _git_output(resolver, ["git", "-C", repo_path, "branch", "--show-current"])
     for local_ref in _git_refs(resolver, repo_path, "refs/heads"):
         branch = local_ref.removeprefix("refs/heads/")
         if _skip_mirror_branch(branch):
@@ -534,12 +535,38 @@ def _refuse_stale_local_branches(
         local_ahead, remote_ahead = (int(count_parts[0]), int(count_parts[1]))
         if remote_ahead <= 0:
             continue
+        if local_ahead == 0:
+            _fast_forward_local_branch(
+                resolver,
+                repo_path=repo_path,
+                branch=branch,
+                current_branch=current_branch,
+                local_ref=local_ref,
+                remote_ref=remote_ref,
+            )
+            continue
 
         raise RuntimeError(
-            "Refusing to mirror stale local refs from "
+            "Refusing to mirror divergent local refs from "
             f"{repo_path}; local {branch} is behind {remote_name}/{branch} "
             f"(ahead={local_ahead} behind={remote_ahead})."
         )
+
+
+def _fast_forward_local_branch(
+    resolver: ContainerGitMirrorResolver,
+    *,
+    repo_path: str,
+    branch: str,
+    current_branch: str,
+    local_ref: str,
+    remote_ref: str,
+) -> None:
+    if branch == current_branch:
+        resolver._run(["git", "-C", repo_path, "merge", "--ff-only", remote_ref])
+        return
+
+    resolver._run(["git", "-C", repo_path, "update-ref", local_ref, remote_ref, local_ref])
 
 
 def _mirror_fetch_refspecs(

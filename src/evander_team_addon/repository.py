@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from agent_sandbox.admin.user_notifications import AdminUserNotificationStore
 from agent_sandbox.models import utc_now
 
 from .git_naming import (
@@ -1040,13 +1041,22 @@ class TeamStateRepository:
                 created_domain_ids=[reply_id],
             )
 
-        return self._execute_team_command(
+        state, response = self._execute_team_command(
             context=context,
             normalized_payload=normalized_payload,
             handled_inbox_item_ids=[],
             apply_command=_apply,
             require_active_dispatch=True,
         )
+        _publish_admin_chat_notifications(
+            runtime_dir=self.runtime_dir,
+            state=state,
+            message_ids=[
+                str(message_id)
+                for message_id in response.get("created_chat_reply_message_ids", [])
+            ],
+        )
+        return state, response
 
     def send_operator_chat_message_command(
         self,
@@ -1174,13 +1184,22 @@ class TeamStateRepository:
                 created_domain_ids=created_domain_ids,
             )
 
-        return self._execute_team_command(
+        state, response = self._execute_team_command(
             context=context,
             normalized_payload=normalized_payload,
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
         )
+        _publish_admin_chat_notifications(
+            runtime_dir=self.runtime_dir,
+            state=state,
+            message_ids=[
+                str(message_id)
+                for message_id in response.get("created_operator_chat_message_ids", [])
+            ],
+        )
+        return state, response
 
     def escalate_operator_command(
         self,
@@ -2898,7 +2917,22 @@ class TeamStateRepository:
                 isinstance(new_owner_id, str) and new_owner_id != task.owner_agent_id
             )
             has_dependency_edit = "dependency_task_ids" in normalized_updates
-            if (has_state or has_priority or has_title or has_description) and not is_owner:
+            subordinate_finish_allowed = (
+                has_state
+                and not has_priority
+                and not has_title
+                and not has_description
+                and _subordinate_task_finish_allowed(
+                    state_model,
+                    actor=agent,
+                    task=task,
+                    raw_state=raw_state,
+                    new_owner_id=new_owner_id if has_owner_reassignment else None,
+                )
+            )
+            if (
+                has_state or has_priority or has_title or has_description
+            ) and not is_owner and not subordinate_finish_allowed:
                 raise TeamCommandValidationError(
                     code="task_update_not_owner",
                     message=f"agent {agent.id} cannot update task {task.id}",
@@ -8810,8 +8844,24 @@ class TeamStateRepository:
                         new_owner_id is not None and new_owner_id != task.owner_agent_id
                     )
                     has_dependency_edit = "dependency_task_ids" in update
-                    # State, priority, title, and description remain owner-only.
-                    if has_owner_only_edit and not is_owner:
+                    subordinate_finish_allowed = (
+                        raw_state is not None
+                        and priority is None
+                        and title is None
+                        and description is None
+                        and _subordinate_task_finish_allowed(
+                            state_model,
+                            actor=agent,
+                            task=task,
+                            raw_state=raw_state,
+                            new_owner_id=(
+                                new_owner_id if has_owner_reassignment else None
+                            ),
+                        )
+                    )
+                    # State, priority, title, and description remain owner-only,
+                    # except that a superior may close claimable subordinate work.
+                    if has_owner_only_edit and not is_owner and not subordinate_finish_allowed:
                         result["errors"].append(
                             f"agent {agent.id} cannot update task {task_id}"
                         )
@@ -9504,6 +9554,17 @@ class TeamStateRepository:
             _ephemeral_assignment_event_payload(state, assignment_id)
             for assignment_id in result["created_ephemeral_assignment_ids"]
         ]
+        _publish_admin_chat_notifications(
+            runtime_dir=self.runtime_dir,
+            state=state,
+            message_ids=[
+                str(message_id)
+                for message_id in (
+                    list(result["created_chat_reply_message_ids"])
+                    + list(result["created_operator_chat_message_ids"])
+                )
+            ],
+        )
         return state, result
 
     def record_git_promotion_result(
@@ -11375,6 +11436,55 @@ def _chat_preview(value: object, *, limit: int = 160) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: max(0, limit - 1)].rstrip()}..."
+
+
+def _publish_admin_chat_notification(
+    *,
+    runtime_dir: Path,
+    state: TeamState,
+    message_id: str,
+) -> None:
+    message = state.conversation_messages.get(message_id)
+    if message is None or message.sender != "agent":
+        return
+    conversation = state.conversations.get(message.conversation_id)
+    if conversation is None:
+        return
+    agent = state.agents.get(conversation.agent_id)
+    agent_label = (
+        _optional_text(agent.display_name if agent is not None else None)
+        or conversation.agent_id
+    )
+    try:
+        AdminUserNotificationStore(runtime_dir).push(
+            user_id=conversation.operator_user_id,
+            title="New Team chat message",
+            body=f"{agent_label}: {_chat_preview(message.body, limit=140)}",
+            source="team-chat",
+            source_id=message.id,
+            target_url="#addon:team-addon",
+            metadata={
+                "conversation_id": conversation.id,
+                "message_id": message.id,
+                "agent_id": conversation.agent_id,
+            },
+        )
+    except Exception:
+        return
+
+
+def _publish_admin_chat_notifications(
+    *,
+    runtime_dir: Path,
+    state: TeamState,
+    message_ids: Sequence[str],
+) -> None:
+    for message_id in message_ids:
+        _publish_admin_chat_notification(
+            runtime_dir=runtime_dir,
+            state=state,
+            message_id=message_id,
+        )
 
 
 def _touch_conversation(
@@ -15038,6 +15148,33 @@ def _task_owner_reassignment_error(
             f"outside project {task.project_id}"
         )
     return None
+
+
+def _subordinate_task_finish_allowed(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    task: AgentTask,
+    raw_state: object,
+    new_owner_id: str | None,
+) -> bool:
+    try:
+        next_state = TeamTaskState(str(raw_state))
+    except ValueError:
+        return False
+    if next_state != TeamTaskState.FINISHED:
+        return False
+    if new_owner_id is not None and new_owner_id != actor.id:
+        return False
+    return (
+        _task_owner_reassignment_error(
+            state,
+            actor=actor,
+            task=task,
+            new_owner_id=actor.id,
+        )
+        is None
+    )
 
 
 def _task_creation_batch_graph_errors(
