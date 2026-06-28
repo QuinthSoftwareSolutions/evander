@@ -647,8 +647,9 @@ You can choose freshness behavior explicitly:
 ```
 
 By default (or when `--sync-remote` is set) for a local source, the helper fetches
-`git fetch --prune <remote-name>` and checks whether the local default branch is behind the remote
-default branch. If so, it stops with a divergence message unless `--force-local` is supplied. Use
+`git fetch --prune <remote-name>` and fast-forwards the local default branch when
+the remote only has additive commits. It still stops with a divergence message
+when both sides have unique commits unless `--force-local` is supplied. Use
 `--no-sync-remote` to keep a strictly local/offline mirror update.
 Every mirror run logs the source mode (local vs remote), selected base branch, and source commit
 SHA for auditability.

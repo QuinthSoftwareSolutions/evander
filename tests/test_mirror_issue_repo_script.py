@@ -210,6 +210,87 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
     )
 
 
+def test_mirror_issue_repo_fast_forwards_stale_local_default_branch(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True, exist_ok=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for name in ("mirror_issue_repo.sh", "create_git_remote.sh", "resolve_repo_source.sh"):
+        source = repo_root / "scripts" / name
+        target = scripts_dir / name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        os.chmod(target, 0o755)
+    runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
+    (lib_dir / "git_provider_auth.sh").write_text(
+        auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
+    script = scripts_dir / "mirror_issue_repo.sh"
+
+    source_repo = tmp_path / "source"
+    source_repo.mkdir()
+    _git(source_repo, "init", "-b", "main")
+    origin_bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
+    _git(source_repo, "remote", "add", "origin", str(origin_bare))
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "USER": os.environ.get("USER", "test-user"),
+        }
+    )
+
+    (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md", env=env)
+    _git(source_repo, "commit", "-m", "Initial commit", env=env)
+    _git(source_repo, "push", "-u", "origin", "main", env=env)
+    _git_dir(origin_bare, "symbolic-ref", "HEAD", "refs/heads/main")
+
+    upstream_worktree = tmp_path / "upstream-worktree"
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(upstream_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    (upstream_worktree / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(upstream_worktree, "add", "README.md", env=env)
+    _git(upstream_worktree, "commit", "-m", "Remote update", env=env)
+    _git(upstream_worktree, "push", "origin", "main", env=env)
+    updated_sha = _git(upstream_worktree, "rev-parse", "HEAD").stdout.strip()
+
+    subprocess.run(
+        [str(script), "14357", str(source_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    bare_repo = git_root / "14357_repo.git"
+    assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
+    assert (source_repo / "README.md").read_text(encoding="utf-8") == "v2\n"
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
+
+
 def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_path: Path) -> None:
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"

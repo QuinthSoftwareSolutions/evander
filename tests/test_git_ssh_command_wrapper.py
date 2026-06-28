@@ -216,11 +216,18 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     initial_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == initial_sha
 
-    (source_repo / "README.md").write_text("v2\n", encoding="utf-8")
-    _git(source_repo, "add", "README.md", env=env)
-    _git(source_repo, "commit", "-m", "Update commit", env=env)
-    _git(source_repo, "push", "origin", "main", env=env)
-    updated_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
+    upstream_worktree = tmp_path / "upstream-worktree"
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(upstream_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    (upstream_worktree / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(upstream_worktree, "add", "README.md", env=env)
+    _git(upstream_worktree, "commit", "-m", "Update commit", env=env)
+    _git(upstream_worktree, "push", "origin", "main", env=env)
+    updated_sha = _git(upstream_worktree, "rev-parse", "HEAD").stdout.strip()
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -245,6 +252,7 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     )
 
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
+    assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
 
 

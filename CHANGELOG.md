@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-28 - Git Mirror Fast-Forward Sync
+
+- Fast-forwarded stale local branches before refreshing container-worker and
+  SSH-backed Git mirrors when the remote has only additive commits, while still
+  refusing divergent local branches that would require a merge decision.
+
 ## 2026-06-28 - Team Queued Retry Finalization Guard
 
 - Ignored queued prompt retry markers when finalizing Team dispatch leases, so

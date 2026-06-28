@@ -18,6 +18,10 @@ def _run(cmd: list[str], *, cwd: Path) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True)
 
 
+def _git_stdout(cmd: list[str], *, cwd: Path) -> str:
+    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
 def _write_commit(repo: Path, filename: str, content: str, message: str) -> None:
     (repo / filename).write_text(content, encoding="utf-8")
     _run(["git", "add", filename], cwd=repo)
@@ -327,7 +331,7 @@ def test_container_git_mirror_waits_for_upload_pack_sync_lock(tmp_path: Path) ->
             holder.wait(timeout=5)
 
 
-def test_container_git_mirror_refuses_stale_local_branch_before_mirroring(
+def test_container_git_mirror_fast_forwards_stale_local_branch_before_mirroring(
     tmp_path: Path,
 ) -> None:
     upstream_worktree = _source_repo(tmp_path / "upstream-worktree")
@@ -339,9 +343,53 @@ def test_container_git_mirror_refuses_stale_local_branch_before_mirroring(
     _write_commit(upstream_worktree, "README.md", "fresh\n", "fresh")
     _run(["git", "push", str(upstream), "main"], cwd=upstream_worktree)
 
+    mirror = _resolver(tmp_path).resolve(repo_source=str(source), clone_branch="main")
+
+    assert _git_stdout(["git", "rev-parse", "main"], cwd=source) == _git_stdout(
+        ["git", "rev-parse", "origin/main"], cwd=source
+    )
+    assert (source / "README.md").read_text(encoding="utf-8") == "fresh\n"
+    assert _has_ref(mirror.mirror_path, "refs/heads/main")
+
+
+def test_container_git_mirror_fast_forwards_stale_non_current_branch_before_mirroring(
+    tmp_path: Path,
+) -> None:
+    upstream_worktree = _source_repo(tmp_path / "upstream-worktree")
+    upstream = tmp_path / "upstream.git"
+    _run(["git", "clone", "--bare", str(upstream_worktree), str(upstream)], cwd=tmp_path)
+    source = tmp_path / "source"
+    _run(["git", "clone", str(upstream), str(source)], cwd=tmp_path)
+    _run(["git", "checkout", "-b", "work"], cwd=source)
+
+    _write_commit(upstream_worktree, "README.md", "fresh\n", "fresh")
+    _run(["git", "push", str(upstream), "main"], cwd=upstream_worktree)
+
+    mirror = _resolver(tmp_path).resolve(repo_source=str(source), clone_branch="main")
+
+    assert _git_stdout(["git", "branch", "--show-current"], cwd=source) == "work"
+    assert _git_stdout(["git", "rev-parse", "main"], cwd=source) == _git_stdout(
+        ["git", "rev-parse", "origin/main"], cwd=source
+    )
+    assert _has_ref(mirror.mirror_path, "refs/heads/main")
+
+
+def test_container_git_mirror_refuses_divergent_local_branch_before_mirroring(
+    tmp_path: Path,
+) -> None:
+    upstream_worktree = _source_repo(tmp_path / "upstream-worktree")
+    upstream = tmp_path / "upstream.git"
+    _run(["git", "clone", "--bare", str(upstream_worktree), str(upstream)], cwd=tmp_path)
+    source = tmp_path / "source"
+    _run(["git", "clone", str(upstream), str(source)], cwd=tmp_path)
+
+    _write_commit(upstream_worktree, "README.md", "fresh\n", "fresh")
+    _run(["git", "push", str(upstream), "main"], cwd=upstream_worktree)
+    _write_commit(source, "README.md", "local\n", "local")
+
     with pytest.raises(
         RuntimeError,
-        match="Refusing to mirror stale local refs.*local main is behind origin/main",
+        match="Refusing to mirror divergent local refs.*local main is behind origin/main",
     ):
         _resolver(tmp_path).resolve(repo_source=str(source), clone_branch="main")
 
