@@ -819,13 +819,34 @@
                 <h2 id="projects-workbench-heading">Project Catalog</h2>
               </div>
             </div>
+            <div class="projects-focus-list" data-projects-focus-list></div>
+            <div class="projects-create-actions">
+              <button
+                type="button"
+                class="record-action"
+                aria-controls="create-project-from-projects-form"
+                aria-expanded="false"
+                data-project-create-toggle
+              >
+                Create project
+              </button>
+            </div>
             <form
               id="create-project-from-projects-form"
               class="projects-create-form"
               data-form-id="create-project-form"
               data-endpoint="/projects"
               data-method="POST"
+              data-project-create-form
+              hidden
             >
+              <div class="projects-create-form-header">
+                <div>
+                  <p class="section-label">Project</p>
+                  <h3>Create project</h3>
+                </div>
+                <button type="button" class="record-action" data-project-create-close>Close</button>
+              </div>
               <label>Team <select name="team_id" required data-options="teams"></select></label>
               <label>Name <input name="name" required /></label>
               <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
@@ -845,7 +866,6 @@
               </details>
               <button type="submit">Create project</button>
             </form>
-            <div class="projects-focus-list" data-projects-focus-list></div>
           </section>
           <section class="content-panel projects-detail-panel" aria-label="Selected project">
             <div class="projects-focus-detail" data-projects-focus-detail></div>

@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Cleaned up the Team Add-on Projects tab with horizontal project tabs, hidden
+  create forms, collapsed paged deliverable/release sections, and default-hidden
+  rejected delivery records.
+
 - Kept the Admin Web built-in chat anchored at the bottom when an SSE snapshot arrives while an
   older-history fetch is in flight.
 

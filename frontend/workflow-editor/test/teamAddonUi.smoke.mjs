@@ -58,9 +58,12 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /data-team-view="projects"/);
   assert.match(markup, /id="team-projects-page"/);
   assert.match(markup, /id="create-project-from-projects-form"/);
+  assert.match(markup, /data-project-create-toggle/);
   assert.match(script, /renderProjectFocus/);
   assert.match(script, /projectReviewRoleOptionsForProject/);
   assert.match(script, /create-review-profile-for-project-form/);
+  assert.match(script, /data-project-section-show-rejected/);
+  assert.match(script, /projectRecordPageSize/);
   assert.match(script, /data-select-agent-id/);
   assert.match(script, /data-select-project-id/);
   assert.match(script, /data-select-role-id/);
@@ -79,6 +82,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.projects-workbench/);
   assert.match(stylesheet, /\.projects-focus-row/);
+  assert.match(stylesheet, /\.project-record-section/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.criteria-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
@@ -2081,6 +2085,11 @@ async function openWorkspace(page) {
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
 }
 
+async function openProjects(page) {
+  await page.getByRole("tab", { name: "Projects" }).click();
+  await page.locator("#team-projects-page").waitFor({ state: "visible" });
+}
+
 async function openDetails(page, name) {
   await openWorkspace(page);
   const details = page
@@ -2272,6 +2281,163 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
       required: false,
     },
   ]);
+});
+
+test("team add-on Projects tab reveals project and review profile forms on demand", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const panel = page.locator("#team-projects-page");
+  await panel.locator("#create-project-from-projects-form").waitFor({ state: "hidden" });
+  assert.equal(await panel.locator("#create-review-profile-for-project-form").count(), 0);
+
+  await panel.getByRole("button", { name: "Add review profile" }).click();
+  const profileForm = panel.locator("#create-review-profile-for-project-form");
+  await profileForm.waitFor({ state: "visible" });
+  await profileForm.locator('[name="name"]').fill("Project security review");
+  await profileForm.locator('[name="description"]').fill("Review project-sensitive changes.");
+  await profileForm.locator('[name="applicable_role_ids"]').selectOption(["project__backend"]);
+  await profileForm.locator('[name="criterion_label"]').fill("Authorization");
+  await profileForm.getByRole("button", { name: "Create profile" }).click();
+  await page.getByText(/Saved revision \d+\./).waitFor({ state: "visible" });
+  assert.equal(await panel.locator("#create-review-profile-for-project-form").count(), 0);
+
+  await panel.locator("[data-project-create-toggle]").click();
+  const projectForm = panel.locator("#create-project-from-projects-form");
+  await projectForm.waitFor({ state: "visible" });
+  await projectForm.locator('[name="team_id"]').selectOption("team");
+  await waitForSelectOption(page, '#create-project-from-projects-form [name="lead_agent_id"]', "lead");
+  await projectForm.locator('[name="lead_agent_id"]').selectOption("lead");
+  await projectForm.locator('[name="name"]').fill("Follow-up project");
+  await projectForm.locator('[name="goal_description"]').fill("Ship a follow-up slice.");
+  await projectForm.getByRole("button", { name: "Create project" }).click();
+  await projectForm.waitFor({ state: "hidden" });
+
+  const profileRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/review-profiles"
+  );
+  assert.ok(profileRequest);
+  assert.ok(profileRequest.payload.expected_revision >= 8);
+  assert.equal(profileRequest.payload.project_id, "project");
+
+  const projectRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/projects"
+  );
+  assert.ok(projectRequest);
+  assert.equal(projectRequest.payload.expected_revision, profileRequest.payload.expected_revision + 1);
+  assert.equal(projectRequest.payload.name, "Follow-up project");
+});
+
+test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.tasks.task_open.deliverable_ids = [];
+  initialState.deliverables = {};
+  for (let index = 1; index <= 12; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const deliverableId = `deliverable-${suffix}`;
+    initialState.deliverables[deliverableId] = {
+      id: deliverableId,
+      task_id: "task_open",
+      producer_agent_id: "backend",
+      artifact_refs: [],
+      summary: `Visible deliverable ${index}`,
+      state: "accepted",
+      review_request_ids: [],
+      created_at: `2026-06-11T${suffix}:00:00Z`,
+    };
+    initialState.tasks.task_open.deliverable_ids.push(deliverableId);
+  }
+  initialState.deliverables["deliverable-rejected"] = {
+    id: "deliverable-rejected",
+    task_id: "task_open",
+    producer_agent_id: "backend",
+    artifact_refs: [],
+    summary: "Rejected deliverable",
+    state: "rejected",
+    review_request_ids: [],
+    created_at: "2026-06-12T00:00:00Z",
+  };
+  initialState.tasks.task_open.deliverable_ids.push("deliverable-rejected");
+
+  initialState.release_packages = {};
+  for (let index = 1; index <= 12; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    initialState.release_packages[`release-${suffix}`] = {
+      id: `release-${suffix}`,
+      project_id: "project",
+      deliverable_ids: [`deliverable-${suffix}`],
+      state: "published",
+      published_at: `2026-06-11T${suffix}:30:00Z`,
+      updated_at: `2026-06-11T${suffix}:30:00Z`,
+      created_at: `2026-06-11T${suffix}:00:00Z`,
+    };
+  }
+  initialState.release_packages["release-rejected"] = {
+    id: "release-rejected",
+    project_id: "project",
+    deliverable_ids: ["deliverable-rejected"],
+    state: "rejected",
+    published_at: "2026-06-12T00:30:00Z",
+    updated_at: "2026-06-12T00:30:00Z",
+    created_at: "2026-06-12T00:00:00Z",
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const panel = page.locator("#team-projects-page");
+  assert.equal(await panel.locator(".task-list .task-item").count(), 0);
+
+  const deliverablesSection = panel.locator("details.project-record-section").filter({
+    hasText: "Deliverables",
+  }).first();
+  await deliverablesSection.evaluate((element) => {
+    element.open = true;
+  });
+  assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 10);
+  assert.equal(
+    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
+    "Visible deliverable 12",
+  );
+  assert.equal(await deliverablesSection.getByText("Rejected deliverable").count(), 0);
+
+  await deliverablesSection.getByRole("button", { name: "Next" }).click();
+  assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 2);
+  assert.equal(
+    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
+    "Visible deliverable 2",
+  );
+
+  await deliverablesSection.getByRole("button", { name: "Show rejected" }).click();
+  assert.equal(
+    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
+    "Rejected deliverable",
+  );
+
+  const releasesSection = panel.locator("details.project-record-section").filter({
+    hasText: "Releases",
+  }).first();
+  await releasesSection.evaluate((element) => {
+    element.open = true;
+  });
+  assert.equal(await releasesSection.locator(".release-list .record-item").count(), 10);
+  assert.equal(
+    await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
+    "release-12",
+  );
+  assert.equal(await releasesSection.getByText("release-rejected").count(), 0);
+
+  await releasesSection.getByRole("button", { name: "Show rejected" }).click();
+  assert.equal(
+    await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
+    "release-rejected",
+  );
 });
 
 test("team add-on UI renders empty state and submits setup forms with revisions", async (t) => {

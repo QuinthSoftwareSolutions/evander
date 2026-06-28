@@ -269,7 +269,6 @@ button.team-view-tab[aria-selected="true"] {
 
 .projects-workbench {
   display: grid;
-  grid-template-columns: minmax(19rem, 0.42fr) minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
   min-width: 0;
@@ -291,6 +290,33 @@ button.team-view-tab[aria-selected="true"] {
   border-radius: 8px;
   padding: 0.8rem;
   background: var(--panel-alt);
+}
+
+.projects-create-form[hidden],
+.project-review-profile-form[hidden] {
+  display: none;
+}
+
+.projects-create-actions,
+.project-review-profile-create-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.projects-create-form-header,
+.project-review-profile-form-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.projects-create-form-header h3,
+.project-review-profile-form-header h3 {
+  margin: 0;
 }
 
 .projects-create-form details {
@@ -324,25 +350,29 @@ button.team-view-tab[aria-selected="true"] {
 }
 
 .projects-focus-list-items {
-  display: grid;
-  gap: 0.45rem;
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 button.projects-focus-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.45rem;
-  width: 100%;
+  display: flex;
+  flex: 0 1 15rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  min-width: min(15rem, 100%);
   text-align: left;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.7rem;
+  padding: 0.55rem 0.65rem;
   background: var(--panel);
   color: var(--ink);
 }
 
 button.projects-focus-row.active,
-button.projects-focus-row[aria-pressed="true"] {
+button.projects-focus-row[aria-selected="true"] {
   border-color: rgba(23, 111, 122, 0.34);
   background: rgba(23, 111, 122, 0.1);
 }
@@ -357,6 +387,7 @@ button.projects-focus-row[aria-pressed="true"] {
 
 .projects-focus-row-main {
   flex-direction: column;
+  gap: 0.18rem;
 }
 
 .projects-focus-row-main strong,
@@ -366,9 +397,12 @@ button.projects-focus-row[aria-pressed="true"] {
 
 .projects-focus-row-main span,
 .projects-focus-row-meta {
+  align-items: center;
+  justify-content: flex-end;
   color: var(--muted);
   font-size: 0.8rem;
   font-weight: 700;
+  flex: 0 0 auto;
 }
 
 .project-focus-metrics {
@@ -399,14 +433,55 @@ button.projects-focus-row[aria-pressed="true"] {
 
 .projects-detail-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
   gap: 0.9rem;
 }
 
 .projects-detail-grid h3,
-.project-review-profile-panel h3 {
+.project-review-profile-panel h3,
+.project-record-section h3 {
   margin: 0 0 0.45rem;
   font-size: 0.95rem;
+}
+
+.project-record-sections {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.project-record-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.project-record-section-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+}
+
+.project-record-section-summary::marker {
+  color: var(--muted);
+}
+
+.project-record-section-body {
+  display: grid;
+  gap: 0.65rem;
+  border-top: 1px solid var(--line);
+  padding: 0.7rem;
+}
+
+.project-record-section-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
 }
 
 .project-review-profile-panel {
@@ -3837,6 +3912,9 @@ label textarea {
   .agent-detail-header,
   .projects-detail-header,
   .projects-detail-section-header,
+  .projects-create-form-header,
+  .project-review-profile-form-header,
+  .project-record-section-summary,
   .teams-create-team-header,
   .org-focus-header,
   .org-focus-team-header,
@@ -3856,6 +3934,7 @@ label textarea {
 
   .org-focus-summary,
   .org-focus-team-status,
+  .project-record-section-controls,
   .team-record-group-counts {
     justify-content: flex-start;
   }

@@ -153,6 +153,11 @@ let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
+let projectCreateFormOpen = false;
+let projectReviewProfileCreateProjectId = null;
+const projectRecordSectionPages = {};
+const projectRecordShowRejected = new Set();
+const openProjectRecordSections = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -191,6 +196,7 @@ const ephemeralWorkKinds = new Set([
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 const timelinePageSize = 10;
+const projectRecordPageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
 const chatBottomStickinessPx = 96;
@@ -1425,13 +1431,92 @@ function bindPlanningFilters() {
 
 function bindProjectFocus() {
   document.addEventListener("click", (event) => {
-    const button = event.target?.closest?.("[data-project-focus-id]");
-    if (!button) {
+    const createToggle = event.target?.closest?.("[data-project-create-toggle]");
+    if (createToggle) {
+      event.preventDefault();
+      projectCreateFormOpen = !projectCreateFormOpen;
+      syncProjectCreatePanel();
+      if (projectCreateFormOpen) {
+        const form = document.querySelector("[data-project-create-form]");
+        if (form) {
+          fillSelectsIn(form);
+          decorateFieldTooltips(form);
+        }
+        form?.querySelector("select, input, textarea")?.focus();
+      }
       return;
     }
-    event.preventDefault();
-    selectedProjectFocusId = text(button.dataset.projectFocusId) || null;
-    renderProjectFocus();
+
+    const createClose = event.target?.closest?.("[data-project-create-close]");
+    if (createClose) {
+      event.preventDefault();
+      projectCreateFormOpen = false;
+      syncProjectCreatePanel({ reset: true });
+      return;
+    }
+
+    const button = event.target?.closest?.("[data-project-focus-id]");
+    if (button) {
+      event.preventDefault();
+      selectedProjectFocusId = text(button.dataset.projectFocusId) || null;
+      projectReviewProfileCreateProjectId = null;
+      renderProjectFocus();
+      return;
+    }
+
+    const reviewProfileCreateToggle = event.target?.closest?.("[data-project-review-profile-create-toggle]");
+    if (reviewProfileCreateToggle) {
+      event.preventDefault();
+      const projectId = text(reviewProfileCreateToggle.dataset.projectId);
+      projectReviewProfileCreateProjectId =
+        text(projectReviewProfileCreateProjectId) === projectId ? null : projectId;
+      renderProjectFocus();
+      const form = document.querySelector("[data-project-review-profile-create-form]");
+      if (form) {
+        fillSelectsIn(form);
+        decorateFieldTooltips(form);
+        form.querySelector("input, select, textarea")?.focus();
+      }
+      return;
+    }
+
+    const reviewProfileCreateClose = event.target?.closest?.("[data-project-review-profile-create-close]");
+    if (reviewProfileCreateClose) {
+      event.preventDefault();
+      projectReviewProfileCreateProjectId = null;
+      renderProjectFocus();
+      return;
+    }
+
+    const rejectedToggle = event.target?.closest?.("[data-project-section-show-rejected]");
+    if (rejectedToggle) {
+      event.preventDefault();
+      const key = projectRecordSectionKey(
+        rejectedToggle.dataset.projectId,
+        rejectedToggle.dataset.projectSection,
+      );
+      if (projectRecordShowRejected.has(key)) {
+        projectRecordShowRejected.delete(key);
+      } else {
+        projectRecordShowRejected.add(key);
+      }
+      projectRecordSectionPages[key] = 1;
+      openProjectRecordSections.add(key);
+      renderProjectFocus();
+      return;
+    }
+
+    const pageButton = event.target?.closest?.("[data-project-section-page]");
+    if (pageButton) {
+      event.preventDefault();
+      const key = projectRecordSectionKey(
+        pageButton.dataset.projectId,
+        pageButton.dataset.projectSection,
+      );
+      projectRecordSectionPages[key] = Math.max(1, Math.floor(Number(pageButton.dataset.projectSectionPage) || 1));
+      openProjectRecordSections.add(key);
+      renderProjectFocus();
+    }
   });
 }
 
@@ -6848,10 +6933,12 @@ function renderProjectFocus() {
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
   }
+  syncProjectCreatePanel();
   const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter(isVisibleProject);
   if (!projects.some((project) => project.id === selectedProjectFocusId)) {
     selectedProjectFocusId = projects[0]?.id || null;
+    projectReviewProfileCreateProjectId = null;
   }
   const selectedProject = selectedProjectFocusId ? state.projects[selectedProjectFocusId] : null;
 
@@ -6882,19 +6969,20 @@ function renderProjectFocus() {
     fillSelectsIn(target);
     decorateFieldTooltips(target);
   });
+  syncProjectCreatePanel();
 }
 
 function renderProjectFocusListItem(project) {
   const active = project.id === selectedProjectFocusId;
   const team = state.teams[project.team_id];
-  const tasks = values(state.tasks).filter((task) => task.project_id === project.id);
   const reviewProfiles = projectSpecificReviewProfiles(project);
   return `
     <button
       type="button"
       class="projects-focus-row${active ? " active" : ""}"
+      role="tab"
       data-project-focus-id="${escapeAttr(project.id)}"
-      aria-pressed="${active ? "true" : "false"}"
+      aria-selected="${active ? "true" : "false"}"
     >
       <span class="projects-focus-row-main">
         <strong>${escapeHtml(project.name)}</strong>
@@ -6902,7 +6990,6 @@ function renderProjectFocusListItem(project) {
       </span>
       <span class="projects-focus-row-meta">
         <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
-        <span>${tasks.length} tasks</span>
         <span>${reviewProfiles.length} profiles</span>
       </span>
     </button>
@@ -6918,10 +7005,10 @@ function renderProjectFocusDetail(project) {
   const taskIds = new Set(tasks.map((task) => task.id));
   const deliverables = values(state.deliverables)
     .filter((deliverable) => taskIds.has(deliverable.task_id))
-    .sort(byId);
+    .sort(compareProjectDeliverablesLatest);
   const releases = values(state.release_packages)
     .filter((release) => release.project_id === project.id)
-    .sort(byId);
+    .sort(compareProjectReleasesLatest);
   const projectProfiles = projectSpecificReviewProfiles(project);
   const teamProfiles = teamWideReviewProfilesForProject(project);
   const projectAgents = values(state.agents)
@@ -6968,18 +7055,10 @@ function renderProjectFocusDetail(project) {
         <h3>Project agents</h3>
         ${renderProjectFocusAgents(projectAgents)}
       </section>
-      <section>
-        <h3>Tasks</h3>
-        ${renderTasks(tasks, { compact: true })}
-      </section>
-      <section>
-        <h3>Deliverables</h3>
-        ${renderDeliverables(deliverables, { compact: true })}
-      </section>
-      <section>
-        <h3>Releases</h3>
-        ${releases.length ? `<ul class="release-list compact-record-list">${releases.map(renderCompactRelease).join("")}</ul>` : `<p class="empty-state">No release packages.</p>`}
-      </section>
+    </div>
+    <div class="project-record-sections">
+      ${renderProjectRecordSection(project, "deliverables", "Deliverables", deliverables, renderProjectDeliverablePage)}
+      ${renderProjectRecordSection(project, "releases", "Releases", releases, renderProjectReleasePage)}
     </div>
     <section class="project-review-profile-panel">
       <div class="projects-detail-section-header">
@@ -6988,10 +7067,159 @@ function renderProjectFocusDetail(project) {
           <h3>Project review profiles</h3>
         </div>
       </div>
-      ${renderProjectReviewProfileCreateForm(project)}
       ${renderProjectReviewProfiles(projectProfiles, teamProfiles)}
+      ${renderProjectReviewProfileCreatePanel(project)}
     </section>
   `;
+}
+
+function syncProjectCreatePanel({ reset = false } = {}) {
+  const form = document.querySelector("[data-project-create-form]");
+  const button = document.querySelector("[data-project-create-toggle]");
+  if (form) {
+    form.hidden = !projectCreateFormOpen;
+    if (reset) {
+      form.reset();
+    }
+    if (projectCreateFormOpen) {
+      fillSelectsIn(form);
+      decorateFieldTooltips(form);
+    }
+  }
+  if (button) {
+    button.setAttribute("aria-expanded", projectCreateFormOpen ? "true" : "false");
+  }
+}
+
+function renderProjectRecordSection(project, section, title, records, renderPageRecords) {
+  const key = projectRecordSectionKey(project.id, section);
+  const rejectedRecords = records.filter(isRejectedProjectRecord);
+  const showRejected = projectRecordShowRejected.has(key);
+  const visibleRecords = showRejected
+    ? records
+    : records.filter((record) => !isRejectedProjectRecord(record));
+  const totalPages = Math.max(1, Math.ceil(visibleRecords.length / projectRecordPageSize));
+  const page = clampPage(projectRecordSectionPages[key] || 1, totalPages);
+  projectRecordSectionPages[key] = page;
+  const start = (page - 1) * projectRecordPageSize;
+  const pageRecords = visibleRecords.slice(start, start + projectRecordPageSize);
+  const summaryParts = [
+    `${visibleRecords.length} shown`,
+    rejectedRecords.length && !showRejected ? `${rejectedRecords.length} rejected hidden` : "",
+    visibleRecords.length > projectRecordPageSize ? `page ${page} of ${totalPages}` : "",
+  ].filter(Boolean);
+  return `
+    <details class="project-record-section" ${openProjectRecordSections.has(key) ? "open" : ""}>
+      <summary class="project-record-section-summary">
+        <span class="compact-record-main">
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml(summaryParts.join(" - ") || "No records")}</span>
+        </span>
+      </summary>
+      <div class="project-record-section-body">
+        <div class="project-record-section-controls">
+          ${
+            rejectedRecords.length
+              ? `<button
+                  type="button"
+                  class="record-action"
+                  aria-pressed="${showRejected ? "true" : "false"}"
+                  data-project-id="${escapeAttr(project.id)}"
+                  data-project-section="${escapeAttr(section)}"
+                  data-project-section-show-rejected
+                >${showRejected ? "Hide rejected" : "Show rejected"}</button>`
+              : ""
+          }
+        </div>
+        ${renderPageRecords(pageRecords)}
+        ${renderProjectRecordPager(project.id, section, page, totalPages, visibleRecords.length, start, pageRecords.length)}
+      </div>
+    </details>
+  `;
+}
+
+function renderProjectDeliverablePage(deliverables) {
+  return renderDeliverables(deliverables, { compact: true });
+}
+
+function renderProjectReleasePage(releases) {
+  if (!releases.length) {
+    return `<p class="empty-state">No release packages.</p>`;
+  }
+  return `<ul class="release-list compact-record-list">${releases.map(renderCompactRelease).join("")}</ul>`;
+}
+
+function renderProjectRecordPager(projectId, section, page, totalPages, totalRecords, start, pageLength) {
+  if (totalRecords <= projectRecordPageSize) {
+    return `<div class="team-record-pager-summary">Showing ${escapeHtml(totalRecords)} ${escapeHtml(section)}</div>`;
+  }
+  const first = start + 1;
+  const last = start + pageLength;
+  return `
+    <div class="team-record-pager" aria-label="${escapeAttr(section)} pages">
+      <button
+        type="button"
+        data-project-id="${escapeAttr(projectId)}"
+        data-project-section="${escapeAttr(section)}"
+        data-project-section-page="${page - 1}"
+        ${page <= 1 ? "disabled" : ""}
+      >Previous</button>
+      <span>${escapeHtml(first)}-${escapeHtml(last)} of ${escapeHtml(totalRecords)}</span>
+      <button
+        type="button"
+        data-project-id="${escapeAttr(projectId)}"
+        data-project-section="${escapeAttr(section)}"
+        data-project-section-page="${page + 1}"
+        ${page >= totalPages ? "disabled" : ""}
+      >Next</button>
+    </div>
+  `;
+}
+
+function projectRecordSectionKey(projectId, section) {
+  return `${text(projectId)}:${text(section)}`;
+}
+
+function isRejectedProjectRecord(record) {
+  return text(record?.state) === "rejected";
+}
+
+function compareProjectDeliverablesLatest(left, right) {
+  return compareProjectRecordsLatest(left, right, ["created_at"]);
+}
+
+function compareProjectReleasesLatest(left, right) {
+  return compareProjectRecordsLatest(left, right, ["published_at", "updated_at", "created_at"]);
+}
+
+function compareProjectRecordsLatest(left, right, fields) {
+  const leftTime = projectRecordSortTime(left, fields);
+  const rightTime = projectRecordSortTime(right, fields);
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+  for (const field of fields) {
+    const leftText = text(left?.[field]);
+    const rightText = text(right?.[field]);
+    if (leftText !== rightText) {
+      return rightText.localeCompare(leftText);
+    }
+  }
+  return text(right?.id).localeCompare(text(left?.id));
+}
+
+function projectRecordSortTime(record, fields) {
+  for (const field of fields) {
+    const value = text(record?.[field]);
+    if (!value) {
+      continue;
+    }
+    const parsed = Date.parse(normalizeTimelineTimestampForSort(value));
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return Number.NEGATIVE_INFINITY;
 }
 
 function renderProjectFocusMetric(label, value) {
@@ -7185,6 +7413,26 @@ function caseStatusRank(status) {
   return order[text(status)] ?? 99;
 }
 
+function renderProjectReviewProfileCreatePanel(project) {
+  const open = text(projectReviewProfileCreateProjectId) === text(project.id);
+  if (!open) {
+    return `
+      <div class="project-review-profile-create-actions">
+        <button
+          type="button"
+          class="record-action"
+          aria-expanded="false"
+          data-project-id="${escapeAttr(project.id)}"
+          data-project-review-profile-create-toggle
+        >
+          Add review profile
+        </button>
+      </div>
+    `;
+  }
+  return renderProjectReviewProfileCreateForm(project);
+}
+
 function renderProjectReviewProfileCreateForm(project) {
   return `
     <form
@@ -7194,7 +7442,15 @@ function renderProjectReviewProfileCreateForm(project) {
       data-endpoint="/review-profiles"
       data-method="POST"
       data-delegated-create-form
+      data-project-review-profile-create-form
     >
+      <div class="project-review-profile-form-header">
+        <div>
+          <p class="section-label">Review profile</p>
+          <h3>Add review profile</h3>
+        </div>
+        <button type="button" class="record-action" data-project-review-profile-create-close>Close</button>
+      </div>
       <input type="hidden" name="team_id" value="${escapeAttr(project.team_id)}" />
       <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
       <div class="project-review-profile-fields">
@@ -9496,11 +9752,20 @@ async function submitCreateForm(form) {
       .sort((left, right) =>
         String(right.created_at || "").localeCompare(String(left.created_at || "")) || byId(left, right),
       );
+    if (form.hasAttribute("data-project-create-form")) {
+      projectCreateFormOpen = false;
+    }
     if (createdProjects.length) {
       selectedProjectFocusId = createdProjects[0].id;
       renderProjectFocus();
       refreshSelects();
+    } else {
+      syncProjectCreatePanel();
     }
+  }
+  if (saved && formId === "create-review-profile-form" && form.hasAttribute("data-project-review-profile-create-form")) {
+    projectReviewProfileCreateProjectId = null;
+    renderProjectFocus();
   }
   if (saved && formId === "create-team-from-teams-form") {
     closeTeamsCreateTeamPanel({ reset: true });
