@@ -3,6 +3,7 @@ from types import ModuleType
 
 import pytest
 
+from agent_sandbox.gateway import cli as gateway_cli
 from agent_sandbox.relays import http_target, nuget, openai
 
 
@@ -13,3 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_relay_entrypoints_bootstrap_from_repo_runtime(relay_module: ModuleType) -> None:
     assert relay_module._project_root() == ROOT
     assert relay_module._project_root() / "runtime" == ROOT / "runtime"
+
+
+def test_gateway_entrypoint_bootstraps_from_repo_runtime() -> None:
+    assert gateway_cli._project_root() == ROOT
+    assert gateway_cli._project_root() / "runtime" == ROOT / "runtime"

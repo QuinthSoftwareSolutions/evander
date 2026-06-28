@@ -12,7 +12,7 @@ from agent_sandbox.runtime import build_runtime
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def _bootstrap_runtime_config(*, legacy_config_path: Path | None = None) -> GatewayConfig:

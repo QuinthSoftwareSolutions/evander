@@ -240,7 +240,7 @@ def register_chat_tools(
 
             resolved_target_session_id = ""
             if request.target_vm_name:
-                summary = _require_vm_visible_in_session_directory(
+                summary = require_vm_visible_in_session_directory(
                     context,
                     source_session,
                     vm_name=request.target_vm_name,
@@ -259,7 +259,7 @@ def register_chat_tools(
                 resolved_target_session_id = str(request.target_session_id or "").strip()
                 if not resolved_target_session_id:
                     raise ToolError("target_session_id is required")
-                _require_target_session_visible_within_directory(
+                require_target_session_visible_within_directory(
                     context,
                     source_session,
                     target_session_id=resolved_target_session_id,

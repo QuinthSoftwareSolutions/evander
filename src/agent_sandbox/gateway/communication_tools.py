@@ -14,6 +14,7 @@ from pydantic import Field as PydanticField
 
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.email.providers import EmailDraft, EmailDraftAttachment
+from agent_sandbox.gateway.dependencies import _compat_gateway_attr
 from agent_sandbox.gateway.session_context import _resolve_session_id_from_context
 from agent_sandbox.models import (
     CommunicationAttachmentRef,
@@ -88,6 +89,9 @@ def register_communication_tools(
 
     audit_success = helpers["audit_success"]
     audit_failure = helpers["audit_failure"]
+    transport_session_map = helpers.get("transport_session_map")
+    if transport_session_map is None:
+        transport_session_map = getattr(server, "_agent_sandbox_transport_session_map", {})
     _artifact_payloads = helpers["artifact_payloads"]
     _artifact_audit_summaries = helpers["artifact_audit_summaries"]
     _communication_target_audit_fields = helpers["communication_target_audit_fields"]
@@ -1803,7 +1807,11 @@ def register_communication_tools(
                 admin_service=_admin_service(),
                 metadata={"directory_path": session.directory_path or "root"},
             )
-            provider = ArtifactStageEffectProvider()
+            provider_cls = _compat_gateway_attr(
+                "ArtifactStageEffectProvider",
+                ArtifactStageEffectProvider,
+            )
+            provider = provider_cls()
             provider.initialize(effect_definition=effect, runtime_context=effect_context)
             stage_result = provider.execute()
             response = StageArtifactResponse(
@@ -1900,7 +1908,11 @@ def register_communication_tools(
                 admin_service=_admin_service(),
                 metadata={"directory_path": session.directory_path or "root"},
             )
-            provider = AgentCopyFilesEffectProvider()
+            provider_cls = _compat_gateway_attr(
+                "AgentCopyFilesEffectProvider",
+                AgentCopyFilesEffectProvider,
+            )
+            provider = provider_cls()
             provider.initialize(effect_definition=effect, runtime_context=effect_context)
             copy_result = provider.execute()
             response = CommunicationCopyArtifactToWorkspaceResponse(
@@ -2565,6 +2577,7 @@ def register_communication_tools(
             )
             raise
 
+    @server.tool()
     def email_send_approved(
         session_id: str, request_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:

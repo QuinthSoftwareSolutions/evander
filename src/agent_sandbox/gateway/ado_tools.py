@@ -57,6 +57,51 @@ AdoMentionRefsArgument = Annotated[
 ]
 
 
+def _normalize_ado_tag_list(value: Any) -> list[str]:
+    raw_values = value if isinstance(value, list) else str(value or "").split(";")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in raw_values:
+        tag = str(raw_tag).strip()
+        if not tag:
+            continue
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(tag)
+    return normalized
+
+
+def _extract_ado_tags(remote_payload: dict[str, Any]) -> list[str]:
+    fields = remote_payload.get("fields") if isinstance(remote_payload.get("fields"), dict) else {}
+    raw_tags = remote_payload.get("tags")
+    if raw_tags is None:
+        raw_tags = fields.get("System.Tags")
+    return _normalize_ado_tag_list(raw_tags)
+
+
+def _merge_ado_tags(
+    previous_tags: list[str], *, add_tags: list[str], remove_tags: list[str]
+) -> list[str]:
+    remove_keys = {tag.casefold() for tag in remove_tags}
+    merged: list[str] = []
+    seen: set[str] = set()
+    for tag in previous_tags:
+        key = tag.casefold()
+        if key in remove_keys or key in seen:
+            continue
+        seen.add(key)
+        merged.append(tag)
+    for tag in add_tags:
+        key = tag.casefold()
+        if key in remove_keys or key in seen:
+            continue
+        seen.add(key)
+        merged.append(tag)
+    return merged
+
+
 def register_ado_tools(
     server: Any,
     context: Any,

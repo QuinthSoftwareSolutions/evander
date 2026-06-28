@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from contextvars import ContextVar
+from inspect import signature
 import json
 import logging
 from hashlib import sha256
@@ -182,7 +183,7 @@ from agent_sandbox.services import (
     resolve_teams_send_target,
     teams_target_from_message,
 )
-from agent_sandbox.gateway.dependencies import GatewayToolDependencies
+from agent_sandbox.gateway.dependencies import GatewayToolDependencies, _compat_gateway_attr
 from agent_sandbox.gateway.admin_tools import register_admin_tools
 from agent_sandbox.gateway.agent_tools import register_agent_tools
 from agent_sandbox.gateway.ado_tools import register_ado_tools
@@ -614,8 +615,14 @@ def _require_vm_visible_in_session_directory(
     *,
     vm_name: str,
     vm_user: str,
+    admin_service: AdminService | None = None,
 ) -> Any:
-    summaries = _visible_vm_summaries_for_session(context, session, vm_user=vm_user)
+    summaries = _visible_vm_summaries_for_session(
+        context,
+        session,
+        vm_user=vm_user,
+        admin_service=admin_service,
+    )
     summary = next((item for item in summaries if item.vm_name == vm_name), None)
     if summary is None:
         raise PolicyError(
@@ -630,6 +637,7 @@ def _require_target_session_visible_within_directory(
     *,
     target_session_id: str,
     vm_user: str,
+    admin_service: AdminService | None = None,
 ) -> Any:
     target_session = context.policy.get_session(target_session_id)
     if target_session.directory_path == source_session.directory_path:
@@ -642,7 +650,12 @@ def _require_target_session_visible_within_directory(
             f"'{source_session.directory_path}'."
         )
 
-    visible_vms = _visible_vm_summaries_for_session(context, source_session, vm_user=vm_user)
+    visible_vms = _visible_vm_summaries_for_session(
+        context,
+        source_session,
+        vm_user=vm_user,
+        admin_service=admin_service,
+    )
     if any(target_session_id in summary.session_ids for summary in visible_vms):
         return target_session
 
@@ -667,96 +680,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 transport_session_map[transport_session_id] = bound_session_id
     setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
     deps = GatewayToolDependencies.from_context(context)
-    register_ado_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-        artifact_audit_summaries=_artifact_audit_summaries,
-        ado_artifacts_for_ids=_ado_artifacts_for_ids,
-        ado_artifact_approval_payload=_ado_artifact_approval_payload,
-    )
-    register_approval_tools(
-        server,
-        context,
-        deps,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-    )
-    register_admin_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-        payload_from_result=_payload_from_result,
-    )
-    register_chat_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-        require_vm_visible_in_session_directory=_require_vm_visible_in_session_directory,
-        require_target_session_visible_within_directory=(
-            _require_target_session_visible_within_directory
-        ),
-    )
-    register_issue_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-        payload_from_result=_payload_from_result,
-    )
-    register_mssql_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-    )
-    register_pr_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-        artifact_audit_summaries=_artifact_audit_summaries,
-        ado_artifacts_for_ids=_ado_artifacts_for_ids,
-        ado_artifact_approval_payload=_ado_artifact_approval_payload,
-    )
-    register_semantic_tools(
-        server,
-        context,
-        deps,
-        transport_session_map=transport_session_map,
-        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
-        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-    )
-    addon_mcp_tool_names: list[str] = []
-    addon_catalog = load_addons(context.config.addon_loader)
-    for addon in addon_catalog.registrations:
-        addon_context = AddonContext(
-            addon_id=addon.addon_id,
-            runtime_dir=context.config.runtime_dir,
-            addon_runtime_dir=addon_runtime_dir(context.config.runtime_dir, addon.addon_id),
-            config=context.config,
-            service=context,
-        )
-        addon_mcp_tool_names.extend(
-            register_addon_mcp_tools(addon, server, addon_context)
-        )
-    if addon_mcp_tool_names:
-        context.policy.set_extra_mcp_tool_names(addon_mcp_tool_names)
 
     def _record_visible_tools(
         *,
@@ -1077,6 +1000,29 @@ def create_server(context: RuntimeContext) -> FastMCP:
             error_class,
         )
 
+    def _admin_service() -> AdminService:
+        return deps.admin_service_factory()
+
+    def _require_vm_visible_with_admin_service(
+        context_arg: RuntimeContext,
+        session: Any,
+        **kwargs: Any,
+    ) -> Any:
+        kwargs.setdefault("admin_service", _admin_service())
+        return _require_vm_visible_in_session_directory(context_arg, session, **kwargs)
+
+    def _require_target_session_visible_with_admin_service(
+        context_arg: RuntimeContext,
+        source_session: Any,
+        **kwargs: Any,
+    ) -> Any:
+        kwargs.setdefault("admin_service", _admin_service())
+        return _require_target_session_visible_within_directory(
+            context_arg,
+            source_session,
+            **kwargs,
+        )
+
     def _communication_artifact_store() -> CommunicationArtifactStore:
         return deps.communication_artifact_store_factory()
 
@@ -1171,7 +1117,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             admin_service=_admin_service(),
             metadata={"directory_path": session.directory_path or "root"},
         )
-        provider = AgentExecEffectProvider()
+        provider_cls = _compat_gateway_attr("AgentExecEffectProvider", AgentExecEffectProvider)
+        provider = provider_cls()
         provider.initialize(effect_definition=effect, runtime_context=effect_context)
         exec_result = provider.execute()
         return _parse_workspace_file_payload(str(exec_result.get("stdout") or ""))
@@ -1353,48 +1300,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if isinstance(payload, dict):
             return {key: value for key, value in payload.items() if key != "request_id"}
         return {}
-
-    def _extract_ado_tags(remote_payload: dict[str, Any]) -> list[str]:
-        fields = remote_payload.get("fields") if isinstance(remote_payload.get("fields"), dict) else {}
-        raw_tags = remote_payload.get("tags")
-        if raw_tags is None:
-            raw_tags = fields.get("System.Tags")
-        return _normalize_ado_tag_list(raw_tags)
-
-    def _normalize_ado_tag_list(value: Any) -> list[str]:
-        raw_values = value if isinstance(value, list) else str(value or "").split(";")
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for raw_tag in raw_values:
-            tag = str(raw_tag).strip()
-            if not tag:
-                continue
-            key = tag.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            normalized.append(tag)
-        return normalized
-
-    def _merge_ado_tags(
-        previous_tags: list[str], *, add_tags: list[str], remove_tags: list[str]
-    ) -> list[str]:
-        remove_keys = {tag.casefold() for tag in remove_tags}
-        merged: list[str] = []
-        seen: set[str] = set()
-        for tag in previous_tags:
-            key = tag.casefold()
-            if key in remove_keys or key in seen:
-                continue
-            seen.add(key)
-            merged.append(tag)
-        for tag in add_tags:
-            key = tag.casefold()
-            if key in remove_keys or key in seen:
-                continue
-            seen.add(key)
-            merged.append(tag)
-        return merged
 
     def _communication_target_audit_fields(
         *,
@@ -1900,7 +1805,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 or "AZURE_DEVOPS_PR_PAT"
             )
         pat = os.environ.get(pat_env_name, "").strip()
-        return AzureDevOpsFeedbackAdapter(
+        adapter_cls = _compat_gateway_attr(
+            "AzureDevOpsFeedbackAdapter",
+            AzureDevOpsFeedbackAdapter,
+        )
+        return adapter_cls(
             organization_url=resolved_config.azure_devops_organization_url,
             project=resolved_config.azure_devops_project,
             pat=pat,
@@ -1914,7 +1823,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             else context.config
         )
         token = os.environ.get(resolved_config.github_token_env, "").strip()
-        return GitHubFeedbackAdapter(token=token)
+        adapter_cls = _compat_gateway_attr("GitHubFeedbackAdapter", GitHubFeedbackAdapter)
+        return adapter_cls(token=token)
 
     def _inline_media_provider_for_request(
         request: ListInlineMediaRequest | DownloadInlineMediaRequest,
@@ -2420,6 +2330,81 @@ def create_server(context: RuntimeContext) -> FastMCP:
         _mark_tool_call_audited()
 
 
+    register_ado_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+        artifact_audit_summaries=_artifact_audit_summaries,
+        ado_artifacts_for_ids=_ado_artifacts_for_ids,
+        ado_artifact_approval_payload=_ado_artifact_approval_payload,
+    )
+    register_approval_tools(
+        server,
+        context,
+        deps,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+    )
+    register_admin_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+        payload_from_result=_payload_from_result,
+    )
+    register_chat_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+        require_vm_visible_in_session_directory=_require_vm_visible_with_admin_service,
+        require_target_session_visible_within_directory=(
+            _require_target_session_visible_with_admin_service
+        ),
+    )
+    register_issue_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+        payload_from_result=_payload_from_result,
+    )
+    register_mssql_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+    )
+    register_pr_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+        artifact_audit_summaries=_artifact_audit_summaries,
+        ado_artifacts_for_ids=_ado_artifacts_for_ids,
+        ado_artifact_approval_payload=_ado_artifact_approval_payload,
+    )
+    register_semantic_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+    )
     register_agent_tools(
         server,
         context,
@@ -2427,7 +2412,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         transport_session_map=transport_session_map,
         audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
         audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
-        require_vm_visible_in_session_directory=_require_vm_visible_in_session_directory,
+        require_vm_visible_in_session_directory=_require_vm_visible_with_admin_service,
     )
 
 
@@ -2435,6 +2420,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         server,
         context,
         deps,
+        transport_session_map=transport_session_map,
         audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
         audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
         artifact_payloads=_artifact_payloads,
@@ -2464,8 +2450,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
         teams_cursor_for_target=_teams_cursor_for_target,
     )
 
-
-    @server.tool()
+    addon_mcp_tool_names: list[str] = []
+    addon_catalog = load_addons(context.config.addon_loader)
+    for addon in addon_catalog.registrations:
+        addon_context = AddonContext(
+            addon_id=addon.addon_id,
+            runtime_dir=context.config.runtime_dir,
+            addon_runtime_dir=addon_runtime_dir(context.config.runtime_dir, addon.addon_id),
+            config=context.config,
+            service=context,
+        )
+        addon_mcp_tool_names.extend(
+            register_addon_mcp_tools(addon, server, addon_context)
+        )
+    if addon_mcp_tool_names:
+        context.policy.set_extra_mcp_tool_names(addon_mcp_tool_names)
 
     def _deprecate_session_id_parameter_schema() -> None:
         for tool in server._tool_manager.list_tools():

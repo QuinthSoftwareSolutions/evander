@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Fixed MCP gateway refactor regressions that prevented server construction, miswired extracted
+  communication and ADO helpers, and pointed the gateway CLI at `src/runtime`.
+
 - Moved approval MCP gateway tools into `agent_sandbox.gateway.approval_tools` while preserving behavior.
 
 - Moved communication MCP gateway tools into `agent_sandbox.gateway.communication_tools` while preserving behavior.

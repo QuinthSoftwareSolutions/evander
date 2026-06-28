@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import sys
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
@@ -11,6 +12,13 @@ from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.issues.service import IssueService
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
+
+
+def _compat_gateway_attr(name: str, default: object) -> object:
+    gateway_module = sys.modules.get("agent_sandbox.gateway")
+    if gateway_module is None:
+        return default
+    return getattr(gateway_module, name, default)
 
 
 @dataclass(frozen=True)
@@ -31,14 +39,21 @@ class GatewayToolDependencies:
     def from_context(cls, context: RuntimeContext) -> "GatewayToolDependencies":
         """Build gateway dependencies from a runtime context."""
 
+        admin_service_cls = _compat_gateway_attr("AdminService", AdminService)
+        issue_service_cls = _compat_gateway_attr("IssueService", IssueService)
+        communication_artifact_store_cls = _compat_gateway_attr(
+            "CommunicationArtifactStore",
+            CommunicationArtifactStore,
+        )
+
         def communication_artifact_store_factory() -> CommunicationArtifactStore:
-            store = CommunicationArtifactStore(context.config.runtime_dir)
+            store = communication_artifact_store_cls(context.config.runtime_dir)
             store.cleanup_expired()
             return store
 
         return cls(
-            admin_service_factory=lambda: AdminService(context.config.runtime_dir),
-            issue_service_factory=lambda: IssueService(context.provider_config),
+            admin_service_factory=lambda: admin_service_cls(context.config.runtime_dir),
+            issue_service_factory=lambda: issue_service_cls(context.provider_config),
             chat_store_factory=lambda: ChatStore(admin_chat_store_path(context.config.runtime_dir)),
             semantic_adapter=GatewaySemanticAdapter(context),
             communication_artifact_store_factory=communication_artifact_store_factory,
