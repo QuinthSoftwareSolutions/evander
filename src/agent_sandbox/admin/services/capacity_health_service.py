@@ -20,7 +20,7 @@ from agent_sandbox.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
 )
-from agent_sandbox.sessions import SessionManifest
+from agent_sandbox.models import SessionManifest
 
 # Payload models still live in ``admin.service`` while capacity calculation logic
 # is owned here.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-28 - Admin Service Composition Startup Fixes
+
+- Fixed extracted admin service imports and composition locking so `AdminService`
+  can be constructed by web, gateway, and CLI callers.
+- Routed issue/Git directory normalization through the injected directory path
+  port and updated focused service tests for the refactored dependency shape.
+
 ## 2026-06-27 - Workflow Run Report Reader Extraction
 
 - Moved workflow run snapshot, search, detail, graph activity, failure cluster, and conformance report readers out of `AdminService` and into `WorkflowReportsAdminService`.

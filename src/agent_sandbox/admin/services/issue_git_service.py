@@ -1281,7 +1281,7 @@ class IssueGitAdminService:
         exclude_states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
         admin = self._deps
-        normalized_directory_path = admin.normalize_directory_path(directory_path)
+        normalized_directory_path = admin.directory_path.normalize_directory_path(directory_path)
         normalized_states = {value.strip() for value in (states or set()) if value.strip()} or None
         normalized_excluded_states = {
             value.strip() for value in (exclude_states or set()) if value.strip()
@@ -1342,8 +1342,10 @@ class IssueGitAdminService:
         if statuses is not None and request.status not in statuses:
             return False
         if directory_path is not None:
-            normalized_directory_path = admin.normalize_directory_path(directory_path)
-            request_directory_path = admin.normalize_directory_path(request.directory_path)
+            normalized_directory_path = admin.directory_path.normalize_directory_path(directory_path)
+            request_directory_path = admin.directory_path.normalize_directory_path(
+                request.directory_path
+            )
             if not _admin_service._directory_path_matches_scope(
                 request_directory_path,
                 normalized_directory_path,
@@ -1592,7 +1594,7 @@ class IssueGitAdminService:
         states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
         admin = self._deps
-        normalized_directory_path = admin.normalize_directory_path(directory_path)
+        normalized_directory_path = admin.directory_path.normalize_directory_path(directory_path)
         issues = self.list_issues(directory_path=normalized_directory_path, direct_only=True)
         actionable: list[LocalIssueRecord] = []
         for issue in issues:
@@ -1668,7 +1670,7 @@ class IssueGitAdminService:
     ) -> LocalIssueRecord:
         admin = self._deps
         now = _admin_service._utc_now()
-        normalized_directory_path = admin.normalize_directory_path(directory_path)
+        normalized_directory_path = admin.directory_path.normalize_directory_path(directory_path)
         merged_metadata: dict[str, Any] = dict(metadata or {})
         source_value = "local_gui"
         source_type = "local_manual"

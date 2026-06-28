@@ -14,7 +14,7 @@ from agent_sandbox.operator_steering import (
     OperatorSteeringNote,
     operator_steering_note_store,
 )
-from agent_sandbox.sessions import SessionManifest
+from agent_sandbox.models import SessionManifest
 
 
 class _ModelUsageAdminServiceHost(Protocol):
