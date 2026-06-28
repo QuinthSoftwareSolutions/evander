@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-06-28 - First-Run Setup TUI
+
+- Added `evander-cli setup` as an interactive first-run checklist for choosing
+  host secret storage, Admin Web access, execution model, AI providers, default
+  model routing, install preflight, and launch verification.
+- Added `evander-cli setup doctor --json` and `evander-cli setup plan --json`
+  for scriptable setup readiness and launch-plan inspection.
+- Added `./scripts/setup` as a one-step checkout bootstrap that installs Python
+  prerequisites, creates `.venv`, installs Evander, and starts the guided setup
+  checklist.
+- Stored setup draft state under `runtime/setup-wizard/state.json` while keeping
+  entered secret values in a host-local secret env file.
+
 ## 2026-06-28 - Team Subordinate Task Finish Permission
 
 - Allowed Team supervisors to mark claimable subordinate tasks `finished`

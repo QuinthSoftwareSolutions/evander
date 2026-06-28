@@ -57,16 +57,24 @@ Directory-scoped config is rooted at `root`:
 
 ## Quick Start
 
-1. Install host dependencies and create a virtual environment:
+1. Bootstrap the checkout and start the guided setup:
 
    ```bash
-   sudo apt install qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst cloud-image-utils ovmf
-   uv venv
-   . .venv/bin/activate
-   uv pip install -e .
+   ./scripts/setup
    ```
 
-2. Initialize runtime state and host bootstrap config:
+   The script installs the minimum Python bootstrap packages on apt-based hosts,
+   creates `.venv`, installs Evander in editable mode, and then transitions into
+   `evander-cli setup`.
+
+   For development-only bootstrap without launching the setup checklist:
+
+   ```bash
+   ./scripts/setup --dev --bootstrap-only
+   ```
+
+2. Manual lower-level setup is still available when needed. Initialize runtime
+   state and host bootstrap config:
 
    ```bash
    evander-cli init-state --runtime-dir runtime

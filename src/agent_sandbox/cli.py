@@ -82,6 +82,8 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.runtime import build_runtime
+from agent_sandbox.setup import setup_doctor_payload, setup_plan_payload
+from agent_sandbox.setup.tui import run_setup_tui
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.messaging.teams_auth import TeamsAuthError
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
@@ -129,11 +131,16 @@ wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
 teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
 teams_meeting_app = typer.Typer(help="Manage live Teams meeting agent sessions.")
 execution_app = typer.Typer(help="Manual execution backend controls.")
+setup_app = typer.Typer(
+    help="Guided first-run setup for the Evander control plane.",
+    invoke_without_command=True,
+)
 app.add_typer(directories_app, name="directories")
 app.add_typer(wake_schedules_app, name="wake-schedules")
 app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
 app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions and Feedback")
 app.add_typer(execution_app, name="execution", rich_help_panel="VM Operations")
+app.add_typer(setup_app, name="setup", rich_help_panel="Health and State")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
 DirectoryOption = Annotated[
@@ -150,6 +157,13 @@ ConfigOption = Annotated[
         "--runtime-dir",
         "--config",
         help="Runtime directory root. A legacy gateway YAML path is accepted for bootstrap compatibility.",
+    ),
+]
+SetupProjectDirOption = Annotated[
+    Path,
+    typer.Option(
+        "--project-dir",
+        help="Checked-out Evander repository root. Defaults to the current working directory.",
     ),
 ]
 _discord_seed_sequence = count()
@@ -1473,6 +1487,61 @@ def init_state(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
     runtime = build_runtime(load_runtime_gateway_config(runtime_dir=host_cfg.runtime_dir))
     runtime.directories.ensure_root()
     typer.echo(f"Initialized runtime state under {host_cfg.runtime_dir}")
+
+
+@setup_app.callback()
+def setup_callback(
+    ctx: typer.Context,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    project_dir: SetupProjectDirOption = Path("."),
+) -> None:
+    """Launch the guided setup checklist when no setup subcommand is provided."""
+    if ctx.invoked_subcommand is not None:
+        return
+    runtime_dir, _ = _bootstrap_inputs(config)
+    run_setup_tui(project_dir=project_dir, runtime_dir=runtime_dir)
+
+
+@setup_app.command("doctor", short_help="Show setup checklist and host readiness.")
+def setup_doctor(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    project_dir: SetupProjectDirOption = Path("."),
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON."),
+    ] = False,
+) -> None:
+    runtime_dir, _ = _bootstrap_inputs(config)
+    payload = setup_doctor_payload(
+        project_dir=project_dir, runtime_dir=runtime_dir
+    )
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    for item in payload["checklist"]:
+        typer.echo(f"[{item['status']}] {item['label']}: {item['summary']}")
+
+
+@setup_app.command("plan", short_help="Show the pending guided setup launch plan.")
+def setup_plan(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    project_dir: SetupProjectDirOption = Path("."),
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON."),
+    ] = False,
+) -> None:
+    runtime_dir, _ = _bootstrap_inputs(config)
+    payload = setup_plan_payload(
+        project_dir=project_dir, runtime_dir=runtime_dir
+    )
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    typer.echo("Setup plan")
+    typer.echo(f"Ready: {payload['ready']}")
+    for step in payload["steps"]:
+        typer.echo(f"- {step}")
 
 
 @directories_app.command("list", short_help="List directory children.")
