@@ -6,6 +6,12 @@
   so duplicate handoffs return the existing review instead of creating another
   reviewer inbox item.
 
+## 2026-06-27 - Team Wake Lease Release Fix
+
+- Released Team wake leases when standalone agent prompt executions finish, so
+  completed container-worker wakes no longer block follow-up inbox work until the
+  lease TTL expires.
+
 ## 2026-06-26 - Queued Dispatch Correlation Fixes
 
 - Preserved caller-supplied dispatch ids when busy agent prompts are queued and

@@ -17,7 +17,7 @@ from agent_sandbox.effects.providers.artifacts import (
     ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
 )
-from agent_sandbox.effects.providers.base import EffectProviderBase
+from agent_sandbox.effects.providers.base import EffectLifecycleHookBase, EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.artifact_spaces import (
     ArtifactSpacePermissionError,
     ArtifactSpaceStore,
@@ -1471,6 +1471,10 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
 
 class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
     @classmethod
+    def lifecycle_hooks(cls) -> tuple[type["TeamAgentPromptCompletionFinalizeHook"], ...]:
+        return (TeamAgentPromptCompletionFinalizeHook,)
+
+    @classmethod
     def validate_definition(cls, effect_definition):
         if isinstance(effect_definition, WorkflowNodeEnvelope):
             return _materialize(
@@ -1835,6 +1839,66 @@ class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
         return result
+
+
+class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
+    """Finalize Team leases for standalone prompt completions.
+
+    Team wakes are dispatched through standalone admin prompt effects in some
+    paths, so their completion does not always flow through the Team runtime
+    pack's trigger:agent:run:completed node. This hook keeps the lease lifecycle
+    owned by the add-on while reusing the same repository finalizer.
+    """
+
+    def on_post_completion_dispatch(self, *, worker: Any) -> int:
+        runtime_dir = _runtime_dir_from_worker(worker)
+        if runtime_dir is None:
+            return 0
+        repo = TeamStateRepository(runtime_dir)
+        state = repo.read()
+        active_dispatches = {
+            dispatch_id: agent_id
+            for agent_id, runtime in state.agent_runtimes.items()
+            if (dispatch_id := _optional_text(runtime.active_dispatch_id)) is not None
+            and (
+                dispatch_id.startswith("team-dispatch-")
+                or dispatch_id.startswith("team-chat:")
+            )
+        }
+        if not active_dispatches:
+            return 0
+
+        finalized_count = 0
+        for record in _completed_agent_prompt_records(worker):
+            dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
+            if dispatch_id is None or dispatch_id not in active_dispatches:
+                continue
+            session_id = _completed_prompt_session_id(record)
+            if session_id is None:
+                continue
+            agent_id = active_dispatches[dispatch_id]
+            state, result = repo.finalize_agent_dispatch_from_activity(
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                agent_id=agent_id,
+            )
+            if not result.get("finalized"):
+                continue
+            finalized_count += 1
+            active_dispatches.pop(dispatch_id, None)
+            agent = state.agents.get(agent_id)
+            if agent is not None:
+                context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
+                _mirror_session_metadata(
+                    context,
+                    repo=repo,
+                    state=state,
+                    agent_id=agent_id,
+                    session_id=agent.session_id,
+                )
+            if not active_dispatches:
+                break
+        return finalized_count
 
 
 class TeamMarkEphemeralSpawnedEffectProvider(EffectProviderBase):
@@ -4466,6 +4530,85 @@ def _runtime_dir(context: Any) -> Path:
     if runtime_dir is None:
         raise RuntimeError("team add-on provider requires resolved_config.runtime_dir")
     return Path(runtime_dir)
+
+
+def _runtime_dir_from_worker(worker: Any) -> Path | None:
+    for source in (getattr(worker, "config", None), getattr(worker, "worker_config", None)):
+        runtime_dir = getattr(source, "runtime_dir", None)
+        if runtime_dir is not None:
+            return Path(runtime_dir)
+    return None
+
+
+def _effect_context_from_worker(worker: Any, *, runtime_dir: Path) -> EffectRuntimeContext:
+    admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+    return EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(runtime_dir)},
+        admin_service=admin_service,
+    )
+
+
+def _completed_agent_prompt_records(worker: Any) -> list[Any]:
+    execution_store = getattr(worker, "execution_store", None)
+    if execution_store is None:
+        return []
+    records: list[Any] = []
+    list_executions = getattr(execution_store, "list_executions", None)
+    if callable(list_executions):
+        try:
+            records = list(list_executions())
+        except Exception:
+            records = []
+    if not records:
+        read_all = getattr(execution_store, "read_all", None)
+        if callable(read_all):
+            try:
+                raw = read_all()
+                records = list(raw.values()) if isinstance(raw, Mapping) else []
+            except Exception:
+                records = []
+    candidates = [
+        record
+        for record in records
+        if _optional_text(getattr(record, "effect_type", None))
+        == "effect:agent:enqueue-prompt"
+        and _optional_text(getattr(record, "status", None)) in {"succeeded", "failed"}
+        and _record_outputs(record)
+    ]
+    candidates.sort(
+        key=lambda record: (
+            getattr(record, "finished_at", datetime.min.replace(tzinfo=UTC)),
+            _optional_text(getattr(record, "execution_id", None)) or "",
+        )
+    )
+    return candidates
+
+
+def _record_outputs(record: Any) -> dict[str, Any]:
+    outputs = getattr(record, "outputs", None)
+    if isinstance(outputs, Mapping):
+        return dict(outputs)
+    if isinstance(record, Mapping):
+        outputs = record.get("outputs")
+        if isinstance(outputs, Mapping):
+            return dict(outputs)
+    return {}
+
+
+def _completed_prompt_session_id(record: Any) -> str | None:
+    outputs = _record_outputs(record)
+    session_id = _optional_text(outputs.get("session_id"))
+    if session_id is not None:
+        return session_id
+    scope = outputs.get("scope")
+    if isinstance(scope, Mapping):
+        session_id = _optional_text(scope.get("session_id"))
+        if session_id is not None:
+            return session_id
+    resolved_config = getattr(record, "resolved_config", None)
+    if isinstance(resolved_config, Mapping):
+        return _optional_text(resolved_config.get("session_id"))
+    return None
 
 
 def _coerce_mapping(value: Any) -> dict[str, Any]:

@@ -84,6 +84,7 @@ from evander_team_addon.providers import (
     TeamCreateCaseEffectProvider,
     TeamCreateOperatorDirectiveEffectProvider,
     TeamFinalizeAgentDispatchEffectProvider,
+    TeamAgentPromptCompletionFinalizeHook,
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamSessionRoutingQueryProvider,
@@ -349,6 +350,14 @@ class FakeSessionStore(FakeMetadataUpdater):
         session = self.sessions[target]
         session.metadata = _deep_merge(dict(session.metadata), metadata)
         return {"success": True, "metadata": session.metadata}
+
+
+class FakeExecutionStore:
+    def __init__(self, records: list[object]) -> None:
+        self.records = records
+
+    def list_executions(self) -> list[object]:
+        return list(self.records)
 
 
 class FakeFileCopier:
@@ -3920,6 +3929,59 @@ def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_cha
     assert reread.agent_runtimes["backend"].active_dispatch_id is None
     assert reread.agent_runtimes["backend"].no_progress_count == 0
     assert reread.conversation_messages[message.id].status == "queued"
+
+
+def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = leases[0]["dispatch_id"]
+    repo.append_dispatch_activity(
+        TeamDispatchActivity(
+            id="activity-finalize-progress",
+            tool_name="team_update_task",
+            caller_session_id="session-backend",
+            caller_identity="agent:backend",
+            agent_id="backend",
+            dispatch_id=dispatch_id,
+            request_id="request-progress",
+            status=TeamDispatchActivityStatus.SUCCESS,
+            progress_classification="progress",
+        )
+    )
+    session_store = FakeSessionStore()
+    record = SimpleNamespace(
+        execution_id="exec-standalone-team-prompt",
+        effect_type="effect:agent:enqueue-prompt",
+        status="succeeded",
+        finished_at=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+        outputs={
+            "dispatch_id": dispatch_id,
+            "session_id": "session-backend",
+            "success": True,
+        },
+    )
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        execution_store=FakeExecutionStore([record]),
+        provider_factory=SimpleNamespace(admin_service=session_store),
+    )
+
+    hook = TeamAgentPromptCompletionFinalizeHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 1
+    reread = repo.read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
+    assert runtime.no_progress_count == 0
+    assert session_store.calls
+    assert (
+        session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"]
+        == "backend"
+    )
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
 
 
 def test_deliverable_artifact_publish_reuses_existing_key_without_duplicate_version(
