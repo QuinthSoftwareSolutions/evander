@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-28 - Team MCP Artifact Publisher Config Fix
+
+- Resolved effect provider configuration from gateway MCP runtime contexts so
+  Team deliverable artifact publication for container-worker sessions keeps the
+  configured `container_worker_base_url` instead of failing with a missing
+  worker URL.
+
 ## 2026-06-28 - Git Mirror Fast-Forward Sync
 
 - Fast-forwarded stale local branches before refreshing container-worker and
