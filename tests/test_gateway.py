@@ -508,22 +508,41 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     )
     server = create_server(context)
 
-    assert any(tool.name == "schedule_resume" for tool in server._tool_manager.list_tools())
-    assert any(
-        tool.name == "cancel_scheduled_wake" for tool in server._tool_manager.list_tools()
-    )
-    assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
-    assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
-    assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
-    assert any(tool.name == "resolve_ado_identity" for tool in server._tool_manager.list_tools())
-    assert any(
-        tool.name == "list_ado_pr_comment_activity"
-        for tool in server._tool_manager.list_tools()
-    )
-    assert any(
-        tool.name == "list_ado_pr_commit_activity"
-        for tool in server._tool_manager.list_tools()
-    )
+    pr_feedback_tool_names = {
+        "list_pull_requests",
+        "get_pull_request",
+        "has_pending_feedback",
+        "list_unread_feedback",
+        "list_all_feedback",
+        "schedule_resume",
+        "cancel_scheduled_wake",
+        "run_script",
+        "post_pr_feedback_reply",
+        "request_pr_review",
+        "post_pr_comment",
+        "post_pr_inline_comment",
+        "submit_pr_review",
+    }
+    registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+    assert {"approval_submit", "approval_check"} <= registered_tool_names
+    assert pr_feedback_tool_names <= registered_tool_names
+    ado_tool_names = {
+        "create_ado_backlog_item",
+        "post_ado_backlog_comment",
+        "delete_ado_backlog_item",
+        "update_ado_backlog_text",
+        "update_ado_backlog_title",
+        "update_ado_backlog_tags",
+        "query_ado_backlog_items",
+        "get_ado_backlog_item",
+        "query_ado_work_item_activity",
+        "list_ado_current_iteration_backlog_items",
+        "get_ado_daily_status_report_data",
+        "resolve_ado_identity",
+        "list_ado_pr_comment_activity",
+        "list_ado_pr_commit_activity",
+    }
+    assert ado_tool_names <= registered_tool_names
     assert any(
         tool.name == "query_ado_work_item_activity"
         for tool in server._tool_manager.list_tools()
@@ -1592,7 +1611,7 @@ def test_mssql_tools_call_container_worker_backend_and_redact_audit(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.gateway.ContainerWorkerVmExecutionBackend",
+        "agent_sandbox.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
         FakeContainerWorkerBackend,
     )
     server = create_server(context)
@@ -1703,7 +1722,7 @@ def test_mssql_tools_reuse_mapped_transport_session(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.gateway.ContainerWorkerVmExecutionBackend",
+        "agent_sandbox.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
         FakeContainerWorkerBackend,
     )
     server = create_server(context)
@@ -3418,3 +3437,36 @@ def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> Non
         assert mcp_session_manager._task_group is not None
 
     assert mcp_session_manager._task_group is None
+
+
+def test_gateway_import_paths_expose_migration_entry_points() -> None:
+    import agent_sandbox.gateway as compatibility_gateway
+    from agent_sandbox.gateway.app import create_app as canonical_create_app
+    from agent_sandbox.gateway.cli import main as canonical_main
+    from agent_sandbox.gateway.server import create_server as canonical_create_server
+
+    assert compatibility_gateway.create_app is canonical_create_app
+    assert compatibility_gateway.create_server is canonical_create_server
+    assert compatibility_gateway.main is canonical_main
+
+
+def test_gateway_legacy_module_shim_exposes_migration_entry_points() -> None:
+    legacy_module_path = (
+        Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "gateway.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_agent_sandbox_gateway_legacy_shim",
+        legacy_module_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    legacy_gateway = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(legacy_gateway)
+
+    from agent_sandbox.gateway.app import create_app as canonical_create_app
+    from agent_sandbox.gateway.cli import main as canonical_main
+    from agent_sandbox.gateway.server import create_server as canonical_create_server
+
+    assert legacy_gateway.create_app is canonical_create_app
+    assert legacy_gateway.create_server is canonical_create_server
+    assert legacy_gateway.main is canonical_main

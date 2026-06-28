@@ -79,6 +79,37 @@ def write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object])
     )
 
 
+def test_create_server_registers_extracted_issue_tools(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    server = create_server(context)
+
+    registered_tools = set(server._tool_manager._tools)
+
+    assert {
+        "list_issues",
+        "get_issue",
+        "create_local_issue",
+        "set_issue_plan",
+        "approve_issue",
+        "claim_next_issue",
+        "complete_issue",
+        "reject_issue",
+        "commit_issue",
+    }.issubset(registered_tools)
+
+
+def test_create_server_registers_extracted_agent_tools(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    server = create_server(context)
+
+    registered_tools = set(server._tool_manager._tools)
+
+    assert {
+        "get_agent_status",
+        "get_agent_logs",
+    }.issubset(registered_tools)
+
+
 def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
