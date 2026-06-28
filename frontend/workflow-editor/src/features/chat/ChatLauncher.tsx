@@ -23,7 +23,7 @@ const UI_KEY = "admin-web:chat:ui";
 const CHAT_TRANSCRIPT_PAGE_SIZE = 80;
 const CHAT_SCROLL_BOTTOM_TOLERANCE_PX = 48;
 const CHAT_SCROLL_TOP_LOAD_THRESHOLD_PX = 32;
-type OlderScrollRestore = { scrollHeight: number; scrollTop: number };
+type OlderScrollRestore = { scrollHeight: number; scrollTop: number; anchorMessageId: string };
 
 function currentPageVisible() {
   return typeof globalThis.document === "undefined" || globalThis.document.visibilityState !== "hidden";
@@ -117,6 +117,7 @@ export function ChatLauncher({
   }, [threadId]);
 
   const requestChatScrollToBottom = () => {
+    pendingOlderScrollRestoreRef.current = null;
     stickToBottomRef.current = true;
     forceScrollToBottomRef.current = true;
   };
@@ -142,8 +143,24 @@ export function ChatLauncher({
   const handleChatScroll = () => {
     const element = scrollRef.current;
     if (!element) return;
-    stickToBottomRef.current = chatIsNearBottom(element);
-    if (element.scrollTop <= CHAT_SCROLL_TOP_LOAD_THRESHOLD_PX) {
+    const nearBottom = chatIsNearBottom(element);
+    const nearTop = element.scrollTop <= CHAT_SCROLL_TOP_LOAD_THRESHOLD_PX;
+    stickToBottomRef.current = nearBottom;
+    if (nearBottom && pendingOlderScrollRestoreRef.current) {
+      pendingOlderScrollRestoreRef.current = null;
+    } else if (pendingOlderScrollRestoreRef.current && loadingOlderMessagesRef.current) {
+      pendingOlderScrollRestoreRef.current = {
+        ...pendingOlderScrollRestoreRef.current,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+      };
+    }
+    if (
+      nearTop &&
+      !nearBottom &&
+      !forceScrollToBottomRef.current &&
+      !pendingOlderScrollRestoreRef.current
+    ) {
       void loadOlderMessages();
     }
   };
@@ -258,7 +275,12 @@ export function ChatLauncher({
     if (!element) return;
     const pendingOlderScrollRestore = pendingOlderScrollRestoreRef.current;
     if (pendingOlderScrollRestore) {
+      const anchorIndex = messagesRef.current.findIndex(
+        (message) => message.id === pendingOlderScrollRestore.anchorMessageId,
+      );
+      if (anchorIndex === 0) return;
       pendingOlderScrollRestoreRef.current = null;
+      if (anchorIndex < 0) return;
       element.scrollTop = Math.max(
         0,
         element.scrollHeight -
@@ -285,6 +307,7 @@ export function ChatLauncher({
       pendingOlderScrollRestoreRef.current = {
         scrollHeight: element.scrollHeight,
         scrollTop: element.scrollTop,
+        anchorMessageId: oldestMessage.id,
       };
     }
     loadingOlderMessagesRef.current = true;
@@ -296,6 +319,11 @@ export function ChatLauncher({
       });
       if (activeThreadRef.current !== targetThreadId) return;
       if (!messagesRef.current.some((message) => message.id === oldestMessage.id)) return;
+      if (transcript.messages.length === 0) {
+        pendingOlderScrollRestoreRef.current = null;
+        setHasOlderMessages(false);
+        return;
+      }
       setVisibleMessages(mergeMessages(transcript.messages, messagesRef.current));
       setHasOlderMessages(Boolean(transcript.has_older));
       setMode(transcript.assistant_capability_mode);

@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Kept the Admin Web built-in chat anchored at the bottom when an SSE snapshot arrives while an
+  older-history fetch is in flight.
+
 - Kept Teams inbox retention compaction from deleting historical messages before
   a channel cursor has advanced into the retained window.
 
