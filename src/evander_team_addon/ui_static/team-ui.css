@@ -85,7 +85,6 @@ textarea {
 
 .team-header h1,
 .content-panel h2,
-.summary-panel h2,
 .forms-panel h2 {
   margin: 0;
   line-height: 1.15;
@@ -1350,7 +1349,6 @@ button.team-record-kind-tab strong {
   gap: 1rem;
 }
 
-.summary-panel,
 .content-panel,
 .forms-panel {
   border: 1px solid var(--line);
@@ -1359,7 +1357,6 @@ button.team-record-kind-tab strong {
   box-shadow: 0 12px 36px var(--shadow);
 }
 
-.summary-panel,
 .content-panel {
   padding: 1rem;
 }
@@ -1666,39 +1663,9 @@ button.runtime-filter-button.active {
   padding: 1rem;
 }
 
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(6.5rem, 1fr));
-  gap: 0.65rem;
-  margin-top: 0.85rem;
-}
-
-.metric {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.7rem;
-  background: var(--panel-alt);
-}
-
-.metric strong {
-  display: block;
-  font-size: 1.35rem;
-  line-height: 1;
-}
-
-.metric span {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
 .empty-state {
   margin: 0.75rem 0 0;
   color: var(--muted);
-}
-
-.summary-empty-state {
-  grid-column: 1 / -1;
-  margin-top: 0.25rem;
 }
 
 .hierarchy-view,
@@ -4187,10 +4154,6 @@ label textarea {
     max-height: none;
   }
 
-  .summary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .hierarchy-chart {
     max-width: 100%;
   }
@@ -4326,10 +4289,6 @@ label textarea {
 
   .agent-detail-field:first-child {
     border-top: 0;
-  }
-
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .hierarchy-team-header {

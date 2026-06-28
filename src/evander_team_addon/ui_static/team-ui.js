@@ -84,7 +84,6 @@ const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
 const teamViewIds = new Set([
   "workspace",
-  "overview",
   "operations",
   "delivery",
   "projects",
@@ -207,7 +206,6 @@ const chatOlderMessageLoads = new Set();
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
   statusMessage: document.querySelector("#status-message"),
-  summaryGrid: document.querySelector("#summary-grid"),
   runtimeOperationsView: document.querySelector("#runtime-operations-view"),
   runtimeFilterButtons: Array.from(document.querySelectorAll("[data-runtime-filter]")),
   reviewDeliveryView: document.querySelector("#review-delivery-view"),
@@ -1430,19 +1428,6 @@ function bindPlanningFilters() {
 }
 
 function bindProjectFocus() {
-  document.addEventListener("toggle", (event) => {
-    const section = event.target;
-    if (!section?.matches?.("[data-project-record-section]")) {
-      return;
-    }
-    const key = projectRecordSectionKey(section.dataset.projectId, section.dataset.projectSection);
-    if (section.open) {
-      openProjectRecordSections.add(key);
-    } else {
-      openProjectRecordSections.delete(key);
-    }
-  }, true);
-
   document.addEventListener("click", (event) => {
     const createToggle = event.target?.closest?.("[data-project-create-toggle]");
     if (createToggle) {
@@ -2447,10 +2432,6 @@ function renderActiveView(view = activeTeamView) {
       renderWorkspaceDashboard();
       decorateActiveViewTooltips();
       break;
-    case "overview":
-      renderSummary();
-      decorateActiveViewTooltips();
-      break;
     case "operations":
       renderRuntimeOperations();
       decorateActiveViewTooltips();
@@ -2515,7 +2496,6 @@ function renderActiveViewLoading(view = activeTeamView) {
     panel?.querySelector("[data-projects-focus-detail]") ||
     panel?.querySelector("[data-workspace-attention-column]") ||
     panel?.querySelector("[data-runtime-operations-view]") ||
-    panel?.querySelector("[data-summary-grid]") ||
     panel?.querySelector("[data-review-delivery-view]") ||
     panel?.querySelector("[data-projects-view]") ||
     panel?.querySelector("[data-cases-view]") ||
@@ -3194,48 +3174,6 @@ function compareWorkspaceAttentionItems(left, right) {
     text(left.title).localeCompare(text(right.title)) ||
     text(left.meta).localeCompare(text(right.meta))
   );
-}
-
-function renderSummary() {
-  const teams = values(state.teams);
-  const visibleTeams = teams.filter(isVisibleTeam);
-  const projects = values(state.projects);
-  const visibleProjects = projects.filter(isVisibleProject);
-  const visibleAgents = values(state.agents).filter(isVisibleAgent);
-  const visibleGovernanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup);
-  const tasks = values(state.tasks);
-  const cases = values(state.cases);
-  const deliverables = values(state.deliverables);
-  const reviews = values(state.review_requests);
-  const reviewProfiles = values(state.review_profiles);
-  const visibleReviewProfiles = reviewProfiles.filter(isVisibleReviewProfile);
-  const ephemeral = values(state.ephemeral_assignments);
-
-  const metrics = [
-    ["Teams", visibleTeams.length],
-    ["Governance groups", visibleGovernanceGroups.length],
-    ["Projects", visibleProjects.length],
-    ["Agents", visibleAgents.length],
-    ["Open cases", cases.filter((item) => item.status !== "closed").length],
-    ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
-    ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
-    ["Review profiles", visibleReviewProfiles.length],
-    ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
-  ];
-
-  const html = metrics
-    .map(([label, value]) => {
-      return `<div class="metric"><strong>${value}</strong><span>${escapeHtml(label)}</span></div>`;
-    })
-    .join("")
-    .concat(
-      !teams.length
-        ? `<p class="empty-state summary-empty-state">No teams registered.</p>`
-        : !visibleTeams.length
-          ? `<p class="empty-state summary-empty-state">No active team.</p>`
-      : "",
-    );
-  renderIntoActiveTargets("[data-summary-grid]", html);
 }
 
 function renderTeamCostCounter(teamId) {
@@ -7694,13 +7632,7 @@ function renderProjectRecordSection(project, section, title, records, renderPage
     visibleRecords.length > projectRecordPageSize ? `page ${page} of ${totalPages}` : "",
   ].filter(Boolean);
   return `
-    <details
-      class="project-record-section"
-      data-project-record-section
-      data-project-id="${escapeAttr(project.id)}"
-      data-project-section="${escapeAttr(section)}"
-      ${openProjectRecordSections.has(key) ? "open" : ""}
-    >
+    <details class="project-record-section" ${openProjectRecordSections.has(key) ? "open" : ""}>
       <summary class="project-record-section-summary">
         <span class="compact-record-main">
           <strong>${escapeHtml(title)}</strong>

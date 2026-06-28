@@ -13,7 +13,6 @@ const staticRoot = path.resolve(
 const teamViewStorageKey = "team-addon:active-view";
 const teamViewIds = [
   "workspace",
-  "overview",
   "operations",
   "delivery",
   "projects",
@@ -48,7 +47,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-addon:active-view/);
   assert.doesNotMatch(markup, /data-team-view="setup"/);
   assert.doesNotMatch(markup, /team-setup-page/);
-  assert.match(script, /data-summary-grid/);
+  assert.doesNotMatch(markup, /data-team-view="overview"/);
+  assert.doesNotMatch(markup, /team-overview-page/);
+  assert.doesNotMatch(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
   assert.match(script, /data-planning-task-status/);
@@ -2394,12 +2395,12 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   const panel = page.locator("#team-projects-page");
   assert.equal(await panel.locator(".task-list .task-item").count(), 0);
 
-  const projectTab = panel.locator('[data-project-focus-id="project"]');
-  const deliverablesSection = panel.locator('details.project-record-section[data-project-section="deliverables"]').first();
-  await deliverablesSection.locator("summary.project-record-section-summary").click();
-  assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
-  await projectTab.click();
-  assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
+  const deliverablesSection = panel.locator("details.project-record-section").filter({
+    hasText: "Deliverables",
+  }).first();
+  await deliverablesSection.evaluate((element) => {
+    element.open = true;
+  });
   assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 10);
   assert.equal(
     await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
@@ -2420,13 +2421,12 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     "Rejected deliverable",
   );
 
-  await deliverablesSection.locator("summary.project-record-section-summary").click();
-  assert.equal(await deliverablesSection.evaluate((element) => element.open), false);
-  await projectTab.click();
-  assert.equal(await deliverablesSection.evaluate((element) => element.open), false);
-
-  const releasesSection = panel.locator('details.project-record-section[data-project-section="releases"]').first();
-  await releasesSection.locator("summary.project-record-section-summary").click();
+  const releasesSection = panel.locator("details.project-record-section").filter({
+    hasText: "Releases",
+  }).first();
+  await releasesSection.evaluate((element) => {
+    element.open = true;
+  });
   assert.equal(await releasesSection.locator(".release-list .record-item").count(), 10);
   assert.equal(
     await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
@@ -4845,7 +4845,6 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   for (const tabName of [
     "Workspace",
-    "Overview",
     "Operations",
     "Delivery",
     "Task board",
@@ -4858,14 +4857,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     await page.getByRole("tab", { name: tabName }).waitFor({ state: "visible" });
   }
   assert.equal(await page.getByRole("tab", { name: "Setup" }).count(), 0);
-
-  await page.getByRole("tab", { name: "Overview" }).click();
-  await page.locator("#team-overview-page").waitFor({ state: "visible" });
-  await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
-  assert.equal(await page.locator("#team-overview-page .metric").count(), 9);
-  await page.locator("#team-overview-page").getByText("Pending reviews").waitFor({
-    state: "visible",
-  });
+  assert.equal(await page.getByRole("tab", { name: "Overview", exact: true }).count(), 0);
+  assert.equal(await page.locator("#team-overview-page").count(), 0);
 
   await page.getByRole("tab", { name: "Operations" }).click();
   await page.locator("#team-operations-page").waitFor({ state: "visible" });

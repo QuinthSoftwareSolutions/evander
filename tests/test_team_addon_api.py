@@ -824,6 +824,7 @@ def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
     bootstrap_payload = bootstrap.json()
     assert bootstrap_payload["revision"] > 0
     assert "chat" in bootstrap_payload["views"]
+    assert "overview" not in bootstrap_payload["views"]
     assert bootstrap_payload["counts"]["conversations"] == 1
     assert "tasks" not in bootstrap_payload
     assert "conversation_messages" not in bootstrap_payload
@@ -843,6 +844,10 @@ def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
     assert "tasks" not in payload["data"]["state"]
     assert "conversation_messages" not in payload["data"]["state"]
     assert set(payload["resource_tokens"]) == {"agents"}
+
+    missing_view = client.get("/api/addons/team-addon/views/overview")
+    assert missing_view.status_code == 404
+    assert missing_view.json() == {"error": "view not found"}
 
 
 def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:

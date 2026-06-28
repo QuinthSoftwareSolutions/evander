@@ -82,7 +82,6 @@ DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
 TEAM_VIEW_IDS = (
     "workspace",
-    "overview",
     "operations",
     "delivery",
     "projects",
@@ -120,18 +119,6 @@ TEAM_STATE_COLLECTION_KEYS = (
     "conversation_messages",
 )
 TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
-    "overview": {
-        "teams",
-        "governance_groups",
-        "projects",
-        "agents",
-        "cases",
-        "tasks",
-        "deliverables",
-        "review_requests",
-        "review_profiles",
-        "ephemeral_assignments",
-    },
     "operations": {
         "teams",
         "projects",

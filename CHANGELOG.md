@@ -13,6 +13,9 @@
 - Reworked the Team Add-on Workspace tab into a compact dashboard for team status,
   attention items, blockers, delivery counts, and drill-down links to focused tabs.
 
+- Removed the Team Add-on Overview tab and its dedicated view endpoint so operators use the
+  workspace and focused detail tabs instead.
+
 - Kept the Admin Web built-in chat anchored when SSE snapshots or operator scroll changes race an
   older-history fetch.
 
