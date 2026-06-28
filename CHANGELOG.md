@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Reduced stale Team Add-on Operations blockers by showing failed action attention only for each
+  agent's current failed dispatch.
+
 - Added `effect:team:create-task` so workflows can directly create or update
   operator-authored Team Add-on tasks for a project owner.
 

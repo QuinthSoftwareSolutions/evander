@@ -3538,6 +3538,31 @@ def _latest_undelivered_action_feedback_for_agent(
     ]
 
 
+def current_failed_action_records(state: TeamState) -> list[AgentActionRecord]:
+    latest_records_by_agent: dict[str, AgentActionRecord] = {}
+    for record in state.action_records.values():
+        current = latest_records_by_agent.get(record.agent_id)
+        if current is None or (record.created_at, record.id) > (
+            current.created_at,
+            current.id,
+        ):
+            latest_records_by_agent[record.agent_id] = record
+
+    rows: list[AgentActionRecord] = []
+    for latest_record in latest_records_by_agent.values():
+        if latest_record.success or latest_record.dismissed_at is not None:
+            continue
+        rows.extend(
+            record
+            for record in state.action_records.values()
+            if record.agent_id == latest_record.agent_id
+            and record.dispatch_id == latest_record.dispatch_id
+            and not record.success
+            and record.dismissed_at is None
+        )
+    return sorted(rows, key=lambda entry: (entry.created_at, entry.id))
+
+
 def _runtime_low_priority_batch_due(runtime: AgentRuntime) -> bool:
     if runtime.low_priority_batch_started_at is None:
         return False
@@ -3788,22 +3813,7 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
 
 def _failed_action_rows(state: TeamState) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    successful_action_keys = [
-        (record.agent_id, record.created_at)
-        for record in state.action_records.values()
-        if record.success
-    ]
-    for record in sorted(state.action_records.values(), key=lambda entry: (entry.created_at, entry.id)):
-        if record.success:
-            continue
-        if record.dismissed_at is not None:
-            continue
-        if any(
-            agent_id == record.agent_id
-            and created_at > record.created_at
-            for agent_id, created_at in successful_action_keys
-        ):
-            continue
+    for record in current_failed_action_records(state):
         rows.append(
             _runtime_row(
                 id=record.id,

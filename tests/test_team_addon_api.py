@@ -867,9 +867,20 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
             action={"type": "dismissed"},
             success=False,
             error="dismissed failure",
-            created_at=now,
+            created_at=state.action_records["action-1"].created_at
+            - timedelta(seconds=2),
             dismissed_at=now,
             dismissed_by="operator",
+        )
+        state.action_records["older-failed-action"] = AgentActionRecord(
+            id="older-failed-action",
+            agent_id="backend",
+            dispatch_id="dispatch-backend-older",
+            action={"type": "old-build"},
+            success=False,
+            error="older failed action",
+            created_at=state.action_records["action-1"].created_at
+            - timedelta(seconds=1),
         )
         state.action_records["successful-action"] = AgentActionRecord(
             id="successful-action",

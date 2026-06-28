@@ -63,6 +63,7 @@ from .models import (
     TeamState,
     agent_project_assignment_payloads,
     agent_project_ids,
+    current_failed_action_records,
     project_assignments_for_agent,
     effective_role_permissions,
     team_state_payload,
@@ -2468,20 +2469,8 @@ def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
             if item.state != TeamInboxItemState.HANDLED
         }
     if view in {"operations", "workspace"}:
-        successful_action_keys = [
-            (record.agent_id, record.created_at)
-            for record in state.action_records.values()
-            if record.success
-        ]
         ids_by_collection["action_records"] = {
-            record_id
-            for record_id, record in state.action_records.items()
-            if not record.success
-            and record.dismissed_at is None
-            and not any(
-                agent_id == record.agent_id and created_at > record.created_at
-                for agent_id, created_at in successful_action_keys
-            )
+            record.id for record in current_failed_action_records(state)
         }
     return ids_by_collection
 
