@@ -717,7 +717,7 @@
         },
         {
           "title": "Review A Prepared Bokio Action",
-          "description": "Explain how to compare the prepared action, supporting documents, account mapping, human approval request, and final action status."
+          "description": "Explain how to compare the prepared action, supporting documents, and account mapping, approve or reject it in Bokio Prepared actions, and satisfy any separate core tool approval only if one exists."
         },
         {
           "title": "Check Skatteverket Connection Status",
@@ -896,7 +896,7 @@
         {
           "number": "18.1",
           "title": "What Workers Do",
-          "description": "Describe workers for workflow triggers/effects, ADO feedback, proxy issue sync, Discord ingest/wake, scheduled wake, Teams ingest, Teams meeting ingest, relays, and Admin Web."
+          "description": "Describe Workers-managed background workers for workflow triggers/effects, ADO feedback, proxy issue sync, Discord ingest/wake, scheduled wake, Teams ingest, and Teams meeting ingest. Distinguish core systemd services such as gateway, relays, and Admin Web from the Workers UI."
         },
         {
           "number": "18.2",

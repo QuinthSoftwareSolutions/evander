@@ -1,8 +1,12 @@
 # 18. Workers And Background Services
 
-This section helps operators understand and manage host background services in one place.
+This section helps operators understand and manage background workers in one place.
 Workers are the always-on processes that keep automation moving when no one is actively
 watching the screen.
+
+Core control-plane services such as the MCP gateway, relays, and Admin Web are managed as host
+systemd services. Check those with the Operations runbook, `systemctl`, and service logs rather
+than expecting them to appear in the Workers page.
 
 For live operator status in one screen, use section 3. For event-level workflow failures,
 go to section 11. For recurring failure patterns and operational cost signals, use section
@@ -13,16 +17,10 @@ service setting changes and revision handling, use section 16.
 
 Workers are grouped by role:
 
-1. Core control-plane access services
-   - `agent-sandbox-gateway`
-   - `agent-sandbox-openai-relay`
-   - `agent-sandbox-nuget-relay`
-   - `agent-sandbox-http-target-relay`
-   - `agent-sandbox-admin-web`
-2. Workflow automation processing
+1. Workflow automation processing
    - `agent-sandbox-trigger-orchestrator`
    - `agent-sandbox-effect-orchestrator`
-3. Inbound and resume automation
+2. Inbound and resume automation
    - `agent-sandbox-ado-worker`
    - `agent-sandbox-proxy-issue-sync`
    - `agent-sandbox-discord-ingest`
@@ -34,6 +32,11 @@ Workers are grouped by role:
 In many deployments, the exact set matches what is installed and enabled on the host.
 If a worker is not active in this environment, it may still appear with a stopped state or not
 show up at all.
+
+Services such as `agent-sandbox-gateway.service`, `agent-sandbox-openai-relay.service`,
+`agent-sandbox-nuget-relay.service`, `agent-sandbox-http-target-relay.service`, and
+`agent-sandbox-admin-web.service` are not Workers-managed entries. Use host service checks for
+start, stop, and log review for those units.
 
 What to remember:
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-28 - Evander Manual Operational Corrections
+
+- Corrected Evander user manual guidance for Workers-managed services, Bokio
+  prepared-action approvals, and add-on loader configuration boundaries.
+
 ## 2026-06-28 - Team Duplicate Review Progress Accounting
 
 - Classified duplicate-only Team review request commands as non-progress in

@@ -3530,7 +3530,7 @@ Steps:
 5. Open **Prepared actions** and confirm recent actions list the expected `kind`.
 6. If status is not ready:
    1. Compare host config with section 16 expectations.
-2. Confirm the required Bokio company and integration-token settings are present in the host
+   2. Confirm the required Bokio company and integration-token settings are present in the host
       configuration.
    3. Restart the affected services only after configuration is corrected.
 
@@ -3546,7 +3546,9 @@ Use this when a prepared action is waiting, failing, or before execution.
 Prerequisites:
 
 1. Correct directory selected.
-2. If you need to create an approval, privileges unlocked as required by your policy.
+2. Access to **Bokio** > **Prepared actions**.
+3. If a separate core tool approval appears, access to **Approvals** and privileges unlocked as
+   required by your policy.
 
 Steps:
 
@@ -3558,15 +3560,17 @@ Steps:
    3. payload note
 4. Confirm supporting documents were uploaded to the intended scope.
 5. Check mapped accounts and tax category matches expected policy.
-6. If the action is `pending_approval`, open the matching approval in **Approvals**.
-7. If approved:
+6. If the action is `pending_approval`, approve or reject it in **Bokio** > **Prepared actions**.
+7. If your deployment also creates a core MCP/tool approval for the same operation, open
+   **Approvals** and satisfy that separate policy gate after the Bokio prepared action decision.
+8. If approved:
    1. confirm account mapping still matches current rules
    2. execute through the normal approved action path used in your workflow
-8. If status is `rejected` or `failed`, review the error/reason and request a corrected re-submission.
+9. If status is `rejected` or `failed`, review the error/reason and request a corrected re-submission.
 
 Expected result:
 
-1. Only approved actions proceed to execution.
+1. Only Bokio prepared actions approved in the add-on proceed to execution.
 2. Failed actions are either corrected and re-prepared or explicitly blocked by operator decision.
 
 ### How-to: Check Skatteverket Connection Status
@@ -3966,8 +3970,13 @@ Think of configuration as grouped into domains that each control a different ope
 8. VM controls relay and network defaults and the VM template selection catalog.
 9. PR template defines the standard markdown that can be prepended when automation writes pull requests.
 10. Model pricing controls local usage estimate rates and labels used in usage reporting.
-11. Add-on loader settings control whether optional Admin Web tabs and workflow provider blocks are exposed.
-12. Admin Web branding controls browser title, header text, and logo presentation.
+11. Admin Web branding controls browser title, header text, and logo presentation.
+
+Add-on loader settings are not edited in the selected directory's Configuration page. Optional tabs
+and add-on workflow provider blocks come from host `addon_loader` configuration and worker
+configuration loaded when Admin Web, the trigger orchestrator, and the effect orchestrator start or
+reload. If an add-on tab is missing, check host add-on configuration and restart or reload the
+affected services after correcting it.
 
 The system uses inherited values:
 
@@ -4423,9 +4432,13 @@ Expected result:
 
 ## 18. Workers And Background Services
 
-This section helps operators understand and manage host background services in one place.
+This section helps operators understand and manage background workers in one place.
 Workers are the always-on processes that keep automation moving when no one is actively
 watching the screen.
+
+Core control-plane services such as the MCP gateway, relays, and Admin Web are managed as host
+systemd services. Check those with the Operations runbook, `systemctl`, and service logs rather
+than expecting them to appear in the Workers page.
 
 For live operator status in one screen, use section 3. For event-level workflow failures,
 go to section 11. For recurring failure patterns and operational cost signals, use section
@@ -4436,16 +4449,10 @@ service setting changes and revision handling, use section 16.
 
 Workers are grouped by role:
 
-1. Core control-plane access services
-   - `agent-sandbox-gateway`
-   - `agent-sandbox-openai-relay`
-   - `agent-sandbox-nuget-relay`
-   - `agent-sandbox-http-target-relay`
-   - `agent-sandbox-admin-web`
-2. Workflow automation processing
+1. Workflow automation processing
    - `agent-sandbox-trigger-orchestrator`
    - `agent-sandbox-effect-orchestrator`
-3. Inbound and resume automation
+2. Inbound and resume automation
    - `agent-sandbox-ado-worker`
    - `agent-sandbox-proxy-issue-sync`
    - `agent-sandbox-discord-ingest`
@@ -4457,6 +4464,11 @@ Workers are grouped by role:
 In many deployments, the exact set matches what is installed and enabled on the host.
 If a worker is not active in this environment, it may still appear with a stopped state or not
 show up at all.
+
+Services such as `agent-sandbox-gateway.service`, `agent-sandbox-openai-relay.service`,
+`agent-sandbox-nuget-relay.service`, `agent-sandbox-http-target-relay.service`, and
+`agent-sandbox-admin-web.service` are not Workers-managed entries. Use host service checks for
+start, stop, and log review for those units.
 
 What to remember:
 

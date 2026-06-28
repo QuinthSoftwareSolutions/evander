@@ -152,7 +152,7 @@ Steps:
 5. Open **Prepared actions** and confirm recent actions list the expected `kind`.
 6. If status is not ready:
    1. Compare host config with section 16 expectations.
-2. Confirm the required Bokio company and integration-token settings are present in the host
+   2. Confirm the required Bokio company and integration-token settings are present in the host
       configuration.
    3. Restart the affected services only after configuration is corrected.
 
@@ -168,7 +168,9 @@ Use this when a prepared action is waiting, failing, or before execution.
 Prerequisites:
 
 1. Correct directory selected.
-2. If you need to create an approval, privileges unlocked as required by your policy.
+2. Access to **Bokio** > **Prepared actions**.
+3. If a separate core tool approval appears, access to **Approvals** and privileges unlocked as
+   required by your policy.
 
 Steps:
 
@@ -180,15 +182,17 @@ Steps:
    3. payload note
 4. Confirm supporting documents were uploaded to the intended scope.
 5. Check mapped accounts and tax category matches expected policy.
-6. If the action is `pending_approval`, open the matching approval in **Approvals**.
-7. If approved:
+6. If the action is `pending_approval`, approve or reject it in **Bokio** > **Prepared actions**.
+7. If your deployment also creates a core MCP/tool approval for the same operation, open
+   **Approvals** and satisfy that separate policy gate after the Bokio prepared action decision.
+8. If approved:
    1. confirm account mapping still matches current rules
    2. execute through the normal approved action path used in your workflow
-8. If status is `rejected` or `failed`, review the error/reason and request a corrected re-submission.
+9. If status is `rejected` or `failed`, review the error/reason and request a corrected re-submission.
 
 Expected result:
 
-1. Only approved actions proceed to execution.
+1. Only Bokio prepared actions approved in the add-on proceed to execution.
 2. Failed actions are either corrected and re-prepared or explicitly blocked by operator decision.
 
 ## How-to: Check Skatteverket Connection Status

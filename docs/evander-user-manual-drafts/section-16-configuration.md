@@ -20,8 +20,13 @@ Think of configuration as grouped into domains that each control a different ope
 8. VM controls relay and network defaults and the VM template selection catalog.
 9. PR template defines the standard markdown that can be prepended when automation writes pull requests.
 10. Model pricing controls local usage estimate rates and labels used in usage reporting.
-11. Add-on loader settings control whether optional Admin Web tabs and workflow provider blocks are exposed.
-12. Admin Web branding controls browser title, header text, and logo presentation.
+11. Admin Web branding controls browser title, header text, and logo presentation.
+
+Add-on loader settings are not edited in the selected directory's Configuration page. Optional tabs
+and add-on workflow provider blocks come from host `addon_loader` configuration and worker
+configuration loaded when Admin Web, the trigger orchestrator, and the effect orchestrator start or
+reload. If an add-on tab is missing, check host add-on configuration and restart or reload the
+affected services after correcting it.
 
 The system uses inherited values:
 
