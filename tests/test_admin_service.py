@@ -14,6 +14,7 @@ from types import MethodType, SimpleNamespace
 from typing import Any, Mapping
 
 import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import httpx
 import pytest
 from agent_sandbox.admin import privileged_helper
@@ -9046,7 +9047,7 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
         / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
         workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
@@ -9139,7 +9140,7 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
@@ -9270,7 +9271,7 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
@@ -9374,11 +9375,11 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "json",
@@ -9496,7 +9497,7 @@ def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "json-runtime"
     stores = {
         "runtime_dir": runtime_dir,
@@ -9536,11 +9537,11 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    workflow_admin = service.workflow_reports_admin
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
     stores = {
         "runtime_dir": runtime_dir,
         "orchestration_store_backend": "sqlite",

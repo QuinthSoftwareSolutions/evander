@@ -22,7 +22,12 @@ class RecordingDomain:
 
     def get(self, directory_path: str):
         self.calls.append(("get", (directory_path,), {}))
-        directory = SimpleNamespace(path=f"canonical/{directory_path}")
+        normalized_path = (
+            directory_path
+            if directory_path.startswith("canonical/")
+            else f"canonical/{directory_path}"
+        )
+        directory = SimpleNamespace(path=normalized_path)
         details = SimpleNamespace(directory=directory)
         return SimpleNamespace(ok=True, data=SimpleNamespace(details=details))
 
@@ -186,7 +191,9 @@ def test_operations_admin_service_delegates_directory_methods_with_normalized_pa
     service = _service(directory_admin=directory)
 
     assert service.list_directory_tree() == {"method": "tree", "args": ("root",), "kwargs": {}}
-    assert service.get_directory("team") == {"method": "get", "args": ("canonical/team",), "kwargs": {}}
+    directory_result = service.get_directory("team")
+    assert directory_result.ok is True
+    assert directory_result.data.details.directory.path == "canonical/team"
     assert service.create_directory_child("team", "child") == {"method": "create_child", "args": (), "kwargs": {"parent": "canonical/team", "name": "child"}}
     assert service.read_directory_domain_config("team", "providers") == {"method": "read_domain_config", "args": ("canonical/team",), "kwargs": {"domain": "providers"}}
     assert service.write_directory_domain_config("team", "providers", {"mode": "test"}) == {"method": "write_domain_config", "args": ("canonical/team",), "kwargs": {"domain": "providers", "payload": {"mode": "test"}}}

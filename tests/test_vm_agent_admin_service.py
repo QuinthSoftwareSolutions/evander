@@ -275,12 +275,19 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
         project_dir=admin.project_dir,
         local_issue_store=admin.local_issue_store,
         worker_admin=admin.worker_admin,
-        get_privileged_helper=lambda: admin._privileged_helper,
-        get_use_privileged_helper=lambda: admin.use_privileged_helper,
-        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
-            directory_path
+        privileged_helper=SimpleNamespace(
+            get_privileged_helper=lambda: admin._privileged_helper,
+            get_use_privileged_helper=lambda: admin.use_privileged_helper,
+            set_privileged_helper=lambda helper: setattr(admin, "_privileged_helper", helper),
         ),
-        read_worker_global_config=lambda worker_id: admin._read_worker_global_config(worker_id),
+        directory_path=SimpleNamespace(
+            normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
+                directory_path
+            )
+        ),
+        workflow_config=SimpleNamespace(
+            read_worker_global_config=lambda worker_id: admin._read_worker_global_config(worker_id)
+        ),
         resolve_agent_model_for_session=lambda session_or_id: (
             admin._resolve_agent_model_for_session(session_or_id)
         ),
