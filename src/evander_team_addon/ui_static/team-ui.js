@@ -1428,6 +1428,19 @@ function bindPlanningFilters() {
 }
 
 function bindProjectFocus() {
+  document.addEventListener("toggle", (event) => {
+    const section = event.target;
+    if (!section?.matches?.("[data-project-record-section]")) {
+      return;
+    }
+    const key = projectRecordSectionKey(section.dataset.projectId, section.dataset.projectSection);
+    if (section.open) {
+      openProjectRecordSections.add(key);
+    } else {
+      openProjectRecordSections.delete(key);
+    }
+  }, true);
+
   document.addEventListener("click", (event) => {
     const createToggle = event.target?.closest?.("[data-project-create-toggle]");
     if (createToggle) {
@@ -7632,7 +7645,13 @@ function renderProjectRecordSection(project, section, title, records, renderPage
     visibleRecords.length > projectRecordPageSize ? `page ${page} of ${totalPages}` : "",
   ].filter(Boolean);
   return `
-    <details class="project-record-section" ${openProjectRecordSections.has(key) ? "open" : ""}>
+    <details
+      class="project-record-section"
+      data-project-record-section
+      data-project-id="${escapeAttr(project.id)}"
+      data-project-section="${escapeAttr(section)}"
+      ${openProjectRecordSections.has(key) ? "open" : ""}
+    >
       <summary class="project-record-section-summary">
         <span class="compact-record-main">
           <strong>${escapeHtml(title)}</strong>

@@ -10,6 +10,9 @@
   create forms, collapsed paged deliverable/release sections, and default-hidden
   rejected delivery records.
 
+- Preserved Team Add-on Projects deliverable/release collapsed-section state
+  across normal Projects tab re-renders.
+
 - Reworked the Team Add-on Workspace tab into a compact dashboard for team status,
   attention items, blockers, delivery counts, and drill-down links to focused tabs.
 

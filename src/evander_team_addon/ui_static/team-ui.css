@@ -4149,6 +4149,10 @@ label textarea {
     grid-template-columns: 1fr;
   }
 
+  button.projects-focus-row {
+    flex-basis: 100%;
+  }
+
   .forms-panel {
     position: static;
     max-height: none;

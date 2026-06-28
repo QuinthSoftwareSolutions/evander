@@ -90,7 +90,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
-  assert.match(markup, /data-review-profile-criteria-editor/);
+  assert.match(script, /data-review-profile-criteria-editor/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
   assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
@@ -2395,12 +2395,12 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   const panel = page.locator("#team-projects-page");
   assert.equal(await panel.locator(".task-list .task-item").count(), 0);
 
-  const deliverablesSection = panel.locator("details.project-record-section").filter({
-    hasText: "Deliverables",
-  }).first();
-  await deliverablesSection.evaluate((element) => {
-    element.open = true;
-  });
+  const projectTab = panel.locator('[data-project-focus-id="project"]');
+  const deliverablesSection = panel.locator('details.project-record-section[data-project-section="deliverables"]').first();
+  await deliverablesSection.locator("summary.project-record-section-summary").click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
+  await projectTab.click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
   assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 10);
   assert.equal(
     await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
@@ -2421,12 +2421,13 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
     "Rejected deliverable",
   );
 
-  const releasesSection = panel.locator("details.project-record-section").filter({
-    hasText: "Releases",
-  }).first();
-  await releasesSection.evaluate((element) => {
-    element.open = true;
-  });
+  await deliverablesSection.locator("summary.project-record-section-summary").click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), false);
+  await projectTab.click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), false);
+
+  const releasesSection = panel.locator('details.project-record-section[data-project-section="releases"]').first();
+  await releasesSection.locator("summary.project-record-section-summary").click();
   assert.equal(await releasesSection.locator(".release-list .record-item").count(), 10);
   assert.equal(
     await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
