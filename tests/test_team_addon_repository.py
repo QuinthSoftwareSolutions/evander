@@ -2615,6 +2615,64 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
     assert state.agent_runtimes["backend"].wake_leased_until is None
 
 
+def test_live_replied_chat_dispatch_lease_blocks_normal_inbox_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state, conversation, _created = repo.create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = repo.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Can you summarize the blocker?",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    state, message = repo.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id="team-chat:live",
+        lease_seconds=3600,
+    )
+
+    state, result = repo.reply_to_chat_command(
+        session_id="session-backend",
+        conversation_id=conversation.id,
+        message_id=message.id,
+        body="The dependency task is still open.",
+        request_id="request-chat-reply-live",
+    )
+
+    def _pin_live_chat_lease(state):
+        state.agent_runtimes["backend"].wake_leased_until = now + timedelta(minutes=10)
+        state.inbox["normal-note"] = AgentInboxItem(
+            id="normal-note",
+            recipient_agent_id="backend",
+            sender_agent_id="worker",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=False,
+            priority=TeamInboxPriority.NORMAL,
+            state=TeamInboxItemState.PENDING,
+            created_at=now + timedelta(minutes=1),
+            updated_at=now + timedelta(minutes=1),
+        )
+        return state
+
+    repo.update(_pin_live_chat_lease)
+    state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(minutes=2),
+    )
+
+    assert result["success"] is True
+    assert state.conversation_messages[message.id].status == "replied"
+    assert leases == []
+    assert state.agent_runtimes["backend"].active_dispatch_id == "team-chat:live"
+    assert state.agent_runtimes["backend"].wake_reason == "team_chat"
+
+
 def test_completed_chat_dispatch_lease_does_not_block_normal_inbox_wake(
     tmp_path: Path,
 ) -> None:
@@ -2640,6 +2698,9 @@ def test_completed_chat_dispatch_lease_does_not_block_normal_inbox_wake(
         state.conversation_messages[message.id].status = "replied"
         state.conversation_messages[message.id].updated_at = datetime(
             2026, 1, 1, 0, 1, tzinfo=UTC
+        )
+        state.agent_runtimes["backend"].wake_leased_until = datetime(
+            2026, 1, 1, 0, 2, tzinfo=UTC
         )
         state.inbox["normal-note"] = AgentInboxItem(
             id="normal-note",

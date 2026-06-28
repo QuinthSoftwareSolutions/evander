@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-28 - Team Chat Live Lease Guard
+
+- Kept active Team Chat dispatch leases live after `team_reply_to_chat` marks an
+  operator message replied, preventing scheduled or inbox wakes from minting an
+  overlapping dispatch before finalization releases the original lease.
+
 ## 2026-06-28 - Evander Manual Operational Corrections
 
 - Corrected Evander user manual guidance for Workers-managed services, Bokio

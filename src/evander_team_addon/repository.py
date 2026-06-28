@@ -14594,6 +14594,11 @@ def _clear_completed_chat_dispatch_lease(
     dispatch_id = _optional_text(runtime.active_dispatch_id)
     if dispatch_id is None or not dispatch_id.startswith("team-chat:"):
         return False
+    if (
+        runtime.wake_leased_until is not None
+        and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
+    ):
+        return False
     message = next(
         (
             item
