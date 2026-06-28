@@ -1,0 +1,1155 @@
+{
+  "title": "Evander User Manual Outline",
+  "version": "0.1",
+  "intended_audience": [
+    "operators who supervise Evander day to day",
+    "team leads who assign or review agent work",
+    "administrators who manage users, directories, policies, and integrations",
+    "support staff who investigate failed automations or approval requests"
+  ],
+  "tone_guidance": {
+    "style": "Plain-language, task-oriented, and operator-focused.",
+    "technical_depth": "Avoid internal implementation detail unless it helps the user make a safe operating decision.",
+    "how_to_format": "Each how-to should state when to use it, prerequisites, numbered steps, expected result, and common recovery paths."
+  },
+  "sections": [
+    {
+      "number": "1",
+      "title": "Welcome To Evander",
+      "description": "Introduce Evander as the operator console and automation control plane for supervised agent work. Explain what users can do with it, what it is not meant to replace, and how the system keeps human approval, auditability, and scoped access central.",
+      "subsections": [
+        {
+          "number": "1.1",
+          "title": "What Evander Helps You Do",
+          "description": "Describe the main user outcomes: monitor active work, create agent sessions, review approvals, manage workflows, coordinate teams, inspect audit trails, and recover from common failures."
+        },
+        {
+          "number": "1.2",
+          "title": "Important Concepts In Plain Language",
+          "description": "Define core terms such as directory, agent, session, VM, container worker, workflow, approval, tool call, artifact, add-on, and Team without exposing low-level storage or service details."
+        },
+        {
+          "number": "1.3",
+          "title": "Operator Responsibilities",
+          "description": "Explain what humans remain responsible for: approving sensitive actions, checking outputs before relying on them, maintaining user access, reviewing incidents, and keeping external systems or credentials current."
+        },
+        {
+          "number": "1.4",
+          "title": "Safety And Trust Model",
+          "description": "Summarize in user terms that Evander keeps secrets on the host, restricts agent access, records tool activity, and uses approval gates for higher-risk actions."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Decide Whether Evander Is The Right Surface For A Task",
+          "description": "Walk the user through choosing between Dashboard, Agents, Issues, Workflow, Teams, and external systems based on the desired outcome."
+        }
+      ]
+    },
+    {
+      "number": "2",
+      "title": "Getting Started",
+      "description": "Give first-time users a practical path from opening Evander to understanding the current system state. Keep setup wording high level and refer administrators to operational setup documents only when needed.",
+      "subsections": [
+        {
+          "number": "2.1",
+          "title": "Open Evander",
+          "description": "Show the usual local URL, explain sign-in behavior, and describe what a user should see after a successful login."
+        },
+        {
+          "number": "2.2",
+          "title": "Sign In And Sign Out",
+          "description": "Explain local-password and Microsoft sign-in modes from the user's point of view, including what to do when a login is rejected or a session expires."
+        },
+        {
+          "number": "2.3",
+          "title": "Understand The Main Screen",
+          "description": "Describe the header, navigation, selected directory, privilege lock, theme toggle, user menu, deployment banner, assistant launcher, and page content area."
+        },
+        {
+          "number": "2.4",
+          "title": "Choose The Right Directory",
+          "description": "Explain directories as scopes for teams, environments, tenants, or products. Describe how changing directory affects visible agents, sessions, policies, workflows, and approvals."
+        },
+        {
+          "number": "2.5",
+          "title": "Unlock Privileged Operations",
+          "description": "Explain the lock as a deliberate safety step before changes such as starting agents, deleting records, approving actions, saving configuration, or editing workflows."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Open Evander For The First Time",
+          "description": "Provide steps for navigating to the Admin Web URL, signing in, confirming the active user, and checking the Dashboard for live status."
+        },
+        {
+          "title": "Switch To A Team Or Project Directory",
+          "description": "Show how to open the directory chooser, select the desired scope, verify the current scope in the header, and avoid acting in the wrong directory."
+        },
+        {
+          "title": "Safely Unlock And Relock Changes",
+          "description": "Explain when to unlock, how to confirm mutation buttons became available, and why to lock again after completing changes."
+        }
+      ]
+    },
+    {
+      "number": "3",
+      "title": "Dashboard And Daily Monitoring",
+      "description": "Teach operators how to use the Dashboard as the first stop for answering what needs attention now.",
+      "subsections": [
+        {
+          "number": "3.1",
+          "title": "Dashboard Panels",
+          "description": "Describe the purpose of health, workers, agents, workflow activity, approvals, sessions, audit, reports, version, news, and capacity panels."
+        },
+        {
+          "number": "3.2",
+          "title": "Refresh And Staleness",
+          "description": "Explain when the Dashboard uses cached summaries, when to click Refresh, and when to open detail pages for a live read."
+        },
+        {
+          "number": "3.3",
+          "title": "Attention Signals",
+          "description": "Explain missing data, unavailable panels, failed workflow runs, pending approvals, unhealthy workers, high queue age, and prompt pressure in operator language."
+        },
+        {
+          "number": "3.4",
+          "title": "Release And Product Information",
+          "description": "Explain where to find version, changelog, news entries, and deployed build identity so operators know what is currently running."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Run A Morning Operations Check",
+          "description": "List a daily sequence: open Dashboard, refresh, scan worker state, approvals, sessions, workflow activity, capacity, and any deployment banner."
+        },
+        {
+          "title": "Follow A Dashboard Warning To The Detail Page",
+          "description": "Show how to use quick links from Dashboard panels to Workflow, Approvals, Sessions, Tool Calls, Configuration, Workers, or Reports."
+        },
+        {
+          "title": "Download The Changelog",
+          "description": "Describe how to retrieve release notes from the Dashboard and use them during operator handover or incident review."
+        }
+      ]
+    },
+    {
+      "number": "4",
+      "title": "Working With Agents",
+      "description": "Explain how operators create, inspect, steer, and retire agent work without requiring knowledge of the underlying execution backend.",
+      "subsections": [
+        {
+          "number": "4.1",
+          "title": "Agent List And Details",
+          "description": "Explain the agent list, selected agent details, labels, logs, policy, metadata, session links, VM or worker context, and current status."
+        },
+        {
+          "number": "4.2",
+          "title": "Create An Agent",
+          "description": "Describe the create flow: directory, session ID, model, target type, allowed tools, communication allowlists, bootstrap choices, and optional skills."
+        },
+        {
+          "number": "4.3",
+          "title": "Prompt Or Resume An Agent",
+          "description": "Explain direct prompts, resume thread IDs, expected responses, and how to find follow-up logs or tool calls."
+        },
+        {
+          "number": "4.4",
+          "title": "Operator Steering",
+          "description": "Explain how to interrupt or steer active container work and how legacy notes differ from direct interruption, without exposing backend internals."
+        },
+        {
+          "number": "4.5",
+          "title": "Lifecycle Actions",
+          "description": "Describe start, stop, shutdown, destroy, revoke, and cleanup actions, including confirmation habits before destructive changes."
+        },
+        {
+          "number": "4.6",
+          "title": "Skills For Agents",
+          "description": "Explain managed skills as reusable instructions that can be selected when creating an agent or installed later."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Create A Basic Agent Session",
+          "description": "Step through opening Agents, selecting a directory, unlocking, filling required fields, choosing a model/provider, selecting allowed tools, and confirming the created session."
+        },
+        {
+          "title": "Send A Follow-Up Prompt To An Existing Agent",
+          "description": "Show how to select the agent, open the prompt action, write a clear instruction, optionally reuse the latest thread, and inspect the result."
+        },
+        {
+          "title": "Install A Managed Skill Into A Session",
+          "description": "Explain how to pick a skill from the Skills library through the Agents tab and verify that the install action completed."
+        },
+        {
+          "title": "Steer An Agent That Is Going Off Track",
+          "description": "Give a practical flow for reviewing the current log, sending a concise steering message, and checking whether the next output reflects the change."
+        },
+        {
+          "title": "Retire Or Destroy An Agent Safely",
+          "description": "Explain how to confirm the agent, session, directory, work status, artifacts, and audit needs before stopping, revoking, or destroying it."
+        }
+      ]
+    },
+    {
+      "number": "5",
+      "title": "Sessions, Access, And Policy",
+      "description": "Explain sessions as the access envelope for agents. Focus on how operators adjust model choice, expiry, tool access, approvals, scripts, communication, and wake schedules.",
+      "subsections": [
+        {
+          "number": "5.1",
+          "title": "Find A Session",
+          "description": "Describe search, active versus expired lists, and how to interpret VM, issue, directory, model, creation, and expiry fields."
+        },
+        {
+          "number": "5.2",
+          "title": "Session Expiry And Revocation",
+          "description": "Explain when to extend, revoke, or delete a session, and how those actions affect future guest access."
+        },
+        {
+          "number": "5.3",
+          "title": "Allowed Tools",
+          "description": "Explain how the allowed tool list controls what the session can ask Evander to do."
+        },
+        {
+          "number": "5.4",
+          "title": "Approval Requirements",
+          "description": "Explain per-session approval requirements, approval time-to-live, use counts, and strict payload matching in operator terms."
+        },
+        {
+          "number": "5.5",
+          "title": "Allowed Scripts And Communication",
+          "description": "Describe how to limit scripts, messaging targets, file receive/send permissions, file size, MIME type, extension, and metadata."
+        },
+        {
+          "number": "5.6",
+          "title": "Scheduled Wakes",
+          "description": "Explain one-time and recurring wake schedules, wake prompts, ledger entries, and retrying failed or late wakes."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Require Human Approval For A Tool",
+          "description": "Show how to select the session, enable the tool if needed, require approval, adjust approval settings, save, and test that requests appear in Approvals."
+        },
+        {
+          "title": "Extend A Session Before It Expires",
+          "description": "Explain how to locate the session, check current expiry, use the extend action, and confirm the new expiry."
+        },
+        {
+          "title": "Revoke A Session After Work Is Finished",
+          "description": "Provide steps for checking artifacts and tool calls first, revoking access, and confirming no future guest access remains."
+        },
+        {
+          "title": "Schedule A Recurring Agent Wake",
+          "description": "Explain how to create a wake schedule, choose the prompt, enable it, verify ledger entries, and retry failures."
+        },
+        {
+          "title": "Allow A Session To Receive Or Send Files",
+          "description": "Describe how to set allowed targets, size limits, MIME types, extensions, approval expectations, and audit checks."
+        }
+      ]
+    },
+    {
+      "number": "6",
+      "title": "Approvals And Human Decisions",
+      "description": "Teach users how to evaluate and decide requests that require human approval.",
+      "subsections": [
+        {
+          "number": "6.1",
+          "title": "When Approval Is Required",
+          "description": "Explain directory policy, session policy, and action sensitivity as reasons a request may wait for a human."
+        },
+        {
+          "number": "6.2",
+          "title": "Approval Queue",
+          "description": "Describe filtering by status, session, tool, age, directory, and how to read queue health."
+        },
+        {
+          "number": "6.3",
+          "title": "Reviewing A Request",
+          "description": "Explain request summary, intended effect, payload digest, redacted payload, diagnostics, decision history, and matching audit context."
+        },
+        {
+          "number": "6.4",
+          "title": "Approve Or Deny",
+          "description": "Describe entering approver identity and reason, choosing approve or deny, and confirming the decision."
+        },
+        {
+          "number": "6.5",
+          "title": "Approval Diagnostics",
+          "description": "Explain stale, expired, denied, missing, and payload-mismatched approvals using plain examples."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Review And Decide A Pending Approval",
+          "description": "Step through filtering to pending requests, selecting one, comparing summary and audit evidence, unlocking, entering a reason, and approving or denying."
+        },
+        {
+          "title": "Investigate Why An Approved Action Still Failed",
+          "description": "Show how to compare the approval request, approval payload diagnostic, and later Tool Calls entry for mismatch, expiry, or policy denial."
+        },
+        {
+          "title": "Set Up Approval Notifications",
+          "description": "Explain how to choose notify-capable communication targets and verify that approval requests reach the intended operators."
+        }
+      ]
+    },
+    {
+      "number": "7",
+      "title": "Audit Trail And Tool Calls",
+      "description": "Explain Tool Calls as the evidence trail for what agents, workflows, and operators asked Evander to do.",
+      "subsections": [
+        {
+          "number": "7.1",
+          "title": "Tool Call Search",
+          "description": "Describe filters for text, session, tool, status, directory, time range, and limit."
+        },
+        {
+          "number": "7.2",
+          "title": "Reading A Tool Call",
+          "description": "Explain timestamp, status, duration, actor, directory, tool name, request ID, correlation ID, approval ID, workflow run, redacted arguments, redacted result, and metadata."
+        },
+        {
+          "number": "7.3",
+          "title": "Following Related Records",
+          "description": "Explain relation buttons to Sessions, Approvals, Workflow, Agents, VMs, Reports, Configuration, Users, and Workers."
+        },
+        {
+          "number": "7.4",
+          "title": "Incident Review",
+          "description": "Describe how Tool Calls helps reconstruct events without exposing secrets or relying on memory."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Find What An Agent Did",
+          "description": "Show how to filter Tool Calls by session or agent-related fields, inspect each action, and follow links to approvals or workflow runs."
+        },
+        {
+          "title": "Confirm Whether A Sensitive Action Ran",
+          "description": "Explain how to search by tool name and status, verify success or denial, and record the relevant IDs for follow-up."
+        },
+        {
+          "title": "Build A Timeline For An Incident",
+          "description": "Show how to combine Tool Calls, Workflow run details, Approval history, and Agent logs into a chronological account."
+        }
+      ]
+    },
+    {
+      "number": "8",
+      "title": "Issues And Work Intake",
+      "description": "Explain how operators create local work records, import issue files, and start execution from an issue.",
+      "subsections": [
+        {
+          "number": "8.1",
+          "title": "Issue List",
+          "description": "Describe active/all filters, issue state, title, source, repo source, directory, YAML path, body, and metadata."
+        },
+        {
+          "number": "8.2",
+          "title": "Create Or Import An Issue",
+          "description": "Explain manual entry versus importing an existing issue file."
+        },
+        {
+          "number": "8.3",
+          "title": "Start Work From An Issue",
+          "description": "Describe creating a VM or agent context from an issue and selecting bootstrap options."
+        },
+        {
+          "number": "8.4",
+          "title": "Track Issue Follow-Up",
+          "description": "Explain where to watch VMs, Agents, Sessions, Tool Calls, Artifacts, and Reports after work starts."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Create A Local Issue And Start Work Immediately",
+          "description": "Step through directory selection, new issue creation, repo source, body, bootstrap options, save, and confirmation in Agents or VMs."
+        },
+        {
+          "title": "Start A VM From An Existing Issue",
+          "description": "Show how to select an issue, unlock, start the VM action, choose bootstraps, and inspect the created target."
+        },
+        {
+          "title": "Edit Or Delete A Local Issue",
+          "description": "Explain when editing or deletion is available, what to check first, and how to avoid removing active work context."
+        }
+      ]
+    },
+    {
+      "number": "9",
+      "title": "Execution Targets",
+      "description": "Explain the two user-facing execution target types: virtual machines and container workers. Focus on what operators see and what decisions they make.",
+      "subsections": [
+        {
+          "number": "9.1",
+          "title": "Choosing An Execution Target",
+          "description": "Explain VM-backed and container-backed work in plain terms, including when each normally appears in the UI."
+        },
+        {
+          "number": "9.2",
+          "title": "Virtual Machines",
+          "description": "Describe VM status, power state, IP address, attached session, provider, timestamps, logs, and lifecycle controls."
+        },
+        {
+          "number": "9.3",
+          "title": "Container Workers",
+          "description": "Describe worker-backed sessions, executions, thread logs, cleanup states, and what operators can inspect from Agents and Sessions."
+        },
+        {
+          "number": "9.4",
+          "title": "Logs And Output",
+          "description": "Explain where to read recent output and how to distinguish agent reasoning/output, execution logs, workflow results, and published artifacts."
+        },
+        {
+          "number": "9.5",
+          "title": "Cleanup And Recovery",
+          "description": "Explain stopped, failed, abandoned, cleanup failed, and cleaned up states, plus when manual cleanup or retry is appropriate."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Inspect A VM Before Taking Action",
+          "description": "Show how to open VMs, select the machine, read status and session links, inspect logs, and decide whether to start, shutdown, or destroy."
+        },
+        {
+          "title": "Create A Standalone VM",
+          "description": "Explain how to use New VM, set name and optional session/model, choose bootstraps, and verify the created VM."
+        },
+        {
+          "title": "Review A Container Worker Execution",
+          "description": "Show how to open the selected agent, switch between execution and thread views when available, and identify completion or failure details."
+        },
+        {
+          "title": "Handle A Cleanup Failure",
+          "description": "Describe checking the session state, related worker observations, logs, and deciding whether to retry cleanup or preserve evidence."
+        }
+      ]
+    },
+    {
+      "number": "10",
+      "title": "Artifacts And Files",
+      "description": "Explain how Evander stores, resolves, downloads, uploads, and reuses published work products.",
+      "subsections": [
+        {
+          "number": "10.1",
+          "title": "What Artifacts Are",
+          "description": "Define artifacts as durable archives or uploaded files produced by agents or workflows, separate from temporary working files."
+        },
+        {
+          "number": "10.2",
+          "title": "Artifact Keys",
+          "description": "Explain keys as durable identifiers that can be shared through workflow runs, Team deliverables, and audit records."
+        },
+        {
+          "number": "10.3",
+          "title": "Resolving And Downloading",
+          "description": "Describe filtering by key or time range, selecting archives, checking metadata, and downloading."
+        },
+        {
+          "number": "10.4",
+          "title": "Manual Uploads",
+          "description": "Explain when an operator may upload a file into the artifact store and how to choose a new key."
+        },
+        {
+          "number": "10.5",
+          "title": "Artifact Safety",
+          "description": "Explain why operators should verify source session, byte count, hash, and expected contents before relying on an artifact."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Download A Published Artifact",
+          "description": "Step through opening Artifacts, resolving a known key or filtering, selecting the archive, checking metadata, and downloading it."
+        },
+        {
+          "title": "Upload A File For Later Workflow Use",
+          "description": "Explain selecting a local file, entering a unique artifact key, uploading, and verifying that the archive appears."
+        },
+        {
+          "title": "Trace An Artifact Back To Work",
+          "description": "Show how to use artifact metadata and relation links from Workflow, Team deliverables, or Tool Calls to find the producing session."
+        }
+      ]
+    },
+    {
+      "number": "11",
+      "title": "Workflows",
+      "description": "Teach operators how to inspect, edit, save, and troubleshoot workflow graphs without assuming they are engineers.",
+      "subsections": [
+        {
+          "number": "11.1",
+          "title": "Workflow Basics",
+          "description": "Explain triggers, gates, queries, effects, edges, graph names, and directories using plain examples."
+        },
+        {
+          "number": "11.2",
+          "title": "The Workflow Editor",
+          "description": "Describe graph selection, canvas, create panel, node inspector, diagnostics, output bindings, and save behavior."
+        },
+        {
+          "number": "11.3",
+          "title": "Safe Editing",
+          "description": "Explain unlocking, staged browser changes, dirty nodes, reset changes, save conflicts, stale workflow revisions, and coordination with other operators."
+        },
+        {
+          "number": "11.4",
+          "title": "Workflow Runs",
+          "description": "Describe current runs, latest runs, inspect mode, run graph, node status, errors, inputs, outputs, and binding trace."
+        },
+        {
+          "number": "11.5",
+          "title": "Generated Draft Workflows",
+          "description": "Explain the experimental natural-language draft generator, preview behavior, accepting a draft, reviewing fields, and saving only after validation."
+        },
+        {
+          "number": "11.6",
+          "title": "Workflow Tutorials",
+          "description": "Describe the built-in first-steps tutorial and when to restart it for training."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Inspect A Failed Workflow Run",
+          "description": "Show how to open Workflow, search current or latest runs, enter inspect mode, select failed nodes, read errors and binding trace, and follow related Tool Calls."
+        },
+        {
+          "title": "Add A Simple Node To A Workflow",
+          "description": "Step through selecting the graph, unlocking, adding a node, connecting it, filling required fields, checking diagnostics, and saving."
+        },
+        {
+          "title": "Change A Trigger Without Breaking The Graph",
+          "description": "Explain selecting the trigger, disabling it if needed, editing fields, checking downstream routes, saving, and verifying current runs."
+        },
+        {
+          "title": "Recover From A Save Conflict",
+          "description": "Show how to stop, reload the newer workflow, compare the intended change, reapply only the needed fields, and save again."
+        },
+        {
+          "title": "Generate A Draft Workflow From A Description",
+          "description": "Explain how to open the generator, write a plain-language description, review the draft graph, accept it as unsaved changes, and inspect every node before saving."
+        }
+      ]
+    },
+    {
+      "number": "12",
+      "title": "Reports And Operational Insight",
+      "description": "Explain how Reports help operators understand workflow activity, repeated failures, PR integration readiness, and conformance health.",
+      "subsections": [
+        {
+          "number": "12.1",
+          "title": "Workflow Graph Activity",
+          "description": "Describe activity counts, run counts, node counts, latest activity, status breakdowns, and time presets."
+        },
+        {
+          "number": "12.2",
+          "title": "Workflow Failure Clusters",
+          "description": "Explain grouped failures, normalized signatures, active/recent/resolved labels, and why representative run details still matter."
+        },
+        {
+          "number": "12.3",
+          "title": "PR Integration Preflight",
+          "description": "Explain read-only merge simulation, clean/conflict/missing ref/stale target/repo error/provider error statuses, and when to run the report."
+        },
+        {
+          "number": "12.4",
+          "title": "Conformance Reports",
+          "description": "Explain trigger and effect conformance reports, missing coverage, remediation snippets, and when to regenerate."
+        },
+        {
+          "number": "12.5",
+          "title": "Usage And Cost Awareness",
+          "description": "Describe model usage summaries and cost estimates as operational signals, including partial coverage cautions."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Run A Workflow Activity Report",
+          "description": "Show how to choose a time range, run the report, select a graph, and use the result during status reviews."
+        },
+        {
+          "title": "Find Repeated Workflow Failures",
+          "description": "Explain running failure clusters, opening a representative run, and deciding whether the issue is isolated or systemic."
+        },
+        {
+          "title": "Check Whether PRs Are Safe To Combine",
+          "description": "Walk through PR integration preflight fields, reading status, and deciding when a human should investigate conflicts."
+        },
+        {
+          "title": "Regenerate A Conformance Snapshot",
+          "description": "Explain selecting trigger or effect conformance, running the report, and interpreting missing requirements."
+        }
+      ]
+    },
+    {
+      "number": "13",
+      "title": "Team Add-On",
+      "description": "Explain the optional Team Add-on as an operator surface for persistent agent teams, cases, tasks, deliverables, reviews, chat, roles, templates, and releases.",
+      "subsections": [
+        {
+          "number": "13.1",
+          "title": "Team Concepts",
+          "description": "Define teams, managers, project leads, agents, roles, projects, goals, tasks, cases, inbox items, deliverables, review requests, review profiles, release packages, and governance groups."
+        },
+        {
+          "number": "13.2",
+          "title": "Teams Tab Overview",
+          "description": "Describe setup forms, workspace panels, org chart, People view, Chat view, Roles view, Cases view, Timeline/Audit view, and Review & Delivery workspace."
+        },
+        {
+          "number": "13.3",
+          "title": "Set Up A Team",
+          "description": "Explain manual setup and setup from template, including auto-dev and accounting department templates, required inputs, preview, and optimistic save behavior."
+        },
+        {
+          "number": "13.4",
+          "title": "Manage People And Roles",
+          "description": "Explain registering agents, assigning managers and reporting lines, editing display names, uploading or generating avatars, managing roles, and checking operational details."
+        },
+        {
+          "number": "13.5",
+          "title": "Cases, Goals, And Tasks",
+          "description": "Describe creating cases, linking tasks to cases, setting priority and status, managing task dependencies and subtasks, and monitoring progress."
+        },
+        {
+          "number": "13.6",
+          "title": "Team Chat And Direct Calls",
+          "description": "Explain operator-to-agent chat, read-only inspection permissions, sending messages, voice calls from People, and what chat or call history means."
+        },
+        {
+          "number": "13.7",
+          "title": "Deliverables And Reviews",
+          "description": "Explain submit deliverable, request review, attach review profiles, decide accepted/rejected/blocked, review cascade, and artifact handoff."
+        },
+        {
+          "number": "13.8",
+          "title": "Git Promotion And Releases",
+          "description": "Explain the delivery ladder from agent output to review branch, feature branch, release branch, and canonical publication in operator terms."
+        },
+        {
+          "number": "13.9",
+          "title": "Timeline And Attention",
+          "description": "Explain Team timeline filters, attention-needed entries, missing timestamps, dismissed attention cards, and how to use the timeline for review."
+        },
+        {
+          "number": "13.10",
+          "title": "Wake Behavior And Stand-Down",
+          "description": "Explain why agents wake, why they may not wake, low-priority batching, cost guard, active leases, stand-down, and revocation of stand-down."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Create A Team From A Template",
+          "description": "Step through opening Teams, selecting Setup from template, choosing a template, filling role/session inputs, previewing generated records, and materializing the team."
+        },
+        {
+          "title": "Register Or Edit A Team Agent",
+          "description": "Explain adding an agent record, selecting role and manager, setting display name and session, adding an avatar, and checking the org chart."
+        },
+        {
+          "title": "Create A Case And Assign Work",
+          "description": "Show how to create a case, set source reference, priority and status, create or link tasks, assign owners, and verify the case appears in wake context."
+        },
+        {
+          "title": "Chat With A Team Agent",
+          "description": "Describe selecting the operator's conversation, sending a message, understanding read-only inspection mode, and checking whether the agent replied."
+        },
+        {
+          "title": "Start A Browser Call With A Team Agent",
+          "description": "Explain opening People, selecting an agent, starting a call, knowing what context is projected, and where call reconciliation appears."
+        },
+        {
+          "title": "Request And Decide A Review",
+          "description": "Show how to submit a deliverable for review, attach a profile, inspect imported artifacts, record findings, choose accepted/rejected/blocked, and confirm cascade effects."
+        },
+        {
+          "title": "Publish A Reviewed Delivery",
+          "description": "Explain checking accepted deliverables, requesting branch promotion or release, watching promotion state, and confirming canonical publication or blocked status."
+        },
+        {
+          "title": "Stand Down A Problematic Agent",
+          "description": "Provide steps for selecting the agent, entering a required reason, understanding subordinate impact, and revoking the stand-down when appropriate."
+        },
+        {
+          "title": "Investigate Why A Team Agent Did Not Wake",
+          "description": "Guide the operator through checking pending inbox, task dependencies, review requests, active leases, stand-down state, wake interval, low-priority batching, and cost guard."
+        }
+      ]
+    },
+    {
+      "number": "14",
+      "title": "Accounting And Tax Add-Ons",
+      "description": "Cover optional Bokio and Skatteverket add-ons from the operator perspective. Emphasize assisted bookkeeping and filing workflows, host-side credentials, drafts, approval boundaries, and human sign-off.",
+      "subsections": [
+        {
+          "number": "14.1",
+          "title": "Add-On Availability",
+          "description": "Explain that add-ons appear only when enabled and configured, and that each add-on keeps its own state and navigation."
+        },
+        {
+          "number": "14.2",
+          "title": "Bokio Assisted Bookkeeping",
+          "description": "Describe supported reads, prepared bookkeeping actions, uploads, supplier invoices, bank payment preparation, and the requirement for human BankID signing where applicable."
+        },
+        {
+          "number": "14.3",
+          "title": "Skatteverket Assisted Filing",
+          "description": "Describe connection status, catalog of APIs, local drafts, validation, approval requests, submission records, and external onboarding requirements."
+        },
+        {
+          "number": "14.4",
+          "title": "Approval Boundaries",
+          "description": "Explain that agents may prepare actions or drafts, but production submissions or creations require configured approvals and human review."
+        },
+        {
+          "number": "14.5",
+          "title": "Accounting Department Team Pattern",
+          "description": "Explain how the Team Add-on accounting department template coordinates Bokio and Skatteverket work without making Team state the accounting ledger."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Check Whether Bokio Is Ready",
+          "description": "Guide users to inspect the Bokio tab, connection status, available company data, and any missing configuration or permission errors."
+        },
+        {
+          "title": "Review A Prepared Bokio Action",
+          "description": "Explain how to compare the prepared action, supporting documents, account mapping, human approval request, and final action status."
+        },
+        {
+          "title": "Check Skatteverket Connection Status",
+          "description": "Show how to inspect the add-on tab, enabled APIs, adapter status, and onboarding or credential gaps."
+        },
+        {
+          "title": "Review And Submit An Approved Tax Draft",
+          "description": "Describe validating a draft, requesting approval, confirming the approved revision, submitting only the approved version, and recording the result."
+        }
+      ]
+    },
+    {
+      "number": "15",
+      "title": "Communication And Notifications",
+      "description": "Explain how Evander routes operator communication, inbound messages, approval notifications, file transfer, direct messages, and wakeups through configured targets.",
+      "subsections": [
+        {
+          "number": "15.1",
+          "title": "Communication Targets",
+          "description": "Define communication targets as named destinations or inboxes for Discord, Teams, email, or other provider-backed messaging."
+        },
+        {
+          "number": "15.2",
+          "title": "Read And Send Capabilities",
+          "description": "Explain the difference between targets that can receive inbound messages, send outbound messages, or both."
+        },
+        {
+          "number": "15.3",
+          "title": "Approval Notifications",
+          "description": "Explain how approval requests can notify selected targets and where to troubleshoot delivery failures."
+        },
+        {
+          "number": "15.4",
+          "title": "File Transfer",
+          "description": "Explain inbound attachments, outbound file sends, MIME and size limits, artifact storage, and approval requirements."
+        },
+        {
+          "number": "15.5",
+          "title": "Teams, Discord, And Email Workflows",
+          "description": "Describe message triggers and wake workers at a high level, focusing on what operators configure and observe."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Add Or Update A Communication Target",
+          "description": "Show how to open Configuration, edit Contacts or Communication targets, set capabilities, save, and verify the target appears where expected."
+        },
+        {
+          "title": "Send An Approval Notification To The Right People",
+          "description": "Explain selecting approval notification targets and testing that pending approvals produce visible notifications."
+        },
+        {
+          "title": "Review An Inbound Attachment",
+          "description": "Step through finding the message or artifact, checking file metadata, validating size and type, and following audit records."
+        },
+        {
+          "title": "Approve An Outbound File Send",
+          "description": "Explain how to inspect the file, target, reason, approval request, and Tool Calls record before approval."
+        },
+        {
+          "title": "Troubleshoot A Missing Teams Or Discord Wake",
+          "description": "Guide operators through checking target configuration, worker status, workflow triggers, Tool Calls, and recent logs."
+        }
+      ]
+    },
+    {
+      "number": "16",
+      "title": "Configuration",
+      "description": "Explain how to safely view and change directory-scoped configuration and runtime-global admin settings from Evander.",
+      "subsections": [
+        {
+          "number": "16.1",
+          "title": "Configuration Domains",
+          "description": "Explain domains such as policy, providers, email, wake, issue setup, ADO worker, VM, contacts, communication targets, approval notifications, model pricing, and add-on loader settings at a user level."
+        },
+        {
+          "number": "16.2",
+          "title": "Effective Values And Overrides",
+          "description": "Explain inherited parent defaults, explicit local overrides, effective config, validation messages, and raw JSON views."
+        },
+        {
+          "number": "16.3",
+          "title": "Safe Save Behavior",
+          "description": "Explain revision checks, stale save conflicts, reload behavior, and coordination between multiple operators."
+        },
+        {
+          "number": "16.4",
+          "title": "Teams Delegated Auth",
+          "description": "Explain checking Teams auth status, starting device-code sign-in, refreshing status, and signing out."
+        },
+        {
+          "number": "16.5",
+          "title": "Model Pricing And Usage",
+          "description": "Explain where model pricing comes from, why estimates may be partial, and how operators should treat cost data."
+        },
+        {
+          "number": "16.6",
+          "title": "Branding And Admin Web Settings",
+          "description": "Describe browser title, header title, logos, sign-in branding, and when service restart may be required."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Update Directory Configuration Safely",
+          "description": "Step through choosing directory, opening Configuration, reviewing effective and parent values, unlocking, editing only needed fields, saving, and handling conflicts."
+        },
+        {
+          "title": "Copy Effective Configuration For Support",
+          "description": "Explain using Effective config and Directory override JSON to collect evidence without exposing secret values."
+        },
+        {
+          "title": "Refresh Microsoft Teams Delegated Auth",
+          "description": "Show how to inspect auth status, start device-code sign-in, complete sign-in, refresh, and confirm the status changed."
+        },
+        {
+          "title": "Adjust Model Pricing Data",
+          "description": "Explain opening the pricing editor, checking loaded catalog status, editing rates carefully, saving, and re-running usage reports."
+        }
+      ]
+    },
+    {
+      "number": "17",
+      "title": "Users, Groups, And Permissions",
+      "description": "Explain how administrators manage Evander users, local passwords, permission groups, directory assignments, and workflow grants.",
+      "subsections": [
+        {
+          "number": "17.1",
+          "title": "User Records",
+          "description": "Describe login identifier, display name, local password, legacy role, contact, group assignments, direct workflow grants, and deletion."
+        },
+        {
+          "number": "17.2",
+          "title": "Groups",
+          "description": "Explain reusable groups, permissions, custom groups, inherited directory scopes, and who can manage groups."
+        },
+        {
+          "number": "17.3",
+          "title": "Workflow Grants",
+          "description": "Explain direct workflow read and write grants and that write implies read."
+        },
+        {
+          "number": "17.4",
+          "title": "Team Chat Visibility",
+          "description": "Explain ordinary chat visibility and the special read-all permission for read-only inspection of other operators' Team chats."
+        },
+        {
+          "number": "17.5",
+          "title": "Access Reviews",
+          "description": "Describe periodic review of users, stale accounts, group assignments, direct grants, and break-glass access."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Create A New User",
+          "description": "Step through opening Users & Groups, creating the user, setting display name/password when applicable, assigning groups and contact, saving, and verifying access."
+        },
+        {
+          "title": "Create A Permission Group",
+          "description": "Explain selecting Groups mode, entering group ID/name, choosing permissions, saving, and assigning the group to users."
+        },
+        {
+          "title": "Grant Workflow Access",
+          "description": "Show how to add direct workflow read or write grants to a user and confirm inherited group permissions do not conflict."
+        },
+        {
+          "title": "Remove A User Safely",
+          "description": "Explain checking active responsibilities, reassigning work, deleting the user, and confirming future authenticated requests are invalidated."
+        }
+      ]
+    },
+    {
+      "number": "18",
+      "title": "Workers And Background Services",
+      "description": "Explain host background workers in operator terms: what they do, how to inspect them, how to start or stop them, and how to save editable settings.",
+      "subsections": [
+        {
+          "number": "18.1",
+          "title": "What Workers Do",
+          "description": "Describe workers for workflow triggers/effects, ADO feedback, proxy issue sync, Discord ingest/wake, scheduled wake, Teams ingest, Teams meeting ingest, relays, and Admin Web."
+        },
+        {
+          "number": "18.2",
+          "title": "Worker Status",
+          "description": "Explain active state, sub-state, result, unit name, main PID, settings, and recent journal tail."
+        },
+        {
+          "number": "18.3",
+          "title": "Start And Stop",
+          "description": "Explain when it is appropriate to start or stop a worker and what other user activity may be affected."
+        },
+        {
+          "number": "18.4",
+          "title": "Worker Settings",
+          "description": "Explain editable worker-global settings, revision conflicts, save behavior, and reload."
+        },
+        {
+          "number": "18.5",
+          "title": "Service Installation And Health",
+          "description": "Summarize preflight, installed services, and broad health checks at a high level for administrators."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Start Or Stop A Worker",
+          "description": "Step through opening Workers, selecting the worker, reviewing status and log, unlocking, using start/stop, refreshing, and confirming the result."
+        },
+        {
+          "title": "Change A Worker Setting",
+          "description": "Explain editing the setting, saving, handling revision conflicts, and checking whether the worker must be restarted."
+        },
+        {
+          "title": "Check Whether Background Automation Is Running",
+          "description": "Guide operators through Dashboard worker panels, Workers detail view, Workflow current runs, and recent logs."
+        },
+        {
+          "title": "Run A Broad Health Check",
+          "description": "Describe using the status summary and Dashboard to check configuration load, runtime stores, endpoint reachability, and active sessions."
+        }
+      ]
+    },
+    {
+      "number": "19",
+      "title": "Assistant",
+      "description": "Explain the optional in-app assistant for operator support, including modes, limits, and safe use.",
+      "subsections": [
+        {
+          "number": "19.1",
+          "title": "Open The Assistant",
+          "description": "Describe where the launcher appears, disabled/loading/error states, and how to expand or minimize it."
+        },
+        {
+          "number": "19.2",
+          "title": "Assistant Modes",
+          "description": "Explain read-only versus full-access behavior and why users should check the mode badge before asking it to act."
+        },
+        {
+          "number": "19.3",
+          "title": "Chat Practices",
+          "description": "Explain concise prompts, multiline input, new chats, and how to verify any suggested action through the relevant Evander page."
+        },
+        {
+          "number": "19.4",
+          "title": "Assistant Troubleshooting",
+          "description": "Explain what to do when the launcher is hidden, disabled, or shows an error."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Ask The Assistant To Investigate A Problem",
+          "description": "Show how to provide the affected directory, session, workflow, or tool call ID and verify the answer against Evander detail pages."
+        },
+        {
+          "title": "Start A Fresh Assistant Thread",
+          "description": "Explain when to use New chat and how to keep unrelated investigations separate."
+        }
+      ]
+    },
+    {
+      "number": "20",
+      "title": "Common End-To-End Tasks",
+      "description": "Collect practical workflows that cross multiple Evander pages. These should be written as complete recipes with clear entry and exit criteria.",
+      "subsections": [
+        {
+          "number": "20.1",
+          "title": "Investigate A Failed Automation",
+          "description": "Combine Dashboard, Workflow, Tool Calls, Approvals, Sessions, Agents, VMs, and Reports into one investigation recipe."
+        },
+        {
+          "number": "20.2",
+          "title": "Create Work From A Local Issue",
+          "description": "Show the full path from issue creation to target startup and monitoring."
+        },
+        {
+          "number": "20.3",
+          "title": "Prepare Agent Output For Human Review",
+          "description": "Explain collecting artifacts, reviewing logs, checking tests or verification summary, and deciding whether to request review."
+        },
+        {
+          "number": "20.4",
+          "title": "Approve A Sensitive Action",
+          "description": "Combine session policy, approval queue, redacted payload review, tool audit, and final decision."
+        },
+        {
+          "number": "20.5",
+          "title": "Roll Out A Workflow Change",
+          "description": "Explain editing, validation, save, smoke check, monitoring current runs, and rollback or disable strategy."
+        },
+        {
+          "number": "20.6",
+          "title": "Handle An Operator Handover",
+          "description": "List what to capture: active agents, pending approvals, failed workflow runs, active Team work, worker warnings, recent changes, and open incidents."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Investigate A Failed Automation End To End",
+          "description": "Provide a detailed sequence starting at Dashboard, entering Workflow inspect mode, checking Tool Calls and Approvals, then using Reports to detect recurrence."
+        },
+        {
+          "title": "Run A Human Review Cycle",
+          "description": "Show how to gather artifacts, inspect verification evidence, request or perform review, record findings, and decide next action."
+        },
+        {
+          "title": "Perform A Shift Handover",
+          "description": "Give a checklist for current directory, dashboard health, active sessions, pending approvals, Team deliverables, worker warnings, and unresolved incidents."
+        }
+      ]
+    },
+    {
+      "number": "21",
+      "title": "Troubleshooting",
+      "description": "Provide symptom-based guidance for common user-facing problems. Each item should lead users toward the right page and the first evidence to collect.",
+      "subsections": [
+        {
+          "number": "21.1",
+          "title": "Empty Or Missing Pages",
+          "description": "Explain checking directory scope, permissions, backend availability, and whether an optional add-on is enabled."
+        },
+        {
+          "number": "21.2",
+          "title": "Disabled Buttons",
+          "description": "Explain privilege lock, missing permissions, selected directory, unavailable backend, stale state, or invalid form fields."
+        },
+        {
+          "number": "21.3",
+          "title": "Workflow Did Not Run",
+          "description": "Explain checking trigger enabled state, worker health, recent events, current runs, and Tool Calls."
+        },
+        {
+          "number": "21.4",
+          "title": "Agent Did Not Respond",
+          "description": "Explain checking session expiry, target state, logs, wake schedule, worker status, model relay health, and Tool Calls."
+        },
+        {
+          "number": "21.5",
+          "title": "Approval Problems",
+          "description": "Explain pending approvals, expired approvals, payload mismatch, denied requests, missing approver reason, and notification issues."
+        },
+        {
+          "number": "21.6",
+          "title": "Configuration Save Problems",
+          "description": "Explain validation errors, stale revision conflicts, inherited denies, and how to reload safely."
+        },
+        {
+          "number": "21.7",
+          "title": "Team Add-On Problems",
+          "description": "Explain missing Teams tab, empty Team state, agents not waking, failed review or release promotion, chat visibility, and stand-down state."
+        },
+        {
+          "number": "21.8",
+          "title": "When To Escalate",
+          "description": "List evidence to collect for an administrator or engineer: directory, time, session, agent, workflow run, tool call IDs, approval IDs, worker names, screenshots, and recent changes."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Recover From An Empty Page",
+          "description": "Show how to verify directory scope, refresh, check permissions, confirm add-on availability, and collect evidence if the page remains empty."
+        },
+        {
+          "title": "Find Why A Button Is Disabled",
+          "description": "Walk through privilege lock, user permissions, selected record, form validation, backend state, and tooltip or error messages."
+        },
+        {
+          "title": "Diagnose A Workflow That Did Not Fire",
+          "description": "Guide users through trigger status, worker status, current runs, queue health, and related audit records."
+        },
+        {
+          "title": "Diagnose A Silent Agent",
+          "description": "Guide users through session state, target state, logs, wakes, model connectivity, and approval blockers."
+        },
+        {
+          "title": "Prepare A Support Escalation",
+          "description": "Provide a checklist of IDs, timestamps, screenshots, page names, directory, user, and recent operator actions."
+        }
+      ]
+    },
+    {
+      "number": "22",
+      "title": "Reference",
+      "description": "Collect concise supporting material that helps users operate Evander without interrupting task-oriented chapters.",
+      "subsections": [
+        {
+          "number": "22.1",
+          "title": "Glossary",
+          "description": "Define common terms in plain language and link each term to the relevant manual chapter."
+        },
+        {
+          "number": "22.2",
+          "title": "Page Map",
+          "description": "List each major navigation item, its purpose, and common tasks."
+        },
+        {
+          "number": "22.3",
+          "title": "Permission Summary",
+          "description": "Summarize common permissions and what they allow in operator language."
+        },
+        {
+          "number": "22.4",
+          "title": "Status Meanings",
+          "description": "Explain common statuses for sessions, workers, approvals, workflow runs, Team reviews, releases, and cleanup."
+        },
+        {
+          "number": "22.5",
+          "title": "Default URLs And Deep Links",
+          "description": "List common routes such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Configuration, Reports, Users, Workers, Workflow, and optional add-on pages."
+        },
+        {
+          "number": "22.6",
+          "title": "Operator Checklists",
+          "description": "Provide reusable checklists for daily monitoring, pre-change review, approval review, incident response, release review, and handover."
+        },
+        {
+          "number": "22.7",
+          "title": "Further Reading",
+          "description": "Point users to deeper administrator and engineering documents for setup, service installation, workflow operations, add-on enablement, and live smoke tests."
+        }
+      ],
+      "how_tos": [
+        {
+          "title": "Look Up A Status Quickly",
+          "description": "Show how to use the status reference to interpret a message before changing state."
+        },
+        {
+          "title": "Use The Page Map To Find A Task",
+          "description": "Explain how to map a desired action to the correct Evander page."
+        },
+        {
+          "title": "Run A Pre-Change Checklist",
+          "description": "Give a compact checklist before saving workflow, policy, worker, or Team changes."
+        }
+      ]
+    }
+  ]
+}
