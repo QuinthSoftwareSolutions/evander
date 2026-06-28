@@ -3100,7 +3100,7 @@ def create_issue(
     ] = None,
 ) -> None:
     service = AdminService(config)
-    issue = service.issue_git_admin.create_issue(
+    issue = service.create_issue(
         title=title,
         body=body,
         repo_source=repo_source,
@@ -3140,7 +3140,7 @@ def create_local_issue(
     ] = None,
 ) -> None:
     service = AdminService(config)
-    issue = service.issue_git_admin.create_local_issue(
+    issue = service.create_local_issue(
         title=title,
         body=body,
         repo_source=repo_source,
@@ -3162,7 +3162,7 @@ def list_issues(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    issues = service.issue_git_admin.list_issues()
+    issues = service.list_issues()
     if as_json:
         typer.echo(
             json.dumps(
@@ -3220,7 +3220,7 @@ def get_issue(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.issue_git_admin.get_issue(
+    payload = service.get_issue(
         issue_id,
         include_remote_comments=include_remote_comments,
         sync_proxy_cache=sync_proxy_cache,
@@ -3260,7 +3260,7 @@ def add_issue_comment(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.issue_git_admin.add_issue_comment(
+    payload = service.add_issue_comment(
         issue_id, comment, sync_proxy_cache=sync_proxy_cache
     )
     if as_json:
@@ -3296,7 +3296,7 @@ def set_issue_state(
     ] = False,
 ) -> None:
     service = AdminService(config)
-    payload = service.issue_git_admin.set_issue_state(
+    payload = service.set_issue_state(
         issue_id, state, sync_proxy_cache=sync_proxy_cache
     )
     if as_json:
@@ -4100,7 +4100,7 @@ def approve(
     service = AdminService(config)
     normalized_reason = reason.strip() or ("approved-via-cli" if approve else "denied-via-cli")
     try:
-        request = service.issue_git_admin.decide_approval_request(
+        request = service.decide_approval_request(
             request_id,
             approver=approver,
             approve=approve,
@@ -4142,7 +4142,7 @@ def list_approvals(
 ) -> None:
     service = AdminService(config)
     statuses = set(status) or None
-    health = service.issue_git_admin.approval_queue_health(
+    health = service.approval_queue_health(
         statuses=statuses,
         directory_path=directory_path,
         direct_only=direct_only,
@@ -4157,7 +4157,7 @@ def list_approvals(
         f"denied={health.denied} expired={health.expired} "
         f"oldest_pending_age_seconds={health.oldest_pending_age_seconds}"
     )
-    requests = service.issue_git_admin.list_approval_requests(
+    requests = service.list_approval_requests(
         statuses=statuses,
         directory_path=directory_path,
         direct_only=direct_only,
@@ -4185,7 +4185,7 @@ def list_approvals(
             )
         )
         if show_payload:
-            review = service.issue_git_admin.get_approval_review(request.request_id)
+            review = service.get_approval_review(request.request_id)
             typer.echo(json.dumps(review["redacted_payload"], indent=2, sort_keys=True))
 
 
@@ -4200,7 +4200,7 @@ def show_approval(
 ) -> None:
     service = AdminService(config)
     try:
-        payload = service.issue_git_admin.get_approval_review(request_id)
+        payload = service.get_approval_review(request_id)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(json.dumps(payload, indent=2, sort_keys=True))
