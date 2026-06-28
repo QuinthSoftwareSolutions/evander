@@ -47,6 +47,7 @@ from agent_sandbox.admin.web.tool_visibility import tool_visibility_routes
 from agent_sandbox.admin.web.teams_auth import teams_auth_routes
 from agent_sandbox.admin.web.skills import skill_routes
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from agent_sandbox.admin.web.user_notifications import user_notification_routes
 from agent_sandbox.admin.web.users import admin_user_routes
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
 from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_events
@@ -489,6 +490,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(tool_visibility_routes(service))
     routes.extend(worker_config_routes(service, auth, dashboard_cache))
     routes.extend(admin_user_routes(admin_user_store, auth, service))
+    routes.extend(user_notification_routes(service, auth))
     routes.extend(pr_integration_routes(service, auth))
     routes.extend(report_routes(service, auth, dashboard_cache))
     routes.extend(teams_auth_routes(service, auth))

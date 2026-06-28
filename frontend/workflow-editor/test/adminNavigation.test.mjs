@@ -144,6 +144,31 @@ async function createAdminPage(t, options = {}) {
       return;
     }
 
+    if (pathname === "/api/admin/user-notifications") {
+      await route.fulfill(
+        jsonResponse(
+          options.notifications ?? {
+            user_id: "admin",
+            unread_count: 0,
+            notifications: [],
+          },
+        ),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/user-notifications/read") {
+      await route.fulfill(
+        jsonResponse({
+          user_id: "admin",
+          marked_notification_ids: ["notif-1"],
+          unread_count: 0,
+          notifications: [],
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/chat/session") {
       await route.fulfill(
         jsonResponse({
@@ -318,6 +343,38 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
     "/addons/team-addon/",
   );
   await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
+});
+
+test("admin shell shows unread user notifications from the header", async (t) => {
+  const { address, page } = await createAdminPage(t, {
+    notifications: {
+      user_id: "admin",
+      unread_count: 2,
+      notifications: [
+        {
+          id: "notif-1",
+          title: "New Team chat message",
+          body: "Miranda: Review is ready",
+          source: "team-chat",
+          source_id: "chatmsg-1",
+          target_url: "#addon:team-addon",
+          metadata: {},
+          created_at: "2026-06-26T10:00:00Z",
+          read_at: null,
+        },
+      ],
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const notificationButton = page.getByRole("button", { name: "2 unread notifications" });
+  await notificationButton.waitFor({ state: "visible" });
+  await notificationButton.click();
+  await assert.doesNotReject(() => page.getByRole("menuitem", { name: /New Team chat message/ }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Miranda: Review is ready").waitFor({ state: "visible" }));
 });
 
 test("admin shell keeps mobile section access and dashboard content in the first viewport", async (t) => {
