@@ -263,10 +263,21 @@ def test_mirror_issue_repo_fast_forwards_stale_local_default_branch(tmp_path: Pa
     _git(source_repo, "commit", "-m", "Initial commit", env=env)
     _git(source_repo, "push", "-u", "origin", "main", env=env)
     _git_dir(origin_bare, "symbolic-ref", "HEAD", "refs/heads/main")
+    _git(source_repo, "checkout", "-b", "work")
+    (source_repo / "work.txt").write_text("work\n", encoding="utf-8")
+    _git(source_repo, "add", "work.txt", env=env)
+    _git(source_repo, "commit", "-m", "Work branch", env=env)
+    _git(source_repo, "push", "-u", "origin", "work", env=env)
+    subprocess.run(
+        ["git", "-C", str(source_repo), "update-ref", "-d", "refs/remotes/origin/HEAD"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
     upstream_worktree = tmp_path / "upstream-worktree"
     subprocess.run(
-        ["git", "clone", str(origin_bare), str(upstream_worktree)],
+        ["git", "clone", "--branch", "main", str(origin_bare), str(upstream_worktree)],
         check=True,
         text=True,
         capture_output=True,
@@ -278,7 +289,7 @@ def test_mirror_issue_repo_fast_forwards_stale_local_default_branch(tmp_path: Pa
     updated_sha = _git(upstream_worktree, "rev-parse", "HEAD").stdout.strip()
 
     subprocess.run(
-        [str(script), "14357", str(source_repo)],
+        [str(script), "--branch", "main", "14357", str(source_repo)],
         check=True,
         text=True,
         capture_output=True,
@@ -286,8 +297,8 @@ def test_mirror_issue_repo_fast_forwards_stale_local_default_branch(tmp_path: Pa
     )
 
     bare_repo = git_root / "14357_repo.git"
+    assert _git(source_repo, "branch", "--show-current").stdout.strip() == "work"
     assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
-    assert (source_repo / "README.md").read_text(encoding="utf-8") == "v2\n"
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
 
 

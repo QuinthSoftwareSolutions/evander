@@ -6,6 +6,13 @@
   directly, including in the same `team_update_task` call that claims the task,
   while keeping other non-owner state/detail edits blocked.
 
+## 2026-06-28 - Git Mirror Pinned Branch Fast-Forward Fix
+
+- Preferred explicit pinned mirror branches and stored mirror base branches
+  before the current checkout fallback when fast-forwarding stale local refs,
+  preventing pinned `main` mirrors from publishing stale refs while another
+  remote branch is checked out.
+
 ## 2026-06-28 - Team MCP Artifact Publisher Config Fix
 
 - Resolved effect provider configuration from gateway MCP runtime contexts so

@@ -78,7 +78,17 @@ fast_forward_local_branch() {
 default_base_branch_for_remote() {
   local repo_path="$1"
   local remote_name="$2"
+  local preferred_branch="${3:-}"
   local branch=""
+
+  if [[ -n "${preferred_branch}" ]] \
+    && {
+      git -C "${repo_path}" show-ref --verify --quiet "refs/remotes/${remote_name}/${preferred_branch}" \
+        || git -C "${repo_path}" show-ref --verify --quiet "refs/heads/${preferred_branch}"
+    }; then
+    printf '%s\n' "${preferred_branch}"
+    return 0
+  fi
 
   branch="$(
     git -C "${repo_path}" symbolic-ref --quiet --short "refs/remotes/${remote_name}/HEAD" 2>/dev/null \
@@ -98,6 +108,27 @@ default_base_branch_for_remote() {
 
   git -C "${repo_path}" for-each-ref --format='%(refname:strip=3)' "refs/remotes/${remote_name}" \
     | awk '$0 != "HEAD" { print; exit }'
+}
+
+preferred_branch_from_refspecs() {
+  local refspec normalized source_ref destination_ref branch
+
+  for refspec in "$@"; do
+    [[ -n "${refspec}" ]] || continue
+    normalized="${refspec#+}"
+    if [[ "${normalized}" != *:* ]]; then
+      continue
+    fi
+    source_ref="${normalized%%:*}"
+    destination_ref="${normalized#*:}"
+    if [[ "${source_ref}" == refs/heads/* ]]; then
+      branch="${source_ref#refs/heads/}"
+      if [[ "${destination_ref}" == "refs/heads/${branch}" ]]; then
+        printf '%s\n' "${branch}"
+        return 0
+      fi
+    fi
+  done
 }
 
 resolve_canonical_origin_url() {
@@ -300,6 +331,7 @@ MIRROR_REMOTE_NAME="${ISSUE_NUMBER}-mirror"
 BARE_REPO_PATH="${ROOT_DIR}/git-remotes/${BARE_REPO_NAME}.git"
 
 RESOLVED_REPO_PATH="$(${SCRIPT_DIR}/resolve_repo_source.sh "${REPO_SOURCE}")"
+PREFERRED_BASE_BRANCH="$(preferred_branch_from_refspecs "${REFSPECS[@]}")"
 
 if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
   if ! git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
@@ -311,7 +343,7 @@ if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
   git -C "${RESOLVED_REPO_PATH}" fetch --prune "${REMOTE_NAME}"
 
   DEFAULT_REMOTE_BRANCH="$(
-    default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}"
+    default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}" "${PREFERRED_BASE_BRANCH}"
   )"
   if [[ -n "${DEFAULT_REMOTE_BRANCH}" ]]; then
     LOCAL_DEFAULT_REF="refs/heads/${DEFAULT_REMOTE_BRANCH}"
@@ -371,7 +403,7 @@ if (( ${#REFSPECS[@]} > 0 )); then
 fi
 
 DEFAULT_BASE_BRANCH="$(
-  default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}"
+  default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}" "${PREFERRED_BASE_BRANCH}"
 )"
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
