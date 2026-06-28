@@ -3550,7 +3550,7 @@ def current_failed_action_records(state: TeamState) -> list[AgentActionRecord]:
 
     rows: list[AgentActionRecord] = []
     for latest_record in latest_records_by_agent.values():
-        if latest_record.success or latest_record.dismissed_at is not None:
+        if latest_record.success:
             continue
         rows.extend(
             record
