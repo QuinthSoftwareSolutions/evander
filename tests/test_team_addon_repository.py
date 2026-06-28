@@ -2435,6 +2435,43 @@ def test_repository_update_task_command_reports_cross_project_graph_context(
     assert repo.read().tasks["backend-task"].dependency_task_ids == []
 
 
+def test_repository_update_task_command_supervisor_finishes_subordinate_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = repo.update_task_command(
+        session_id="session-backend",
+        task_id="worker-task",
+        state="finished",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["worker-task"].state == TeamTaskState.FINISHED
+    assert state.tasks["worker-task"].owner_agent_id == "worker"
+
+
+def test_repository_update_task_command_supervisor_claims_and_finishes_subordinate_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = repo.update_task_command(
+        session_id="session-backend",
+        task_id="worker-task",
+        state="finished",
+        owner_agent_id="backend",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["worker-task"].state == TeamTaskState.FINISHED
+    assert state.tasks["worker-task"].owner_agent_id == "backend"
+
+
 def test_repository_stand_down_command_blocks_held_subtree_commands(
     tmp_path: Path,
 ) -> None:
@@ -9925,6 +9962,23 @@ def test_apply_agent_action_supervisor_reassigns_subordinate_task(
 
     assert result["success"] is True
     assert state.tasks["w1"].owner_agent_id == "worker-2"
+    assert "w1" in result["updated_task_ids"]
+
+
+def test_apply_agent_action_supervisor_finishes_subordinate_task(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="w1", owner_agent_id="worker")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "w1", "state": "finished"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["w1"].state == TeamTaskState.FINISHED
+    assert state.tasks["w1"].owner_agent_id == "worker"
     assert "w1" in result["updated_task_ids"]
 
 
