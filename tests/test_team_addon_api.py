@@ -1580,16 +1580,14 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'name="manager_display_name"' in ui.text
     assert 'name="lead_agent_id"' in ui.text
     assert 'name="lead_display_name"' not in ui.text
-    assert 'name="display_name"' in ui.text
+    assert 'class="workspace-dashboard-page"' in ui.text
+    assert "data-workspace-dashboard-metrics" in ui.text
+    assert "data-workspace-attention-column" in ui.text
+    assert "data-workspace-status-column" in ui.text
     assert "Review &amp; Delivery" in ui.text
-    assert 'id="review-delivery-view"' in ui.text
-    assert 'id="delivery-filter-blocked"' in ui.text
-    assert 'name="parent_task_id"' in ui.text
+    assert "data-review-delivery-view" in ui.text
+    assert 'data-filter="blocked"' in ui.text
     assert 'name="lead_session_id"' not in ui.text
-    assert 'name="review_profile_id"' in ui.text
-    assert 'id="create-review-profile-form"' in ui.text
-    assert 'data-review-profile-criteria-editor' in ui.text
-    assert 'name="criterion_label"' in ui.text
     assert 'data-team-view="projects"' in ui.text
     assert 'id="team-projects-page"' in ui.text
     assert 'id="create-project-from-projects-form"' in ui.text
@@ -1598,22 +1596,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-projects-focus-detail" in ui.text
     assert 'data-team-view="cases"' in ui.text
     assert 'id="team-cases-page"' in ui.text
-    assert 'id="create-case-form"' in ui.text
-    assert 'data-options="case-statuses"' in ui.text
-    assert 'name="case_id"' in ui.text
     assert 'data-team-view="governance"' in ui.text
     assert "data-governance-create-toggle" in ui.text
     assert 'id="governance-create-panel"' in ui.text
     assert 'id="create-governance-group-form"' in ui.text
     assert ui.text.count('id="create-governance-group-form"') == 1
-    assert 'id="create-governance-agenda-form"' in ui.text
     assert 'data-team-view="chat"' in ui.text
     assert 'id="team-chat-page"' in ui.text
     assert "data-chat-conversations-view" in ui.text
     assert 'name="bare_repo"' in ui.text
     assert 'data-options="git-providers"' in ui.text
-    assert "data-template-role-fields" in ui.text
-    assert "data-template-git-fields" in ui.text
     assert "data-agent-source-picker" in ui.text
     assert "data-id-field=" not in ui.text
     assert "Team ID <input" not in ui.text
@@ -1629,6 +1621,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+    assert "renderWorkspaceDashboard" in script.text
+    assert "data-team-link-view" in script.text
     assert "renderRuntimeOperations" in script.text
     assert "runtimeOperationsView" in script.text
     assert "data-runtime-filter" in script.text
@@ -1637,13 +1631,19 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "blocked_waiting_work" in script.text
     assert "ephemeral_work" in script.text
     assert "renderTemplateRoleFields" in script.text
+    assert "data-template-role-fields" in script.text
+    assert "data-template-git-fields" in script.text
     assert "const roles = {};" in script.text
     assert "dependency_task_ids" in script.text
+    assert "parent_task_id" in script.text
     assert "caseStatuses" in script.text
     assert "renderCases" in script.text
+    assert "create-case-form" in script.text
     assert "case_id" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
+    assert "data-review-profile-criteria-editor" in script.text
+    assert "criterion_label" in script.text
     assert "renderReviewDeliveryWorkspace" in script.text
     assert "submitReviewDecision" in script.text
     assert "bindWorkspaceReviewDecisionForms" in script.text

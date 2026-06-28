@@ -217,9 +217,19 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "inbox",
     },
 }
-TEAM_VIEW_COLLECTIONS["workspace"] = set(TEAM_STATE_COLLECTION_KEYS) - {
-    "conversations",
-    "conversation_messages",
+TEAM_VIEW_COLLECTIONS["workspace"] = {
+    "teams",
+    "governance_groups",
+    "governance_agenda",
+    "projects",
+    "agents",
+    "cases",
+    "tasks",
+    "deliverables",
+    "review_requests",
+    "inbox",
+    "release_packages",
+    "git_promotions",
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
@@ -2443,10 +2453,6 @@ def _view_payload_for_request(
             "description": "Derived timeline from the current TeamState snapshot.",
             "filters": {},
         }
-    if view == "workspace":
-        data["templates"] = [
-            template.model_dump(mode="json") for template in template_catalog()
-        ]
     return {
         "revision": state.revision,
         "view": view,

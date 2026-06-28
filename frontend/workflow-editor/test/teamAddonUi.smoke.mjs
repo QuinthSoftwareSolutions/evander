@@ -5080,6 +5080,9 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Planning" }).click();
   await page.locator("#team-planning-page").waitFor({ state: "visible" });
+  await page.locator("#team-planning-page .planning-project-card").first().waitFor({
+    state: "visible",
+  });
   assert.equal(await page.locator(".project-block").count(), 2);
   assert.equal(await page.locator("#team-planning-page .planning-project-card details[open]").count(), 0);
   const alphaProjectCard = page.locator("#team-planning-page .planning-project-card", { hasText: "Alpha Project" });
@@ -5111,7 +5114,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   });
   await page.locator("#focused-timeline-type-filter").selectOption("review");
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
-  assert.equal(await page.locator("#timeline-type-filter").inputValue(), "review");
+  assert.equal(await page.locator("#focused-timeline-type-filter").inputValue(), "review");
 
   await page.getByRole("tab", { name: "Org chart" }).click();
   await page.locator("#team-org-page").waitFor({ state: "visible" });
@@ -5143,10 +5146,19 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Workspace" }).click();
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
-  await page.locator("#team-workspace-page .template-setup summary", { hasText: "Setup from template" }).waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 1);
+  await page.locator("#team-workspace-page").getByRole("heading", { name: "Team Dashboard" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-workspace-page").getByText("Needs attention").first().waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-workspace-page .workspace-metric-card").count(), 6);
+  assert.equal(await page.locator("#team-workspace-page .delivery-row").count(), 0);
+  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 0);
   assert.equal(await page.locator("#team-setup-page").count(), 0);
-  await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page .workspace-dashboard-actions").getByRole("button", { name: "Delivery" }).click();
+  await page.locator("#team-delivery-page").waitFor({ state: "visible" });
+  await page.locator("#team-delivery-page .delivery-row").first().waitFor({ state: "visible" });
 });
 
 test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {

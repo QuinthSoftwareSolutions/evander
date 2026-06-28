@@ -10,6 +10,9 @@
   create forms, collapsed paged deliverable/release sections, and default-hidden
   rejected delivery records.
 
+- Reworked the Team Add-on Workspace tab into a compact dashboard for team status,
+  attention items, blockers, delivery counts, and drill-down links to focused tabs.
+
 - Kept the Admin Web built-in chat anchored when SSE snapshots or operator scroll changes race an
   older-history fetch.
 
