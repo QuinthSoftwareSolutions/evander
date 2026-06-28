@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Extracted shared MCP gateway communication, inline media, email draft, artifact, attachment,
+  and VM visibility helper implementations into focused modules while preserving compatibility
+  exports and behavior.
+
 - Fixed MCP gateway refactor regressions that prevented server construction, miswired extracted
   communication and ADO helpers, and pointed the gateway CLI at `src/runtime`.
 

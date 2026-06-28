@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
@@ -79,44 +81,80 @@ TeamsMentionRefsArgument = Annotated[
 ]
 
 
+@dataclass(frozen=True)
+class CommunicationToolHelpers:
+    audit_success: Callable[..., None]
+    audit_failure: Callable[..., None]
+    artifact_payloads: Callable[..., Any]
+    artifact_audit_summaries: Callable[..., Any]
+    communication_target_audit_fields: Callable[..., Any]
+    record_email_draft_snapshot: Callable[..., Any]
+    send_email_draft: Callable[..., Any]
+    audit_inline_media_operation: Callable[..., Any]
+    resolve_inline_media: Callable[..., Any]
+    download_inline_media_bytes: Callable[..., Any]
+    provider_download_attachment: Callable[..., Any]
+    stage_inline_media_artifact: Callable[..., Any]
+    inline_media_ref_audit_payload: Callable[..., Any]
+    normalize_inline_media_source_kind: Callable[..., Any]
+    resolve_communication_attachments: Callable[..., Any]
+    stage_communication_artifact: Callable[..., Any]
+    admin_service: Callable[..., Any]
+    artifact_to_model: Callable[..., Any]
+    communication_artifact_store: Callable[..., Any]
+    safe_artifact_id: Callable[..., Any]
+    normalize_workspace_source_path: Callable[..., Any]
+    read_agent_workspace_file: Callable[..., Any]
+    teams_artifacts_with_public_download_links: Callable[..., Any]
+    draft_recipients_from_payload: Callable[..., Any]
+    filter_discord_commands_for_session: Callable[..., Any]
+    filter_teams_messages_for_session: Callable[..., Any]
+    teams_cursor_for_target: Callable[..., Any]
+    transport_session_map: dict[str, str] | None = None
+
+
 def register_communication_tools(
     server: Any,
     context: Any,
     deps: Any,
-    **helpers: Any,
+    helpers: CommunicationToolHelpers | None = None,
+    **legacy_helpers: Any,
 ) -> None:
     """Register communication tools with the MCP gateway server."""
 
-    audit_success = helpers["audit_success"]
-    audit_failure = helpers["audit_failure"]
-    transport_session_map = helpers.get("transport_session_map")
+    if helpers is None:
+        helpers = CommunicationToolHelpers(**legacy_helpers)
+
+    audit_success = helpers.audit_success
+    audit_failure = helpers.audit_failure
+    transport_session_map = helpers.transport_session_map
     if transport_session_map is None:
         transport_session_map = getattr(server, "_agent_sandbox_transport_session_map", {})
-    _artifact_payloads = helpers["artifact_payloads"]
-    _artifact_audit_summaries = helpers["artifact_audit_summaries"]
-    _communication_target_audit_fields = helpers["communication_target_audit_fields"]
-    _record_email_draft_snapshot = helpers["record_email_draft_snapshot"]
-    _send_email_draft = helpers["send_email_draft"]
-    _audit_inline_media_operation = helpers["audit_inline_media_operation"]
-    _resolve_inline_media = helpers["resolve_inline_media"]
-    _download_inline_media_bytes = helpers["download_inline_media_bytes"]
-    _provider_download_attachment = helpers["provider_download_attachment"]
-    _stage_inline_media_artifact = helpers["stage_inline_media_artifact"]
-    _inline_media_ref_audit_payload = helpers["inline_media_ref_audit_payload"]
-    _normalize_inline_media_source_kind = helpers["normalize_inline_media_source_kind"]
-    _resolve_communication_attachments = helpers["resolve_communication_attachments"]
-    _stage_communication_artifact = helpers["stage_communication_artifact"]
-    _admin_service = helpers["admin_service"]
-    _artifact_to_model = helpers["artifact_to_model"]
-    _communication_artifact_store = helpers["communication_artifact_store"]
-    _safe_artifact_id = helpers["safe_artifact_id"]
-    _normalize_workspace_source_path = helpers["normalize_workspace_source_path"]
-    _read_agent_workspace_file = helpers["read_agent_workspace_file"]
-    _teams_artifacts_with_public_download_links = helpers["teams_artifacts_with_public_download_links"]
-    draft_recipients_from_payload = helpers["draft_recipients_from_payload"]
-    _filter_discord_commands_for_session = helpers["filter_discord_commands_for_session"]
-    _filter_teams_messages_for_session = helpers["filter_teams_messages_for_session"]
-    _teams_cursor_for_target = helpers["teams_cursor_for_target"]
+    _artifact_payloads = helpers.artifact_payloads
+    _artifact_audit_summaries = helpers.artifact_audit_summaries
+    _communication_target_audit_fields = helpers.communication_target_audit_fields
+    _record_email_draft_snapshot = helpers.record_email_draft_snapshot
+    _send_email_draft = helpers.send_email_draft
+    _audit_inline_media_operation = helpers.audit_inline_media_operation
+    _resolve_inline_media = helpers.resolve_inline_media
+    _download_inline_media_bytes = helpers.download_inline_media_bytes
+    _provider_download_attachment = helpers.provider_download_attachment
+    _stage_inline_media_artifact = helpers.stage_inline_media_artifact
+    _inline_media_ref_audit_payload = helpers.inline_media_ref_audit_payload
+    _normalize_inline_media_source_kind = helpers.normalize_inline_media_source_kind
+    _resolve_communication_attachments = helpers.resolve_communication_attachments
+    _stage_communication_artifact = helpers.stage_communication_artifact
+    _admin_service = helpers.admin_service
+    _artifact_to_model = helpers.artifact_to_model
+    _communication_artifact_store = helpers.communication_artifact_store
+    _safe_artifact_id = helpers.safe_artifact_id
+    _normalize_workspace_source_path = helpers.normalize_workspace_source_path
+    _read_agent_workspace_file = helpers.read_agent_workspace_file
+    _teams_artifacts_with_public_download_links = helpers.teams_artifacts_with_public_download_links
+    draft_recipients_from_payload = helpers.draft_recipients_from_payload
+    _filter_discord_commands_for_session = helpers.filter_discord_commands_for_session
+    _filter_teams_messages_for_session = helpers.filter_teams_messages_for_session
+    _teams_cursor_for_target = helpers.teams_cursor_for_target
 
     @server.tool()
     def discord_get_commands(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
