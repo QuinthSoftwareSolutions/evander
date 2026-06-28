@@ -15,8 +15,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from agent_sandbox.admin.services.ports import (
+    DirectoryPathPort,
+    PrivilegedHelperPort,
+    WorkflowConfigPort,
+)
+
 from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_directory
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult, VmSummary
 from agent_sandbox.provider_config import (
@@ -33,6 +40,29 @@ from agent_sandbox.vm.provider import VmProviderRegistry
 
 _ASSISTANT_AGENTS_DESTINATION_PATH = "/home/agent/AGENTS.md"
 _ASSISTANT_AGENTS_TEMPLATE_NAME = "chat-assistant-AGENTS.md"
+
+
+def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
+    for key, value in update.items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge_mapping(existing, value)
+            continue
+        merged[key] = value
+    return merged
+
+
+@dataclass(frozen=True)
+class NormalizedVmCreationOptions:
+    provider: str | None
+    allowed_contact_ids: list[str] | None
+    payload: dict[str, Any]
+
+    def provider_kwargs(self) -> dict[str, Any]:
+        payload = dict(self.payload)
+        payload["allowed_contact_ids"] = self.allowed_contact_ids
+        return payload
 
 
 def _managed_codex_skills_root(runtime_dir: Path, skill_names: list[str] | None) -> Path | None:
@@ -151,10 +181,9 @@ class VmAgentAdminDependencies:
     project_dir: Path
     local_issue_store: Any
     worker_admin: Any
-    get_privileged_helper: Any
-    get_use_privileged_helper: Any
-    normalize_directory_path: Any
-    read_worker_global_config: Any
+    privileged_helper: PrivilegedHelperPort
+    directory_path: DirectoryPathPort
+    workflow_config: WorkflowConfigPort
     resolve_agent_model_for_session: Any
     resolve_vm_defaults: Any
     resolve_issue_setup: Any
@@ -163,6 +192,69 @@ class VmAgentAdminDependencies:
     resolve_repo_source: Any
     sync_repo_into_bare_remote: Any
     clone_repo_into_vm: Any
+
+
+@dataclass(frozen=True)
+class _VmProviderRegistryDependencies:
+    runtime: Any
+    directory_path: DirectoryPathPort
+    resolve_vm_defaults: Any
+    resolve_agent_model_for_session: Any
+    privileged_helper: PrivilegedHelperPort
+    directory_ownership: Any
+    agent_control_store: Any
+
+    def normalize_directory_path(self, directory_path: str | None) -> str:
+        return self.directory_path.normalize_directory_path(directory_path)
+
+    def get_privileged_helper(self) -> Any | None:
+        return self.privileged_helper.get_privileged_helper()
+
+    def get_use_privileged_helper(self) -> bool:
+        return self.privileged_helper.get_use_privileged_helper()
+
+    def direct_owned_entity_ids(self, directory_path: str, *, kind: str = "vm") -> set[str]:
+        return self.directory_ownership.direct_owned_entity_ids(directory_path, kind=kind)
+
+    def sync_added_discord_session_cursors(
+        self, *, previous_session: Any, updated_session: Any
+    ) -> None:
+        _admin_service._sync_added_discord_session_cursors(
+            self.runtime,
+            previous_session=previous_session,
+            updated_session=updated_session,
+        )
+
+
+class _EmptyDirectoryOwnership:
+    def direct_owned_entity_ids(self, directory_path: str, *, kind: str = "vm") -> set[str]:
+        del directory_path, kind
+        return set()
+
+
+class _EnabledAgentControlStore:
+    def status_for_vm(self, vm_name: str) -> str:
+        del vm_name
+        return "enabled"
+
+
+class _CallbackPrivilegedHelperPort:
+    def __init__(
+        self,
+        get_privileged_helper: Any | None,
+        get_use_privileged_helper: Any | None,
+    ) -> None:
+        self._get_privileged_helper = get_privileged_helper or (lambda: None)
+        self._get_use_privileged_helper = get_use_privileged_helper or (lambda: False)
+
+    def get_privileged_helper(self) -> Any | None:
+        return self._get_privileged_helper()
+
+    def get_use_privileged_helper(self) -> bool:
+        return bool(self._get_use_privileged_helper())
+
+    def set_privileged_helper(self, helper: Any | None) -> None:
+        self._get_privileged_helper = lambda: helper
 
 
 @dataclass
@@ -175,8 +267,16 @@ class VmAgentAdminSupport:
     worker_admin: Any
     workflow_config_admin: Any
     directory_admin: Any
-    get_privileged_helper: Any
-    get_use_privileged_helper: Any
+    privileged_helper: PrivilegedHelperPort | None = None
+    get_privileged_helper: Any | None = None
+    get_use_privileged_helper: Any | None = None
+
+    def __post_init__(self) -> None:
+        if self.privileged_helper is None:
+            self.privileged_helper = _CallbackPrivilegedHelperPort(
+                self.get_privileged_helper,
+                self.get_use_privileged_helper,
+            )
 
     def normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:
@@ -1167,7 +1267,7 @@ class VmAgentAdminService:
         resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
         if callable(resolve_for_directory):
             resolved_config = resolve_for_directory(
-                self._deps.normalize_directory_path(directory_path)
+                self._deps.directory_path.normalize_directory_path(directory_path)
             )
         else:
             resolved_config = self._deps.config
@@ -1236,32 +1336,20 @@ class VmAgentAdminService:
         raise RuntimeError(detail)
 
     def _provider_registry(self) -> VmProviderRegistry:
-        dependency_view = SimpleNamespace(
+        worker_deps = getattr(self._deps.worker_admin, "_deps", SimpleNamespace())
+        agent_control_store = getattr(worker_deps, "agent_control_store", None)
+        if agent_control_store is None:
+            agent_control_store = _EnabledAgentControlStore()
+        dependency_view = _VmProviderRegistryDependencies(
             runtime=self._deps.runtime,
-            normalize_directory_path=self._deps.normalize_directory_path,
+            directory_path=self._deps.directory_path,
             resolve_vm_defaults=self._deps.resolve_vm_defaults,
             resolve_agent_model_for_session=self._deps.resolve_agent_model_for_session,
-            get_privileged_helper=self._deps.get_privileged_helper,
-            get_use_privileged_helper=self._deps.get_use_privileged_helper,
-            direct_owned_entity_ids=getattr(
-                self._deps.worker_admin, "_deps", SimpleNamespace()
-            ).direct_owned_entity_ids
-            if hasattr(getattr(self._deps.worker_admin, "_deps", None), "direct_owned_entity_ids")
-            else (lambda directory_path, kind="vm": set()),
-            agent_control_store=getattr(
-                getattr(self._deps.worker_admin, "_deps", None),
-                "agent_control_store",
-                SimpleNamespace(status_for_vm=lambda vm_name: "enabled"),
+            privileged_helper=self._deps.privileged_helper,
+            directory_ownership=getattr(
+                worker_deps, "directory_ownership", _EmptyDirectoryOwnership()
             ),
-            sync_added_discord_session_cursors=(
-                lambda *, previous_session, updated_session: (
-                    _admin_service._sync_added_discord_session_cursors(
-                        self._deps.runtime,
-                        previous_session=previous_session,
-                        updated_session=updated_session,
-                    )
-                )
-            ),
+            agent_control_store=agent_control_store,
         )
         return VmProviderRegistry(dependency_view)
 
@@ -2004,7 +2092,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             "--timeout-seconds",
             "172800",
         ]
-        trigger_worker_config = self._deps.read_worker_global_config("trigger-orchestrator").config
+        trigger_worker_config = self._deps.workflow_config.read_worker_global_config(
+            "trigger-orchestrator"
+        ).config
         workflow_runtime_dir = _admin_service._resolve_path_setting(
             base_dir=self._deps.project_dir,
             value=trigger_worker_config.get("runtime_dir"),
@@ -2173,7 +2263,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     )
         resolved_session_id = session_id or _admin_service._default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
-        normalized_directory_path = self._deps.normalize_directory_path(
+        normalized_directory_path = self._deps.directory_path.normalize_directory_path(
             local_issue.directory_path
             if local_issue is not None and directory_path == "root"
             else directory_path
@@ -2288,8 +2378,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 )
 
             helper = (
-                self._deps.get_privileged_helper()
-                if self._deps.get_use_privileged_helper()
+                self._deps.privileged_helper.get_privileged_helper()
+                if self._deps.privileged_helper.get_use_privileged_helper()
                 else None
             )
             if helper is not None and not helper.is_running():
@@ -2426,25 +2516,181 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             directory_path=issue.directory_path,
         )
 
+    def normalize_vm_creation_options(
+        self,
+        *,
+        provider: str | None = None,
+        vm_name: str,
+        session_id: str | None = None,
+        allowed_contact_ids: list[str] | None = None,
+        teams_channel_allowlist: list[str] | None = None,
+        teams_chat_allowlist: list[str] | None = None,
+        teams_user_allowlist: list[str] | None = None,
+        communication_file_receive_enabled: bool | None = None,
+        communication_file_send_enabled: bool | None = None,
+        communication_file_max_bytes: int | None = None,
+        communication_file_require_approval_for_send: bool | None = None,
+        web_search_enabled: bool | None = None,
+        directory_path: str = "root",
+        metadata: dict[str, Any] | None = None,
+        model_provider_mode: str | None = None,
+    ) -> NormalizedVmCreationOptions:
+        payload: dict[str, Any] = {}
+        if teams_channel_allowlist is not None:
+            payload["teams_channel_allowlist"] = teams_channel_allowlist
+        if teams_chat_allowlist is not None:
+            payload["teams_chat_allowlist"] = teams_chat_allowlist
+        if teams_user_allowlist is not None:
+            payload["teams_user_allowlist"] = teams_user_allowlist
+        if communication_file_receive_enabled is not None:
+            payload["communication_file_receive_enabled"] = communication_file_receive_enabled
+        if communication_file_send_enabled is not None:
+            payload["communication_file_send_enabled"] = communication_file_send_enabled
+        if communication_file_max_bytes is not None:
+            payload["communication_file_max_bytes"] = communication_file_max_bytes
+        if communication_file_require_approval_for_send is not None:
+            payload["communication_file_require_approval_for_send"] = (
+                communication_file_require_approval_for_send
+            )
+        if web_search_enabled is not None:
+            payload["web_search_enabled"] = web_search_enabled
+        if metadata is not None:
+            payload["metadata"] = metadata
+
+        resolved_model_provider_mode = normalize_model_provider_mode_override(
+            model_provider_mode
+        )
+        if resolved_model_provider_mode is not None:
+            payload["metadata"] = _deep_merge_mapping(
+                payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                {MODEL_PROVIDER_MODE_METADATA_KEY: resolved_model_provider_mode},
+            )
+
+        resolved_allowed_contact_ids = self._validate_allowed_contact_ids_for_directory(
+            session_id=session_id or vm_name,
+            directory_path=directory_path,
+            allowed_contact_ids=allowed_contact_ids,
+        )
+        return NormalizedVmCreationOptions(
+            provider=provider,
+            allowed_contact_ids=resolved_allowed_contact_ids,
+            payload=payload,
+        )
+
+    def _validate_allowed_contact_ids_for_directory(
+        self,
+        *,
+        session_id: str,
+        directory_path: str,
+        allowed_contact_ids: object,
+    ) -> list[str] | None:
+        if allowed_contact_ids is None:
+            return None
+        provider_config = getattr(self._deps.runtime, "provider_config", None)
+        resolve_contacts_for_directory = getattr(
+            provider_config, "resolve_contacts_for_directory", None
+        )
+        if not callable(resolve_contacts_for_directory):
+            raise RuntimeError("contacts config resolver is not available")
+        contacts_config = resolve_contacts_for_directory(directory_path)
+        return validate_allowed_contact_ids_for_directory(
+            contacts_config,
+            allowed_contact_ids,
+            session_id=session_id,
+            directory_path=directory_path,
+        )
+
     def create_vm(
         self,
         *,
         provider: str | None = None,
-        **kwargs: Any,
+        vm_name: str,
+        session_id: str | None = None,
+        labels: dict[str, str] | None = None,
+        model: str | None = None,
+        model_provider_mode: str | None = None,
+        vm_user: str = "agent",
+        ttl_seconds: int | None = None,
+        ttl_hours: int | None = None,
+        allowed_tools: list[str | ToolName] | None = None,
+        tool_argument_policies: dict[str, list[Any]] | None = None,
+        allowed_script_names: list[str] | None = None,
+        allowed_contact_ids: list[str] | None = None,
+        discord_channels: list[str] | None = None,
+        teams_channel_allowlist: list[str] | None = None,
+        teams_chat_allowlist: list[str] | None = None,
+        teams_user_allowlist: list[str] | None = None,
+        email_mailboxes: list[str] | None = None,
+        email_folders: list[str] | None = None,
+        communication_file_receive_enabled: bool | None = None,
+        communication_file_send_enabled: bool | None = None,
+        communication_file_max_bytes: int | None = None,
+        communication_file_require_approval_for_send: bool | None = None,
+        web_search_enabled: bool | None = None,
+        dotnet: bool = False,
+        nuget: bool = False,
+        mssql: bool = False,
+        mssql_init_root: str | None = None,
+        playwright: bool = False,
+        codex_skills: list[str] | None = None,
+        directory_path: str = "root",
+        metadata: dict[str, Any] | None = None,
+        allow_existing_session: bool = False,
     ) -> VmActionResult:
-        directory_path = str(kwargs.get("directory_path") or "root")
+        normalized_options = self.normalize_vm_creation_options(
+            provider=provider,
+            vm_name=vm_name,
+            session_id=session_id,
+            allowed_contact_ids=allowed_contact_ids,
+            teams_channel_allowlist=teams_channel_allowlist,
+            teams_chat_allowlist=teams_chat_allowlist,
+            teams_user_allowlist=teams_user_allowlist,
+            communication_file_receive_enabled=communication_file_receive_enabled,
+            communication_file_send_enabled=communication_file_send_enabled,
+            communication_file_max_bytes=communication_file_max_bytes,
+            communication_file_require_approval_for_send=(
+                communication_file_require_approval_for_send
+            ),
+            web_search_enabled=web_search_enabled,
+            directory_path=directory_path,
+            metadata=metadata,
+            model_provider_mode=model_provider_mode,
+        )
+        directory_path = str(directory_path or "root")
+        vm_defaults = self._deps.resolve_vm_defaults(directory_path)
         resolved_provider = (
-            str(
-                provider or self._deps.resolve_vm_defaults(directory_path).provider or "libvirt"
-            ).strip()
+            str(provider or getattr(vm_defaults, "provider", None) or "libvirt").strip()
             or "libvirt"
         )
-        result = (
+        return (
             self._provider_registry()
             .get(resolved_provider)
-            .create_vm(provider=resolved_provider, **kwargs)
+            .create_vm(
+                vm_name=vm_name,
+                session_id=session_id,
+                labels=labels,
+                model=model,
+                vm_user=vm_user,
+                ttl_seconds=ttl_seconds,
+                ttl_hours=ttl_hours,
+                allowed_tools=allowed_tools,
+                tool_argument_policies=tool_argument_policies,
+                allowed_script_names=allowed_script_names,
+                discord_channels=discord_channels,
+                email_mailboxes=email_mailboxes,
+                email_folders=email_folders,
+                dotnet=dotnet,
+                nuget=nuget,
+                mssql=mssql,
+                mssql_init_root=mssql_init_root,
+                playwright=playwright,
+                codex_skills=codex_skills,
+                directory_path=directory_path,
+                allow_existing_session=allow_existing_session,
+                provider=resolved_provider,
+                **normalized_options.provider_kwargs(),
+            )
         )
-        return result
 
     def clone_repo_into_vm(
         self,
@@ -2758,7 +3004,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
 
         normalized_directory_path = str(
             getattr(session, "directory_path", "") or ""
-        ).strip() or self._deps.normalize_directory_path(directory_path)
+        ).strip() or self._deps.directory_path.normalize_directory_path(directory_path)
         return resolved_session_id, session, normalized_directory_path, None
 
     def destroy_vm(self, target: str) -> VmActionResult:
@@ -2774,7 +3020,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         root_dir = Path(__file__).resolve().parents[4]
         destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
         helper = (
-            self._deps.get_privileged_helper() if self._deps.get_use_privileged_helper() else None
+            self._deps.privileged_helper.get_privileged_helper()
+            if self._deps.privileged_helper.get_use_privileged_helper()
+            else None
         )
         if helper is not None and not helper.is_running():
             helper.start()

@@ -1268,7 +1268,8 @@ def worker_config_routes(
 ) -> list[BaseRoute]:
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
-            _normalize_worker_summary(summary) for summary in service.list_background_workers()
+            _normalize_worker_summary(summary)
+            for summary in service.list_background_workers()
         ]
         return JSONResponse({"workers": workers})
 

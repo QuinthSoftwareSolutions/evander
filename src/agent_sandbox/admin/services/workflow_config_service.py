@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from agent_sandbox.admin.services.ports import WorkflowConfigPort
 
 
 class WorkflowConfigAdminService:
@@ -10,7 +10,7 @@ class WorkflowConfigAdminService:
     admin implementation.
     """
 
-    def __init__(self, worker_admin: Any) -> None:
+    def __init__(self, worker_admin: WorkflowConfigPort) -> None:
         self._worker_admin = worker_admin
 
     def read_worker_global_config(self, worker_id: str):

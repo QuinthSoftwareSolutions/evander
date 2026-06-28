@@ -416,9 +416,9 @@ def register_admin_tools(
                     raise ValueError(
                         "worker_id is required for worker_global config reads"
                     )
-                payload = service.read_worker_global_config(target_worker_id).model_dump(
-                    mode="json"
-                )
+                payload = service.read_worker_global_config(
+                    target_worker_id
+                ).model_dump(mode="json")
                 result = {"scope": "worker_global", **payload}
                 audit_success(
                     resolved_session_id,
@@ -652,9 +652,13 @@ def register_admin_tools(
             params = parameters or {}
             normalized_operation = str(operation or "").strip()
             if normalized_operation == "clear_workflow_run":
-                result_payload = service.clear_workflow_run(str(params.get("event_id") or ""))
+                result_payload = service.clear_workflow_run(
+                    str(params.get("event_id") or "")
+                )
             elif normalized_operation == "resume_workflow_run":
-                result_payload = service.resume_workflow_run(str(params.get("event_id") or ""))
+                result_payload = service.resume_workflow_run(
+                    str(params.get("event_id") or "")
+                )
             else:
                 raise ToolError(f"Unsupported safe operation: {normalized_operation}")
             result = (

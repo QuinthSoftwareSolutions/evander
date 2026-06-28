@@ -1,109 +1,62 @@
 from __future__ import annotations
 
+import pytest
+
 from agent_sandbox.admin.services.workflow_config_service import WorkflowConfigAdminService
 
 
-class FakeFacade:
+class RecordingWorkflowAdmin:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
-    def read_workflow_editor_document(self):
-        self.calls.append(("read_workflow_editor_document", (), {}))
-        return {"kind": "document"}
+    def __getattr__(self, name: str):
+        def recorder(*args: object, **kwargs: object) -> dict[str, object]:
+            self.calls.append((name, args, kwargs))
+            return {"method": name, "args": args, "kwargs": kwargs}
 
-    def save_workflow_editor_document(
-        self,
-        *,
-        config: dict[str, object],
-        layout: dict[str, object] | None = None,
-        graphs: list[dict[str, object]] | None = None,
-        expected_revision: str | None = None,
-    ):
-        self.calls.append(
-            (
-                "save_workflow_editor_document",
-                (),
-                {
-                    "config": config,
-                    "layout": layout,
-                    "graphs": graphs,
-                    "expected_revision": expected_revision,
-                },
-            )
-        )
-        return {"kind": "save", "config": config, "layout": layout, "graphs": graphs}
-
-    def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]):
-        self.calls.append(("upsert_trigger_config", (trigger_id, payload), {}))
-        return {"kind": "trigger", "trigger_id": trigger_id, "payload": payload}
-
-    def delete_effect_config(self, effect_id: str):
-        self.calls.append(("delete_effect_config", (effect_id,), {}))
-        return {"kind": "effect", "effect_id": effect_id}
+        return recorder
 
 
-def test_workflow_config_service_delegates_representative_operations() -> None:
-    facade = FakeFacade()
-    service = WorkflowConfigAdminService(facade)
+@pytest.mark.parametrize(
+    ("method_name", "args", "kwargs", "worker_method", "expected_args", "expected_kwargs"),
+    [
+        ("read_worker_global_config", ("ado-worker",), {}, "read_worker_global_config", ("ado-worker",), {}),
+        ("write_worker_global_config", ("ado-worker", {"enabled": True}), {"expected_revision": "rev-1"}, "write_worker_global_config", ("ado-worker", {"enabled": True}), {"expected_revision": "rev-1"}),
+        ("read_workflow_editor_document", (), {}, "read_workflow_editor_document", (), {}),
+        ("read_workflow_editor_document", (), {"workflow_pack": "ops"}, "read_workflow_editor_document", (), {"workflow_pack": "ops"}),
+        ("read_composed_workflow_editor_document", (), {}, "read_composed_workflow_editor_document", (), {}),
+        ("read_workflow_editor_catalog", (), {"directory_path": "root/team"}, "read_workflow_editor_catalog", (), {"directory_path": "root/team"}),
+        ("validate_workflow_editor_document", (), {"config": {"nodes": []}, "layout": {"nodes": {}}, "graphs": [{"id": "g"}]}, "validate_workflow_editor_document", (), {"config": {"nodes": []}, "layout": {"nodes": {}}, "graphs": [{"id": "g"}]}),
+        ("validate_workflow_editor_document", (), {"config": {"nodes": []}, "layout": None, "graphs": None, "workflow_pack": "ops"}, "validate_workflow_editor_document", (), {"config": {"nodes": []}, "layout": None, "graphs": None, "workflow_pack": "ops"}),
+        ("save_workflow_editor_document", (), {"config": {"nodes": []}, "layout": {"nodes": {}}, "graphs": [{"id": "g"}], "expected_revision": "rev-2"}, "save_workflow_editor_document", (), {"config": {"nodes": []}, "layout": {"nodes": {}}, "graphs": [{"id": "g"}], "expected_revision": "rev-2"}),
+        ("save_workflow_editor_document", (), {"config": {"nodes": []}, "layout": None, "graphs": None, "expected_revision": "rev-3", "workflow_pack": "ops"}, "save_workflow_editor_document", (), {"config": {"nodes": []}, "layout": None, "graphs": None, "expected_revision": "rev-3", "workflow_pack": "ops"}),
+        ("read_workflow_run_snapshot", (), {}, "read_workflow_run_snapshot", (), {}),
+        ("read_workflow_run_detail", (), {"run_id": "run", "event_id": "event", "trigger_event_id": "trigger", "trace_id": "trace", "session_id": "session", "artifact_id": "artifact"}, "read_workflow_run_detail", (), {"run_id": "run", "event_id": "event", "trigger_event_id": "trigger", "trace_id": "trace", "session_id": "session", "artifact_id": "artifact"}),
+        ("read_workflow_run_search", (), {"node_id": "node", "graph_id": "graph", "without_session": True, "include_completed": False, "limit": 25}, "read_workflow_run_search", (), {"node_id": "node", "graph_id": "graph", "without_session": True, "include_completed": False, "limit": 25}),
+        ("clear_workflow_run", ("event",), {}, "clear_workflow_run", ("event",), {}),
+        ("dismiss_workflow_node_failures", ("node",), {}, "dismiss_workflow_node_failures", ("node",), {}),
+        ("resume_workflow_run", ("event",), {}, "resume_workflow_run", ("event",), {}),
+        ("workflow_event_journal", (), {}, "workflow_event_journal", (), {}),
+        ("upsert_trigger_config", ("trigger", {"type": "manual"}), {}, "upsert_trigger_config", ("trigger", {"type": "manual"}), {}),
+        ("delete_trigger_config", ("trigger",), {}, "delete_trigger_config", ("trigger",), {}),
+        ("upsert_effect_config", ("effect", {"type": "notify"}), {}, "upsert_effect_config", ("effect", {"type": "notify"}), {}),
+        ("delete_effect_config", ("effect",), {}, "delete_effect_config", ("effect",), {}),
+    ],
+)
+def test_workflow_config_service_delegates_every_public_operation(
+    method_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    worker_method: str,
+    expected_args: tuple[object, ...],
+    expected_kwargs: dict[str, object],
+) -> None:
+    worker_admin = RecordingWorkflowAdmin()
+    service = WorkflowConfigAdminService(worker_admin)
 
-    document = service.read_workflow_editor_document()
-    saved = service.save_workflow_editor_document(
-        config={"name": "demo"},
-        layout={"nodes": {}},
-        graphs=[
-            {
-                "id": "graph-demo",
-                "name": "Demo",
-                "directory_path": "root",
-                "user_ids": ["admin"],
-                "node_ids": [],
-            }
-        ],
-    )
-    trigger = service.upsert_trigger_config("trigger-1", {"type": "trigger:manual"})
-    effect = service.delete_effect_config("effect-9")
-
-    assert document == {"kind": "document"}
-    assert saved == {
-        "kind": "save",
-        "config": {"name": "demo"},
-        "layout": {"nodes": {}},
-        "graphs": [
-            {
-                "id": "graph-demo",
-                "name": "Demo",
-                "directory_path": "root",
-                "user_ids": ["admin"],
-                "node_ids": [],
-            }
-        ],
+    assert getattr(service, method_name)(*args, **kwargs) == {
+        "method": worker_method,
+        "args": expected_args,
+        "kwargs": expected_kwargs,
     }
-    assert trigger == {
-        "kind": "trigger",
-        "trigger_id": "trigger-1",
-        "payload": {"type": "trigger:manual"},
-    }
-    assert effect == {"kind": "effect", "effect_id": "effect-9"}
-    assert facade.calls == [
-        ("read_workflow_editor_document", (), {}),
-        (
-            "save_workflow_editor_document",
-            (),
-            {
-                "config": {"name": "demo"},
-                "layout": {"nodes": {}},
-                "graphs": [
-                    {
-                        "id": "graph-demo",
-                        "name": "Demo",
-                        "directory_path": "root",
-                        "user_ids": ["admin"],
-                        "node_ids": [],
-                    }
-                ],
-                "expected_revision": None,
-            },
-        ),
-        ("upsert_trigger_config", ("trigger-1", {"type": "trigger:manual"}), {}),
-        ("delete_effect_config", ("effect-9",), {}),
-    ]
+    assert worker_admin.calls == [(worker_method, expected_args, expected_kwargs)]

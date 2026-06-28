@@ -177,7 +177,9 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         auth.require(request)
         directory_path = _directory_path_from_request(service, request)
         try:
-            result = await run_in_threadpool(service.teams_auth_status, directory=directory_path)
+            result = await run_in_threadpool(
+                service.teams_auth_status, directory=directory_path
+            )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse(
@@ -203,7 +205,9 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
             return json_error("Privileged operations are locked.", status_code=403)
         directory_path = _directory_path_from_request(service, request)
         try:
-            session = await run_in_threadpool(service.teams_auth_login, directory=directory_path)
+            session = await run_in_threadpool(
+                service.teams_auth_login, directory=directory_path
+            )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except TeamsAuthError as exc:
@@ -297,7 +301,9 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
             return json_error("Privileged operations are locked.", status_code=403)
         directory_path = _directory_path_from_request(service, request)
         try:
-            result = await run_in_threadpool(service.teams_auth_logout, directory=directory_path)
+            result = await run_in_threadpool(
+                service.teams_auth_logout, directory=directory_path
+            )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse(
