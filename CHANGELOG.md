@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Restored Admin Web add-on service compatibility after the admin facade removal
+  by passing add-on routes a narrow adapter for project Git imports, agent
+  inventory summaries, and Team chat dispatch helpers.
+
 - Fixed provider-runtime adapter regressions from the admin facade removal so
   narrow VM providers no longer advertise unavailable skill validation, model
   usage query providers delegate through `model_usage_admin`, and tests no

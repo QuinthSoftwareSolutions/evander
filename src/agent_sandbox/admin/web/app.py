@@ -5,6 +5,7 @@ import json
 import re
 from html import escape
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
@@ -54,6 +55,28 @@ from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_event
 from agent_sandbox.admin.web.workflow_events import workflow_event_routes
 from agent_sandbox.admin.web.workflow_webhooks import workflow_webhook_routes
 from agent_sandbox.admin.web.workers_config import worker_config_routes
+
+
+class AdminWebAddonServiceAdapter:
+    """Narrow Admin Web service surface exposed to add-on admin routes."""
+
+    def __init__(self, components: AdminRuntimeComponents) -> None:
+        self._components = components
+        self.runtime = components.runtime
+        self.config = components.config
+        self.project_dir = components.project_dir
+
+    def import_git_repo(self, **kwargs: Any) -> Any:
+        return self._components.issue_git_admin.import_git_repo(**kwargs)
+
+    def list_agents(self, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.list_agents(**kwargs)
+
+    def resume_agent(self, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.resume_agent(**kwargs)
+
+    def vm_copy_files(self, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.vm_copy_files(**kwargs)
 
 
 def _dist_dir() -> Path:
@@ -499,6 +522,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))
     routes.extend(artifact_routes(service))
+    addon_service = AdminWebAddonServiceAdapter(service)
     for addon in addon_catalog.registrations:
         context = AddonContext(
             addon_id=addon.addon_id,
@@ -506,7 +530,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             addon_runtime_dir=addon_runtime_dir(service.config.runtime_dir, addon.addon_id),
             project_dir=service.project_dir,
             config=service.config,
-            service=service,
+            service=addon_service,
             auth=auth,
         )
         api_routes = resolve_addon_admin_api_routes(addon, context)
