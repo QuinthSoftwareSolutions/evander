@@ -745,7 +745,7 @@ def test_read_session_artifact_text_routes_container_sessions_to_worker_backend(
 
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         lambda **kwargs: calls.append({"backend_kwargs": kwargs}) or FakeContainerBackend(),
     )
 
@@ -992,7 +992,7 @@ def test_list_agents_summary_mode_skips_container_reconciliation_and_omits_vm_st
     )
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(fake_container_worker_backend, service.vm_agent_admin),
     )
 
@@ -2530,7 +2530,7 @@ def test_create_container_agent_duplicate_session_raises(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -2911,7 +2911,7 @@ def test_install_admin_agent_skills_copies_managed_skill_to_container_session(
 
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         lambda **_kwargs: FakeContainerBackend(),
     )
 
@@ -3567,7 +3567,7 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     backend = InterruptBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
     )
 
@@ -3727,7 +3727,7 @@ def test_submit_operator_steering_failure_after_stop_fails_waiting_record(
     backend = FailingReplacementBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
     )
 
@@ -5172,7 +5172,7 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5272,7 +5272,7 @@ def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_l
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5388,7 +5388,7 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5488,7 +5488,7 @@ def test_get_admin_agent_log_page_container_session_threads_use_stored_thread_id
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5580,7 +5580,7 @@ def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execut
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5665,7 +5665,7 @@ def test_get_admin_agent_log_page_container_session_threads_fetches_offset_windo
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5745,7 +5745,7 @@ def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_h
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5828,7 +5828,7 @@ def test_get_admin_agent_log_page_container_session_threads_large_history_rebuil
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5910,7 +5910,7 @@ def test_get_admin_agent_log_page_container_session_threads_searches_full_transc
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -5985,7 +5985,7 @@ def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_ex
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -11103,7 +11103,7 @@ def test_delete_session_cleans_detached_worker_state(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -11166,7 +11166,7 @@ def test_cleanup_container_session_records_cleaned_up_tombstone(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -11252,7 +11252,7 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
 
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: FakeContainerBackend(), service.vm_agent_admin),
     )
 
@@ -11402,7 +11402,7 @@ def test_delete_admin_agent_deletes_container_session_and_prunes_context(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -11457,7 +11457,7 @@ def test_delete_admin_agent_deletes_prepared_container_session(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -11516,7 +11516,7 @@ def test_delete_admin_agent_destroys_running_container_execution(
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
         service.vm_agent_admin,
-        "_container_worker_backend",
+        "container_worker_backend",
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
@@ -14377,7 +14377,7 @@ def test_sync_repo_into_bare_remote_sets_head_to_default_branch(
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 
-    service._sync_repo_into_bare_remote(
+    service.vm_agent_admin._sync_repo_into_bare_remote(
         "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
     )
 
@@ -14478,7 +14478,7 @@ def test_sync_repo_into_bare_remote_preserves_detected_remote_name(
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 
-    service._sync_repo_into_bare_remote(
+    service.vm_agent_admin._sync_repo_into_bare_remote(
         "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
     )
 
@@ -14525,7 +14525,7 @@ def test_sync_repo_into_bare_remote_records_canonical_origin_url_when_available(
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 
-    service._sync_repo_into_bare_remote(
+    service.vm_agent_admin._sync_repo_into_bare_remote(
         "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
     )
 
@@ -14574,7 +14574,7 @@ def test_sync_repo_into_bare_remote_unwraps_repo_cache_origin_url(
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 
-    service._sync_repo_into_bare_remote(
+    service.vm_agent_admin._sync_repo_into_bare_remote(
         "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
     )
 
@@ -14634,7 +14634,7 @@ def test_sync_repo_into_bare_remote_preserves_agent_refs_while_pruning_stale_hea
     _git("add", "README.md", cwd=source_repo)
     _git("commit", "-m", "Initial commit", cwd=source_repo)
 
-    service._sync_repo_into_bare_remote(
+    service.vm_agent_admin._sync_repo_into_bare_remote(
         "sample-repo",
         str(source_repo),
         issue_setup=issue_setup,
@@ -14650,7 +14650,7 @@ def test_sync_repo_into_bare_remote_preserves_agent_refs_while_pruning_stale_hea
     _git("commit", "-am", "Refresh source", cwd=source_repo)
     refreshed_commit = _git("rev-parse", "HEAD", cwd=source_repo)
 
-    service._sync_repo_into_bare_remote(
+    service.vm_agent_admin._sync_repo_into_bare_remote(
         "sample-repo",
         str(source_repo),
         issue_setup=issue_setup,

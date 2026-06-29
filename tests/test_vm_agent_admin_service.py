@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
 from agent_sandbox.admin.services import process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from agent_sandbox.admin.services.vm_agent_service import AgentCreateOperation
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
@@ -25,7 +27,7 @@ class CallRecord:
     kwargs: dict[str, Any]
 
 
-def test_admin_service_vm_domain_methods_are_delegate_wrappers() -> None:
+def test_admin_service_vm_agent_boundary_uses_public_ports() -> None:
     source = Path(admin_service_module.__file__).read_text(encoding="utf-8")
     module = ast.parse(source)
     admin_class = next(
@@ -33,12 +35,20 @@ def test_admin_service_vm_domain_methods_are_delegate_wrappers() -> None:
         for node in module.body
         if isinstance(node, ast.ClassDef) and node.name == "AdminService"
     )
-    method_names = {
+    admin_method_names = {
+        node.name for node in admin_class.body if isinstance(node, ast.FunctionDef)
+    }
+    removed_private_wrappers = {
         "_agent_record_from_container_session",
         "_clone_repo_into_vm",
         "_container_worker_backend",
         "_container_worker_url_for_target",
+        "_prompt_admin_agent",
         "_sync_repo_into_bare_remote",
+    }
+    assert admin_method_names.isdisjoint(removed_private_wrappers)
+
+    public_facade_methods = {
         "agent_create_options",
         "cleanup_container_session",
         "create_admin_agent",
@@ -56,33 +66,17 @@ def test_admin_service_vm_domain_methods_are_delegate_wrappers() -> None:
         "vm_delete_files",
         "vm_exec",
     }
-    methods = {
-        node.name: node
-        for node in admin_class.body
-        if isinstance(node, ast.FunctionDef) and node.name in method_names
-    }
-    assert set(methods) == method_names
-    for name, method in methods.items():
-        body = [
-            node
-            for node in method.body
-            if not (
-                isinstance(node, ast.Expr)
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
-            )
-        ]
-        assert len(body) == 1, name
-        assert isinstance(body[0], ast.Return), name
-        assert isinstance(body[0].value, ast.Call), name
-        target = body[0].value.func
-        assert isinstance(target, ast.Attribute), name
-        owner = target.value
-        if isinstance(owner, ast.Attribute):
-            assert isinstance(owner.value, ast.Name) and owner.value.id == "self", name
-            assert owner.attr == "vm_agent_admin", name
-        else:
-            assert isinstance(owner, ast.Name) and owner.id == "VmAgentAdminService", name
+    assert public_facade_methods.issubset(admin_method_names)
+
+    dependency_fields = set(VmAgentAdminDependencies.__dataclass_fields__)
+    assert "admin_service_override" not in dependency_fields
+    assert "list_vms_for_agents" not in dependency_fields
+    assert {
+        "vm_lifecycle",
+        "agent_create",
+        "agent_prompt_dispatch",
+        "container_worker_backend_port",
+    }.issubset(dependency_fields)
 
 
 def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
@@ -402,7 +396,7 @@ class FakeAdmin:
         return "/home/agent/repo"
 
 
-def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
+def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDependencies:
     return VmAgentAdminDependencies(
         config=admin.config,
         runtime=admin.runtime,
@@ -438,7 +432,133 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
             *args, **kwargs
         ),
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
+        **overrides,
     )
+
+
+def test_vm_agent_admin_service_uses_explicit_ports_for_boundary_operations(
+    tmp_path: Path,
+) -> None:
+    admin = FakeAdmin()
+    admin.config.runtime_dir = tmp_path
+    lifecycle_calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+    prompt_calls: list[tuple[str, str, dict[str, Any]]] = []
+    backend_calls: list[dict[str, Any]] = []
+    create_payloads: list[dict[str, Any]] = []
+
+    class LifecyclePort:
+        def create_vm(self, **kwargs: Any) -> VmActionResult:
+            lifecycle_calls.append(("create_vm", (), dict(kwargs)))
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs.get("vm_name") or ""),
+                action="create_vm",
+                message="created",
+            )
+
+        def start_vm(self, target: str) -> VmActionResult:
+            lifecycle_calls.append(("start_vm", (target,), {}))
+            return VmActionResult(
+                success=True,
+                vm_name=target,
+                action="start",
+                message="started",
+            )
+
+    class PromptPort:
+        def prompt_admin_agent(
+            self,
+            agent_id: str,
+            *,
+            backend: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            prompt_calls.append((agent_id, backend, dict(payload)))
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "backend": backend,
+                "action": "prompt-agent",
+                "status": "queued",
+            }
+
+    class ContainerBackendPort:
+        def container_worker_backend(self, **kwargs: Any) -> object:
+            backend_calls.append(dict(kwargs))
+            return "container-backend"
+
+    class AgentCreatePort:
+        def create_admin_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+            create_payloads.append(dict(payload))
+            return {
+                "success": True,
+                "agent_id": "created-agent",
+                "message": "created through port",
+            }
+
+    class OperationStore:
+        def __init__(self) -> None:
+            self.items: dict[str, AgentCreateOperation] = {}
+
+        def get(self, key: str) -> AgentCreateOperation | None:
+            return self.items.get(key)
+
+        def update_all(self, updater: Any) -> Any:
+            return updater(self.items)
+
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(
+            admin,
+            vm_lifecycle=LifecyclePort(),
+            agent_prompt_dispatch=PromptPort(),
+            container_worker_backend_port=ContainerBackendPort(),
+            agent_create=AgentCreatePort(),
+        )
+    )
+
+    start_result = service.run_admin_agent_action("vm-1", "start", backend="libvirt_vm")
+    prompt_result = service.run_admin_agent_action(
+        "vm-1",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "continue"},
+    )
+    backend = service.container_worker_backend(
+        directory_path="root/team-a", worker_url="http://worker.test"
+    )
+
+    operation_store = OperationStore()
+    operation_store.items["operation-1"] = AgentCreateOperation(
+        operation_id="operation-1",
+        status="queued",
+        backend="container_worker_vm",
+        target_name="container-target",
+        session_id="container-session",
+    )
+    service.configure_admin_collaborators(
+        agent_create_operations=operation_store,
+        agent_create_operation_payloads={
+            "operation-1": {"backend": "container_worker_vm", "session_id": "container-session"}
+        },
+        agent_create_operation_payloads_lock=threading.Lock(),
+    )
+    service._run_agent_create_operation("operation-1")
+
+    assert start_result["message"] == "started"
+    assert lifecycle_calls == [("start_vm", ("vm-1",), {})]
+    assert prompt_result["status"] == "queued"
+    assert prompt_calls == [("vm-1", "libvirt_vm", {"prompt": "continue"})]
+    assert backend == "container-backend"
+    assert backend_calls == [
+        {"directory_path": "root/team-a", "worker_url": "http://worker.test"}
+    ]
+    assert create_payloads == [
+        {"backend": "container_worker_vm", "session_id": "container-session"}
+    ]
+    operation = operation_store.items["operation-1"]
+    assert operation.status == "succeeded"
+    assert operation.result is not None
+    assert operation.result["message"] == "created through port"
 
 
 def test_chat_assistant_session_resolution_is_backend_aware(
@@ -513,7 +633,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     )
     monkeypatch.setattr(
         VmAgentAdminService,
-        "_container_worker_backend",
+        "container_worker_backend",
         lambda self, *, directory_path=None: fake_container_backend,
     )
 

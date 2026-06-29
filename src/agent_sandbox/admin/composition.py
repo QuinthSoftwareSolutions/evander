@@ -90,21 +90,6 @@ def admin_config_mutation_file_lock(path: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _admin_service_instance_override(
-    host: Any,
-    method_name: str,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> tuple[bool, Any]:
-    method = getattr(host, method_name, None)
-    if method is None:
-        return False, None
-    class_method = getattr(type(host), method_name, None)
-    if getattr(method, "__func__", None) is class_method:
-        return False, None
-    return True, method(*args, **kwargs)
-
-
 class AdminServiceDirectoryOwnershipPort:
     def __init__(self, issue_git_support: Any) -> None:
         self._issue_git_support = issue_git_support
@@ -399,10 +384,6 @@ def build_admin_service_components(
             resolve_repo_source=vm_agent_support.resolve_repo_source,
             sync_repo_into_bare_remote=vm_agent_support.sync_repo_into_bare_remote,
             clone_repo_into_vm=vm_agent_support.clone_repo_into_vm,
-            list_vms_for_agents=lambda **kwargs: host.list_vms(**kwargs),
-            admin_service_override=lambda method_name, args, kwargs: (
-                _admin_service_instance_override(host, method_name, args, kwargs)
-            ),
         )
     )
     pr_integration_preflight_admin = PrIntegrationPreflightAdminService(
@@ -452,7 +433,9 @@ def build_admin_service_components(
             container_execution_records_for_session=(
                 vm_agent_admin.container_execution_records_for_session
             ),
-            container_worker_backend=lambda **kwargs: host._container_worker_backend(**kwargs),
+            container_worker_backend=lambda **kwargs: vm_agent_admin.container_worker_backend(
+                **kwargs
+            ),
             container_worker_url_for_target=vm_agent_admin.container_worker_url_for_target,
         )
     )

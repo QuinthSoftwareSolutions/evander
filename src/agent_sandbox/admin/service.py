@@ -6145,43 +6145,6 @@ class AdminService:
     def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
         return self.vm_agent_admin._resolve_repo_source(repo_source)
 
-    def _sync_repo_into_bare_remote(
-        self,
-        repo_name: str,
-        resolved_repo_path: str,
-        *,
-        issue_setup: EffectiveIssueSetupConfig,
-        repo_source: str | None = None,
-    ) -> Path:
-        return self.vm_agent_admin._sync_repo_into_bare_remote(
-            repo_name, resolved_repo_path, issue_setup=issue_setup, repo_source=repo_source
-        )
-
-    def _clone_repo_into_vm(
-        self,
-        *,
-        vm_name: str,
-        vm_user: str,
-        session_id: str,
-        repo_name: str,
-        issue_setup: EffectiveIssueSetupConfig,
-        repo_source: str | None = None,
-        clone_branch: str | None = None,
-        issue_number: str | None = None,
-        vm_ip: str | None = None,
-    ) -> str:
-        return self.vm_agent_admin._clone_repo_into_vm(
-            vm_name=vm_name,
-            vm_user=vm_user,
-            session_id=session_id,
-            repo_name=repo_name,
-            issue_setup=issue_setup,
-            repo_source=repo_source,
-            clone_branch=clone_branch,
-            issue_number=issue_number,
-            vm_ip=vm_ip,
-        )
-
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         return self.issue_git_support.direct_owned_entity_ids(directory_path, kind=kind)
 
@@ -6418,35 +6381,6 @@ class AdminService:
             direct_only=direct_only,
         )
 
-    def _container_worker_execution_repository(self):
-        return self.vm_agent_admin._container_worker_execution_repository()
-
-    def _container_worker_backend(
-        self, *, directory_path: str | None = None, worker_url: str | None = None
-    ):
-        return self.vm_agent_admin._container_worker_backend(
-            directory_path=directory_path, worker_url=worker_url
-        )
-
-    @staticmethod
-    def _container_worker_backend_url(backend: Any) -> str | None:
-        return VmAgentAdminService._container_worker_backend_url(backend)
-
-    @staticmethod
-    def _container_worker_url_from_metadata(metadata: Any) -> str | None:
-        return VmAgentAdminService._container_worker_url_from_metadata(metadata)
-
-    def _container_worker_url_for_target(
-        self,
-        *,
-        session: SessionManifest | None = None,
-        record: Any | None = None,
-        records: list[Any] | None = None,
-    ) -> str | None:
-        return self.vm_agent_admin._container_worker_url_for_target(
-            session=session, record=record, records=records
-        )
-
     @staticmethod
     def _agent_record_directory_path(directory_path: str | None) -> str:
         return VmAgentAdminService._agent_record_directory_path(directory_path)
@@ -6637,42 +6571,6 @@ class AdminService:
     def _agent_records_with_prompt_queue(self, records: list[AgentRecord]) -> list[AgentRecord]:
         return self.vm_agent_admin._agent_records_with_prompt_queue(records)
 
-    def _agent_record_from_vm(
-        self, summary: VmSummary, *, include_effective_tool_policy: bool = True
-    ) -> AgentRecord:
-        return self.vm_agent_admin._agent_record_from_vm(
-            summary, include_effective_tool_policy=include_effective_tool_policy
-        )
-
-    def _agent_record_from_stale_vm_session(
-        self,
-        session: SessionManifest,
-        *,
-        inventory_error: str | None = None,
-        include_effective_tool_policy: bool = True,
-    ) -> AgentRecord:
-        return self.vm_agent_admin._agent_record_from_stale_vm_session(
-            session,
-            inventory_error=inventory_error,
-            include_effective_tool_policy=include_effective_tool_policy,
-        )
-
-    def _reconcile_container_execution_records(self, records: list[Any]) -> list[Any]:
-        return self.vm_agent_admin._reconcile_container_execution_records(records)
-
-    def _container_execution_payload(self, record: Any) -> dict[str, Any]:
-        return self.vm_agent_admin._container_execution_payload(record)
-
-    def _container_worker_image_details(
-        self,
-        metadata: Mapping[str, Any] | None,
-        *,
-        fallback_metadata: Mapping[str, Any] | None = None,
-    ) -> dict[str, str | None]:
-        return self.vm_agent_admin._container_worker_image_details(
-            metadata, fallback_metadata=fallback_metadata
-        )
-
     @staticmethod
     def _runtime_image_ref_display_details(image_ref: str) -> tuple[str, bool]:
         return VmAgentAdminService._runtime_image_ref_display_details(image_ref)
@@ -6681,28 +6579,6 @@ class AdminService:
         self, session: SessionManifest | SessionSummary
     ) -> dict[str, Any]:
         return self.vm_agent_admin.session_runtime_image_payload(session)
-
-    def _agent_record_from_container_execution(
-        self, record: Any, *, reconcile: bool, include_effective_tool_policy: bool = True
-    ) -> AgentRecord:
-        return self.vm_agent_admin._agent_record_from_container_execution(
-            record, reconcile=reconcile, include_effective_tool_policy=include_effective_tool_policy
-        )
-
-    def _agent_record_from_container_session(
-        self,
-        session: SessionManifest,
-        *,
-        executions: list[Any] | None = None,
-        reconcile: bool = False,
-        include_effective_tool_policy: bool = True,
-    ) -> AgentRecord:
-        return self.vm_agent_admin._agent_record_from_container_session(
-            session,
-            executions=executions,
-            reconcile=reconcile,
-            include_effective_tool_policy=include_effective_tool_policy,
-        )
 
     def list_agents(
         self,
@@ -6994,11 +6870,6 @@ class AdminService:
         return self.vm_agent_admin.run_admin_agent_action(
             agent_id, action, backend=backend, payload=payload
         )
-
-    def _prompt_admin_agent(
-        self, agent_id: str, *, backend: str, payload: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return self.vm_agent_admin._prompt_admin_agent(agent_id, backend=backend, payload=payload)
 
     def _queued_admin_prompt_result_after_dispatch_error(
         self,

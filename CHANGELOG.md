@@ -25,6 +25,10 @@
   dependencies, operator steering interrupts, assistant settings/chat, release, and deployment
   status ownership behind extracted admin services.
 
+- Removed the VM-agent `admin_service_override` callback, routed VM-agent orchestration through
+  explicit service ports, and stopped exposing selected private VM/container helpers through
+  `AdminService`.
+
 - Completed the model-usage, tool-visibility, and tool-call audit facade cleanup so
   `AdminService` delegates those APIs while preserving `tool_call_audit_index` compatibility.
 

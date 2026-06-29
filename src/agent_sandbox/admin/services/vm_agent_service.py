@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from importlib import resources
 import hashlib
 import json
@@ -21,8 +21,12 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from agent_sandbox.admin.services.ports import (
+    AgentCreatePort,
+    AgentPromptDispatchPort,
+    ContainerWorkerBackendPort,
     DirectoryPathPort,
     PrivilegedHelperPort,
+    VmLifecyclePort,
     WorkflowConfigPort,
 )
 from agent_sandbox.admin.services import (
@@ -584,10 +588,10 @@ class VmAgentAdminDependencies:
     resolve_repo_source: Any
     sync_repo_into_bare_remote: Any
     clone_repo_into_vm: Any
-    list_vms_for_agents: Callable[..., list[VmSummary]] | None = None
-    admin_service_override: (
-        Callable[[str, tuple[Any, ...], dict[str, Any]], tuple[bool, Any]] | None
-    ) = None
+    vm_lifecycle: VmLifecyclePort | None = None
+    agent_create: AgentCreatePort | None = None
+    agent_prompt_dispatch: AgentPromptDispatchPort | None = None
+    container_worker_backend_port: ContainerWorkerBackendPort | None = None
 
 
 @dataclass(frozen=True)
@@ -1245,6 +1249,15 @@ class VmAgentAdminService:
             raise RuntimeError("VmAgentAdminService agent create executor is not configured")
         return self._agent_create_executor_value
 
+    def _vm_lifecycle_port(self) -> VmLifecyclePort:
+        return self._deps.vm_lifecycle or self
+
+    def _agent_create_port(self) -> AgentCreatePort:
+        return self._deps.agent_create or self
+
+    def _agent_prompt_dispatch_port(self) -> AgentPromptDispatchPort:
+        return self._deps.agent_prompt_dispatch or self
+
     def validate_managed_codex_skills(
         self, skill_names: list[str] | tuple[str, ...] | None
     ) -> list[str]:
@@ -1823,7 +1836,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         is_container_session = provider == "container_worker_vm"
         if is_container_session:
             worker_url = self._container_worker_url_for_target(session=session)
-            backend = self._container_worker_backend(
+            backend = self.container_worker_backend(
                 directory_path=session.directory_path,
                 worker_url=worker_url,
             )
@@ -1887,7 +1900,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError(reason)
 
         execution_records = self._container_execution_records_for_session(normalized_session_id)
-        worker_backend = self._container_worker_backend(
+        worker_backend = self.container_worker_backend(
             directory_path=session.directory_path,
             worker_url=self._container_worker_url_for_target(
                 session=session,
@@ -2840,7 +2853,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 reconciled.append(record)
                 continue
             try:
-                self._container_worker_backend(
+                self.container_worker_backend(
                     directory_path=record.directory_path,
                     worker_url=self._container_worker_url_for_target(record=record),
                 ).inspect(record.execution_id)
@@ -3008,7 +3021,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         session = self.runtime.session_repository.get_session(record.session_id)
         if reconcile:
             try:
-                self._container_worker_backend(
+                self.container_worker_backend(
                     directory_path=record.directory_path,
                     worker_url=self._container_worker_url_for_target(record=record),
                 ).inspect(record.execution_id)
@@ -3187,8 +3200,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         inventoried_session_ids: set[str] = set()
         if selected_backend in {"all", "libvirt_vm"}:
             try:
-                list_vms_for_agents = self._deps.list_vms_for_agents or self.list_vms
-                vm_summaries = list_vms_for_agents(
+                vm_summaries = self.list_vms(
                     include_inactive=include_inactive,
                     omit_state=omit_vm_state,
                     directory_path=None if all_directories else normalized_directory,
@@ -3427,11 +3439,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 worker_payload = self._agent_create_operation_payloads.get(operation_id)
             if worker_payload is None:
                 raise RuntimeError("Agent create request payload is no longer available.")
-            overridden, result = self._admin_service_override(
-                "create_admin_agent", worker_payload
-            )
-            if not overridden:
-                result = self.create_admin_agent(worker_payload)
+            result = self._agent_create_port().create_admin_agent(worker_payload)
             finished_at = _utc_now()
             if bool(result.get("success")):
                 self._update_agent_create_operation(
@@ -3525,19 +3533,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             updated_session=updated_session,
         )
 
-    def _admin_service_override(
-        self, method_name: str, *args: Any, **kwargs: Any
-    ) -> tuple[bool, Any]:
-        override = self._deps.admin_service_override
-        if override is None:
-            return False, None
-        return override(method_name, args, kwargs)
-
     def _create_vm_for_admin_agent(self, **kwargs: Any) -> VmActionResult:
-        overridden, result = self._admin_service_override("create_vm", **kwargs)
-        if overridden:
-            return result
-        return self.create_vm(**kwargs)
+        return self._vm_lifecycle_port().create_vm(**kwargs)
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(
@@ -3699,7 +3696,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         policy = self.runtime.policy_config.resolve_for_directory(directory_path)
         labels = _normalize_session_labels(payload.get("labels"))
         model = self._agent_optional_string(payload, "model")
-        backend = self._container_worker_backend(directory_path=directory_path)
+        backend = self.container_worker_backend(directory_path=directory_path)
         from agent_sandbox.effects.providers.agent_session import default_agent_provider_for_config
 
         requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
@@ -3952,7 +3949,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             key=self._container_execution_sort_key,
             reverse=True,
         )[0]
-        worker_backend = self._container_worker_backend(
+        worker_backend = self.container_worker_backend(
             directory_path=getattr(latest_record, "directory_path", None),
             worker_url=self._container_worker_url_for_target(
                 record=latest_record,
@@ -4096,7 +4093,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             raise ValueError(f"Unknown container worker agent target: {agent_id}")
         execution_records = self._container_execution_records_for_session(session.session_id)
-        worker_backend = self._container_worker_backend(
+        worker_backend = self.container_worker_backend(
             directory_path=session.directory_path,
             worker_url=self._container_worker_url_for_target(
                 session=session,
@@ -4344,7 +4341,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             else str(getattr(record, "target_name", "") or agent_id)
         )
         execution_records = self._container_execution_records_for_session(session_id)
-        worker_backend = self._container_worker_backend(
+        worker_backend = self.container_worker_backend(
             directory_path=(
                 session.directory_path
                 if session is not None
@@ -4435,7 +4432,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             execution_records = (
                 self._container_execution_records_for_session(session_id) if session_id else []
             )
-            worker_backend = self._container_worker_backend(
+            worker_backend = self.container_worker_backend(
                 directory_path=(
                     session.directory_path
                     if session is not None
@@ -4982,7 +4979,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             execution_records = (
                 self._container_execution_records_for_session(session_id) if session_id else []
             )
-            worker_backend = self._container_worker_backend(
+            worker_backend = self.container_worker_backend(
                 directory_path=(
                     session.directory_path
                     if session is not None
@@ -5052,9 +5049,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         body = payload or {}
         if selected_backend == "libvirt_vm":
             if action == "start":
-                overridden, result = self._admin_service_override("start_vm", agent_id)
-                if not overridden:
-                    result = self.start_vm(agent_id)
+                result = self._vm_lifecycle_port().start_vm(agent_id)
             elif action == "shutdown":
                 result = self.shutdown_vm(agent_id)
             elif action == "enable-agent":
@@ -5067,7 +5062,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     raise ValueError("kill-agent requires a running agent pid")
                 result = self.kill_agent(agent_id, int(pid))
             elif action == "prompt-agent":
-                return self._prompt_admin_agent(agent_id, backend=selected_backend, payload=body)
+                return self._agent_prompt_dispatch_port().prompt_admin_agent(
+                    agent_id, backend=selected_backend, payload=body
+                )
             elif action == "resume-agent":
                 prompt = str(body.get("prompt") or "").strip()
                 if not prompt:
@@ -5113,7 +5110,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     vm_user=self._agent_optional_string(body, "vm_user") or "agent",
                 )
             if action == "prompt-agent":
-                return self._prompt_admin_agent(
+                return self._agent_prompt_dispatch_port().prompt_admin_agent(
                     agent_id,
                     backend=selected_backend,
                     payload=body,
@@ -5128,7 +5125,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             execution_records = (
                 self._container_execution_records_for_session(session_id) if session_id else []
             )
-            worker_backend = self._container_worker_backend(
+            worker_backend = self.container_worker_backend(
                 directory_path=(
                     session.directory_path
                     if session is not None
@@ -5200,19 +5197,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             }
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
-    def _prompt_admin_agent(
+    def prompt_admin_agent(
         self,
         agent_id: str,
         *,
         backend: str,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        overridden, result = self._admin_service_override(
-            "_prompt_admin_agent", agent_id, backend=backend, payload=payload
-        )
-        if overridden:
-            return result
-
         prompt = self._agent_optional_string(payload, "prompt")
         if not prompt:
             raise ValueError("prompt-agent requires a non-empty prompt")
@@ -6017,7 +6008,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         safe_user_id: str,
         settings: dict[str, Any] | None,
     ) -> None:
-        backend = self._container_worker_backend(directory_path="root")
+        backend = self.container_worker_backend(directory_path="root")
         backend.prepare_session(
             session_id=session_id,
             metadata={
@@ -6047,20 +6038,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ],
         )
 
-    def _container_worker_backend(
+    def _build_container_worker_backend(
         self,
         *,
         directory_path: str | None = None,
         worker_url: str | None = None,
     ):
-        overridden, backend = self._admin_service_override(
-            "_container_worker_backend",
-            directory_path=directory_path,
-            worker_url=worker_url,
-        )
-        if overridden:
-            return backend
-
         from agent_sandbox.execution.container_worker_backend import (
             ContainerWorkerVmExecutionBackend,
         )
@@ -6088,7 +6071,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path: str | None = None,
         worker_url: str | None = None,
     ):
-        return self._container_worker_backend(directory_path=directory_path, worker_url=worker_url)
+        port = self._deps.container_worker_backend_port
+        if port is not None:
+            return port.container_worker_backend(
+                directory_path=directory_path, worker_url=worker_url
+            )
+        return self._build_container_worker_backend(
+            directory_path=directory_path, worker_url=worker_url
+        )
 
     def container_worker_execution_repository(self):
         from agent_sandbox.execution.container_worker_repository import (
@@ -6849,7 +6839,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     raise
                 container_session = None
         if container_session is not None and self._is_container_session(container_session):
-            response = self._prompt_admin_agent(
+            response = self._agent_prompt_dispatch_port().prompt_admin_agent(
                 container_session.session_id,
                 backend="container_worker_vm",
                 payload={
