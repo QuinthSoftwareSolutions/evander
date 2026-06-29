@@ -89,6 +89,15 @@ def make_context(tmp_path: Path):
     return context
 
 
+def patch_gateway_admin_runtime(monkeypatch: pytest.MonkeyPatch, **service_factories):
+    def fake_build_admin_runtime(runtime_dir: Path):
+        return SimpleNamespace(
+            **{name: factory(runtime_dir) for name, factory in service_factories.items()}
+        )
+
+    monkeypatch.setattr("agent_sandbox.gateway.build_admin_runtime", fake_build_admin_runtime)
+
+
 def ensure_directories(context, *directory_paths: str) -> None:
     service = DirectoryService(context.directories)
     for directory_path in directory_paths:
@@ -483,7 +492,7 @@ def test_create_local_issue_uses_session_directory_path(
                 },
             )
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -571,7 +580,7 @@ def test_list_issues_defaults_to_open_states_in_session_directory(
                 ),
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(server, "list_issues", {"session_id": "session-1"})
@@ -626,7 +635,7 @@ def test_list_issues_filters_by_requested_status_values(
                 ),
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -675,7 +684,7 @@ def test_list_issues_exposes_rejection_reason_from_metadata(
                 ),
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -775,7 +784,7 @@ def test_list_issues_treats_rejected_closed_and_completed_as_union(
                 ),
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -834,7 +843,7 @@ def test_get_issue_passes_through_backend_payload(
                 "rejection_reason": "Out of scope",
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1029,7 +1038,7 @@ def test_approve_issue_sets_approved_state_and_reason(
             }
             return {"issue_number": issue_id, "source_type": "local", "updated": True}
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1085,7 +1094,7 @@ def test_reject_issue_sets_closed_state_and_reason(
             }
             return {"issue_number": issue_id, "source_type": "local", "updated": True}
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1136,7 +1145,7 @@ def test_commit_issue_sets_committed_state_and_reason(
             }
             return {"issue_number": issue_id, "source_type": "local", "updated": True}
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1190,7 +1199,7 @@ def test_commit_issue_reuses_mapped_transport_session(
             cast_payloads.append(payload)
             return {"issue_number": issue_id, "source_type": "local", "updated": True}
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     seeded_result = call_tool_with_context(
@@ -1292,7 +1301,7 @@ def test_claim_next_issue_passes_through_backend_payload(
                 },
             )
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(server, "claim_next_issue", {"session_id": "session-1"})
@@ -1335,7 +1344,7 @@ def test_complete_issue_passes_through_backend_payload(
                 "updated": True,
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, issue_git_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1492,7 +1501,7 @@ def test_get_agent_status_maps_backend_state(
                 )
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, vm_agent_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(server, "get_agent_status", {"session_id": "session-1", "vm_name": "vm-123"})
@@ -1558,7 +1567,7 @@ def test_get_agent_status_allows_same_directory_peer_vm(
                 ),
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, vm_agent_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1610,7 +1619,7 @@ def test_get_agent_status_rejects_cross_directory_vm(
                 )
             ]
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, vm_agent_admin=StubAdminService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="outside the session directory scope 'root/team-a'"):
@@ -1674,7 +1683,7 @@ def test_get_agent_logs_returns_tail_from_service(
             }
             return "log-line-1\nlog-line-2"
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, vm_agent_admin=StubAdminService)
     server = create_server(context)
 
     result = call_tool(
@@ -1763,7 +1772,7 @@ def test_get_agent_status_and_logs_reuse_mapped_transport_session(
             }
             return "log-line-1\nlog-line-2"
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", StubAdminService)
+    patch_gateway_admin_runtime(monkeypatch, vm_agent_admin=StubAdminService)
     server = create_server(context)
 
     seeded_status = call_tool_with_context(

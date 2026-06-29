@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Updated CLI and gateway tests for the admin facade removal so fakes patch
+  `build_admin_runtime` and expose only the focused runtime component under
+  test.
+
 - Restored Admin Web add-on service compatibility after the admin facade removal
   by passing add-on routes a narrow adapter for project Git imports, agent
   inventory summaries, and Team chat dispatch helpers.

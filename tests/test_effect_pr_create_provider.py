@@ -189,5 +189,5 @@ def test_pr_create_provider_requires_admin_service_method(tmp_path: Path) -> Non
         ),
     )
 
-    with pytest.raises(RuntimeError, match="AdminRuntimeComponents\\.pr_create is not available"):
+    with pytest.raises(RuntimeError, match="Admin runtime pr_create is not available"):
         provider.execute(resolved_config={"repo_path": "/repo"})
