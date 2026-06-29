@@ -40,7 +40,7 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
 
 def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     clone_runtime = (
-        ROOT / "src" / "agent_sandbox" / "admin" / "services" / "vm_agent_service.py"
+        ROOT / "src" / "agent_sandbox" / "admin" / "services" / "vm_agent" / "vm_repo.py"
     ).read_text(encoding="utf-8")
     project_helpers = (
         ROOT / "src" / "agent_sandbox" / "admin" / "services" / "project_helpers.py"
@@ -88,7 +88,10 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     assert "agent-sandbox.prNotesRef" in guest_agents_template
     assert "`push-agent` refuses to run when `SESSION_ID` is missing" in guest_agents_template
     assert "suffix resolves empty" in guest_agents_template
-    assert "`push-agent` fetches and verifies the configured destination branch" in guest_agents_template
+    assert (
+        "`push-agent` fetches and verifies the configured destination branch"
+        in guest_agents_template
+    )
     assert "`sync-base` fetches and merges the configured base branch" in guest_agents_template
 
 
@@ -114,7 +117,9 @@ def test_guest_push_agent_helper_preflights_destination_branch_before_push() -> 
     assert "merge-base --is-ancestor" in helper
     assert "Refusing to push: " in helper
     assert "git sync-base" in helper
-    assert 'git push agent "HEAD:refs/heads/agents/${session_id_value}/${branch}-${suffix}"' in helper
+    assert (
+        'git push agent "HEAD:refs/heads/agents/${session_id_value}/${branch}-${suffix}"' in helper
+    )
 
 
 def test_guest_sync_base_helper_fetches_and_merges_configured_base_branch() -> None:
