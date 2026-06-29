@@ -72,7 +72,7 @@ from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
-from .services.domain_helpers import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
 from .services.runtime_service import TeamRuntimeService
