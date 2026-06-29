@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Split `VmAgentAdminService` internals into focused VM-agent mixins for container sessions,
+  inventory, create operations, agent actions, chat assistant setup, container backend access, and
+  VM lifecycle behavior while keeping the public admin facade compatible.
+
 - Refactored the Team Add-on state repository into a storage-only persistence facade, moving
   command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
   focused Team services.
