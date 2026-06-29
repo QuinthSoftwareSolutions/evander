@@ -20,7 +20,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from agent_sandbox.admin.tool_visibility import ToolVisibilityPayload
 from agent_sandbox.admin.services.ports import (
     DirectoryPathPort,
     PrivilegedHelperPort,
@@ -50,10 +49,6 @@ from agent_sandbox.directories import DirectoryPath, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.messaging.targets import load_communication_targets_config
 from agent_sandbox.effects.registry import EffectProviderFactory
-from agent_sandbox.effects.providers.agent_session import (
-    build_container_session_files,
-    default_agent_provider_for_config,
-)
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 from agent_sandbox.execution import ExecutionBackendKind
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
@@ -92,7 +87,7 @@ from agent_sandbox.session_artifacts import (
     DEFAULT_AGENT_ARTIFACTS_DIR,
     normalize_artifact_relative_path,
 )
-from agent_sandbox.runtime import allowed_tools_for_capability_profile
+from agent_sandbox.runtime import RuntimeContext, allowed_tools_for_capability_profile
 from agent_sandbox.services import parse_teams_target
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from agent_sandbox.vm.provider import VmProviderRegistry
