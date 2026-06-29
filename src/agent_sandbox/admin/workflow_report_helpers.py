@@ -299,4 +299,3 @@ def _merge_run_node_activity(items: object) -> list[WorkflowRunNodeActivityPaylo
             item.node_id,
         ),
     )
-
