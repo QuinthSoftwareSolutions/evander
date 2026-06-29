@@ -5,11 +5,11 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from . import domain_helpers as _domain_helpers
+from .domain import common as _team_common
 from ..repository import (
     TeamStateRepository,
 )
-from .domain_helpers import (
+from ..models import (
     AgentAvatar,
     AgentContextClearingPolicy,
     AgentInboxItem,
@@ -45,60 +45,72 @@ from .domain_helpers import (
     TeamRole,
     TeamState,
     TeamTaskState,
-    _NON_TERMINAL_TASK_STATES,
+    _ensure_unique,
+    _unique_text_list,
+    agent_project_ids,
+)
+from ..templates import get_template
+from .domain.agent_access import (
     _agent_for_session,
     _agent_governs_team,
     _agent_team_removal_blockers,
-    _append_unique,
-    _build_release_package,
-    _cascade_review_decision,
-    _case_can_link_task,
     _default_role_id,
-    _ensure_unique,
-    _generated_id,
-    _governance_agenda_effective_team_id,
-    _governance_goals_with_generated_ids,
-    _is_review_decision_state,
+    _normalize_role_permissions,
+    _project_assignment_id,
+    _validate_role_assignment,
+    _validate_role_filter_assignment,
+)
+from .domain.case_task import (
+    _case_can_link_task,
     _link_task_to_case,
+    _sync_case_task_link,
+    _unlink_task_from_case,
+    _validate_case_scope,
+)
+from .domain.common import (
+    _NON_TERMINAL_TASK_STATES,
+    _append_unique,
+    _generated_id,
     _mapping,
-    _mark_agent_work_due,
     _materialize_role_inputs,
     _materialized_template_record_id,
-    _maybe_mark_idle_context_rotation_due,
-    _normalize_role_permissions,
     _optional_bool,
     _optional_cost_limit,
     _optional_text,
     _ordered_template_roles,
-    _project_assignment_id,
     _project_git_config,
     _project_goals_with_generated_ids,
-    _recalculate_project_status,
-    _record_governance_membership_change_agenda,
     _remove_value,
     _require_absent,
     _require_present,
     _required_mapping,
     _required_text,
-    _resolved_context_clearing_policy,
-    _review_profile_for_request,
-    _set_context_clearing_policy,
     _set_task_state,
-    _superseded_deliverable_for_rework,
-    _sync_case_task_link,
     _unique_id_from_base,
-    _unique_text_list,
-    _unlink_task_from_case,
-    _validate_case_scope,
-    _validate_role_assignment,
-    _validate_role_filter_assignment,
-    agent_project_ids,
-    get_template,
 )
+from .domain.context_rotation import (
+    _maybe_mark_idle_context_rotation_due,
+    _resolved_context_clearing_policy,
+    _set_context_clearing_policy,
+)
+from .domain.deliverables import _superseded_deliverable_for_rework
+from .domain.governance import (
+    _governance_agenda_effective_team_id,
+    _governance_goals_with_generated_ids,
+    _record_governance_membership_change_agenda,
+)
+from .domain.project_status import _recalculate_project_status
+from .domain.release_packages import _build_release_package
+from .domain.review import (
+    _cascade_review_decision,
+    _is_review_decision_state,
+    _review_profile_for_request,
+)
+from .domain.work_due import _mark_agent_work_due
 
 
 def utc_now() -> datetime:
-    return _domain_helpers.utc_now()
+    return _team_common.utc_now()
 
 
 class TeamAdminService:

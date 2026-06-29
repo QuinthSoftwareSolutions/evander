@@ -4,11 +4,10 @@ from typing import Any
 from uuid import uuid4
 
 from ..repository import TeamStateRepository
-from .domain_helpers import (
+from ..models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
-    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
     Deliverable,
     TeamInboxItemState,
     TeamInboxItemType,
@@ -16,71 +15,96 @@ from .domain_helpers import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
-    _NON_TERMINAL_TASK_STATES,
-    _TaskCreationPlan,
-    _active_stand_downs_for_agent,
+)
+from .domain.action_feedback import (
     _append_action_item_error,
-    _append_agent_wake_requested_event,
-    _append_agent_wake_requested_event_for_inbox_item,
-    _append_follow_up_agent_wake_requested_event,
-    _append_pending_chat_message_queued_event_for_agent,
-    _append_unique,
-    _apply_case_update,
-    _apply_chat_reply,
-    _apply_ephemeral_acceptance,
-    _apply_git_feature_update,
-    _apply_git_release_recovery,
-    _apply_git_release_request,
-    _apply_git_review_promotion,
-    _apply_goal_update,
-    _apply_operator_chat_message,
-    _apply_operator_escalation,
-    _apply_review_decision,
-    _apply_review_request,
-    _apply_superior_stand_down,
-    _apply_superior_stand_down_revocation,
-    _apply_task_creation_plan,
-    _bool_from_value,
-    _create_ephemeral_assignments,
-    _deliverable_git_refs_from_payload,
-    _deliverable_verification_from_payload,
-    _deliverable_verification_payload,
-    _ephemeral_assignment_event_payload,
-    _generated_id,
     _git_release_sequence_error,
+    _mark_action_failure,
+    _priority_from_item,
+    _response_requested_from_item,
+)
+from .domain.action_feedback_payloads import _non_empty_action_fields
+from .domain.agent_access import (
     _is_direct_subordinate,
     _is_project_lead_for,
     _is_team_manager,
-    _list_of_mappings,
-    _mark_action_failure,
-    _mark_agent_work_due,
-    _mark_chat_dispatch_message_failed,
-    _maybe_mark_idle_context_rotation_due,
-    _non_empty_action_fields,
-    _optional_text,
-    _plan_task_creation,
-    _priority_from_item,
-    _publish_admin_chat_notifications,
-    _recalculate_project_status,
-    _require_present,
-    _required_text,
     _resolve_action_agent,
-    _response_requested_from_item,
-    _restore_case_task_state,
-    _review_request_was_created,
-    _set_task_state,
-    _snapshot_case_task_state,
-    _stand_down_error_detail,
-    _string_list,
-    _subordinate_task_finish_allowed,
-    _superseded_deliverable_for_rework,
     _supervises,
+)
+from .domain.case_task import (
+    _TaskCreationPlan,
+    _apply_case_update,
+    _apply_goal_update,
+    _apply_task_creation_plan,
+    _plan_task_creation,
+    _restore_case_task_state,
+    _snapshot_case_task_state,
+    _subordinate_task_finish_allowed,
     _task_creation_batch_graph_errors,
     _task_graph_edit_error,
     _task_owner_reassignment_error,
     _upward_recipient_error,
+)
+from .domain.chat import (
+    _append_pending_chat_message_queued_event_for_agent,
+    _apply_chat_reply,
+    _apply_operator_chat_message,
+    _mark_chat_dispatch_message_failed,
+    _publish_admin_chat_notifications,
+)
+from .domain.common import (
+    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+    _NON_TERMINAL_TASK_STATES,
+    _append_unique,
+    _bool_from_value,
+    _generated_id,
+    _list_of_mappings,
+    _optional_text,
+    _require_present,
+    _required_text,
+    _set_task_state,
+    _string_list,
     utc_now,
 )
+from .domain.context_rotation import _maybe_mark_idle_context_rotation_due
+from .domain.deliverables import (
+    _deliverable_git_refs_from_payload,
+    _deliverable_verification_from_payload,
+    _deliverable_verification_payload,
+    _superseded_deliverable_for_rework,
+)
+from .domain.ephemeral import (
+    _apply_ephemeral_acceptance,
+    _create_ephemeral_assignments,
+    _ephemeral_assignment_event_payload,
+)
+from .domain.git_promotion import (
+    _apply_git_feature_update,
+    _apply_git_review_promotion,
+)
+from .domain.operator_escalation import _apply_operator_escalation
+from .domain.project_status import _recalculate_project_status
+from .domain.release_packages import (
+    _apply_git_release_recovery,
+    _apply_git_release_request,
+)
+from .domain.review import (
+    _apply_review_decision,
+    _apply_review_request,
+    _review_request_was_created,
+)
+from .domain.stand_down import (
+    _active_stand_downs_for_agent,
+    _apply_superior_stand_down,
+    _apply_superior_stand_down_revocation,
+    _stand_down_error_detail,
+)
+from .domain.wake import (
+    _append_agent_wake_requested_event,
+    _append_agent_wake_requested_event_for_inbox_item,
+    _append_follow_up_agent_wake_requested_event,
+)
+from .domain.work_due import _mark_agent_work_due
 
 
 class TeamAgentActionService:

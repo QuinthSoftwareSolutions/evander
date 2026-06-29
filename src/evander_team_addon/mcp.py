@@ -28,9 +28,7 @@ from .repository import (
     TeamStateConflictError,
     TeamStateRepository,
 )
-from .services.domain_helpers import (
-    AGENT_WAKE_REQUESTED_EVENT_TYPE,
-)
+from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.command_service import TeamCommandService
 
 TEAM_RECORD_NOTE_TOOL = "team_record_note"

@@ -51,7 +51,7 @@ from evander_team_addon.repository import (
     ADDON_ID,
     TeamStateRepository,
 )
-from evander_team_addon.services.domain_helpers import AGENT_WAKE_REQUESTED_EVENT_TYPE
+from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 

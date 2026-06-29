@@ -15,30 +15,23 @@ from ..sqlite_store import (
 from ..repository import (
     TeamStateRepository,
 )
-from .domain_helpers import (
+from pathlib import PurePosixPath
+from ..models import (
     AGENT_OPERATOR_ONLY_FIELDS,
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
     AgentStatus,
     AgentTask,
-    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
     Deliverable,
-    EPHEMERAL_COMPLETED_EVENT_TYPE,
-    EPHEMERAL_REQUESTED_EVENT_TYPE,
-    EPHEMERAL_WORKER_REPORT_TOOL,
     EphemeralAssignment,
     EphemeralAssignmentState,
-    GIT_PROMOTION_EVENT_TYPE,
-    GIT_RELEASE_RECOVERY_EVENT_TYPE,
     GovernanceAgendaItem,
     GovernanceAgendaItemState,
     GovernanceAgendaItemType,
     GovernanceGroup,
     GovernanceRuntime,
-    OPERATOR_ESCALATION_EVENT_TYPE,
     PersistentAgent,
-    PurePosixPath,
     ReleasePackage,
     ReviewRequest,
     TeamCaseStatus,
@@ -54,80 +47,111 @@ from .domain_helpers import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
-    _MCP_TASK_UPDATE_STATE_VALUES,
-    _NON_TERMINAL_TASK_STATES,
-    _TaskCreationPlan,
-    _UNSET,
-    _active_stand_downs_for_agent,
+    _unique_text_list,
+    release_package_payload_with_derived,
+    task_payload_with_derived,
+)
+from ..git_naming import (
+    ephemeral_agent_branch,
+    validate_branch_name,
+)
+from .domain.agent_access import (
     _agent_for_session,
-    _append_agent_wake_requested_event,
-    _append_agent_wake_requested_event_for_inbox_item,
-    _append_unique,
-    _apply_case_update,
-    _apply_ephemeral_acceptance,
-    _apply_git_feature_update,
-    _apply_git_release_recovery,
-    _apply_git_release_request,
-    _apply_git_review_promotion,
-    _apply_goal_update,
-    _apply_review_decision,
-    _apply_review_request,
-    _apply_superior_stand_down,
-    _apply_superior_stand_down_revocation,
-    _apply_task_creation_plan,
-    _chat_preview,
-    _create_ephemeral_assignments,
-    _create_ephemeral_parent_notice,
-    _deliverable_git_refs_from_payload,
-    _deliverable_submission_next_action_hints,
-    _deliverable_verification_from_payload,
-    _deliverable_verification_payload,
-    _ensure_utc,
-    _ephemeral_assignment_event_payload,
-    _ephemeral_request_result,
-    _failed_release_promotion_for_recovery,
-    _generated_id,
-    _governance_groups_for_team,
     _is_direct_subordinate,
     _is_project_lead_for,
     _is_team_manager,
+    _supervises,
+)
+from .domain.case_task import (
+    _TaskCreationPlan,
+    _apply_case_update,
+    _apply_goal_update,
+    _apply_task_creation_plan,
+    _plan_task_creation,
+    _restore_case_task_state,
+    _snapshot_case_task_state,
+    _subordinate_task_finish_allowed,
+    _task_creation_batch_graph_errors,
+    _task_graph_edit_error,
+    _task_owner_reassignment_error,
+)
+from .domain.chat import (
+    _chat_preview,
+    _publish_admin_chat_notifications,
+    _touch_conversation,
+)
+from .domain.common import (
+    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+    EPHEMERAL_WORKER_REPORT_TOOL,
+    _MCP_TASK_UPDATE_STATE_VALUES,
+    _NON_TERMINAL_TASK_STATES,
+    _UNSET,
+    _append_unique,
+    _ensure_utc,
+    _generated_id,
     _list_of_mappings,
-    _manager_fallback_review_decision_guard_error,
     _mapping,
-    _mark_agent_work_due,
-    _maybe_mark_idle_context_rotation_due,
-    _normalize_agent_branch_ref,
-    _normalize_deliverable_verification_mapping,
     _normalize_operator_user_id,
     _operator_display_name_for_user,
     _optional_bool,
     _optional_mapping,
     _optional_text,
-    _plan_task_creation,
-    _publish_admin_chat_notifications,
-    _recalculate_project_status,
     _require_present,
     _required_text,
-    _restore_case_task_state,
+    _set_task_state,
+    _string_list,
+)
+from .domain.context_rotation import _maybe_mark_idle_context_rotation_due
+from .domain.deliverables import (
+    _deliverable_git_refs_from_payload,
+    _deliverable_submission_next_action_hints,
+    _deliverable_verification_from_payload,
+    _deliverable_verification_payload,
+    _normalize_deliverable_verification_mapping,
+    _superseded_deliverable_for_rework,
+)
+from .domain.ephemeral import (
+    EPHEMERAL_COMPLETED_EVENT_TYPE,
+    EPHEMERAL_REQUESTED_EVENT_TYPE,
+    _apply_ephemeral_acceptance,
+    _create_ephemeral_assignments,
+    _create_ephemeral_parent_notice,
+    _ephemeral_assignment_event_payload,
+    _ephemeral_request_result,
+)
+from .domain.git_promotion import (
+    GIT_PROMOTION_EVENT_TYPE,
+    _apply_git_feature_update,
+    _apply_git_review_promotion,
+    _normalize_agent_branch_ref,
+)
+from .domain.governance import _governance_groups_for_team
+from .domain.manager_fallback import _manager_fallback_review_decision_guard_error
+from .domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
+from .domain.project_status import _recalculate_project_status
+from .domain.release_packages import (
+    GIT_RELEASE_RECOVERY_EVENT_TYPE,
+    _apply_git_release_recovery,
+    _apply_git_release_request,
+    _failed_release_promotion_for_recovery,
+)
+from .domain.review import (
+    _apply_review_decision,
+    _apply_review_request,
     _review_profile_for_request,
     _review_request_was_created,
-    _set_task_state,
-    _snapshot_case_task_state,
-    _stand_down_error_detail,
-    _string_list,
-    _subordinate_task_finish_allowed,
-    _superseded_deliverable_for_rework,
-    _supervises,
-    _task_creation_batch_graph_errors,
-    _task_graph_edit_error,
-    _task_owner_reassignment_error,
-    _touch_conversation,
-    _unique_text_list,
-    ephemeral_agent_branch,
-    release_package_payload_with_derived,
-    task_payload_with_derived,
-    validate_branch_name,
 )
+from .domain.stand_down import (
+    _active_stand_downs_for_agent,
+    _apply_superior_stand_down,
+    _apply_superior_stand_down_revocation,
+    _stand_down_error_detail,
+)
+from .domain.wake import (
+    _append_agent_wake_requested_event,
+    _append_agent_wake_requested_event_for_inbox_item,
+)
+from .domain.work_due import _mark_agent_work_due
 
 
 @dataclass(frozen=True)

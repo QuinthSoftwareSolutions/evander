@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from . import domain_helpers as _domain_helpers
+from .domain import common as _team_common
 from ..repository import (
     TeamStateConflictError,
     TeamStateRepository,
@@ -14,7 +14,7 @@ from ..repository import (
 from ..sqlite_store import (
     TeamStateSqliteCommandTransaction,
 )
-from .domain_helpers import (
+from ..models import (
     AgentContextClearingPolicy,
     AgentRuntime,
     AgentStandDown,
@@ -24,48 +24,6 @@ from .domain_helpers import (
     TeamDispatchActivityStatus,
     TeamInboxPriority,
     TeamState,
-    _active_stand_downs_for_agent,
-    _active_tasks_for_agent,
-    _advance_low_priority_batch,
-    _agent_for_session,
-    _agent_payload,
-    _agent_subtree_ids,
-    _append_follow_up_agent_wake_requested_event,
-    _append_pending_chat_message_queued_event_for_agent,
-    _case_payloads_for_agent,
-    _case_payloads_for_team,
-    _chat_dispatch_finalization_error,
-    _clear_completed_chat_dispatch_lease,
-    _clear_low_priority_batch,
-    _decimal_or_zero,
-    _dispatch_activity_counts_as_progress,
-    _dispatch_activity_counts_for_context_rotation,
-    _ensure_utc,
-    _governance_blocked_signal_fingerprints,
-    _governance_blocked_team_signals,
-    _governance_cost_signal_fingerprints,
-    _governance_cost_signals,
-    _governance_group_payload,
-    _governance_member_team_payload,
-    _latest_action_feedback_for_agent,
-    _manager_fallback_summary_payload,
-    _mark_agent_work_due,
-    _mark_chat_dispatch_message_failed,
-    _mark_chat_dispatch_message_replied_from_activity,
-    _mark_context_rotation_pending,
-    _maybe_mark_idle_context_rotation_due,
-    _operator_chat_participant_payloads,
-    _optional_text,
-    _pending_governance_agenda_for_group,
-    _pending_inbox_for_agent,
-    _release_package_payloads_for_agent,
-    _require_present,
-    _required_text,
-    _runtime_attention_payloads_for_agent,
-    _subordinate_agent_payloads,
-    _task_can_wake_owner_for_work,
-    _team_ids_with_open_work,
-    _wakeable_inbox_items,
     agent_has_project_assignment,
     agent_lead_project_ids,
     agent_project_assignment_payloads,
@@ -73,10 +31,70 @@ from .domain_helpers import (
     effective_role_permissions,
     task_payload_with_derived,
 )
+from .domain.action_feedback_payloads import _latest_action_feedback_for_agent
+from .domain.agent_access import (
+    _agent_for_session,
+    _agent_payload,
+    _subordinate_agent_payloads,
+    _team_ids_with_open_work,
+)
+from .domain.chat import (
+    _append_pending_chat_message_queued_event_for_agent,
+    _chat_dispatch_finalization_error,
+    _clear_completed_chat_dispatch_lease,
+    _mark_chat_dispatch_message_failed,
+    _mark_chat_dispatch_message_replied_from_activity,
+    _operator_chat_participant_payloads,
+)
+from .domain.common import (
+    _decimal_or_zero,
+    _ensure_utc,
+    _optional_text,
+    _require_present,
+    _required_text,
+)
+from .domain.context_rotation import (
+    _mark_context_rotation_pending,
+    _maybe_mark_idle_context_rotation_due,
+)
+from .domain.dispatch_progress import (
+    _dispatch_activity_counts_as_progress,
+    _dispatch_activity_counts_for_context_rotation,
+)
+from .domain.governance import (
+    _governance_blocked_signal_fingerprints,
+    _governance_blocked_team_signals,
+    _governance_cost_signal_fingerprints,
+    _governance_cost_signals,
+    _governance_group_payload,
+    _governance_member_team_payload,
+    _pending_governance_agenda_for_group,
+)
+from .domain.manager_fallback import _manager_fallback_summary_payload
+from .domain.stand_down import (
+    _active_stand_downs_for_agent,
+    _agent_subtree_ids,
+)
+from .domain.wake import (
+    _active_tasks_for_agent,
+    _append_follow_up_agent_wake_requested_event,
+    _case_payloads_for_agent,
+    _case_payloads_for_team,
+    _pending_inbox_for_agent,
+    _release_package_payloads_for_agent,
+    _runtime_attention_payloads_for_agent,
+    _task_can_wake_owner_for_work,
+    _wakeable_inbox_items,
+)
+from .domain.work_due import (
+    _advance_low_priority_batch,
+    _clear_low_priority_batch,
+    _mark_agent_work_due,
+)
 
 
 def utc_now() -> datetime:
-    return _domain_helpers.utc_now()
+    return _team_common.utc_now()
 
 
 class TeamRuntimeService:

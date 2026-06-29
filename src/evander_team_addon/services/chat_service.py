@@ -4,31 +4,35 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from . import domain_helpers as _domain_helpers
+from .domain import common as _team_common
 from ..repository import (
     TeamStateConflictError,
     TeamStateRepository,
 )
-from .domain_helpers import (
+from ..models import (
     AgentRuntime,
     AgentStatus,
     TeamConversation,
     TeamConversationMessage,
     TeamState,
+    agent_has_project_assignment,
+)
+from .domain.chat import (
     _chat_preview,
+    _touch_conversation,
+)
+from .domain.common import (
     _ensure_utc,
     _generated_id,
     _normalize_operator_user_id,
     _optional_text,
     _require_present,
     _required_text,
-    _touch_conversation,
-    agent_has_project_assignment,
 )
 
 
 def utc_now() -> datetime:
-    return _domain_helpers.utc_now()
+    return _team_common.utc_now()
 
 
 class TeamChatService:

@@ -3,24 +3,28 @@ from __future__ import annotations
 from typing import Any
 
 from ..repository import TeamStateRepository
-from .domain_helpers import (
-    EPHEMERAL_COMPLETED_EVENT_TYPE,
+from ..models import (
     EphemeralAssignmentState,
     TeamState,
-    _apply_ephemeral_acceptance,
+)
+from ..git_naming import ephemeral_agent_branch
+from .domain.common import (
     _bool_from_value,
-    _create_ephemeral_assignments,
-    _create_ephemeral_parent_notice,
-    _ephemeral_assignment_event_payload,
-    _ephemeral_request_result,
     _list_of_mappings,
     _optional_text,
     _require_present,
     _required_text,
-    _resolve_ephemeral_assignment,
     _string_list,
-    ephemeral_agent_branch,
     utc_now,
+)
+from .domain.ephemeral import (
+    EPHEMERAL_COMPLETED_EVENT_TYPE,
+    _apply_ephemeral_acceptance,
+    _create_ephemeral_assignments,
+    _create_ephemeral_parent_notice,
+    _ephemeral_assignment_event_payload,
+    _ephemeral_request_result,
+    _resolve_ephemeral_assignment,
 )
 
 
