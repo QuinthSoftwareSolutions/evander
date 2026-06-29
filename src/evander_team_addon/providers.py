@@ -42,11 +42,18 @@ from agent_sandbox.events.provider_models import (
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
 )
-from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.events.models import TriggerEvent, WorkflowNodeEnvelope
 from agent_sandbox.models import tool_name_value
 from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryProviderBase
+from agent_sandbox.triggers.delivery import (
+    TriggerDeliveryRepository,
+    TriggerDeliverySourceItem,
+    TriggerDeliveryStore,
+    TriggerDeliverySubscription,
+)
+from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.workflow.catalog import (
     WorkflowEditorFieldDefinition,
     WorkflowEditorNodeCatalogEntry,
@@ -93,6 +100,7 @@ from .mcp import (
     TEAM_UPDATE_TASK_TOOL,
 )
 from .models import (
+    AgentStatus,
     RolePermission,
     TeamState,
     TeamTaskState,
@@ -105,7 +113,9 @@ from .provider_schemas import (
     TeamConsolidateGitBranchesEffectDefinition,
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
+    TeamCreateReviewRequestEffectDefinition,
     TeamCreateTaskEffectDefinition,
+    TeamDeliverableCreatedTriggerDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
@@ -124,6 +134,7 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
+from .services.domain_helpers import _apply_review_request, _review_request_was_created
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
 from .services.runtime_service import TeamRuntimeService
@@ -212,6 +223,38 @@ def _valid_field() -> WorkflowEditorFieldDefinition:
 
 
 _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
+    _catalog_entry(
+        "trigger",
+        "trigger:team:deliverable-created",
+        "Team deliverable created",
+        "Start a workflow when a Team deliverable is created.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                description="Only emit deliverables from this Team. Leave blank for all Teams.",
+                placeholder="auto-dev",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Only emit deliverables from this Team project. Leave blank for all projects.",
+                placeholder="web-app",
+            ),
+            _catalog_field(
+                "producer_agent_id",
+                "Producer agent ID",
+                "string",
+                description=(
+                    "Only emit deliverables produced by this persistent Team agent. "
+                    "Leave blank for any producer."
+                ),
+                placeholder="implementer",
+            ),
+        ],
+    ),
     _catalog_entry(
         "effect",
         "effect:team:wake-due-agents",
@@ -495,6 +538,81 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Requesting session ID",
                 "string",
                 description="Optional Truman session that requested the directive.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:create-review-request",
+        "Create Team review request",
+        "Create a Team review request for a deliverable and wake the assigned reviewer.",
+        [
+            _catalog_field(
+                "actor_agent_id",
+                "Actor agent ID",
+                "string",
+                required=True,
+                description=(
+                    "Team agent whose authority is used to request the review. "
+                    "Must be the producer, a supervisor, project lead, or manager."
+                ),
+                placeholder="project-lead",
+            ),
+            _catalog_field(
+                "deliverable_id",
+                "Deliverable ID",
+                "string",
+                required=True,
+                description="Deliverable that needs this review request.",
+                placeholder="${{team-deliverable-created.deliverable_id}}",
+            ),
+            _catalog_field(
+                "reviewer_agent_id",
+                "Reviewer agent ID",
+                "string",
+                required=True,
+                description="Persistent Team agent assigned to decide the review.",
+                placeholder="code-reviewer",
+            ),
+            _catalog_field(
+                "review_request_id",
+                "Review request ID",
+                "string",
+                description="Optional stable review request id. Leave blank to generate one.",
+                placeholder="code-review-${{team-deliverable-created.deliverable_id}}",
+            ),
+            _catalog_field(
+                "review_profile_id",
+                "Review profile ID",
+                "string",
+                description="Optional Team review profile rubric to attach to the request.",
+                placeholder="code-review-profile",
+            ),
+            _catalog_field(
+                "instructions",
+                "Instructions",
+                "string",
+                multiline=True,
+                description="Reviewer-specific instructions included in the review inbox item.",
+                placeholder="Review correctness, tests, risk, and release readiness.",
+            ),
+            _catalog_field(
+                "skip_if_existing",
+                "Skip if existing",
+                "boolean",
+                description=(
+                    "Treat an active review request for the same deliverable and reviewer as success "
+                    "instead of failing the workflow."
+                ),
+                default_value=True,
+            ),
+            _catalog_field(
+                "publish_wake_events",
+                "Publish wake events",
+                "boolean",
+                description="Publish reviewer wake events created by this request immediately.",
+                default_value=True,
             ),
             _revision_field(),
         ],
@@ -1155,6 +1273,97 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
 )
 
 
+class TeamDeliverableCreatedTriggerProvider(TriggerProviderBase):
+    @classmethod
+    def validate_definition(cls, trigger_definition):
+        if isinstance(trigger_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamDeliverableCreatedTriggerDefinition, trigger_definition)
+        return trigger_definition
+
+    def poll(self) -> list[TriggerEvent]:
+        trigger = self._trigger()
+        now = datetime.now(UTC)
+        state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
+        deliverables: list[tuple[str, datetime, dict[str, Any]]] = []
+        for deliverable in state.deliverables.values():
+            payload = _team_deliverable_created_payload(state, deliverable.id)
+            if payload is None:
+                continue
+            if not _team_deliverable_trigger_matches(trigger, payload):
+                continue
+            occurred_at = _team_datetime_utc(deliverable.created_at)
+            deliverables.append((deliverable.id, occurred_at, payload))
+
+        subscription = TriggerDeliverySubscription(
+            trigger_type=trigger.type,
+            trigger_id=trigger.id,
+            directory_scope=_team_trigger_directory_scope(self.runtime_context),
+        )
+        source_items = [
+            TriggerDeliverySourceItem(
+                source_item_id=deliverable_id,
+                source_occurred_at=occurred_at,
+            )
+            for deliverable_id, occurred_at, _payload in deliverables
+        ]
+        delivery_store = self._delivery_store()
+        delivery_store.initialize_subscription_if_new(
+            subscription,
+            source_items,
+            now=now,
+        )
+        undelivered = {
+            item.source_item_id
+            for item in delivery_store.list_undelivered(subscription, source_items)
+        }
+
+        events: list[TriggerEvent] = []
+        for deliverable_id, occurred_at, payload in deliverables:
+            if deliverable_id not in undelivered:
+                continue
+            event_id = f"{trigger.id}:{deliverable_id}"
+            events.append(
+                TriggerEvent(
+                    event_id=event_id,
+                    trigger_id=trigger.id,
+                    trigger_type=trigger.type,
+                    occurred_at=occurred_at,
+                    payload=payload,
+                )
+            )
+        return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        deliverable_id = _optional_text(event.payload.get("deliverable_id"))
+        if deliverable_id is None:
+            return
+        occurred_at = _team_payload_datetime(event.payload.get("created_at")) or event.occurred_at
+        subscription = TriggerDeliverySubscription(
+            trigger_type=trigger.type,
+            trigger_id=trigger.id,
+            directory_scope=_team_trigger_directory_scope(self.runtime_context),
+        )
+        self._delivery_store().mark_published(
+            subscription,
+            TriggerDeliverySourceItem(
+                source_item_id=deliverable_id,
+                source_occurred_at=_team_datetime_utc(occurred_at),
+            ),
+            event_id=event.event_id,
+        )
+
+    def _trigger(self) -> TeamDeliverableCreatedTriggerDefinition:
+        if not isinstance(self.trigger_definition, TeamDeliverableCreatedTriggerDefinition):
+            raise RuntimeError(
+                "TeamDeliverableCreatedTriggerProvider initialized with wrong definition"
+            )
+        return self.trigger_definition
+
+    def _delivery_store(self) -> TriggerDeliveryRepository:
+        return TriggerDeliveryStore(_runtime_dir(self.runtime_context) / "trigger-deliveries.json")
+
+
 class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -1717,6 +1926,133 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
             "task_id": item.task_id,
             "error": None,
         }
+
+
+class TeamCreateReviewRequestEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateReviewRequestEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "actor_agent_id",
+            "deliverable_id",
+            "reviewer_agent_id",
+            "review_request_id",
+            "review_profile_id",
+            "instructions",
+            "skip_if_existing",
+            "publish_wake_events",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        current_state: TeamState | None = None
+        review_result: dict[str, Any] = {
+            "errors": [],
+            "created_inbox_item_ids": [],
+            "existing_review_request_ids": [],
+            "events": [],
+        }
+        review_request_id: str | None = None
+        actor_agent_id = _optional_text(payload.get("actor_agent_id"))
+        deliverable_id = _optional_text(payload.get("deliverable_id"))
+        reviewer_agent_id = _optional_text(payload.get("reviewer_agent_id"))
+        skip_if_existing = True
+        publish_wake_events = True
+        try:
+            current_state = repo.read()
+            skip_if_existing = _optional_bool(payload.get("skip_if_existing"), default=True)
+            publish_wake_events = _optional_bool(
+                payload.get("publish_wake_events"),
+                default=True,
+            )
+
+            def _mutate(state: TeamState) -> TeamState:
+                nonlocal review_request_id
+                actor_id = _required_text(payload.get("actor_agent_id"), "actor_agent_id")
+                actor = state.agents.get(actor_id)
+                if actor is None:
+                    raise ValueError(f"actor agent {actor_id} does not exist")
+                reviewer_id = _required_text(
+                    payload.get("reviewer_agent_id"),
+                    "reviewer_agent_id",
+                )
+                reviewer = state.agents.get(reviewer_id)
+                if reviewer is None:
+                    raise ValueError(f"reviewer agent {reviewer_id} does not exist")
+                if reviewer.status != AgentStatus.ACTIVE:
+                    raise ValueError(f"recipient agent {reviewer.id} is {reviewer.status.value}")
+                request_payload = {
+                    "id": _optional_text(payload.get("review_request_id")),
+                    "deliverable_id": _required_text(
+                        payload.get("deliverable_id"), "deliverable_id"
+                    ),
+                    "reviewer_agent_id": reviewer_id,
+                    "review_profile_id": _optional_text(payload.get("review_profile_id")),
+                    "instructions": _optional_text(payload.get("instructions")),
+                }
+                created_id = _apply_review_request(
+                    state,
+                    actor=actor,
+                    request=request_payload,
+                    result=review_result,
+                )
+                if created_id is None:
+                    raise ValueError(
+                        "; ".join(str(error) for error in review_result["errors"])
+                        or "review request could not be created"
+                    )
+                existing_ids = list(review_result.get("existing_review_request_ids") or [])
+                if existing_ids and not skip_if_existing:
+                    raise ValueError(
+                        "active review request already exists for this deliverable and reviewer"
+                    )
+                review_request_id = created_id
+                return state
+
+            state = repo.update(
+                _mutate,
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _review_request_effect_error_result(
+                revision=exc.current_revision,
+                review_request_id=review_request_id,
+                actor_agent_id=actor_agent_id,
+                deliverable_id=deliverable_id,
+                reviewer_agent_id=reviewer_agent_id,
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            revision = current_state.revision if current_state is not None else repo.read().revision
+            return _review_request_effect_error_result(
+                revision=revision,
+                review_request_id=review_request_id,
+                actor_agent_id=actor_agent_id,
+                deliverable_id=deliverable_id,
+                reviewer_agent_id=reviewer_agent_id,
+                error=str(exc),
+            )
+
+        published_event_ids: list[str] = []
+        if publish_wake_events:
+            published_event_ids = _publish_team_events(
+                self.runtime_context, review_result["events"]
+            )
+        return _review_request_effect_success_result(
+            state,
+            result=review_result,
+            review_request_id=review_request_id,
+            actor_agent_id=actor_agent_id,
+            published_event_ids=published_event_ids,
+        )
 
 
 class TeamCreateTaskEffectProvider(EffectProviderBase):
@@ -3014,12 +3350,16 @@ def register_providers() -> ProviderPluginRegistration:
     for node_type, outputs in TEAM_OUTPUT_SCHEMAS.items():
         register_node_output_schema(node_type=node_type, outputs=outputs)
     return ProviderPluginRegistration(
+        trigger_providers={
+            "trigger:team:deliverable-created": TeamDeliverableCreatedTriggerProvider,
+        },
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
             "effect:team:wake-governance-managers": TeamWakeGovernanceManagersEffectProvider,
             "effect:team:publish-outbox-events": TeamPublishOutboxEventsEffectProvider,
             "effect:team:finalize-agent-dispatch": (TeamFinalizeAgentDispatchEffectProvider),
             "effect:team:create-operator-directive": (TeamCreateOperatorDirectiveEffectProvider),
+            "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
             "effect:team:create-task": TeamCreateTaskEffectProvider,
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
@@ -3039,6 +3379,9 @@ def register_providers() -> ProviderPluginRegistration:
             "query:team:session-routing": TeamSessionRoutingQueryProvider,
         },
         node_definition_resolvers={
+            "trigger:team:deliverable-created": (
+                lambda node: _materialize(TeamDeliverableCreatedTriggerDefinition, node)
+            ),
             "effect:team:wake-due-agents": (
                 lambda node: _materialize(TeamWakeDueAgentsEffectDefinition, node)
             ),
@@ -3062,6 +3405,9 @@ def register_providers() -> ProviderPluginRegistration:
                     TeamCreateOperatorDirectiveEffectDefinition,
                     node,
                 )
+            ),
+            "effect:team:create-review-request": (
+                lambda node: _materialize(TeamCreateReviewRequestEffectDefinition, node)
             ),
             "effect:team:create-task": (
                 lambda node: _materialize(TeamCreateTaskEffectDefinition, node)
@@ -4668,6 +5014,139 @@ def _payload_field_configured(
     resolved_fields: set[str],
 ) -> bool:
     return field_name in definition_fields or field_name in resolved_fields
+
+
+def _team_trigger_directory_scope(context: Any) -> str:
+    if context is None:
+        return "root"
+    directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "").strip()
+    return directory_path or "root"
+
+
+def _team_deliverable_trigger_matches(
+    trigger: TeamDeliverableCreatedTriggerDefinition,
+    payload: Mapping[str, Any],
+) -> bool:
+    for field_name in ("team_id", "project_id", "producer_agent_id"):
+        expected = _optional_text(getattr(trigger, field_name, None))
+        if expected is not None and _optional_text(payload.get(field_name)) != expected:
+            return False
+    return True
+
+
+def _team_deliverable_created_payload(
+    state: TeamState,
+    deliverable_id: str,
+) -> dict[str, Any] | None:
+    deliverable = state.deliverables.get(deliverable_id)
+    if deliverable is None:
+        return None
+    task = state.tasks.get(deliverable.task_id)
+    project = state.projects.get(task.project_id) if task is not None else None
+    team = state.teams.get(project.team_id) if project is not None else None
+    deliverable_payload = deliverable.model_dump(mode="json")
+    task_payload = task.model_dump(mode="json") if task is not None else None
+    project_payload = project.model_dump(mode="json") if project is not None else None
+    team_payload = team.model_dump(mode="json") if team is not None else None
+    return {
+        "deliverable_id": deliverable.id,
+        "team_id": project.team_id if project is not None else "",
+        "project_id": task.project_id if task is not None else "",
+        "task_id": deliverable.task_id,
+        "producer_agent_id": deliverable.producer_agent_id,
+        "state": deliverable.state.value,
+        "created_at": _team_datetime_utc(deliverable.created_at).isoformat(),
+        "artifact_refs": list(deliverable.artifact_refs),
+        "review_request_ids": list(deliverable.review_request_ids),
+        "deliverable": deliverable_payload,
+        "task": task_payload,
+        "project": project_payload,
+        "team": team_payload,
+        "git_refs": deliverable_payload.get("git_refs"),
+        "verification": deliverable_payload.get("verification"),
+    }
+
+
+def _team_datetime_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _team_payload_datetime(value: object) -> datetime | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _team_datetime_utc(parsed)
+
+
+def _review_request_effect_success_result(
+    state: TeamState,
+    *,
+    result: Mapping[str, Any],
+    review_request_id: str | None,
+    actor_agent_id: str | None,
+    published_event_ids: list[str],
+) -> dict[str, Any]:
+    review = state.review_requests.get(review_request_id or "")
+    created = bool(
+        review_request_id is not None and _review_request_was_created(result, review_request_id)
+    )
+    existing_review_request_ids = list(result.get("existing_review_request_ids") or [])
+    return {
+        "success": review is not None,
+        "revision": state.revision,
+        "review_request_id": review.id if review is not None else review_request_id,
+        "deliverable_id": review.deliverable_id if review is not None else None,
+        "reviewer_agent_id": review.reviewer_agent_id if review is not None else None,
+        "actor_agent_id": actor_agent_id,
+        "created": created,
+        "created_review_request_ids": [review_request_id] if created and review_request_id else [],
+        "existing_review_request_ids": existing_review_request_ids,
+        "created_inbox_item_ids": list(result.get("created_inbox_item_ids") or []),
+        "published_event_ids": published_event_ids,
+        "events": list(result.get("events") or []),
+        "review_request": review.model_dump(mode="json") if review is not None else None,
+        "error": None if review is not None else "review request was not found after mutation",
+    }
+
+
+def _review_request_effect_error_result(
+    *,
+    revision: int,
+    review_request_id: str | None,
+    actor_agent_id: str | None,
+    deliverable_id: str | None,
+    reviewer_agent_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "review_request_id": review_request_id,
+        "deliverable_id": deliverable_id,
+        "reviewer_agent_id": reviewer_agent_id,
+        "actor_agent_id": actor_agent_id,
+        "created": False,
+        "created_review_request_ids": [],
+        "existing_review_request_ids": [],
+        "created_inbox_item_ids": [],
+        "published_event_ids": [],
+        "events": [],
+        "review_request": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
 
 
 def _case_effect_success_result(

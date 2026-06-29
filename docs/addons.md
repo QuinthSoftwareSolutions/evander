@@ -306,6 +306,16 @@ Workflow automation can also create concrete execution work with
 the Admin API task creation semantics: a missing `task_id` creates a task, while
 an existing matching task id updates/reprioritizes that task.
 
+Workflow automation can enforce deliverable review handoffs without relying on
+agent prompt discipline. `trigger:team:deliverable-created` emits newly created
+Team deliverables, suppressing already-existing deliverables when a trigger is
+first enabled. `effect:team:create-review-request` creates a review request for
+an existing deliverable, requires an `actor_agent_id` with normal Team review
+request authority, validates the optional review profile, creates the reviewer
+inbox item, and publishes the reviewer wake event. Use one effect node per
+required reviewer or review profile; the existing review cascade keeps the
+deliverable pending until all attached review requests are accepted.
+
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
 Team state revision. Workflow effects and agent-action application may omit

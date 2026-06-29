@@ -5,7 +5,19 @@ from typing import Any, Literal
 
 from pydantic import field_validator
 
-from agent_sandbox.events.models import ConfigValue, EffectDefinition, QueryDefinition
+from agent_sandbox.events.models import (
+    ConfigValue,
+    EffectDefinition,
+    QueryDefinition,
+    TriggerDefinition,
+)
+
+
+class TeamDeliverableCreatedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:team:deliverable-created"]
+    team_id: str | None = None
+    project_id: str | None = None
+    producer_agent_id: str | None = None
 
 
 class TeamWakeDueAgentsEffectDefinition(EffectDefinition):
@@ -68,6 +80,19 @@ class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     source_message_id: ConfigValue | None = None
     created_by: ConfigValue | None = None
     requesting_session_id: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+
+class TeamCreateReviewRequestEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-review-request"]
+    actor_agent_id: ConfigValue
+    deliverable_id: ConfigValue
+    reviewer_agent_id: ConfigValue
+    review_request_id: ConfigValue | None = None
+    review_profile_id: ConfigValue | None = None
+    instructions: ConfigValue | None = None
+    skip_if_existing: ConfigValue | None = None
+    publish_wake_events: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
 
@@ -228,9 +253,7 @@ class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
     def validate_result_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
-        raise ValueError(
-            "effect:team:record-git-promotion result_outputs must be a JSON object"
-        )
+        raise ValueError("effect:team:record-git-promotion result_outputs must be a JSON object")
 
 
 class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
@@ -258,9 +281,7 @@ class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
     def validate_result_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
-        raise ValueError(
-            "effect:team:mark-release-published result_outputs must be a JSON object"
-        )
+        raise ValueError("effect:team:mark-release-published result_outputs must be a JSON object")
 
 
 class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
@@ -297,6 +318,23 @@ class TeamSessionRoutingQueryDefinition(QueryDefinition):
 
 
 TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
+    "trigger:team:deliverable-created": {
+        "deliverable_id": {"type": "string"},
+        "team_id": {"type": "string"},
+        "project_id": {"type": "string"},
+        "task_id": {"type": "string"},
+        "producer_agent_id": {"type": "string"},
+        "state": {"type": "string"},
+        "created_at": {"type": "string"},
+        "artifact_refs": {"type": "array"},
+        "review_request_ids": {"type": "array"},
+        "deliverable": {"type": "object"},
+        "task": {"type": ["object", "null"]},
+        "project": {"type": ["object", "null"]},
+        "team": {"type": ["object", "null"]},
+        "git_refs": {"type": ["object", "null"]},
+        "verification": {"type": ["object", "null"]},
+    },
     "effect:team:wake-due-agents": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
@@ -352,6 +390,22 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "team_id": {"type": ["string", "null"]},
         "project_id": {"type": ["string", "null"]},
         "task_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-review-request": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "review_request_id": {"type": ["string", "null"]},
+        "deliverable_id": {"type": ["string", "null"]},
+        "reviewer_agent_id": {"type": ["string", "null"]},
+        "actor_agent_id": {"type": ["string", "null"]},
+        "created": {"type": "boolean"},
+        "created_review_request_ids": {"type": "array"},
+        "existing_review_request_ids": {"type": "array"},
+        "created_inbox_item_ids": {"type": "array"},
+        "published_event_ids": {"type": "array"},
+        "events": {"type": "array"},
+        "review_request": {"type": ["object", "null"]},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-task": {
