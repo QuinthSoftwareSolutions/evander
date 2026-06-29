@@ -18,6 +18,8 @@ from agent_sandbox.admin import workflow_report_helpers
 from agent_sandbox.admin.payloads import WorkflowFailureClusterReportPayload
 from agent_sandbox.admin.services import git_helpers, process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.issue_setup_helpers import EffectiveIssueSetupConfig
+import agent_sandbox.admin.services.teams_service as admin_teams_service
+import agent_sandbox.admin.services.worker_control_service as worker_control_service
 admin_service = SimpleNamespace(
     _run_virsh=vm_helpers.run_virsh,
     _probe_agent_state=vm_helpers.probe_agent_state,
@@ -34,13 +36,11 @@ admin_service = SimpleNamespace(
     _require_valid_cron=session_helpers.require_valid_cron,
     _mirror_remote_name_for_repo=git_helpers.mirror_remote_name_for_repo,
 )
-import agent_sandbox.admin.facades as admin_facades
 import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import httpx
 import pytest
 from agent_sandbox.admin import privileged_helper
 from agent_sandbox.capacity_health import HealthState, TelemetryStatus
-from agent_sandbox.admin.facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.services.vm_agent.common_models import AgentCreateOperation
 from agent_sandbox.config import (
@@ -4076,40 +4076,31 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
     )
     assert write_result.ok is True
 
-    requests: list[httpx.Request] = []
+    requested_team_ids: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        assert request.headers["Authorization"] == "Bearer access-token"
-        return httpx.Response(
-            200,
-            json={
-                "value": [
-                    {
-                        "id": "19:truman@thread.skype",
-                        "displayName": "Truman",
-                        "membershipType": "standard",
-                        "webUrl": "https://teams.example/truman",
-                    },
-                    {
-                        "id": "19:other@thread.skype",
-                        "displayName": "General",
-                        "membershipType": "standard",
-                    },
-                ]
-            },
-            request=request,
-        )
+    class FakeGraphClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
 
-    real_client = httpx.Client
+        def list_channels(self, *, team_id: str) -> list[dict[str, object]]:
+            requested_team_ids.append(team_id)
+            return [
+                {
+                    "id": "19:truman@thread.skype",
+                    "displayName": "Truman",
+                    "membershipType": "standard",
+                    "webUrl": "https://teams.example/truman",
+                },
+                {
+                    "id": "19:other@thread.skype",
+                    "displayName": "General",
+                    "membershipType": "standard",
+                },
+            ]
 
-    def fake_client(*args: object, **kwargs: object) -> httpx.Client:
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(admin_facades.httpx, "Client", fake_client)
+    monkeypatch.setattr(admin_teams_service, "TeamsGraphClient", FakeGraphClient)
     monkeypatch.setattr(
-        admin_facades.TeamsDeviceCodeTokenProvider,
+        admin_teams_service.TeamsDeviceCodeTokenProvider,
         "get_bearer_token",
         lambda self, force_refresh=False: "access-token",
     )
@@ -4132,7 +4123,7 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
             "allowlist_entry": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:truman@thread.skype",
         }
     ]
-    assert requests[0].url.path == "/v1.0/teams/c85e4de5-e0d7-4240-8302-8bc944f2360d/channels"
+    assert requested_team_ids == ["c85e4de5-e0d7-4240-8302-8bc944f2360d"]
 
 
 def test_teams_auth_list_channels_can_list_all_channels(
@@ -4154,29 +4145,20 @@ def test_teams_auth_list_channels_can_list_all_channels(
     )
     assert write_result.ok is True
 
-    real_client = httpx.Client
+    class FakeGraphClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
 
-    def fake_client(*args: object, **kwargs: object) -> httpx.Client:
-        return real_client(
-            *args,
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(
-                    200,
-                    json={
-                        "value": [
-                            {"id": "19:a@thread.skype", "displayName": "General"},
-                            {"id": "19:b@thread.skype", "displayName": "Truman"},
-                        ]
-                    },
-                    request=request,
-                )
-            ),
-            **kwargs,
-        )
+        def list_channels(self, *, team_id: str) -> list[dict[str, object]]:
+            assert team_id == "team-123"
+            return [
+                {"id": "19:a@thread.skype", "displayName": "General"},
+                {"id": "19:b@thread.skype", "displayName": "Truman"},
+            ]
 
-    monkeypatch.setattr(admin_facades.httpx, "Client", fake_client)
+    monkeypatch.setattr(admin_teams_service, "TeamsGraphClient", FakeGraphClient)
     monkeypatch.setattr(
-        admin_facades.TeamsDeviceCodeTokenProvider,
+        admin_teams_service.TeamsDeviceCodeTokenProvider,
         "get_bearer_token",
         lambda self, force_refresh=False: "access-token",
     )
@@ -12235,7 +12217,7 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainStatus": "0",
         },
     }
-    monkeypatch.setattr("agent_sandbox.admin.facades._systemctl_show", lambda unit: payloads[unit])
+    monkeypatch.setattr(worker_control_service, "_systemctl_show", lambda unit: payloads[unit])
 
     summaries = service.operations_admin.list_background_workers()
 
@@ -12288,7 +12270,7 @@ def test_list_background_workers_marks_unavailable_when_systemctl_fails(
     def _raise(unit: str) -> dict[str, str]:
         raise RuntimeError(f"cannot inspect {unit}")
 
-    monkeypatch.setattr("agent_sandbox.admin.facades._systemctl_show", _raise)
+    monkeypatch.setattr(worker_control_service, "_systemctl_show", _raise)
 
     summaries = service.operations_admin.list_background_workers()
 
@@ -12302,7 +12284,8 @@ def test_get_background_worker_log_snapshot_returns_unit_journal(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.facades._journalctl_tail",
+        worker_control_service,
+        "_journalctl_tail",
         lambda unit, lines: f"{unit} log tail ({lines})",
     )
 
@@ -12326,7 +12309,7 @@ def test_start_background_worker_controls_systemd_unit(tmp_path: Path, monkeypat
         calls.append((action, unit))
         return _Completed()
 
-    monkeypatch.setattr("agent_sandbox.admin.facades._run_systemd_control", _fake_control)
+    monkeypatch.setattr(worker_control_service, "_run_systemd_control", _fake_control)
 
     result = service.operations_admin.start_background_worker("ado")
 
@@ -12350,7 +12333,7 @@ def test_stop_background_worker_controls_systemd_unit(tmp_path: Path, monkeypatc
         calls.append((action, unit))
         return _Completed()
 
-    monkeypatch.setattr("agent_sandbox.admin.facades._run_systemd_control", _fake_control)
+    monkeypatch.setattr(worker_control_service, "_run_systemd_control", _fake_control)
 
     result = service.operations_admin.stop_background_worker("discord-wake")
 
@@ -12439,92 +12422,14 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     assert "plan_summary:" not in yaml_text
 
 
-def test_worker_admin_dependencies_accept_protocol_ports() -> None:
-    class DirectoryOwnership:
-        def normalize_directory_path(self, directory_path: str | None) -> str:
-            return directory_path or "root"
+def test_workflow_operations_are_not_exposed_on_worker_control_boundaries(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
 
-        def direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
-            assert directory_path == "root"
-            assert kind == "vm"
-            return set()
-
-    class WorkflowConfig:
-        def read_worker_global_config(self, worker_id: str):
-            return {"worker_id": worker_id}
-
-        def write_worker_global_config(
-            self,
-            worker_id: str,
-            payload: dict[str, object],
-            *,
-            expected_revision: str | None = None,
-        ):
-            return {
-                "worker_id": worker_id,
-                "payload": payload,
-                "expected_revision": expected_revision,
-            }
-
-        def read_workflow_editor_document(self, workflow_pack: str | None = None):
-            return {"kind": "document", "workflow_pack": workflow_pack}
-
-        def read_composed_workflow_editor_document(self):
-            return {"kind": "composed-document"}
-
-        def read_workflow_editor_catalog(self, directory_path: str | None = None):
-            return {"kind": "catalog", "directory_path": directory_path}
-
-        def validate_workflow_editor_document(self, **kwargs):
-            return {"kind": "validation", **kwargs}
-
-        def save_workflow_editor_document(self, **kwargs):
-            return {"kind": "save", **kwargs}
-
-        def read_workflow_run_snapshot(self):
-            return {"kind": "snapshot"}
-
-        def read_workflow_run_detail(self, **kwargs):
-            return {"kind": "detail", **kwargs}
-
-        def read_workflow_run_search(self, **kwargs):
-            return {"kind": "search", **kwargs}
-
-        def clear_workflow_run(self, event_id: str):
-            return {"event_id": event_id}
-
-        def dismiss_workflow_node_failures(self, node_id: str):
-            return {"node_id": node_id}
-
-        def resume_workflow_run(self, event_id: str):
-            return {"event_id": event_id}
-
-        def workflow_event_journal(self):
-            return object()
-
-        def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]):
-            return {"trigger_id": trigger_id, "payload": payload}
-
-        def delete_trigger_config(self, trigger_id: str):
-            return {"trigger_id": trigger_id}
-
-        def upsert_effect_config(self, effect_id: str, payload: dict[str, object]):
-            return {"effect_id": effect_id, "payload": payload}
-
-        def delete_effect_config(self, effect_id: str):
-            return {"effect_id": effect_id}
-
-    facade = WorkerAdminFacade(
-        WorkerAdminDependencies(
-            runtime=object(),
-            config=object(),
-            agent_control_store=object(),
-            directory_ownership=DirectoryOwnership(),
-            workflow_config=WorkflowConfig(),
-        )
-    )
-
-    assert facade.clear_workflow_run("event-1") == {"event_id": "event-1"}
+    assert hasattr(service.workflow_config_admin, "clear_workflow_run")
+    assert not hasattr(service.worker_control_admin, "clear_workflow_run")
+    assert not hasattr(service.vm_inventory_admin, "clear_workflow_run")
 
 
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:

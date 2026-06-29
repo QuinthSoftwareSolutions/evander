@@ -14,14 +14,6 @@ import httpx
 
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.admin.directory import DirectoryAdminService
-from agent_sandbox.admin.facades import (
-    SessionAdminDependencies,
-    SessionAdminFacade,
-    TeamsAdminDependencies,
-    TeamsAdminFacade,
-    WorkerAdminDependencies,
-    WorkerAdminFacade,
-)
 from agent_sandbox.admin.operations_helpers import PrivilegedHelperSession
 from agent_sandbox.admin.payloads import AdminRevisionConflict
 from agent_sandbox.admin.services import (
@@ -42,9 +34,18 @@ from agent_sandbox.admin.services import (
     PrIntegrationPreflightAdminDependencies,
     PrIntegrationPreflightAdminService,
     SkillAdminService,
+    SessionAdminDependencies,
+    SessionAdminService,
+    TeamsAdminDependencies,
+    TeamsAdminService,
     VmAgentAdminDependencies,
     VmAgentAdminService,
     VmAgentAdminSupport,
+    VmInventoryAdminDependencies,
+    VmInventoryAdminService,
+    WakeScheduleAdminDependencies,
+    WakeScheduleAdminService,
+    WorkerControlAdminService,
     WorkflowConfigAdminDependencies,
     WorkflowConfigAdminService,
     WorkflowGenerationAdminDependencies,
@@ -156,9 +157,11 @@ class AdminRuntimeComponents:
     directory_admin: DirectoryAdminService
     directory_ownership: DirectoryOwnershipQueries
     issue_service: IssueService
-    session_admin: SessionAdminFacade
-    teams_admin: TeamsAdminFacade
-    worker_admin: WorkerAdminFacade
+    session_admin: SessionAdminService
+    wake_schedule_admin: WakeScheduleAdminService
+    teams_admin: TeamsAdminService
+    vm_inventory_admin: VmInventoryAdminService
+    worker_control_admin: WorkerControlAdminService
     workflow_config_admin: WorkflowConfigAdminService
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
@@ -215,11 +218,11 @@ class _AdminRuntimeHost:
             directory_path, domain
         )
 
-    def _workflow_run_store_paths(self):
-        return self._require_components().workflow_config_admin._workflow_run_store_paths()
+    def workflow_run_store_paths(self):
+        return self._require_components().workflow_config_admin.workflow_run_store_paths()
 
-    def _workflow_run_store_bundle(self, stores: dict[str, Any]):
-        return self._require_components().workflow_config_admin._workflow_run_store_bundle(stores)
+    def workflow_run_store_bundle(self, stores: dict[str, Any]):
+        return self._require_components().workflow_config_admin.workflow_run_store_bundle(stores)
 
 
 def _resolve_project_dir_for_admin_runtime(
@@ -358,14 +361,20 @@ def _build_admin_runtime_components(
     directory_ownership_port = AdminRuntimeDirectoryOwnershipPort(issue_git_support)
     privileged_helper_port = AdminRuntimePrivilegedHelperPort(host)
 
-    session_admin = SessionAdminFacade(
+    session_admin = SessionAdminService(
         SessionAdminDependencies(
             runtime=runtime,
             config=config,
             directory_ownership=directory_ownership_port,
         )
     )
-    teams_admin = TeamsAdminFacade(
+    wake_schedule_admin = WakeScheduleAdminService(
+        WakeScheduleAdminDependencies(
+            runtime=runtime,
+            config=config,
+        )
+    )
+    teams_admin = TeamsAdminService(
         TeamsAdminDependencies(
             runtime=runtime,
             normalize_directory_reference=normalize_directory_reference,
@@ -393,15 +402,14 @@ def _build_admin_runtime_components(
         )
     )
     workflow_config_admin.set_workflow_reports_admin(workflow_reports_admin)
-    worker_admin = WorkerAdminFacade(
-        WorkerAdminDependencies(
+    vm_inventory_admin = VmInventoryAdminService(
+        VmInventoryAdminDependencies(
             runtime=runtime,
-            config=config,
             agent_control_store=agent_control_store,
             directory_ownership=directory_ownership_port,
-            workflow_config=workflow_config_admin,
         )
     )
+    worker_control_admin = WorkerControlAdminService()
     skill_admin = SkillAdminService(skill_library)
     approval_audit_admin = ApprovalAuditAdminService(
         ApprovalAuditAdminDependencies(
@@ -421,10 +429,12 @@ def _build_admin_runtime_components(
         project_dir=project_dir,
         local_issue_store=local_issue_store,
         local_issue_identity_resolver=local_issue_identity_resolver,
-        worker_admin=worker_admin,
+        vm_inventory_admin=vm_inventory_admin,
         workflow_config_admin=workflow_config_admin,
         directory_admin=directory_admin,
         privileged_helper=privileged_helper_port,
+        agent_control_store=agent_control_store,
+        directory_ownership=directory_ownership_port,
     )
 
     issue_git_admin = IssueGitAdminService(
@@ -456,7 +466,9 @@ def _build_admin_runtime_components(
             runtime=vm_agent_support.runtime,
             project_dir=vm_agent_support.project_dir,
             local_issue_store=vm_agent_support.local_issue_store,
-            worker_admin=vm_agent_support.worker_admin,
+            vm_inventory_admin=vm_agent_support.vm_inventory_admin,
+            agent_control_store=vm_agent_support.agent_control_store,
+            directory_ownership=vm_agent_support.directory_ownership,
             privileged_helper=privileged_helper_port,
             directory_path=vm_agent_support,
             workflow_config=workflow_config_admin,
@@ -478,8 +490,8 @@ def _build_admin_runtime_components(
         )
     )
     trigger_repository = WorkerConfigTriggerRepository(
-        read_config=workflow_config_admin._read_trigger_document,
-        write_config=workflow_config_admin._write_trigger_document,
+        read_config=workflow_config_admin.read_trigger_document,
+        write_config=workflow_config_admin.write_trigger_document,
     )
     operations_admin = OperationsAdminService(
         config=config,
@@ -487,7 +499,8 @@ def _build_admin_runtime_components(
         privileged_helper=privileged_helper_port,
         teams_admin=teams_admin,
         session_admin=session_admin,
-        worker_admin=worker_admin,
+        wake_schedule_admin=wake_schedule_admin,
+        worker_control_admin=worker_control_admin,
         directory_admin=directory_admin,
         workflow_config_admin=workflow_config_admin,
         trigger_repository=trigger_repository,
@@ -512,8 +525,8 @@ def _build_admin_runtime_components(
         OperatorSteeringAdminDependencies(
             runtime_dir=config.runtime_dir,
             normalize_agent_record_directory_path=vm_agent_admin.normalize_agent_record_directory_path,
-            workflow_run_store_paths=workflow_config_admin._workflow_run_store_paths,
-            workflow_uses_sqlite_store=workflow_config_admin._workflow_uses_sqlite_store,
+            workflow_run_store_paths=workflow_config_admin.workflow_run_store_paths,
+            workflow_uses_sqlite_store=workflow_config_admin.workflow_uses_sqlite_store,
             container_execution_records_for_session=(
                 vm_agent_admin.container_execution_records_for_session
             ),
@@ -533,8 +546,8 @@ def _build_admin_runtime_components(
                 operator_steering_admin.interrupt_container_operator_steering_note
             ),
             admin_config_mutation_lock=lambda: host.admin_config_mutation_lock(),
-            stable_json_revision=workflow_config_admin._stable_json_revision,
-            write_json_file_atomic=workflow_config_admin._write_json_file_atomic,
+            stable_json_revision=workflow_config_admin.stable_json_revision,
+            write_json_file_atomic=workflow_config_admin.write_json_file_atomic,
             revision_conflict_factory=lambda message, details: AdminRevisionConflict(
                 message, details=details
             ),
@@ -555,8 +568,8 @@ def _build_admin_runtime_components(
             communication_artifact_store=lambda: CommunicationArtifactStore(config.runtime_dir),
             published_artifact_store=artifact_admin.published_artifact_store,
             workflow_config_admin=workflow_config_admin,
-            workflow_run_store_paths=lambda: host._workflow_run_store_paths(),
-            workflow_run_store_bundle=lambda stores: host._workflow_run_store_bundle(stores),
+            workflow_run_store_paths=lambda: host.workflow_run_store_paths(),
+            workflow_run_store_bundle=lambda stores: host.workflow_run_store_bundle(stores),
         )
     )
 
@@ -609,8 +622,10 @@ def _build_admin_runtime_components(
         directory_ownership=directory_ownership,
         issue_service=issue_service,
         session_admin=session_admin,
+        wake_schedule_admin=wake_schedule_admin,
         teams_admin=teams_admin,
-        worker_admin=worker_admin,
+        vm_inventory_admin=vm_inventory_admin,
+        worker_control_admin=worker_control_admin,
         workflow_config_admin=workflow_config_admin,
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,

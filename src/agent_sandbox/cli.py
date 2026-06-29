@@ -980,7 +980,7 @@ def _teams_auth_call(service: AdminRuntimeComponents, action: str, **kwargs: obj
     if not callable(method):
         raise typer.BadParameter(
             f"Teams auth {action} is unavailable in this build. "
-            f"Expected TeamsAdminFacade.{action}()."
+            f"Expected TeamsAdminService.{action}()."
         )
     return method(**kwargs)
 

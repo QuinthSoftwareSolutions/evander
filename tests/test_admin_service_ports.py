@@ -4,8 +4,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent_sandbox.admin.facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin.services.operations_service import OperationsAdminService
+import agent_sandbox.admin.services.vm_inventory_service as vm_inventory_service
+from agent_sandbox.admin.services.vm_inventory_service import (
+    VmInventoryAdminDependencies,
+    VmInventoryAdminService,
+)
 
 
 class FakeDirectoryOwnership:
@@ -121,29 +125,22 @@ class FakeHelperFactory:
         return FakeHelper()
 
 
-def test_worker_admin_facade_uses_directory_and_workflow_ports() -> None:
+def test_vm_inventory_admin_uses_directory_port(monkeypatch) -> None:
     directory_ownership = FakeDirectoryOwnership()
-    workflow_config = FakeWorkflowConfig()
-    facade = WorkerAdminFacade(
-        WorkerAdminDependencies(
-            runtime=SimpleNamespace(),
-            config=SimpleNamespace(),
+    monkeypatch.setattr(vm_inventory_service.vm_helpers, "virsh_lines", lambda _args: [])
+    inventory = VmInventoryAdminService(
+        VmInventoryAdminDependencies(
+            runtime=SimpleNamespace(
+                session_repository=SimpleNamespace(list_sessions=lambda: [])
+            ),
             agent_control_store=SimpleNamespace(status_for_vm=lambda _vm_name: "enabled"),
             directory_ownership=directory_ownership,
-            workflow_config=workflow_config,
         )
     )
 
-    assert facade.read_worker_global_config("worker-1") == {"worker_id": "worker-1"}
-    assert facade.read_workflow_run_search(node_id="node-1") == {
-        "search": {
-            "node_id": "node-1",
-            "graph_id": None,
-            "without_session": False,
-            "include_completed": True,
-            "limit": None,
-        }
-    }
+    assert inventory.list_vms(direct_only=True) == []
+    assert directory_ownership.normalized == [None]
+    assert directory_ownership.owned == [("root", "vm")]
 
 
 def test_operations_service_uses_privileged_helper_port(tmp_path: Path) -> None:
@@ -154,7 +151,8 @@ def test_operations_service_uses_privileged_helper_port(tmp_path: Path) -> None:
         privileged_helper=privileged_helper,
         teams_admin=SimpleNamespace(),
         session_admin=SimpleNamespace(),
-        worker_admin=SimpleNamespace(),
+        wake_schedule_admin=SimpleNamespace(),
+        worker_control_admin=SimpleNamespace(),
         directory_admin=SimpleNamespace(),
         privileged_helper_factory=factory,
     )

@@ -41,9 +41,27 @@ _SERVICE_EXPORTS = {
         "PrIntegrationPreflightAdminService",
     ),
     "SkillAdminService": (".skill_admin_service", "SkillAdminService"),
+    "SessionAdminDependencies": (".session_service", "SessionAdminDependencies"),
+    "SessionAdminService": (".session_service", "SessionAdminService"),
+    "TeamsAdminDependencies": (".teams_service", "TeamsAdminDependencies"),
+    "TeamsAdminService": (".teams_service", "TeamsAdminService"),
     "VmAgentAdminDependencies": (".vm_agent_service", "VmAgentAdminDependencies"),
     "VmAgentAdminService": (".vm_agent_service", "VmAgentAdminService"),
     "VmAgentAdminSupport": (".vm_agent_service", "VmAgentAdminSupport"),
+    "VmInventoryAdminDependencies": (
+        ".vm_inventory_service",
+        "VmInventoryAdminDependencies",
+    ),
+    "VmInventoryAdminService": (".vm_inventory_service", "VmInventoryAdminService"),
+    "WakeScheduleAdminDependencies": (
+        ".wake_schedule_service",
+        "WakeScheduleAdminDependencies",
+    ),
+    "WakeScheduleAdminService": (".wake_schedule_service", "WakeScheduleAdminService"),
+    "WorkerControlAdminService": (
+        ".worker_control_service",
+        "WorkerControlAdminService",
+    ),
     "WorkflowConfigAdminService": (".workflow_config_service", "WorkflowConfigAdminService"),
     "WorkflowConfigAdminDependencies": (
         ".workflow_config_service",

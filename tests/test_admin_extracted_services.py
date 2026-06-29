@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_sandbox.admin.composition import AdminRuntimeComponents
-from agent_sandbox.admin.facades import SessionAdminFacade, TeamsAdminFacade
 from agent_sandbox.admin.services import (
     ApprovalAuditAdminDependencies,
     ApprovalAuditAdminService,
@@ -19,11 +18,16 @@ from agent_sandbox.admin.services import (
     OperatorSteeringAdminDependencies,
     OperatorSteeringAdminService,
     OperationsAdminService,
+    SessionAdminService,
+    TeamsAdminService,
+    WakeScheduleAdminService,
+    WorkerControlAdminService,
     WorkflowGenerationAdminDependencies,
     WorkflowGenerationAdminService,
     WorkflowReportsAdminDependencies,
     WorkflowReportsAdminService,
 )
+from agent_sandbox.admin.services.teams_service import TeamsGraphClient
 
 ADMIN_SERVICES_DIR = Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "admin" / "services"
 ADMIN_SRC_DIR = Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "admin"
@@ -187,9 +191,9 @@ def test_tool_call_audit_index_is_owned_by_approval_audit_service() -> None:
     assert "tool_call_audit_index" in AdminRuntimeComponents.__dataclass_fields__
 
 
-def test_admin_service_scheduled_wake_ledger_retry_methods_are_thin_delegates() -> None:
+def test_scheduled_wake_ledger_retry_methods_live_on_wake_schedule_service() -> None:
     method_names = (
-        "_normalize_wake_ledger_statuses",
+        "normalize_wake_ledger_statuses",
         "_wake_ledger_entry_for_request",
         "list_scheduled_wake_ledger",
         "retry_scheduled_wake",
@@ -200,17 +204,18 @@ def test_admin_service_scheduled_wake_ledger_retry_methods_are_thin_delegates() 
         owner = (
             OperationsAdminService
             if method_name in {"list_scheduled_wake_ledger", "retry_scheduled_wake"}
-            else SessionAdminFacade
+            else WakeScheduleAdminService
         )
         assert hasattr(owner, method_name)
+        assert not hasattr(SessionAdminService, method_name)
         assert not hasattr(AdminRuntimeComponents, method_name)
 
 
-def test_admin_service_teams_auth_private_helpers_are_thin_delegates() -> None:
+def test_teams_auth_service_uses_graph_client_boundary() -> None:
     method_names = (
         "_teams_auth_provider_for_directory",
         "_teams_auth_payload",
-        "_teams_graph_list_channels",
+        "_graph_client",
     )
     implementation_tokens = (
         "JsonTeamsIdentityCredentialStore",
@@ -218,18 +223,34 @@ def test_admin_service_teams_auth_private_helpers_are_thin_delegates() -> None:
         "TeamsDeviceCodeTokenProvider(",
         "teams_delegated_client_id",
         "teams_delegated_credential_store_path",
-        "teams_graph_api_base_url",
-        "get_bearer_token",
-        "httpx.Client",
-        "quote(",
         '"authenticated"',
         '"store_path"',
     )
 
     for method_name in method_names:
-        source = inspect.getsource(getattr(TeamsAdminFacade, method_name))
+        source = inspect.getsource(getattr(TeamsAdminService, method_name))
         assert not hasattr(AdminRuntimeComponents, method_name)
-        assert any(token in source for token in implementation_tokens)
+        if method_name == "_graph_client":
+            assert "TeamsGraphClient" in source
+        else:
+            assert any(token in source for token in implementation_tokens)
+
+    service_source = inspect.getsource(TeamsAdminService)
+    graph_client_source = inspect.getsource(TeamsGraphClient)
+    assert "httpx.Client" not in service_source
+    assert "httpx.Client" in graph_client_source
+
+
+def test_worker_control_service_does_not_delegate_workflow_config() -> None:
+    forbidden = (
+        "read_workflow_editor_document",
+        "read_workflow_run_search",
+        "clear_workflow_run",
+        "upsert_trigger_config",
+        "delete_effect_config",
+    )
+    for method_name in forbidden:
+        assert not hasattr(WorkerControlAdminService, method_name)
 
 
 def test_workflow_generation_service_enforces_in_flight_and_cooldown() -> None:

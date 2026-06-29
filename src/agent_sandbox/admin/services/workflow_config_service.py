@@ -135,9 +135,15 @@ class WorkflowConfigAdminService:
     def admin_config_mutation_lock(self) -> ContextManager[None]:
         return self._admin_config_mutation_lock()
 
+    def stable_json_revision(self, payload: object) -> str:
+        return self._stable_json_revision(payload)
+
     def _stable_json_revision(self, payload: object) -> str:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    def write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:
+        self._write_json_file_atomic(path, payload)
 
     def read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
         return self._read_worker_global_config(worker_id)
@@ -165,6 +171,14 @@ class WorkflowConfigAdminService:
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
         return self._read_workflow_editor_catalog(directory_path=directory_path)
+
+    def coerce_workflow_editor_graphs(
+        self,
+        raw_graphs: object,
+        *,
+        strict: bool = True,
+    ) -> list[WorkflowEditorGraphMetadata]:
+        return self._coerce_workflow_editor_graphs(raw_graphs, strict=strict)
 
     def validate_workflow_editor_document(
         self,
@@ -202,6 +216,21 @@ class WorkflowConfigAdminService:
         if self._workflow_reports_admin is None:
             raise RuntimeError("workflow reports service is not configured")
         return self._workflow_reports_admin._read_workflow_run_snapshot()
+
+    def read_trigger_document(self) -> TriggerConfigDocument:
+        return self._read_trigger_document()
+
+    def write_trigger_document(self, config: dict[str, object]) -> TriggerConfigDocument:
+        return self._write_trigger_document(config)
+
+    def workflow_run_store_paths(self) -> dict[str, Any]:
+        return self._workflow_run_store_paths()
+
+    def workflow_uses_sqlite_store(self, stores: Mapping[str, Any]) -> bool:
+        return self._workflow_uses_sqlite_store(stores)
+
+    def workflow_run_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+        return self._workflow_run_store_bundle(stores)
 
     def read_workflow_run_detail(self, **kwargs: Any):
         if self._workflow_reports_admin is None:

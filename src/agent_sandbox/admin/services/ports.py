@@ -33,7 +33,7 @@ class PrivilegedHelperFactoryPort(Protocol):
 
 
 class WorkflowConfigPort(Protocol):
-    """Host workflow configuration callbacks used by worker-facing facades."""
+    """Host workflow configuration callbacks used by admin worker services."""
 
     def read_worker_global_config(self, worker_id: str) -> Any: ...
 

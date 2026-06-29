@@ -47,7 +47,8 @@ class OperationsAdminService:
         privileged_helper: PrivilegedHelperPort,
         teams_admin: Any,
         session_admin: Any,
-        worker_admin: Any,
+        wake_schedule_admin: Any,
+        worker_control_admin: Any,
         directory_admin: Any,
         workflow_config_admin: Any | None = None,
         trigger_repository: Any | None = None,
@@ -59,7 +60,8 @@ class OperationsAdminService:
         self._privileged_helper = privileged_helper
         self._teams_admin = teams_admin
         self._session_admin = session_admin
-        self._worker_admin = worker_admin
+        self._wake_schedule_admin = wake_schedule_admin
+        self._worker_control_admin = worker_control_admin
         self._directory_admin = directory_admin
         self._workflow_config_admin = workflow_config_admin
         self._trigger_repository = trigger_repository
@@ -164,7 +166,7 @@ class OperationsAdminService:
         session_id: str | None = None,
         include_disabled: bool = True,
     ):
-        return self._session_admin.list_wake_schedules(
+        return self._wake_schedule_admin.list_wake_schedules(
             session_id=session_id,
             include_disabled=include_disabled,
         )
@@ -177,7 +179,7 @@ class OperationsAdminService:
         limit: int = 100,
         include_completed: bool = True,
     ):
-        return self._session_admin.list_scheduled_wake_ledger(
+        return self._wake_schedule_admin.list_scheduled_wake_ledger(
             statuses=statuses,
             session_id=session_id,
             limit=limit,
@@ -191,7 +193,7 @@ class OperationsAdminService:
         resume_at: datetime | None = None,
         run_now: bool = True,
     ):
-        return self._session_admin.retry_scheduled_wake(
+        return self._wake_schedule_admin.retry_scheduled_wake(
             request_id,
             resume_at=resume_at,
             run_now=run_now,
@@ -210,7 +212,7 @@ class OperationsAdminService:
         source: str | None = "admin_cli",
         metadata: dict[str, Any] | None = None,
     ):
-        return self._session_admin.create_wake_schedule(
+        return self._wake_schedule_admin.create_wake_schedule(
             session_id=session_id,
             prompt=prompt,
             resume_at=resume_at,
@@ -232,7 +234,7 @@ class OperationsAdminService:
         resume_mode: str | None = None,
         enabled: bool | None = None,
     ):
-        return self._session_admin.edit_wake_schedule(
+        return self._wake_schedule_admin.edit_wake_schedule(
             request_id,
             resume_at=resume_at,
             cron=cron,
@@ -242,7 +244,7 @@ class OperationsAdminService:
         )
 
     def delete_wake_schedule(self, request_id: str):
-        return self._session_admin.delete_wake_schedule(request_id)
+        return self._wake_schedule_admin.delete_wake_schedule(request_id)
 
     def renew_session(self, target: str, *, extension: str = "1d"):
         return self._session_admin.renew_session(target, extension=extension)
@@ -266,16 +268,18 @@ class OperationsAdminService:
         return self._session_admin.set_session_model(target, model)
 
     def list_background_workers(self):
-        return self._worker_admin.list_background_workers()
+        return self._worker_control_admin.list_background_workers()
 
     def get_background_worker_log_snapshot(self, worker_id: str, *, lines: int = 200):
-        return self._worker_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
+        return self._worker_control_admin.get_background_worker_log_snapshot(
+            worker_id, lines=lines
+        )
 
     def start_background_worker(self, worker_id: str):
-        return self._worker_admin.start_background_worker(worker_id)
+        return self._worker_control_admin.start_background_worker(worker_id)
 
     def stop_background_worker(self, worker_id: str):
-        return self._worker_admin.stop_background_worker(worker_id)
+        return self._worker_control_admin.stop_background_worker(worker_id)
 
     def list_directory_tree(self):
         return self._directory_admin.tree("root")

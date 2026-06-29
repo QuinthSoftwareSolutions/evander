@@ -188,7 +188,7 @@ class FakeExecutionBackend:
         return "destroy-result"
 
 
-class FakeWorkerAdmin:
+class FakeVmInventoryAdmin:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
@@ -285,7 +285,11 @@ class FakeSessionsStore:
 class FakeAdmin:
     def __init__(self, *, sessions: FakeSessionsStore | None = None) -> None:
         session_repository = sessions or FakeSessionsStore()
-        self.worker_admin = FakeWorkerAdmin()
+        self.vm_inventory_admin = FakeVmInventoryAdmin()
+        self.agent_control_store = SimpleNamespace(status_for_vm=lambda _vm_name: "enabled")
+        self.directory_ownership = SimpleNamespace(
+            direct_owned_entity_ids=lambda _directory_path, kind: set()
+        )
         self.runtime = SimpleNamespace(
             sessions=session_repository,
             session_repository=session_repository,
@@ -352,7 +356,9 @@ def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDe
         runtime=admin.runtime,
         project_dir=admin.project_dir,
         local_issue_store=admin.local_issue_store,
-        worker_admin=admin.worker_admin,
+        vm_inventory_admin=admin.vm_inventory_admin,
+        agent_control_store=admin.agent_control_store,
+        directory_ownership=admin.directory_ownership,
         privileged_helper=SimpleNamespace(
             get_privileged_helper=lambda: admin._privileged_helper,
             get_use_privileged_helper=lambda: admin.use_privileged_helper,
@@ -1167,7 +1173,7 @@ def test_admin_service_routes_phase_1_vm_operations_through_vm_agent_admin() -> 
     ]
 
 
-def test_vm_agent_admin_service_list_vms_uses_worker_admin(
+def test_vm_agent_admin_service_list_vms_uses_vm_inventory_admin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     admin = FakeAdmin()
@@ -1189,7 +1195,7 @@ def test_vm_agent_admin_service_list_vms_uses_worker_admin(
     )
 
     assert summaries == ["vm-summary"]
-    assert admin.worker_admin.calls == [
+    assert admin.vm_inventory_admin.calls == [
         {
             "include_inactive": False,
             "omit_state": True,
@@ -1222,7 +1228,7 @@ def test_vm_agent_admin_service_list_vms_falls_back_when_provider_listing_fails(
     )
 
     assert summaries == ["vm-summary"]
-    assert admin.worker_admin.calls == [
+    assert admin.vm_inventory_admin.calls == [
         {
             "include_inactive": False,
             "omit_state": True,

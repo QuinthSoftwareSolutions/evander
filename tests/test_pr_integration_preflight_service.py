@@ -75,7 +75,7 @@ def _resolve_repo_source_support(project_dir: Path) -> VmAgentAdminSupport:
         project_dir=project_dir,
         local_issue_store=SimpleNamespace(),
         local_issue_identity_resolver=SimpleNamespace(),
-        worker_admin=SimpleNamespace(),
+        vm_inventory_admin=SimpleNamespace(),
         workflow_config_admin=SimpleNamespace(),
         directory_admin=SimpleNamespace(),
         get_privileged_helper=lambda: None,
@@ -162,7 +162,7 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
         provider_config_resolver=provider_config_resolver,
     )
 
-    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
+    report = service.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],
@@ -232,7 +232,7 @@ def test_run_pr_integration_preflight_prefers_explicit_repo_source(
         provider_config_resolver=provider_config_resolver,
     )
 
-    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
+    report = service.run_pr_integration_preflight(
         provider="azure-devops",
         repo="repo-1",
         pr_ids=["17"],
@@ -274,7 +274,7 @@ def test_run_pr_integration_preflight_requires_repo_source_when_missing(
         ValueError,
         match=r"repo_source or ado_worker\.ado_repo_source",
     ):
-        service.pr_integration_preflight_admin.run_pr_integration_preflight(
+        service.run_pr_integration_preflight(
             provider="ado",
             repo="repo-1",
             pr_ids=["17"],
@@ -314,7 +314,7 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
         provider_config_resolver=provider_config_resolver,
     )
 
-    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
+    report = service.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],
@@ -352,7 +352,7 @@ def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
     )
 
     missing_repo = tmp_path / "missing-repo"
-    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
+    report = service.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],

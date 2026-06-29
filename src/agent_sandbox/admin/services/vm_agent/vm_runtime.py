@@ -4,12 +4,9 @@ from agent_sandbox.admin.services.vm_agent.common import (
     Any,
     Path,
     SessionManifest,
-    SimpleNamespace,
     VmActionResult,
     VmProviderRegistry,
     VmSummary,
-    _EmptyDirectoryOwnership,
-    _EnabledAgentControlStore,
     _VmProviderRegistryDependencies,
     _source_project_dir,
     os,
@@ -77,20 +74,14 @@ class VmAgentRuntimeMixin:
         raise RuntimeError(detail)
 
     def _provider_registry(self) -> VmProviderRegistry:
-        worker_deps = getattr(self._deps.worker_admin, "_deps", SimpleNamespace())
-        agent_control_store = getattr(worker_deps, "agent_control_store", None)
-        if agent_control_store is None:
-            agent_control_store = _EnabledAgentControlStore()
         dependency_view = _VmProviderRegistryDependencies(
             runtime=self._deps.runtime,
             directory_path=self._deps.directory_path,
             resolve_vm_defaults=self._deps.resolve_vm_defaults,
             resolve_agent_model_for_session=self._deps.resolve_agent_model_for_session,
             privileged_helper=self._deps.privileged_helper,
-            directory_ownership=getattr(
-                worker_deps, "directory_ownership", _EmptyDirectoryOwnership()
-            ),
-            agent_control_store=agent_control_store,
+            directory_ownership=self._deps.directory_ownership,
+            agent_control_store=self._deps.agent_control_store,
         )
         return VmProviderRegistry(dependency_view)
 
@@ -139,7 +130,7 @@ class VmAgentRuntimeMixin:
                 return summaries
         except RuntimeError:
             pass
-        return self._deps.worker_admin.list_vms(
+        return self._deps.vm_inventory_admin.list_vms(
             include_inactive=include_inactive,
             omit_state=omit_state,
             vm_user=vm_user,

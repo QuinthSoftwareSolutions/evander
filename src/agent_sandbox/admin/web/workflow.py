@@ -398,7 +398,10 @@ def _graph_directories_from_payload(
     fallback_graphs: list[Any] | None = None,
 ) -> tuple[str, ...]:
     graphs_payload = payload.get("graphs")
-    submitted_graphs = service.workflow_config_admin._coerce_workflow_editor_graphs(graphs_payload, strict=False)
+    submitted_graphs = service.workflow_config_admin.coerce_workflow_editor_graphs(
+        graphs_payload,
+        strict=False,
+    )
     directories = _graph_directory_paths(
         [graph.model_dump(mode="json") for graph in submitted_graphs]
     )

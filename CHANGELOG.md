@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Split the remaining admin facade concerns into focused Teams, session, wake
+  schedule, VM inventory, and worker-control services, and replaced private
+  composition wiring with public workflow-config service ports.
+
 - Removed the legacy `AdminService` facade and routed Admin Web, gateway, CLI,
   provider runtime, and tests through the explicit `build_admin_runtime`
   component graph and focused admin services.
