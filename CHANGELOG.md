@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Added Team Add-on workflow primitives for deterministic review routing:
+  `trigger:team:deliverable-created` and
+  `effect:team:create-review-request`.
+
 - Refactored the Team Add-on state repository into a storage-only persistence facade, moving
   command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
   focused Team services.
