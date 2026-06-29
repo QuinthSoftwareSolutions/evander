@@ -71,11 +71,11 @@ from .models import (
 from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
-from .repository import (
-    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
-    TeamStateConflictError,
-    TeamStateRepository,
-)
+from .repository import TeamStateConflictError, TeamStateRepository
+from .services.domain_helpers import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.admin_service import TeamAdminService
+from .services.chat_service import TeamChatService
+from .services.runtime_service import TeamRuntimeService
 from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
@@ -240,6 +240,9 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
+    admin_service = TeamAdminService(repository)
+    chat_service = TeamChatService(repository)
+    runtime_service = TeamRuntimeService(repository)
     avatar_storage = AvatarStorage(context.runtime_dir)
 
     def _state_payload(request: Request, state: TeamState) -> dict[str, Any]:
@@ -247,12 +250,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             context.auth,
             request,
             state,
-            session_records=_session_records_by_id(
-                _session_repository_from_context(context)
-            ),
-            agent_execution_records=_agent_execution_records_by_session(
-                context.service
-            ),
+            session_records=_session_records_by_id(_session_repository_from_context(context)),
+            agent_execution_records=_agent_execution_records_by_session(context.service),
         )
 
     def _state_response(
@@ -324,12 +323,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 request,
                 state,
                 view=view,
-                session_records=_session_records_by_id(
-                    _session_repository_from_context(context)
-                ),
-                agent_execution_records=_agent_execution_records_by_session(
-                    context.service
-                ),
+                session_records=_session_records_by_id(_session_repository_from_context(context)),
+                agent_execution_records=_agent_execution_records_by_session(context.service),
             )
         )
 
@@ -345,11 +340,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def list_templates(_request: Request) -> JSONResponse:
         return JSONResponse(
-            {
-                "templates": [
-                    template.model_dump(mode="json") for template in template_catalog()
-                ]
-            }
+            {"templates": [template.model_dump(mode="json") for template in template_catalog()]}
         )
 
     async def get_template_details(request: Request) -> JSONResponse:
@@ -363,7 +354,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if get_template(template_id) is None:
             return JSONResponse({"error": "template not found"}, status_code=404)
         payload = await _read_payload(request)
-        state, result = repository.materialize_template(
+        state, result = admin_service.materialize_template(
             template_id,
             inputs=payload,
             expected_revision=_expected_revision(payload),
@@ -428,7 +419,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         team_id = _optional(payload, "id") or _optional(payload, "team_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_team(
+            lambda expected_revision: admin_service.create_team(
                 team_id=team_id,
                 name=_required(payload, "name"),
                 manager_agent_id=_optional(payload, "manager_agent_id"),
@@ -439,7 +430,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 operator_communication_target_id=_optional(
                     payload, "operator_communication_target_id"
                 ),
-                escalate_to_governance=bool(_optional_bool(payload, "escalate_to_governance") or False),
+                escalate_to_governance=bool(
+                    _optional_bool(payload, "escalate_to_governance") or False
+                ),
                 max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
                 expected_revision=expected_revision,
             ),
@@ -459,7 +452,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         team_id = request.path_params["team_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_team(
+            lambda expected_revision: admin_service.update_team(
                 team_id=team_id,
                 name=_optional(payload, "name"),
                 manager_agent_id=_optional(payload, "manager_agent_id"),
@@ -480,12 +473,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def create_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        governance_group_id = _optional(payload, "id") or _optional(
-            payload, "governance_group_id"
-        )
+        governance_group_id = _optional(payload, "id") or _optional(payload, "governance_group_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_governance_group(
+            lambda expected_revision: admin_service.create_governance_group(
                 governance_group_id=governance_group_id,
                 name=_required(payload, "name"),
                 manager_agent_id=_required(payload, "manager_agent_id"),
@@ -515,7 +506,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         governance_group_id = request.path_params["governance_group_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_governance_group(
+            lambda expected_revision: admin_service.update_governance_group(
                 governance_group_id=governance_group_id,
                 name=_optional(payload, "name"),
                 manager_agent_id=_optional(payload, "manager_agent_id"),
@@ -538,7 +529,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agenda_item_id = _optional(payload, "id") or _optional(payload, "agenda_item_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_governance_agenda_item(
+            lambda expected_revision: admin_service.create_governance_agenda_item(
                 agenda_item_id=agenda_item_id,
                 governance_group_id=_required(payload, "governance_group_id"),
                 item_type=GovernanceAgendaItemType(_required(payload, "item_type")),
@@ -547,7 +538,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 team_id=_optional(payload, "team_id"),
                 project_id=_optional(payload, "project_id"),
                 agent_id=_optional(payload, "agent_id"),
-                payload=payload.get("payload") if isinstance(payload.get("payload"), Mapping) else None,
+                payload=payload.get("payload")
+                if isinstance(payload.get("payload"), Mapping)
+                else None,
                 priority=TeamInboxPriority(raw_priority),
                 expected_revision=expected_revision,
             ),
@@ -566,7 +559,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agenda_item_id = request.path_params["agenda_item_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.mark_governance_agenda_handled(
+            lambda expected_revision: admin_service.mark_governance_agenda_handled(
                 agenda_item_id=agenda_item_id,
                 expected_revision=expected_revision,
             ),
@@ -585,7 +578,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         project_id = _optional(payload, "id") or _optional(payload, "project_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_project(
+            lambda expected_revision: admin_service.create_project(
                 project_id=project_id,
                 team_id=_required(payload, "team_id"),
                 name=_required(payload, "name"),
@@ -621,7 +614,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         project_id = request.path_params["project_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_project(
+            lambda expected_revision: admin_service.update_project(
                 project_id=project_id,
                 name=_optional(payload, "name"),
                 git=_optional_git_config(payload),
@@ -670,7 +663,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         role_id = _optional(payload, "id") or _optional(payload, "role_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_role(
+            lambda expected_revision: admin_service.create_role(
                 role_id=role_id,
                 team_id=_required(payload, "team_id"),
                 project_id=_optional(payload, "project_id"),
@@ -701,7 +694,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         role_id = request.path_params["role_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_role(
+            lambda expected_revision: admin_service.update_role(
                 role_id=role_id,
                 name=_optional(payload, "name"),
                 project_id=_optional(payload, "project_id"),
@@ -748,7 +741,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = _optional(payload, "id") or _optional(payload, "agent_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.register_agent(
+            lambda expected_revision: admin_service.register_agent(
                 agent_id=agent_id,
                 team_id=_optional(payload, "team_id"),
                 project_id=_optional(payload, "project_id"),
@@ -781,7 +774,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = request.path_params["agent_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_agent(
+            lambda expected_revision: admin_service.update_agent(
                 agent_id=agent_id,
                 team_id=_optional(payload, "team_id"),
                 set_team_id="team_id" in payload,
@@ -812,9 +805,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     payload,
                     "auto_context_clearing_enabled",
                 ),
-                set_auto_context_clearing_enabled=(
-                    "auto_context_clearing_enabled" in payload
-                ),
+                set_auto_context_clearing_enabled=("auto_context_clearing_enabled" in payload),
                 expected_revision=expected_revision,
             ),
             target_collection="agents",
@@ -876,7 +867,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request.path_params["agent_id"],
         )
         try:
-            state = repository.set_agent_avatar(
+            state = admin_service.set_agent_avatar(
                 agent_id=request.path_params["agent_id"],
                 avatar=avatar,
                 expected_revision=expected_revision,
@@ -910,7 +901,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             )
         except FileNotFoundError:
             return JSONResponse({"error": "avatar preview not found"}, status_code=404)
-        state = repository.set_agent_avatar(
+        state = admin_service.set_agent_avatar(
             agent_id=agent_id,
             avatar=avatar,
             expected_revision=expected_revision,
@@ -925,7 +916,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             repository.read(),
             request.path_params["agent_id"],
         )
-        state = repository.clear_agent_avatar(
+        state = admin_service.clear_agent_avatar(
             agent_id=request.path_params["agent_id"],
             expected_revision=_expected_revision(payload),
         )
@@ -947,7 +938,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_conversation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         identity = _operator_identity_from_request(context.auth, request)
-        state, conversation, created = repository.create_or_get_conversation(
+        state, conversation, created = chat_service.create_or_get_conversation(
             agent_id=_required(payload, "agent_id"),
             operator_user_id=identity["user_id"],
             operator_display_name=identity["display_name"],
@@ -1053,7 +1044,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             write=True,
             identity=identity,
         )
-        state, message = repository.record_operator_chat_message(
+        state, message = chat_service.record_operator_chat_message(
             conversation_id=conversation_id,
             body=_required(payload, "body"),
             created_by=identity["actor"],
@@ -1061,7 +1052,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         conversation = state.conversations[conversation_id]
         dispatch_id = f"team-chat:{message.id}"
-        state, message = repository.queue_chat_message_dispatch(
+        state, message = chat_service.queue_chat_message_dispatch(
             message_id=message.id,
             dispatch_id=dispatch_id,
             reason="queued by Team chat API for asynchronous dispatch",
@@ -1170,11 +1161,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 or existing_record.caller_metadata.get("conversation_id") != conversation_id
             ):
                 return JSONResponse(
-                    {
-                        "error": (
-                            "Voice session request_id was already used with different inputs"
-                        )
-                    },
+                    {"error": ("Voice session request_id was already used with different inputs")},
                     status_code=400,
                 )
             existing_voice_profile = existing_record.prompt_metadata.get("voice_profile")
@@ -1191,7 +1178,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 ).create_client_secret(
                     instructions=effective_prompt,
                     safety_identifier=f"team-addon:{agent.id}",
-                    include_query_origin_agent=payload.get("include_query_origin_agent") is not False,
+                    include_query_origin_agent=payload.get("include_query_origin_agent")
+                    is not False,
                     voice=existing_voice_profile.get("voice"),
                 )
             except (RuntimeError, ProviderRequestError) as exc:
@@ -1223,7 +1211,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 )
             conversation_message = None
             if conversation is not None:
-                state, conversation_message = repository.record_conversation_voice_call(
+                state, conversation_message = chat_service.record_conversation_voice_call(
                     conversation_id=conversation.id,
                     voice_session_id=existing_record.voice_session_id,
                     status="running",
@@ -1338,7 +1326,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         conversation_message = None
         if conversation is not None:
-            state, conversation_message = repository.record_conversation_voice_call(
+            state, conversation_message = chat_service.record_conversation_voice_call(
                 conversation_id=conversation.id,
                 voice_session_id=record.voice_session_id,
                 status="running",
@@ -1391,18 +1379,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         updated = record
         event_type = _optional(payload, "event_type")
-        event_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        event_metadata = (
+            payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        )
         transcript_text = _optional(payload, "text")
         if transcript_text:
-            updated = runtime.voice_session_store.append_transcript_event(
-                voice_session_id,
-                text=transcript_text,
-                speaker=_optional(payload, "speaker"),
-                metadata={
-                    "event_type": event_type or "browser_call.transcript",
-                    **dict(event_metadata),
-                },
-            ) or updated
+            updated = (
+                runtime.voice_session_store.append_transcript_event(
+                    voice_session_id,
+                    text=transcript_text,
+                    speaker=_optional(payload, "speaker"),
+                    metadata={
+                        "event_type": event_type or "browser_call.transcript",
+                        **dict(event_metadata),
+                    },
+                )
+                or updated
+            )
         raw_status = _optional(payload, "status")
         if raw_status:
             status = normalize_voice_session_status(raw_status, default=updated.status)
@@ -1420,7 +1413,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     else None,
                     error=_optional(payload, "error"),
                 )
-                _record_chat_voice_call_status(repository, updated)
+                _record_chat_voice_call_status(chat_service, updated)
                 runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
             else:
                 updated = runtime.voice_session_store.attach_bridge_session(
@@ -1449,13 +1442,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             status=status,
             transcript=_optional(payload, "transcript"),
             summary=_optional(payload, "summary"),
-            decisions=_optional_string_list(payload, "decisions") if "decisions" in payload else None,
+            decisions=_optional_string_list(payload, "decisions")
+            if "decisions" in payload
+            else None,
             action_items=_optional_string_list(payload, "action_items")
             if "action_items" in payload
             else None,
             error=_optional(payload, "error"),
         )
-        _record_chat_voice_call_status(repository, updated)
+        _record_chat_voice_call_status(chat_service, updated)
         reconciled = runtime.voice_session_reconciler.schedule_reconciliation(voice_session_id)
         return JSONResponse(_team_voice_session_payload(reconciled or updated))
 
@@ -1474,13 +1469,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             status=status,
             transcript=_optional(payload, "transcript"),
             summary=_optional(payload, "summary"),
-            decisions=_optional_string_list(payload, "decisions") if "decisions" in payload else None,
+            decisions=_optional_string_list(payload, "decisions")
+            if "decisions" in payload
+            else None,
             action_items=_optional_string_list(payload, "action_items")
             if "action_items" in payload
             else None,
             error=_optional(payload, "error"),
         )
-        _record_chat_voice_call_status(repository, updated)
+        _record_chat_voice_call_status(chat_service, updated)
         reconciled = runtime.voice_session_reconciler.schedule_reconciliation(
             record.voice_session_id
         )
@@ -1563,7 +1560,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = request.path_params["agent_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.request_agent_context_rotation(
+            lambda expected_revision: runtime_service.request_agent_context_rotation(
                 agent_id=agent_id,
                 requested_by=_optional(payload, "requested_by")
                 or _operator_actor_from_request(context.auth, request),
@@ -1580,7 +1577,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = request.path_params["agent_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.stand_down_agent(
+            lambda expected_revision: runtime_service.stand_down_agent(
                 agent_id=agent_id,
                 reason=_required(payload, "reason"),
                 set_by=_optional(payload, "set_by")
@@ -1602,7 +1599,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         agent_id = request.path_params["agent_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.revoke_operator_stand_downs(
+            lambda expected_revision: runtime_service.revoke_operator_stand_downs(
                 agent_id=agent_id,
                 revoked_by=_optional(payload, "revoked_by")
                 or _operator_actor_from_request(context.auth, request),
@@ -1620,7 +1617,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         raw_priority = _optional(payload, "priority")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_case(
+            lambda expected_revision: admin_service.create_case(
                 case_id=case_id,
                 team_id=_required(payload, "team_id"),
                 project_id=_optional(payload, "project_id"),
@@ -1628,9 +1625,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 description=_optional(payload, "description") or "",
                 status=TeamCaseStatus(raw_status) if raw_status else TeamCaseStatus.OPEN,
                 priority=(
-                    TeamInboxPriority(raw_priority)
-                    if raw_priority
-                    else TeamInboxPriority.NORMAL
+                    TeamInboxPriority(raw_priority) if raw_priority else TeamInboxPriority.NORMAL
                 ),
                 owner_agent_id=_optional(payload, "owner_agent_id"),
                 source=_optional(payload, "source"),
@@ -1657,7 +1652,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         raw_priority = _optional(payload, "priority")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_case(
+            lambda expected_revision: admin_service.update_case(
                 case_id=case_id,
                 title=_optional(payload, "title"),
                 description=_optional_present_text(payload, "description"),
@@ -1673,9 +1668,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 source_ref=_optional_present_text(payload, "source_ref"),
                 set_source_ref="source_ref" in payload,
                 tags=_optional_string_list(payload, "tags"),
-                metadata=(
-                    _optional_object(payload, "metadata") if "metadata" in payload else None
-                ),
+                metadata=(_optional_object(payload, "metadata") if "metadata" in payload else None),
                 task_ids=_optional_string_list(payload, "task_ids"),
                 expected_revision=expected_revision,
             ),
@@ -1691,7 +1684,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         task_id = _optional(payload, "id") or _optional(payload, "task_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_or_reprioritize_task(
+            lambda expected_revision: admin_service.create_or_reprioritize_task(
                 task_id=task_id,
                 owner_agent_id=_required(payload, "owner_agent_id"),
                 project_id=_required(payload, "project_id"),
@@ -1728,7 +1721,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         task_id = request.path_params["task_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_task(
+            lambda expected_revision: admin_service.update_task(
                 task_id=task_id,
                 priority=_optional_int(payload, "priority"),
                 state=TeamTaskState(raw_state) if raw_state else None,
@@ -1752,7 +1745,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         deliverable_id = _optional(payload, "id") or _optional(payload, "deliverable_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.record_deliverable(
+            lambda expected_revision: admin_service.record_deliverable(
                 deliverable_id=deliverable_id,
                 task_id=_required(payload, "task_id"),
                 producer_agent_id=_required(payload, "producer_agent_id"),
@@ -1775,12 +1768,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
         raw_decision_at = _optional(payload, "decision_at")
-        review_request_id = _optional(payload, "id") or _optional(
-            payload, "review_request_id"
-        )
+        review_request_id = _optional(payload, "id") or _optional(payload, "review_request_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.record_review_request(
+            lambda expected_revision: admin_service.record_review_request(
                 review_request_id=review_request_id,
                 deliverable_id=_required(payload, "deliverable_id"),
                 reviewer_agent_id=_required(payload, "reviewer_agent_id"),
@@ -1809,7 +1800,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         review_request_id = request.path_params["review_request_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.record_review_decision(
+            lambda expected_revision: admin_service.record_review_decision(
                 review_request_id=review_request_id,
                 state=TeamRecordState(_required(payload, "state")),
                 findings=_optional_string_list(payload, "findings"),
@@ -1827,7 +1818,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             context.auth,
             request,
         )
-        state, item = repository.create_operator_directive(
+        state, item = admin_service.create_operator_directive(
             team_id=_required(payload, "team_id"),
             message=_required(payload, "message"),
             recipient_agent_id=_optional(payload, "recipient_agent_id"),
@@ -1852,7 +1843,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         action_record_id = request.path_params["action_record_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.dismiss_action_record_attention(
+            lambda expected_revision: admin_service.dismiss_action_record_attention(
                 action_record_id=action_record_id,
                 dismissed_by=_optional(payload, "dismissed_by"),
                 dismissed_reason=_optional(payload, "dismissed_reason"),
@@ -1872,7 +1863,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         profile_id = _optional(payload, "id") or _optional(payload, "review_profile_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.create_review_profile(
+            lambda expected_revision: admin_service.create_review_profile(
                 profile_id=profile_id,
                 team_id=_required(payload, "team_id"),
                 project_id=_optional(payload, "project_id"),
@@ -1908,7 +1899,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         profile_id = request.path_params["review_profile_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
-            lambda expected_revision: repository.update_review_profile(
+            lambda expected_revision: admin_service.update_review_profile(
                 profile_id=profile_id,
                 name=_optional(payload, "name"),
                 description=_optional_present_text(payload, "description"),
@@ -1934,8 +1925,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             {
                 "revision": state.revision,
                 "review_profiles": [
-                    profile.model_dump(mode="json")
-                    for profile in state.review_profiles.values()
+                    profile.model_dump(mode="json") for profile in state.review_profiles.values()
                 ],
             }
         )
@@ -1949,7 +1939,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def create_release_package(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state, result = repository.create_release_package_with_result(
+        state, result = admin_service.create_release_package_with_result(
             project_id=_required(payload, "project_id"),
             deliverable_ids=_optional_string_list(payload, "deliverable_ids") or [],
             release_id=_optional(payload, "id") or _optional(payload, "release_package_id"),
@@ -1976,8 +1966,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             {
                 "revision": state.revision,
                 "release_packages": [
-                    release.model_dump(mode="json")
-                    for release in state.release_packages.values()
+                    release.model_dump(mode="json") for release in state.release_packages.values()
                 ],
             }
         )
@@ -1995,8 +1984,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             {
                 "revision": state.revision,
                 "git_promotions": [
-                    promotion.model_dump(mode="json")
-                    for promotion in state.git_promotions.values()
+                    promotion.model_dump(mode="json") for promotion in state.git_promotions.values()
                 ],
             }
         )
@@ -2506,9 +2494,7 @@ def _filter_state_payload(
             allowed_ids = ids_by_collection.get(key)
             if allowed_ids is not None and isinstance(value, Mapping):
                 filtered[key] = {
-                    item_id: item
-                    for item_id, item in value.items()
-                    if item_id in allowed_ids
+                    item_id: item for item_id, item in value.items() if item_id in allowed_ids
                 }
                 continue
         filtered[key] = value
@@ -2633,9 +2619,7 @@ def _team_resource_token_for(
     item = _team_state_collection(state, collection).get(item_id)
     if item is None:
         return None
-    return _team_resource_token(
-        _team_resource_value_for_token(state, collection, item_id, item)
-    )
+    return _team_resource_token(_team_resource_value_for_token(state, collection, item_id, item))
 
 
 def _team_state_collection(state: TeamState, collection: str) -> Mapping[str, Any]:
@@ -2680,7 +2664,9 @@ def _chat_list_scope(
         "view_operator_user_id",
     )
     if requested_operator_user_id is None:
-        return _chat_scope_for_operator(auth, request, state, identity["user_id"], identity=identity)
+        return _chat_scope_for_operator(
+            auth, request, state, identity["user_id"], identity=identity
+        )
     normalized_requested = _normalize_operator_user_id(requested_operator_user_id)
     if normalized_requested != identity["user_id"] and not _can_view_all_team_chats(
         auth,
@@ -3193,14 +3179,14 @@ def _chat_agent_is_eligible(agent: Any) -> bool:
 
 
 def _record_chat_voice_call_status(
-    repository: TeamStateRepository,
+    chat_service: TeamChatService,
     record: Any,
 ) -> None:
     metadata = getattr(record, "caller_metadata", None)
     if not isinstance(metadata, Mapping) or not _optional(metadata, "conversation_id"):
         return
     try:
-        repository.update_conversation_voice_call_status(
+        chat_service.update_conversation_voice_call_status(
             voice_session_id=record.voice_session_id,
             status=str(getattr(record, "status", "") or "ended"),
             summary=str(getattr(record, "summary", "") or "").strip() or None,
@@ -3323,8 +3309,7 @@ def _build_agent_voice_projection(
             "name": role.name if role else agent.role_id,
             "description": role.description if role else "",
             "permissions": [
-                _enum_value(permission)
-                for permission in effective_role_permissions(state, agent)
+                _enum_value(permission) for permission in effective_role_permissions(state, agent)
             ],
         },
         "runtime": {
@@ -3513,9 +3498,7 @@ def _team_voice_session_payload(record: Any) -> dict[str, Any]:
         "contact_id": record.contact_id,
         "contact_display_name": record.contact_display_name,
         "transcript": record.transcript,
-        "transcript_events": [
-            event.model_dump(mode="json") for event in record.transcript_events
-        ],
+        "transcript_events": [event.model_dump(mode="json") for event in record.transcript_events],
         "reconciliation_status": record.reconciliation_status,
         "reconciliation_request_id": record.reconciliation_request_id,
         "error": record.error,
@@ -3526,10 +3509,14 @@ def _team_voice_session_payload(record: Any) -> dict[str, Any]:
 
 
 def _realtime_calls_url(config: Any) -> str:
-    base_url = str(
-        getattr(config, "openai_realtime_api_base_url", "https://api.openai.com/v1")
-        or "https://api.openai.com/v1"
-    ).strip().rstrip("/")
+    base_url = (
+        str(
+            getattr(config, "openai_realtime_api_base_url", "https://api.openai.com/v1")
+            or "https://api.openai.com/v1"
+        )
+        .strip()
+        .rstrip("/")
+    )
     return f"{base_url}/realtime/calls"
 
 
@@ -3742,9 +3729,7 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
     normalized.pop("bare_repo", None)
     if bare_repo:
         if normalized.get("bare_repo_name") or normalized.get("bare_repo_path"):
-            raise ValueError(
-                "bare_repo cannot be combined with bare_repo_name or bare_repo_path"
-            )
+            raise ValueError("bare_repo cannot be combined with bare_repo_name or bare_repo_path")
         if bare_repo.startswith("/"):
             normalized["bare_repo_path"] = bare_repo
         else:

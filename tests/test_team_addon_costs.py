@@ -17,6 +17,11 @@ import evander_team_addon.costs as costs_module
 from evander_team_addon.costs import TeamCostService
 from evander_team_addon.models import EphemeralAssignment
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.admin_service import TeamAdminService
+
+
+def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repo)
 
 
 def _pricing_catalog():
@@ -53,32 +58,32 @@ def _pricing_catalog():
 
 def _seed_team(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__reviewer",
         team_id="team",
         project_id="project",
         name="Reviewer",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -86,7 +91,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         session_id="session-backend",
         reports_to_agent_id="lead",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="reviewer",
         team_id="team",
         project_id="project",
@@ -122,7 +127,8 @@ def _usage_event(
         total_tokens=total_tokens,
         request_status="success",
         normalized_usage_status="available",
-        raw_usage_metadata=raw_usage_metadata or {
+        raw_usage_metadata=raw_usage_metadata
+        or {
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -197,7 +203,7 @@ def test_team_costs_use_persisted_usage_attribution_after_agent_detached(
             },
         )
     )
-    repo.update_agent(
+    _team_admin_service(repo).update_agent(
         agent_id="backend",
         team_id=None,
         set_team_id=True,
@@ -281,7 +287,7 @@ def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
             dispatch_id="dispatch-backend",
         )
     )
-    repo.update_agent(
+    _team_admin_service(repo).update_agent(
         agent_id="backend",
         team_id=None,
         set_team_id=True,
@@ -305,7 +311,7 @@ def test_team_costs_preserve_dispatch_attribution_for_superseded_transcripts(
 def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_team(runtime_dir)
-    repo.update_team(
+    _team_admin_service(repo).update_team(
         team_id="team",
         max_cost_usd="2.50",
         set_max_cost_usd=True,
@@ -327,7 +333,7 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
     assert team_cost["cost_limit_reached"] is False
     assert team_cost["cost_limit_basis"] == "lifetime"
 
-    repo.update_team(
+    _team_admin_service(repo).update_team(
         team_id="team",
         max_cost_usd="1.00",
         set_max_cost_usd=True,
@@ -347,12 +353,12 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
 def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_team(runtime_dir)
-    repo.update_team(
+    _team_admin_service(repo).update_team(
         team_id="team",
         max_cost_usd="2.00",
         set_max_cost_usd=True,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -524,9 +530,7 @@ def test_claude_transcript_backfill_reads_libvirt_vm_sources_and_supersedes_rela
                     {
                         "sessionId": "claude-thread",
                         "requestId": "req-remote-1",
-                        "timestamp": datetime(
-                            2026, 6, 16, 12, 0, tzinfo=UTC
-                        ).isoformat(),
+                        "timestamp": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
                         "message": {
                             "id": "msg-remote-1",
                             "model": "claude-sonnet-4-6",
@@ -624,9 +628,7 @@ def test_claude_transcript_backfill_keeps_relay_rows_for_unbackfilled_requests(
                     {
                         "sessionId": "claude-thread",
                         "requestId": "req-remote-1",
-                        "timestamp": datetime(
-                            2026, 6, 16, 12, 0, tzinfo=UTC
-                        ).isoformat(),
+                        "timestamp": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
                         "message": {
                             "id": "msg-remote-1",
                             "model": "claude-sonnet-4-6",

@@ -30,18 +30,23 @@ from evander_team_addon.providers import (
     TeamRecordGitPromotionEffectProvider,
 )
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.admin_service import TeamAdminService
+
+
+def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repo)
 
 
 def _seed_team(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -50,14 +55,14 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=1,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=2,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -67,7 +72,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=0),
         expected_revision=3,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
         owner_agent_id="backend",
         project_id="project",
@@ -223,9 +228,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
             target_branch="team/team/releases/release-1",
             promotion_kind="release",
         )
-        state.release_packages["release-1"].git_promotion_record_ids = [
-            "release-promotion"
-        ]
+        state.release_packages["release-1"].git_promotion_record_ids = ["release-promotion"]
         return state
 
     repo.update(_mutate)
@@ -256,9 +259,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert events[0].payload["promotion_kind"] == "canonical_push"
     assert events[0].payload["source_branch"] == "team/team/releases/release-1"
     assert events[0].payload["target_branch"] == "releases/project/release-1"
-    assert events[0].payload["canonical_origin_url"] == (
-        "https://example.invalid/Truman.git"
-    )
+    assert events[0].payload["canonical_origin_url"] == ("https://example.invalid/Truman.git")
     assert events[0].payload["provider"] == "azure_devops"
 
 
@@ -278,9 +279,7 @@ def test_record_canonical_promotion_success_updates_record(
             target_branch="releases/project/release-1",
             promotion_kind="canonical_push",
         )
-        state.release_packages["release-1"].git_promotion_record_ids = [
-            "canonical-promotion"
-        ]
+        state.release_packages["release-1"].git_promotion_record_ids = ["canonical-promotion"]
         return state
 
     repo.update(_mutate)
@@ -321,9 +320,7 @@ def test_record_canonical_promotion_failure_blocks_release(
             target_branch="releases/project/release-1",
             promotion_kind="canonical_push",
         )
-        state.release_packages["release-1"].git_promotion_record_ids = [
-            "canonical-promotion"
-        ]
+        state.release_packages["release-1"].git_promotion_record_ids = ["canonical-promotion"]
         return state
 
     repo.update(_mutate)
@@ -599,14 +596,17 @@ def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
     _branch_with(source, "agents/session-1/work", "agent work\n")
     source_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
     _git(source, "push", "origin", "agents/session-1/work")
-    assert _git(
-        trusted,
-        "rev-parse",
-        "--verify",
-        "--quiet",
-        "agents/session-1/work^{commit}",
-        check=False,
-    ).returncode != 0
+    assert (
+        _git(
+            trusted,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "agents/session-1/work^{commit}",
+            check=False,
+        ).returncode
+        != 0
+    )
 
     result = _consolidate_provider(
         tmp_path,
@@ -619,10 +619,7 @@ def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
 
     assert result["success"] is True
     assert result["merged_branches"] == ["agents/session-1/work"]
-    assert (
-        _git(trusted, "merge-base", "--is-ancestor", source_commit, "HEAD").returncode
-        == 0
-    )
+    assert _git(trusted, "merge-base", "--is-ancestor", source_commit, "HEAD").returncode == 0
     temp_refs = _git(
         trusted,
         "for-each-ref",
@@ -664,8 +661,7 @@ def test_consolidate_git_branches_refreshes_stale_local_source_from_bare_repo(
     new_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
     _git(source, "push", "origin", "agents/session-1/work")
     assert (
-        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip()
-        == old_commit
+        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
     )
 
     result = _consolidate_provider(
@@ -678,14 +674,10 @@ def test_consolidate_git_branches_refreshes_stale_local_source_from_bare_repo(
     )
 
     assert result["success"] is True
-    assert (
-        _git(trusted, "merge-base", "--is-ancestor", new_commit, "HEAD").returncode
-        == 0
-    )
+    assert _git(trusted, "merge-base", "--is-ancestor", new_commit, "HEAD").returncode == 0
     assert (trusted / "file.txt").read_text(encoding="utf-8") == "new agent work\n"
     assert (
-        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip()
-        == old_commit
+        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
     )
 
 

@@ -42,10 +42,30 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamTaskState,
 )
-from evander_team_addon.repository import (
+from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.domain_helpers import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
-    TeamStateRepository,
 )
+from evander_team_addon.services.agent_action_service import TeamAgentActionService
+from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.runtime_service import TeamRuntimeService
+
+
+def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repo)
+
+
+def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
+    return TeamChatService(repo)
+
+
+def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
+    return TeamRuntimeService(repo)
+
+
+def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
+    return TeamAgentActionService(repo)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +103,9 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 
 
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
-    return TestClient(create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon))))
+    return TestClient(
+        create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon)))
+    )
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -126,26 +148,26 @@ def _post_backend_role(
 
 def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -153,7 +175,7 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
         session_id="session-backend",
         reports_to_agent_id="lead",
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="blocked-task",
         owner_agent_id="backend",
         project_id="project",
@@ -163,7 +185,7 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
         created_by_agent_id="lead",
         state=TeamTaskState.BLOCKED,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="dependency-task",
         owner_agent_id="backend",
         project_id="project",
@@ -172,7 +194,7 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
         description="This task is still open.",
         created_by_agent_id="lead",
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="waiting-task",
         owner_agent_id="backend",
         project_id="project",
@@ -182,7 +204,7 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
         created_by_agent_id="lead",
         dependency_task_ids=["dependency-task"],
     )
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id="deliverable",
         task_id="waiting-task",
         producer_agent_id="backend",
@@ -304,7 +326,7 @@ def _seed_long_chat_history(
     message_count: int = 75,
 ) -> tuple[TeamStateRepository, str]:
     repo = _seed_runtime_operations_state(runtime_dir)
-    _state, conversation, _created = repo.create_or_get_conversation(
+    _state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="admin",
         operator_display_name="Admin",
@@ -326,11 +348,11 @@ def _seed_long_chat_history(
                 created_at=created_at,
                 updated_at=created_at,
             )
-        state.conversations[conversation_id].last_message_preview = (
-            f"Message {message_count - 1:03d}"
-        )
-        state.conversations[conversation_id].last_interaction_at = (
-            base_time + timedelta(minutes=message_count - 1)
+        state.conversations[
+            conversation_id
+        ].last_message_preview = f"Message {message_count - 1:03d}"
+        state.conversations[conversation_id].last_interaction_at = base_time + timedelta(
+            minutes=message_count - 1
         )
         return state
 
@@ -580,8 +602,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
             "vm_name": kwargs.get("target") or "vm-backend",
             "copied_count": len(kwargs.get("files") or []),
             "copied_paths": [
-                str(file.get("destination_path"))
-                for file in kwargs.get("files") or []
+                str(file.get("destination_path")) for file in kwargs.get("files") or []
             ],
         }
 
@@ -643,7 +664,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
         "dispatch_id": message["dispatch_id"],
     }
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "dispatch_id": message["dispatch_id"],
@@ -760,8 +781,7 @@ def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     ]
 
     older_page = client.get(
-        f"/api/addons/team-addon/conversations/{conversation_id}/messages"
-        "?before=msg-065&limit=10"
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages?before=msg-065&limit=10"
     )
     assert older_page.status_code == 200
     older_payload = older_page.json()
@@ -773,8 +793,7 @@ def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
     ]
 
     first_page = client.get(
-        f"/api/addons/team-addon/conversations/{conversation_id}/messages"
-        "?before=msg-005&limit=10"
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages?before=msg-005&limit=10"
     )
     assert first_page.status_code == 200
     first_payload = first_page.json()
@@ -830,8 +849,7 @@ def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
     assert "conversation_messages" not in bootstrap_payload
 
     chat_view = client.get(
-        "/api/addons/team-addon/views/chat"
-        f"?selected_conversation_id={conversation_id}"
+        f"/api/addons/team-addon/views/chat?selected_conversation_id={conversation_id}"
     )
     assert chat_view.status_code == 200
     payload = chat_view.json()
@@ -872,8 +890,7 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
             action={"type": "dismissed"},
             success=False,
             error="dismissed failure",
-            created_at=state.action_records["action-1"].created_at
-            - timedelta(seconds=2),
+            created_at=state.action_records["action-1"].created_at - timedelta(seconds=2),
             dismissed_at=now,
             dismissed_by="operator",
         )
@@ -884,8 +901,7 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
             action={"type": "old-build"},
             success=False,
             error="older failed action",
-            created_at=state.action_records["action-1"].created_at
-            - timedelta(seconds=1),
+            created_at=state.action_records["action-1"].created_at - timedelta(seconds=1),
         )
         state.action_records["successful-action"] = AgentActionRecord(
             id="successful-action",
@@ -918,7 +934,7 @@ def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_o
     tmp_path: Path,
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    _state, conversation, _created = repo.create_or_get_conversation(
+    _state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
@@ -954,25 +970,25 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     tmp_path: Path,
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    _state, alice_conversation, _created = repo.create_or_get_conversation(
+    _state, alice_conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
     )
-    repo.record_operator_chat_message(
+    _team_chat_service(repo).record_operator_chat_message(
         conversation_id=alice_conversation.id,
         body="Alice private question",
         created_by="operator:alice@example.com",
         expected_revision=repo.read().revision,
     )
-    _state, bob_conversation, _created = repo.create_or_get_conversation(
+    _state, bob_conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="bob@example.com",
         operator_display_name="Bob",
         expected_revision=repo.read().revision,
     )
-    repo.record_operator_chat_message(
+    _team_chat_service(repo).record_operator_chat_message(
         conversation_id=bob_conversation.id,
         body="Bob private question",
         created_by="operator:bob@example.com",
@@ -996,9 +1012,9 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     )
     assert set(scoped_payload["conversations"]) == {alice_conversation.id}
     assert bob_conversation.id not in scoped_payload["conversations"]
-    assert {
-        message["body"] for message in scoped_payload["conversation_messages"].values()
-    } == {"Alice private question"}
+    assert {message["body"] for message in scoped_payload["conversation_messages"].values()} == {
+        "Alice private question"
+    }
     assert all(
         message["conversation_id"] == alice_conversation.id
         for message in scoped_payload["conversation_messages"].values()
@@ -1018,13 +1034,13 @@ def test_team_addon_bootstrap_counts_only_current_operator_chats_without_read_al
     tmp_path: Path,
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    repo.create_or_get_conversation(
+    _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
     )
-    repo.create_or_get_conversation(
+    _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="bob@example.com",
         operator_display_name="Bob",
@@ -1086,7 +1102,7 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
         return state
 
     repo.update(_clear_backend_runtime)
-    _state, conversation, _created = repo.create_or_get_conversation(
+    _state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator",
     )
@@ -1108,17 +1124,17 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
         )
         try:
             first = await asyncio.wait_for(anext(stream), timeout=1.0)
-            _, message = repo.record_operator_chat_message(
+            _, message = _team_chat_service(repo).record_operator_chat_message(
                 conversation_id=conversation.id,
                 body="Can you summarize the blocker?",
                 expected_revision=repo.read().revision,
             )
             dispatch_id = f"team-chat:{message.id}"
-            repo.begin_chat_message_dispatch(
+            _team_chat_service(repo).begin_chat_message_dispatch(
                 message_id=message.id,
                 dispatch_id=dispatch_id,
             )
-            repo.apply_agent_action(
+            _team_agent_action_service(repo).apply_agent_action(
                 action={
                     "agent_id": "backend",
                     "dispatch_id": dispatch_id,
@@ -1172,7 +1188,7 @@ def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None
         )
         try:
             first = await asyncio.wait_for(anext(stream), timeout=1.0)
-            repo.create_or_reprioritize_task(
+            _team_admin_service(repo).create_or_reprioritize_task(
                 task_id="live-task",
                 owner_agent_id="backend",
                 project_id="project",
@@ -1202,7 +1218,7 @@ def test_agent_voice_session_create_query_and_end(
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    repo.update_agent(
+    _team_admin_service(repo).update_agent(
         agent_id="backend",
         voice_profile=AgentVoiceProfile(
             voice="cedar",
@@ -1292,9 +1308,7 @@ def test_agent_voice_session_create_query_and_end(
     assert query_response.status_code == 201
     query = query_response.json()
     assert query["status"] == "pending"
-    assert service.runtime.wake_store.get_request(
-        f"voice-query:{query['query_id']}"
-    ) is not None
+    assert service.runtime.wake_store.get_request(f"voice-query:{query['query_id']}") is not None
 
     end_response = client.post(
         f"/api/addons/team-addon/voice-sessions/{payload['voice_session_id']}/end",
@@ -1304,9 +1318,12 @@ def test_agent_voice_session_create_query_and_end(
     ended = end_response.json()
     assert ended["status"] == "ended"
     assert ended["reconciliation_status"] == "scheduled"
-    assert service.runtime.wake_store.get_request(
-        f"voice-session-reconcile:{payload['voice_session_id']}"
-    ) is not None
+    assert (
+        service.runtime.wake_store.get_request(
+            f"voice-session-reconcile:{payload['voice_session_id']}"
+        )
+        is not None
+    )
 
 
 def test_agent_voice_session_records_chat_conversation_message(
@@ -1315,7 +1332,7 @@ def test_agent_voice_session_records_chat_conversation_message(
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
@@ -1482,9 +1499,7 @@ def _auto_dev_squad_materialization_payload(
                 "session_id": "session-implementer-auto-dev-squad",
             },
             "reviewer": {
-                "agent_id": (
-                    duplicate_reviewer_agent_id or "reviewer-auto-dev-squad"
-                ),
+                "agent_id": (duplicate_reviewer_agent_id or "reviewer-auto-dev-squad"),
                 "session_id": "session-reviewer-auto-dev-squad",
             },
             "release_operator": {
@@ -1514,9 +1529,7 @@ def _accounting_department_materialization_payload(
             "bookkeeping_clerk": {"session_id": "session-bookkeeping-clerk-accounting"},
             "invoice_reviewer": {"session_id": "session-invoice-reviewer-accounting"},
             "payment_preparer": {"session_id": "session-payment-preparer-accounting"},
-            "tax_compliance_reviewer": {
-                "session_id": "session-tax-compliance-reviewer-accounting"
-            },
+            "tax_compliance_reviewer": {"session_id": "session-tax-compliance-reviewer-accounting"},
         },
     }
 
@@ -1675,7 +1688,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
-    assert 'teamFetch(`${API_BASE}/costs`' in script.text
+    assert "teamFetch(`${API_BASE}/costs`" in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
     assert "Blocked: estimated cost cap reached" in script.text
@@ -2058,8 +2071,7 @@ def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) 
     assert record["dismissed_reason"] == "Superseded by follow-up wake."
     assert record["dismissed_at"]
     assert all(
-        row["kind"] != "failed_action_record"
-        for row in state["runtime_operations"]["attention"]
+        row["kind"] != "failed_action_record" for row in state["runtime_operations"]["attention"]
     )
 
 
@@ -2454,9 +2466,7 @@ def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path:
     assert task["created_by_actor"] == "operator:admin"
 
     timeline = client.get("/api/addons/team-addon/timeline?type=task").json()
-    created = next(
-        entry for entry in timeline["entries"] if entry["id"] == "task:task:created"
-    )
+    created = next(entry for entry in timeline["entries"] if entry["id"] == "task:task:created")
     assert created["actor_agent_id"] is None
     assert created["actor_subject"] == "operator:admin"
 
@@ -2597,21 +2607,26 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     client = _client(tmp_path)
     runtime_dir = tmp_path / "runtime"
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
-    repo.create_project(
+    _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -2678,21 +2693,26 @@ def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) ->
     client = _client(tmp_path)
     runtime_dir = tmp_path / "runtime"
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
-    repo.create_project(
+    _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -2700,7 +2720,7 @@ def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) ->
         session_id="session-backend",
         reports_to_agent_id="lead",
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="active-work",
         owner_agent_id="backend",
         project_id="project",
@@ -2735,21 +2755,26 @@ def test_team_addon_admin_api_manual_context_rotation_rejects_archived_agent(
     client = _client(tmp_path)
     runtime_dir = tmp_path / "runtime"
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
-    repo.create_project(
+    _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -2757,7 +2782,7 @@ def test_team_addon_admin_api_manual_context_rotation_rejects_archived_agent(
         session_id="session-backend",
         reports_to_agent_id="lead",
     )
-    repo.update_agent(agent_id="backend", status=AgentStatus.ARCHIVED)
+    _team_admin_service(repo).update_agent(agent_id="backend", status=AgentStatus.ARCHIVED)
 
     response = client.post(
         "/api/addons/team-addon/agents/backend/context-rotation",
@@ -2772,21 +2797,26 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
     client = _client(tmp_path)
     runtime_dir = tmp_path / "runtime"
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
-    repo.create_project(
+    _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -2851,9 +2881,7 @@ def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> Non
     assert len(body["projects"]) == 1
     assert len(body["review_profiles"]) == 1
     assert len(body["tasks"]) == 2
-    assert body["teams"]["team-auto-dev-squad"]["project_ids"] == [
-        "project-auto-dev-squad"
-    ]
+    assert body["teams"]["team-auto-dev-squad"]["project_ids"] == ["project-auto-dev-squad"]
     assert body["projects"]["project-auto-dev-squad"]["goals"][0]["id"] == (
         "project-auto-dev-squad-auto-dev-reviewed-delivery"
     )
@@ -2911,9 +2939,7 @@ def test_team_addon_admin_api_materializes_accounting_department(
         "review_bookkeeping_action"
     ]
 
-    assert body["teams"][materialized["team_id"]]["project_ids"] == [
-        materialized["project_id"]
-    ]
+    assert body["teams"][materialized["team_id"]]["project_ids"] == [materialized["project_id"]]
     review_profile = body["review_profiles"][materialized["review_profile_ids"][0]]
     assert review_profile["applicable_role_ids"] == [
         materialized["role_ids"]["invoice_reviewer"],
@@ -2925,9 +2951,10 @@ def test_team_addon_admin_api_materializes_accounting_department(
         "tax_treatment",
         "approval_boundary",
     ]
-    assert body["tasks"][
-        f"{materialized['project_id']}-prepare-bank-payments"
-    ]["owner_agent_id"] == materialized["agent_ids"]["payment_preparer"]
+    assert (
+        body["tasks"][f"{materialized['project_id']}-prepare-bank-payments"]["owner_agent_id"]
+        == materialized["agent_ids"]["payment_preparer"]
+    )
 
 
 def test_team_addon_admin_api_materialize_template_rejects_duplicates_and_reruns(
@@ -3000,10 +3027,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
         },
     )
     assert response.status_code == 201
-    assert (
-        response.json()["teams"]["team"]["operator_communication_target_id"]
-        == "ops-channel"
-    )
+    assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 10.5
 
     response = client.patch(
@@ -3015,10 +3039,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
         },
     )
     assert response.status_code == 200
-    assert (
-        response.json()["teams"]["team"]["operator_communication_target_id"]
-        == "ops-channel-2"
-    )
+    assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel-2"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 12.25
 
     response = client.patch(
@@ -3133,14 +3154,12 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "base_branch": "main",
     }
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == source_commit
-    assert (
-        _git_dir(bare_repo, "config", "--get", "agent-sandbox.trustedRepoPath").stdout.strip()
-        == str(source_repo.resolve())
-    )
-    assert (
-        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSource").stdout.strip()
-        == str(source_repo)
-    )
+    assert _git_dir(
+        bare_repo, "config", "--get", "agent-sandbox.trustedRepoPath"
+    ).stdout.strip() == str(source_repo.resolve())
+    assert _git_dir(
+        bare_repo, "config", "--get", "agent-sandbox.mirrorSource"
+    ).stdout.strip() == str(source_repo)
     (source_repo / "README.md").write_text("# Source\n\nRefresh\n", encoding="utf-8")
     _git(source_repo, "add", "README.md")
     _git(source_repo, "commit", "-q", "-m", "refresh")
@@ -3595,9 +3614,9 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     repo = TeamStateRepository(tmp_path / "runtime")
 
     def _attach_feature_branch(current):
-        current.deliverables["deliverable"].git_refs.feature_branch = (
-            "team/team/features/task-backend"
-        )
+        current.deliverables[
+            "deliverable"
+        ].git_refs.feature_branch = "team/team/features/task-backend"
         return current
 
     repo.update(_attach_feature_branch)
@@ -3613,9 +3632,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     )
     assert response.status_code == 201
     payload = response.json()
-    assert payload["release_packages"]["release"]["deliverable_ids"] == [
-        "deliverable"
-    ]
+    assert payload["release_packages"]["release"]["deliverable_ids"] == ["deliverable"]
     assert len(payload["published_event_ids"]) == 1
     events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
     assert len(events) == 1
@@ -3715,7 +3732,12 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "applicable_role_ids": ["project__project-lead", "project__backend"],
             "criteria": [
                 {"id": "authz", "label": "Authorization", "required": True},
-                {"id": "logging", "label": "Logging", "description": "No secrets", "required": False},
+                {
+                    "id": "logging",
+                    "label": "Logging",
+                    "description": "No secrets",
+                    "required": False,
+                },
             ],
             "expected_revision": 6,
         },

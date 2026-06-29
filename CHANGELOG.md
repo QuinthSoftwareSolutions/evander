@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Refactored the Team Add-on state repository into a storage-only persistence facade, moving
+  command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
+  focused Team services.
+
 - Restored Team Add-on UI smoke coverage for exact revision payloads, chat
   scroll preservation, and post-review timeline refreshes, and kept chat
   scroll application stable across layout settling.
