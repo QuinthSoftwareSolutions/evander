@@ -134,7 +134,7 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
-from .services.domain_helpers import _apply_review_request, _review_request_was_created
+from .services.domain.review import _apply_review_request, _review_request_was_created
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
 from .services.runtime_service import TeamRuntimeService
