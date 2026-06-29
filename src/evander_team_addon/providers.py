@@ -100,6 +100,7 @@ from .mcp import (
     TEAM_UPDATE_TASK_TOOL,
 )
 from .models import (
+    AgentStatus,
     RolePermission,
     TeamState,
     TeamTaskState,
@@ -1961,9 +1962,15 @@ class TeamCreateReviewRequestEffectProvider(EffectProviderBase):
         actor_agent_id = _optional_text(payload.get("actor_agent_id"))
         deliverable_id = _optional_text(payload.get("deliverable_id"))
         reviewer_agent_id = _optional_text(payload.get("reviewer_agent_id"))
-        skip_if_existing = _optional_bool(payload.get("skip_if_existing"), default=True)
+        skip_if_existing = True
+        publish_wake_events = True
         try:
             current_state = repo.read()
+            skip_if_existing = _optional_bool(payload.get("skip_if_existing"), default=True)
+            publish_wake_events = _optional_bool(
+                payload.get("publish_wake_events"),
+                default=True,
+            )
 
             def _mutate(state: TeamState) -> TeamState:
                 nonlocal review_request_id
@@ -1971,15 +1978,21 @@ class TeamCreateReviewRequestEffectProvider(EffectProviderBase):
                 actor = state.agents.get(actor_id)
                 if actor is None:
                     raise ValueError(f"actor agent {actor_id} does not exist")
+                reviewer_id = _required_text(
+                    payload.get("reviewer_agent_id"),
+                    "reviewer_agent_id",
+                )
+                reviewer = state.agents.get(reviewer_id)
+                if reviewer is None:
+                    raise ValueError(f"reviewer agent {reviewer_id} does not exist")
+                if reviewer.status != AgentStatus.ACTIVE:
+                    raise ValueError(f"recipient agent {reviewer.id} is {reviewer.status.value}")
                 request_payload = {
                     "id": _optional_text(payload.get("review_request_id")),
                     "deliverable_id": _required_text(
                         payload.get("deliverable_id"), "deliverable_id"
                     ),
-                    "reviewer_agent_id": _required_text(
-                        payload.get("reviewer_agent_id"),
-                        "reviewer_agent_id",
-                    ),
+                    "reviewer_agent_id": reviewer_id,
                     "review_profile_id": _optional_text(payload.get("review_profile_id")),
                     "instructions": _optional_text(payload.get("instructions")),
                 }
@@ -2028,7 +2041,6 @@ class TeamCreateReviewRequestEffectProvider(EffectProviderBase):
                 error=str(exc),
             )
 
-        publish_wake_events = _optional_bool(payload.get("publish_wake_events"), default=True)
         published_event_ids: list[str] = []
         if publish_wake_events:
             published_event_ids = _publish_team_events(

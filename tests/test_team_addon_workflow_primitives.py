@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from evander_team_addon.models import ProjectGoal, TeamInboxItemType
+from evander_team_addon.models import AgentStatus, ProjectGoal, TeamInboxItemType
 from evander_team_addon.provider_schemas import (
     TeamCreateReviewRequestEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
@@ -102,6 +102,14 @@ def _record_deliverable(repo: TeamStateRepository, deliverable_id: str) -> None:
         artifact_refs=[f"artifact-space:/teams/team/projects/project/{deliverable_id}"],
         expected_revision=repo.read().revision,
     )
+
+
+def _set_agent_status(repo: TeamStateRepository, agent_id: str, status: AgentStatus) -> None:
+    def _mutate(state):
+        state.agents[agent_id].status = status
+        return state
+
+    repo.update(_mutate, expected_revision=repo.read().revision)
 
 
 def _trigger(runtime_dir: Path) -> TeamDeliverableCreatedTriggerProvider:
@@ -207,3 +215,60 @@ def test_create_review_request_effect_uses_team_review_handoff(tmp_path: Path) -
     assert duplicate["review_request_id"] == review.id
     assert duplicate["existing_review_request_ids"] == [review.id]
     assert duplicate["created_inbox_item_ids"] == []
+
+
+def test_create_review_request_effect_validates_wake_flag_before_mutating(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "deliverable")
+    provider = TeamCreateReviewRequestEffectProvider()
+    provider.initialize(
+        TeamCreateReviewRequestEffectDefinition(
+            id="create-review",
+            display_name="Create review",
+            type="effect:team:create-review-request",
+            actor_agent_id="lead",
+            deliverable_id="deliverable",
+            reviewer_agent_id="reviewer",
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute(resolved_config={"publish_wake_events": "sometimes"})
+
+    assert result["success"] is False
+    assert result["error"] == "boolean value is required"
+    reread = repo.read()
+    assert reread.review_requests == {}
+    assert reread.inbox == {}
+
+
+def test_create_review_request_effect_rejects_inactive_reviewer_before_mutating(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "deliverable")
+    _set_agent_status(repo, "reviewer", AgentStatus.PAUSED)
+    provider = TeamCreateReviewRequestEffectProvider()
+    provider.initialize(
+        TeamCreateReviewRequestEffectDefinition(
+            id="create-review",
+            display_name="Create review",
+            type="effect:team:create-review-request",
+            actor_agent_id="lead",
+            deliverable_id="deliverable",
+            reviewer_agent_id="reviewer",
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["error"] == "recipient agent reviewer is paused"
+    reread = repo.read()
+    assert reread.review_requests == {}
+    assert reread.inbox == {}
