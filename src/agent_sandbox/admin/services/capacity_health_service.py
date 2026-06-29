@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable
 
 from agent_sandbox.capacity_health import (
     DirectorySizeTelemetry,
@@ -39,32 +40,33 @@ from agent_sandbox.admin.service import (
 )
 
 
-class _CapacityHealthAdminServiceHost(Protocol):
+@dataclass(frozen=True)
+class CapacityHealthAdminDependencies:
     config: Any
     runtime: Any
     local_issue_yaml_dir: Path
-
-    def list_agents(self, **kwargs: Any) -> list[Any]: ...
-    def _agent_record_directory_path(self, value: Any) -> str: ...
-    def _is_container_session(self, session: SessionManifest) -> bool: ...
-    def _container_worker_execution_repository(self) -> Any: ...
-    def _communication_artifact_store(self) -> Any: ...
-    def _published_artifact_store(self) -> Any: ...
-    def _workflow_run_store_paths(self) -> dict[str, Any]: ...
-    def _workflow_run_store_bundle(self, stores: dict[str, Any]) -> tuple[Any, Any, Any]: ...
-    def _container_worker_url_from_metadata(self, metadata: object) -> str | None: ...
+    list_agents: Callable[..., list[Any]]
+    normalize_agent_record_directory_path: Callable[[Any], str]
+    is_container_session: Callable[[SessionManifest], bool]
+    container_worker_execution_repository: Callable[[], Any]
+    container_worker_url_from_metadata: Callable[[object], str | None]
+    communication_artifact_store: Callable[[], Any]
+    published_artifact_store: Callable[[], Any]
+    workflow_config_admin: Any
+    workflow_run_store_paths: Callable[[], dict[str, Any]]
+    workflow_run_store_bundle: Callable[[dict[str, Any]], tuple[Any, Any, Any]]
 
 
 class CapacityHealthAdminService:
     """Capacity and health telemetry operations extracted from AdminService."""
 
-    def __init__(self, host: _CapacityHealthAdminServiceHost) -> None:
-        self._host = host
+    def __init__(self, dependencies: CapacityHealthAdminDependencies) -> None:
+        self._deps = dependencies
 
     def read_capacity_health(self) -> CapacityHealthPayload:
         now = _utc_now()
         sessions = sorted(
-            self._host.runtime.session_repository.list_sessions(),
+            self._deps.runtime.session_repository.list_sessions(),
             key=lambda session: (session.created_at, session.session_id),
         )
         agent_statuses = self._capacity_session_statuses()
@@ -76,7 +78,7 @@ class CapacityHealthAdminService:
             scope="control_plane_known_storage",
         )
         control_plane_disk = collect_disk_usage(
-            self._host.config.runtime_dir,
+            self._deps.config.runtime_dir,
             scope="control_plane_runtime",
         )
 
@@ -88,7 +90,9 @@ class CapacityHealthAdminService:
         directory_breakdowns: dict[str, dict[str, Any]] = {}
         for session in sessions:
             backend = self._capacity_session_backend(session)
-            directory_path = self._host._agent_record_directory_path(session.directory_path)
+            directory_path = self._deps.normalize_agent_record_directory_path(
+                session.directory_path
+            )
             backend_counts[backend] += 1
             directory_counts[directory_path] += 1
             agent_status = str(agent_statuses.get(session.session_id) or "").strip() or "unknown"
@@ -163,7 +167,7 @@ class CapacityHealthAdminService:
 
     def _capacity_session_statuses(self) -> dict[str, str]:
         try:
-            records = self._host.list_agents(
+            records = self._deps.list_agents(
                 include_inactive=True,
                 reconcile_containers=False,
                 all_directories=True,
@@ -208,7 +212,7 @@ class CapacityHealthAdminService:
             return "libvirt_vm"
         if normalized == "container_worker_vm":
             return "container_worker_vm"
-        if self._host._is_container_session(session):
+        if self._deps.is_container_session(session):
             return "container_worker_vm"
         return backend or "libvirt_vm"
 
@@ -243,21 +247,21 @@ class CapacityHealthAdminService:
     def _capacity_control_plane_storage_areas(self) -> list[DirectorySizeTelemetry]:
         areas: list[DirectorySizeTelemetry] = []
         paths: list[tuple[str, Path]] = [
-            ("control_plane_session_store", self._host.config.session_store_path),
-            ("control_plane_agent_prompt_store", self._host.runtime.agent_prompt_store.path),
-            ("control_plane_local_issues", self._host.local_issue_yaml_dir),
+            ("control_plane_session_store", self._deps.config.session_store_path),
+            ("control_plane_agent_prompt_store", self._deps.runtime.agent_prompt_store.path),
+            ("control_plane_local_issues", self._deps.local_issue_yaml_dir),
             (
                 "control_plane_container_worker_executions",
-                self._host._container_worker_execution_repository().path,
+                self._deps.container_worker_execution_repository().path,
             ),
             (
                 "control_plane_communication_artifacts",
-                self._host._communication_artifact_store().root,
+                self._deps.communication_artifact_store().root,
             ),
-            ("control_plane_published_artifacts", self._host._published_artifact_store().root),
+            ("control_plane_published_artifacts", self._deps.published_artifact_store().root),
         ]
         try:
-            workflow_stores = self._host._workflow_run_store_paths()
+            workflow_stores = self._deps.workflow_run_store_paths()
         except Exception:
             workflow_stores = {}
         if workflow_stores:
@@ -466,7 +470,7 @@ class CapacityHealthAdminService:
             )
             if directory_path:
                 descriptor["directory_paths"].add(
-                    self._host._agent_record_directory_path(directory_path)
+                    self._deps.normalize_agent_record_directory_path(directory_path)
                 )
             descriptor["discovered_from"].add(discovered_from)
             if descriptor.get("token_env") is None and token_env:
@@ -475,7 +479,7 @@ class CapacityHealthAdminService:
                 descriptor["timeout_seconds"] = timeout_seconds
 
         try:
-            root_config = self._host.runtime.provider_config.resolve_for_directory("root")
+            root_config = self._deps.runtime.provider_config.resolve_for_directory("root")
         except Exception:
             root_config = None
         if root_config is not None:
@@ -489,10 +493,12 @@ class CapacityHealthAdminService:
 
         now = _utc_now()
         for session in sessions:
-            directory_path = self._host._agent_record_directory_path(session.directory_path)
-            if self._host._is_container_session(session) and session.expires_at > now:
+            directory_path = self._deps.normalize_agent_record_directory_path(
+                session.directory_path
+            )
+            if self._deps.is_container_session(session) and session.expires_at > now:
                 try:
-                    resolved_config = self._host.runtime.provider_config.resolve_for_directory(
+                    resolved_config = self._deps.runtime.provider_config.resolve_for_directory(
                         session.directory_path
                     )
                 except Exception:
@@ -506,7 +512,7 @@ class CapacityHealthAdminService:
                         discovered_from=f"configured:{directory_path}",
                     )
                 register(
-                    self._host._container_worker_url_from_metadata(session.metadata),
+                    self._deps.container_worker_url_from_metadata(session.metadata),
                     directory_path=directory_path,
                     token_env=(
                         resolved_config.container_worker_token_env
@@ -614,7 +620,7 @@ class CapacityHealthAdminService:
 
     def _capacity_queue_telemetry(self, *, now: datetime) -> CapacityQueueTelemetryPayload:
         try:
-            stores = self._host._workflow_run_store_paths()
+            stores = self._deps.workflow_run_store_paths()
         except Exception:
             return CapacityQueueTelemetryPayload(
                 status=TelemetryStatus.MISSING,
@@ -628,7 +634,7 @@ class CapacityHealthAdminService:
             )
         backend = str(stores.get("orchestration_store_backend") or "").strip().casefold() or None
         try:
-            queue_store, _, _ = self._host._workflow_run_store_bundle(stores)
+            queue_store, _, _ = self._deps.workflow_run_store_bundle(stores)
             active_records = list(queue_store.list_active_records())
         except FileNotFoundError:
             return CapacityQueueTelemetryPayload(
@@ -696,7 +702,7 @@ class CapacityHealthAdminService:
 
     def _capacity_prompt_telemetry(self, *, now: datetime) -> CapacityPromptTelemetryPayload:
         try:
-            raw = self._host.runtime.agent_prompt_store.read_raw()
+            raw = self._deps.runtime.agent_prompt_store.read_raw()
         except FileNotFoundError:
             return CapacityPromptTelemetryPayload(
                 status=TelemetryStatus.MISSING,

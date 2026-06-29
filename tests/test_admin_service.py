@@ -14,6 +14,7 @@ from types import MethodType, SimpleNamespace
 from typing import Any, Mapping
 
 import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.facades as admin_facades
 import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import httpx
 import pytest
@@ -224,8 +225,8 @@ def write_failure_cluster_config(
     config_root = tmp_path / "config" / "trigger-orchestrator"
     config_root.mkdir(parents=True, exist_ok=True)
     config_path = config_root / "config.json"
-    normalized_orchestration_store_path = (
-        orchestration_store_path or (runtime_dir / "orchestration.db")
+    normalized_orchestration_store_path = orchestration_store_path or (
+        runtime_dir / "orchestration.db"
     )
     normalized_event_queue_store_path = event_queue_store_path or (
         runtime_dir / "trigger-orchestrator-events.json"
@@ -377,7 +378,11 @@ def test_list_agents_includes_session_only_container_worker_targets(
             },
         )
     )
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     agents = service.list_agents(
         directory_path=team_path,
@@ -448,7 +453,11 @@ def test_list_agents_includes_matching_prompt_queue_summary(
             effect_id="effect-agent-enqueue-prompt-1",
         )
     )
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     list_kwargs = {
         "directory_path": "root",
@@ -681,7 +690,11 @@ def test_list_agents_descendant_scope_includes_child_directory_sessions(
             )
         )
 
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     descendant_agents = service.list_agents(
         directory_path=team_path,
@@ -731,7 +744,7 @@ def test_read_session_artifact_text_routes_container_sessions_to_worker_backend(
             return "daily summary\n"
 
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
         lambda **kwargs: calls.append({"backend_kwargs": kwargs}) or FakeContainerBackend(),
     )
@@ -774,7 +787,7 @@ def test_read_session_artifact_text_routes_vm_sessions_to_vm_exec(
         calls.append({"target": target, **kwargs})
         return {"success": True, "stdout": "vm summary\n", "vm_name": "vm-1"}
 
-    monkeypatch.setattr(service, "vm_exec", fake_vm_exec)
+    monkeypatch.setattr(service.vm_agent_admin, "vm_exec", fake_vm_exec)
 
     result = service.read_session_artifact_text(
         session_id="vm-session",
@@ -838,7 +851,11 @@ def test_list_agents_groups_container_executions_under_session(
             metadata={"image": "runner:latest"},
         )
     )
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     agents = service.list_agents(
         directory_path="root",
@@ -903,7 +920,11 @@ def test_list_agents_prefers_failed_codex_outcome_for_container_session(
             },
         )
     )
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     agents = service.list_agents(
         directory_path="root",
@@ -966,9 +987,13 @@ def test_list_agents_summary_mode_skips_container_reconciliation_and_omits_vm_st
     ) -> FakeContainerWorkerBackend:
         return FakeContainerWorkerBackend()
 
-    monkeypatch.setattr(service, "list_vms", MethodType(list_vms, service))
     monkeypatch.setattr(
-        service, "_container_worker_backend", MethodType(fake_container_worker_backend, service)
+        service.vm_agent_admin, "list_vms", MethodType(list_vms, service.vm_agent_admin)
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "_container_worker_backend",
+        MethodType(fake_container_worker_backend, service.vm_agent_admin),
     )
 
     summary_agents = service.list_agents(
@@ -1017,7 +1042,11 @@ def test_list_agents_summary_mode_skips_stale_session_effective_policy_for_missi
         )
     )
 
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     summary_agents = service.list_agents(
         directory_path="root",
@@ -1120,7 +1149,11 @@ def test_list_agents_ignores_execution_cleanup_success_for_session_status(
             },
         )
     )
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
 
     agents = service.list_agents(
         directory_path="root",
@@ -1159,7 +1192,9 @@ def test_list_agents_still_returns_container_sessions_when_vm_inventory_fails(
     def fail_list_vms(self: AdminService, **_kwargs: object) -> list[object]:
         raise RuntimeError("sudo: a password is required")
 
-    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "list_vms", MethodType(fail_list_vms, service.vm_agent_admin)
+    )
 
     agents = service.list_agents(
         directory_path="root",
@@ -1211,7 +1246,9 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     def fail_list_vms(self: AdminService, **_kwargs: object) -> list[object]:
         raise RuntimeError("virsh: command not found")
 
-    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "list_vms", MethodType(fail_list_vms, service.vm_agent_admin)
+    )
 
     agents = service.list_agents(
         directory_path="root",
@@ -1713,7 +1750,9 @@ def test_list_agents_all_directories_includes_vm_and_container_targets(
             ),
         ]
 
-    monkeypatch.setattr(service, "list_vms", MethodType(fake_list_vms, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "list_vms", MethodType(fake_list_vms, service.vm_agent_admin)
+    )
 
     agents = service.list_agents(
         directory_path="root",
@@ -2285,7 +2324,9 @@ def test_create_admin_agent_libvirt_rejects_unknown_vm_image_selector_before_cre
     def fail_create_vm(self: AdminService, **_kwargs: object) -> object:
         raise AssertionError("create_vm should not be called for an unknown vm_image")
 
-    monkeypatch.setattr(service, "create_vm", MethodType(fail_create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "create_vm", MethodType(fail_create_vm, service.vm_agent_admin)
+    )
 
     with pytest.raises(ValueError, match="unknown libvirt VM template selector") as excinfo:
         service.create_admin_agent(
@@ -2329,7 +2370,9 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
             provider="libvirt",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "create_vm", MethodType(create_vm, service.vm_agent_admin)
+    )
 
     result = service.create_admin_agent(
         {
@@ -2348,7 +2391,7 @@ def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
         "libvirt_vm_template": {
             "image_ref": "ubuntu-24.04-gpu.img",
             "template_alias": "gpu",
-        }
+        },
     }
 
 
@@ -2369,7 +2412,9 @@ def test_create_admin_agent_libvirt_records_default_template_when_vm_image_omitt
             provider="libvirt",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "create_vm", MethodType(create_vm, service.vm_agent_admin)
+    )
 
     result = service.create_admin_agent(
         {
@@ -2403,7 +2448,9 @@ def test_create_admin_agent_libvirt_forwards_ttl_seconds(
             provider="libvirt",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "create_vm", MethodType(create_vm, service.vm_agent_admin)
+    )
 
     result = service.create_admin_agent(
         {
@@ -2435,7 +2482,9 @@ def test_create_admin_agent_libvirt_never_allows_existing_session(
             provider="libvirt",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "create_vm", MethodType(create_vm, service.vm_agent_admin)
+    )
 
     result = service.create_admin_agent(
         {
@@ -2480,9 +2529,9 @@ def test_create_container_agent_duplicate_session_raises(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     payload = {
@@ -2531,7 +2580,11 @@ def test_submit_admin_agent_create_operations_run_concurrently(
             "session_id": session_id,
         }
 
-    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_admin_agent",
+        MethodType(create_admin_agent, service.vm_agent_admin),
+    )
 
     first = service.submit_admin_agent_create(
         {
@@ -2573,7 +2626,11 @@ def test_submit_admin_agent_create_operation_records_failures(
         del self, payload
         raise ValueError("Session already exists: container-session")
 
-    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_admin_agent",
+        MethodType(create_admin_agent, service.vm_agent_admin),
+    )
 
     operation = service.submit_admin_agent_create(
         {
@@ -2583,9 +2640,7 @@ def test_submit_admin_agent_create_operation_records_failures(
         }
     )
 
-    failed = wait_for_agent_create_operation(
-        service, operation.operation_id, statuses={"failed"}
-    )
+    failed = wait_for_agent_create_operation(service, operation.operation_id, statuses={"failed"})
     assert failed.error == "Session already exists: container-session"
     assert failed.result is None
     assert failed.finished_at is not None
@@ -2610,7 +2665,11 @@ def test_submit_admin_agent_create_operation_does_not_persist_raw_payload(
             "session_id": str(payload["session_id"]),
         }
 
-    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_admin_agent",
+        MethodType(create_admin_agent, service.vm_agent_admin),
+    )
 
     operation = service.submit_admin_agent_create(
         {
@@ -2633,9 +2692,7 @@ def test_submit_admin_agent_create_operation_does_not_persist_raw_payload(
         }
     ]
     assert "request_payload" not in succeeded.model_dump(mode="json")
-    store_text = (tmp_path / "runtime" / "agent-create-operations.json").read_text(
-        encoding="utf-8"
-    )
+    store_text = (tmp_path / "runtime" / "agent-create-operations.json").read_text(encoding="utf-8")
     assert "ignored_provider_token" not in store_text
     assert "super-secret-token" not in store_text
 
@@ -2853,7 +2910,7 @@ def test_install_admin_agent_skills_copies_managed_skill_to_container_session(
             )
 
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
         lambda **_kwargs: FakeContainerBackend(),
     )
@@ -2920,8 +2977,14 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
             "copied_paths": [str(file["destination_path"]) for file in files],
         }
 
-    monkeypatch.setattr(service, "vm_exec", MethodType(fake_vm_exec, service))
-    monkeypatch.setattr(service, "vm_copy_files", MethodType(fake_vm_copy_files, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "vm_exec", MethodType(fake_vm_exec, service.vm_agent_admin)
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "vm_copy_files",
+        MethodType(fake_vm_copy_files, service.vm_agent_admin),
+    )
 
     result = service.run_admin_agent_action(
         "lab-vm",
@@ -2964,7 +3027,7 @@ def test_run_admin_agent_action_prompt_agent_queues_running_vm_prompt(
         )
     )
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "list_vms",
         MethodType(
             lambda self, **kwargs: [
@@ -2975,7 +3038,7 @@ def test_run_admin_agent_action_prompt_agent_queues_running_vm_prompt(
                     session_ids=["receptionist-session"],
                 )
             ],
-            service,
+            service.vm_agent_admin,
         ),
     )
 
@@ -3025,7 +3088,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         )
     )
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "list_vms",
         MethodType(
             lambda self, **kwargs: [
@@ -3036,7 +3099,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
                     session_ids=["receptionist-session"],
                 )
             ],
-            service,
+            service.vm_agent_admin,
         ),
     )
 
@@ -3088,7 +3151,11 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         )
 
     monkeypatch.setattr(admin_service.EffectProviderFactory, "build", recording_build)
-    monkeypatch.setattr(service, "resume_agent", MethodType(fake_resume_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "resume_agent",
+        MethodType(fake_resume_agent, service.vm_agent_admin),
+    )
 
     result = service.run_admin_agent_action(
         "receptionist-session",
@@ -3143,7 +3210,7 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
         )
     )
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "list_vms",
         MethodType(
             lambda self, **kwargs: [
@@ -3154,7 +3221,7 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
                     session_ids=["receptionist-session"],
                 )
             ],
-            service,
+            service.vm_agent_admin,
         ),
     )
 
@@ -3180,7 +3247,11 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
             message="resume failed",
         )
 
-    monkeypatch.setattr(service, "resume_agent", MethodType(failing_resume_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "resume_agent",
+        MethodType(failing_resume_agent, service.vm_agent_admin),
+    )
 
     result = service.run_admin_agent_action(
         "receptionist-session",
@@ -3495,9 +3566,9 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
 
     backend = InterruptBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **kwargs: backend, service),
+        MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
     )
 
     result = service.submit_operator_steering_note(
@@ -3655,9 +3726,9 @@ def test_submit_operator_steering_failure_after_stop_fails_waiting_record(
 
     backend = FailingReplacementBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **kwargs: backend, service),
+        MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
     )
 
     with pytest.raises(RuntimeError, match="could not start the replacement"):
@@ -3861,7 +3932,7 @@ def test_run_admin_agent_action_prompt_agent_supports_vm_without_linked_session(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "list_vms",
         MethodType(
             lambda self, **kwargs: [
@@ -3872,7 +3943,7 @@ def test_run_admin_agent_action_prompt_agent_supports_vm_without_linked_session(
                     session_ids=[],
                 )
             ],
-            service,
+            service.vm_agent_admin,
         ),
     )
 
@@ -4006,9 +4077,9 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(*args, **kwargs)
 
-    monkeypatch.setattr(admin_service.httpx, "Client", fake_client)
+    monkeypatch.setattr(admin_facades.httpx, "Client", fake_client)
     monkeypatch.setattr(
-        admin_service.TeamsDeviceCodeTokenProvider,
+        admin_facades.TeamsDeviceCodeTokenProvider,
         "get_bearer_token",
         lambda self, force_refresh=False: "access-token",
     )
@@ -4073,9 +4144,9 @@ def test_teams_auth_list_channels_can_list_all_channels(
             **kwargs,
         )
 
-    monkeypatch.setattr(admin_service.httpx, "Client", fake_client)
+    monkeypatch.setattr(admin_facades.httpx, "Client", fake_client)
     monkeypatch.setattr(
-        admin_service.TeamsDeviceCodeTokenProvider,
+        admin_facades.TeamsDeviceCodeTokenProvider,
         "get_bearer_token",
         lambda self, force_refresh=False: "access-token",
     )
@@ -4228,18 +4299,18 @@ def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) 
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._virsh_lines", lambda args: ["vm-123", "vm-999"]
+        "agent_sandbox.admin.services.vm_helpers.virsh_lines", lambda args: ["vm-123", "vm-999"]
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field",
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
         lambda vm_name, field_name: "running" if vm_name == "vm-123" else "shut off",
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip",
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip",
         lambda vm_name: "192.168.122.10" if vm_name == "vm-123" else None,
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._probe_agent_state",
+        "agent_sandbox.admin.services.vm_helpers.probe_agent_state",
         lambda vm_name, vm_ip, vm_user: ("running", ["repo-one"], datetime.now(UTC), None, 4321),
     )
 
@@ -4263,9 +4334,12 @@ def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(
         vm_name="vm-999", status="disabled", phase="operator-disable"
     )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._virsh_lines", lambda args: ["vm-999"])
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "shut off"
+        "agent_sandbox.admin.services.vm_helpers.virsh_lines", lambda args: ["vm-999"]
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "shut off",
     )
 
     summaries = service.list_vms(include_inactive=True)
@@ -4284,7 +4358,10 @@ def test_run_virsh_prefers_explicit_system_uri_before_fallback(
             return subprocess.CompletedProcess(cmd, 0, stdout="vm-issue-14724\n", stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess",
+        fake_run_subprocess,
+    )
 
     result = admin_service._run_virsh(["list", "--all", "--name"])
 
@@ -4306,7 +4383,10 @@ def test_run_virsh_falls_back_to_sudo_with_explicit_system_uri(
             return subprocess.CompletedProcess(cmd, 0, stdout="State: running\n", stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess",
+        fake_run_subprocess,
+    )
 
     result = admin_service._run_virsh(["dominfo", "vm-issue-14724"])
 
@@ -4348,7 +4428,9 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(
             watcher["cmd"] = cmd
             watcher["kwargs"] = kwargs
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.Popen", _PopenStub)
 
     result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
@@ -4466,7 +4548,9 @@ def test_resume_agent_passes_session_agent_provider(tmp_path: Path, monkeypatch)
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent("agent-sandbox-claude-vm", "Resume now")
 
@@ -4502,7 +4586,9 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
             watcher["cmd"] = cmd
             watcher["kwargs"] = kwargs
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.Popen", _PopenStub)
 
     result = service.resume_agent(
@@ -4573,7 +4659,9 @@ def test_resume_agent_watcher_uses_configured_effect_lock_path(
         def __init__(self, cmd: list[str], **kwargs: object) -> None:
             watcher["cmd"] = cmd
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.Popen", _PopenStub)
 
     result = service.resume_agent(
@@ -4607,7 +4695,9 @@ def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> Non
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="thread_id=thread-mcp-1\nok\n", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent(
         "agent-sandbox-receptionist-vm",
@@ -4645,7 +4735,9 @@ def test_resume_agent_does_not_reuse_stored_session_thread_id(tmp_path: Path, mo
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
 
@@ -4677,7 +4769,9 @@ def test_resume_agent_ignores_synthetic_chat_thread_id(tmp_path: Path, monkeypat
             cmd, 0, stdout="thread_id=thread-real-1\nok\n", stderr=""
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent("assistant-shared", "Resume now")
 
@@ -4707,7 +4801,9 @@ def test_resume_agent_persists_returned_thread_id_to_session_metadata(
             cmd, 0, stdout="thread_id=thread-fresh-1\nok\n", stderr=""
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
 
@@ -4736,7 +4832,9 @@ def test_resume_agent_supports_same_context_mode(tmp_path: Path, monkeypatch) ->
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent(
         "agent-sandbox-receptionist-vm",
@@ -4771,7 +4869,9 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
             cmd, 0, stdout="thread_id=thread-model-1\nok\n", stderr=""
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent(
         "agent-sandbox-receptionist-vm",
@@ -4801,7 +4901,9 @@ def test_resume_agent_times_out_cleanly(tmp_path: Path, monkeypatch) -> None:
     def fake_run_subprocess(cmd: list[str], **kwargs: object):
         raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
 
@@ -4813,7 +4915,8 @@ def test_resume_agent_times_out_cleanly(tmp_path: Path, monkeypatch) -> None:
 def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatch) -> None:
     write_config(tmp_path)
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     captured: dict[str, object] = {}
@@ -4828,7 +4931,10 @@ def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatc
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess",
+        _fake_run_subprocess,
+    )
 
     state, repos, updated_at, dispatch_id, pid = admin_service._probe_agent_state(
         "bug-finder-vm", "192.168.122.11", "agent"
@@ -4847,13 +4953,15 @@ def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatc
 def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "running",
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.122.11"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.122.11"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     captured: dict[str, object] = {}
@@ -4868,7 +4976,9 @@ def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monk
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", _fake_run_subprocess
+    )
 
     output = service.get_agent_log_snapshot("bug-finder-vm")
 
@@ -4890,13 +5000,15 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "running",
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.122.11"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.122.11"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     calls: list[list[str]] = []
@@ -4917,7 +5029,9 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", _fake_run_subprocess
+    )
 
     output = service.get_agent_log_snapshot("bug-finder-vm", repo_name="ExampleIndustryAPP")
 
@@ -4931,13 +5045,15 @@ def test_get_agent_log_snapshot_returns_unavailable_when_ssh_times_out(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "running",
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.122.11"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.122.11"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     calls: list[list[str]] = []
@@ -4946,7 +5062,9 @@ def test_get_agent_log_snapshot_returns_unavailable_when_ssh_times_out(
         calls.append(cmd)
         raise subprocess.TimeoutExpired(cmd, timeout=20.0)
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", _fake_run_subprocess
+    )
 
     output = service.get_agent_log_snapshot("bug-finder-vm", repo_name="codex-heartbeat")
 
@@ -4973,7 +5091,7 @@ def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch
         assert vm_user == "agent"
         return "one\ntwo\nthree\nfour\n"
 
-    monkeypatch.setattr(service, "get_agent_log_snapshot", fake_snapshot)
+    monkeypatch.setattr(service.vm_agent_admin, "get_agent_log_snapshot", fake_snapshot)
 
     page = service.get_admin_agent_log_page(
         "bug-finder-vm",
@@ -5053,9 +5171,9 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     latest_page = service.get_admin_agent_log_page(
@@ -5153,9 +5271,9 @@ def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_l
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     snapshot_text = service.get_admin_agent_log_snapshot(
@@ -5269,9 +5387,9 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5369,9 +5487,9 @@ def test_get_admin_agent_log_page_container_session_threads_use_stored_thread_id
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5461,9 +5579,9 @@ def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execut
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5546,9 +5664,9 @@ def test_get_admin_agent_log_page_container_session_threads_fetches_offset_windo
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5598,8 +5716,7 @@ def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_h
                 worker_job_id=f"job-large-{index:03d}",
                 worker_url="http://worker.test",
                 target_name="target-thread-large-history",
-                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-                + timedelta(minutes=index),
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
             )
@@ -5627,9 +5744,9 @@ def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_h
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5681,8 +5798,7 @@ def test_get_admin_agent_log_page_container_session_threads_large_history_rebuil
                 worker_job_id=f"job-large-fallback-{index:03d}",
                 worker_url="http://worker.test",
                 target_name="target-thread-large-fallback",
-                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-                + timedelta(minutes=index),
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
                 metadata={thread_metadata_key: "thread-large-fallback"},
@@ -5711,9 +5827,9 @@ def test_get_admin_agent_log_page_container_session_threads_large_history_rebuil
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5793,9 +5909,9 @@ def test_get_admin_agent_log_page_container_session_threads_searches_full_transc
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5868,9 +5984,9 @@ def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_ex
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     page = service.get_admin_agent_log_page(
@@ -5991,7 +6107,7 @@ def test_list_sessions_computes_container_lifecycle_payload(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr("agent_sandbox.admin.services.vm_agent_service._utc_now", lambda: now)
     monkeypatch.setattr(
         "agent_sandbox.execution.container_worker_repository.now_utc",
         lambda: now,
@@ -6126,10 +6242,12 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
     service.create_local_issue(title="Team issue", body="b", directory_path=team_path)
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._virsh_lines", lambda args: ["vm-101", "vm-root", "vm-free"]
+        "agent_sandbox.admin.services.vm_helpers.virsh_lines",
+        lambda args: ["vm-101", "vm-root", "vm-free"],
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "shut off"
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "shut off",
     )
 
     team_sessions = service.list_sessions(
@@ -6540,17 +6658,28 @@ def test_get_approval_review_includes_lifecycle_audit_entries_by_request_id_and_
         diagnostic["attempted_payload_digest"]
         for diagnostic in review["approval_diagnostics"]["blocked_tool_call_diagnostics"]
     ] == ["latest-attempted-digest", "attempted-digest"]
-    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
-        "approved_payload"
-    ]["token"] == "<redacted>"
-    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
-        "attempted_payload"
-    ]["token"] == "<redacted>"
-    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0]["differences"][
-        "changed"
-    ][0]["attempted_value"] == "<redacted>"
+    assert (
+        review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0]["approved_payload"][
+            "token"
+        ]
+        == "<redacted>"
+    )
+    assert (
+        review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0]["attempted_payload"][
+            "token"
+        ]
+        == "<redacted>"
+    )
+    assert (
+        review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0]["differences"][
+            "changed"
+        ][0]["attempted_value"]
+        == "<redacted>"
+    )
     assert blocked_entry["result"]["approval_diagnostic"]["secret"] == "<redacted>"
-    assert blocked_entry["result"]["approval_diagnostic"]["attempted_payload"]["token"] == "<redacted>"
+    assert (
+        blocked_entry["result"]["approval_diagnostic"]["attempted_payload"]["token"] == "<redacted>"
+    )
     serialized_review = json.dumps(review, default=str)
     assert "approved-secret" not in serialized_review
     assert "attempted-secret" not in serialized_review
@@ -9050,7 +9179,9 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
     workflow_admin = service.workflow_reports_admin
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     started_at = datetime(2026, 5, 20, 11, 0, tzinfo=UTC)
@@ -9161,7 +9292,9 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -9292,7 +9425,9 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -9398,7 +9533,9 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     queue_store = TriggerEventQueue(stores["event_queue_store_path"])
@@ -9522,7 +9659,9 @@ def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store
         lambda _: pytest.fail("JSON snapshot read constructed workflow stores"),
     )
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     snapshot = service.read_workflow_run_snapshot()
@@ -9560,7 +9699,9 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
     monkeypatch.setattr(
-        workflow_admin, "_read_composed_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
     )
 
     queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
@@ -10744,10 +10885,10 @@ def test_create_issue_vm_deletes_session_when_setup_fails_before_vm_exists(
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(title="Issue VM", body="create and fail")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._run_subprocess",
+        "agent_sandbox.admin.services.process_helpers.run_subprocess",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args=args[0], returncode=17, stdout="", stderr="boom"
         ),
@@ -10770,11 +10911,11 @@ def test_create_issue_vm_deletes_session_when_dominfo_probe_fails(
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(title="Issue VM", body="create and fail")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field",
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
         lambda vm_name, field_name: (_ for _ in ()).throw(RuntimeError("virsh unavailable")),
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._run_subprocess",
+        "agent_sandbox.admin.services.process_helpers.run_subprocess",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args=args[0], returncode=17, stdout="", stderr="boom"
         ),
@@ -10961,9 +11102,9 @@ def test_delete_session_cleans_detached_worker_state(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     result = service.delete_session("detached-session")
@@ -10981,7 +11122,7 @@ def test_cleanup_container_session_records_cleaned_up_tombstone(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr("agent_sandbox.admin.services.vm_agent_service._utc_now", lambda: now)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -11024,9 +11165,9 @@ def test_cleanup_container_session_records_cleaned_up_tombstone(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     result = service.cleanup_container_session("container-session")
@@ -11053,7 +11194,7 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr("agent_sandbox.admin.services.vm_agent_service._utc_now", lambda: now)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -11110,9 +11251,9 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
             )
 
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service.vm_agent_admin),
     )
 
     result = service.cleanup_container_session("container-session")
@@ -11260,9 +11401,9 @@ def test_delete_admin_agent_deletes_container_session_and_prunes_context(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     result = service.delete_admin_agent("container-session", backend="container_worker_vm")
@@ -11315,9 +11456,9 @@ def test_delete_admin_agent_deletes_prepared_container_session(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     result = service.delete_admin_agent("container-session", backend="container_worker_vm")
@@ -11374,9 +11515,9 @@ def test_delete_admin_agent_destroys_running_container_execution(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     result = service.delete_admin_agent("exec-1", backend="container_worker_vm")
@@ -11522,15 +11663,11 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             "contacts": {
                 "ops": {
                     "name": "Ops",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550001", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550001", "primary": True}],
                 },
                 "support": {
                     "name": "Support",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550002", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550002", "primary": True}],
                 },
             }
         },
@@ -12283,8 +12420,18 @@ def test_worker_admin_dependencies_accept_protocol_ports() -> None:
         def read_worker_global_config(self, worker_id: str):
             return {"worker_id": worker_id}
 
-        def write_worker_global_config(self, worker_id: str, payload: dict[str, object], *, expected_revision: str | None = None):
-            return {"worker_id": worker_id, "payload": payload, "expected_revision": expected_revision}
+        def write_worker_global_config(
+            self,
+            worker_id: str,
+            payload: dict[str, object],
+            *,
+            expected_revision: str | None = None,
+        ):
+            return {
+                "worker_id": worker_id,
+                "payload": payload,
+                "expected_revision": expected_revision,
+            }
 
         def read_workflow_editor_document(self, workflow_pack: str | None = None):
             return {"kind": "document", "workflow_pack": workflow_pack}
@@ -12891,10 +13038,10 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/test-user/.ssh/gh_id_ed25519")
     monkeypatch.setenv("HOST_CLAUDE_BIN", "/opt/claude/bin/claude")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     calls: list[tuple[list[str], dict[str, str] | None]] = []
 
@@ -12961,13 +13108,11 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert result.message == "ok:setup_vm.sh"
 
 
-def test_create_vm_uses_ttl_seconds_for_session_expiry(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_create_vm_uses_ttl_seconds_for_session_expiry(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -12975,7 +13120,7 @@ def test_create_vm_uses_ttl_seconds_for_session_expiry(
             args=cmd, returncode=0, stdout="ok:setup_vm.sh", stderr=""
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.run_subprocess", _fake_run)
 
     before = datetime.now(UTC)
     result = service.create_vm(
@@ -13016,10 +13161,10 @@ def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_
     monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/test-user/.ssh/gh_id_ed25519")
     monkeypatch.setenv("HOST_CLAUDE_BIN", "/opt/claude/bin/claude")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     captured: dict[str, Any] = {}
 
@@ -13091,12 +13236,14 @@ def test_create_vm_falls_back_to_pkexec_when_sudo_requires_prompt(
 
     monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/test-user/.ssh/id_ed25519.pub")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
-    monkeypatch.setattr("agent_sandbox.admin.service._can_prompt_for_privileges", lambda: True)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.can_prompt_for_privileges", lambda: True
+    )
 
     calls: list[list[str]] = []
 
@@ -13125,9 +13272,11 @@ def test_create_vm_surfaces_noninteractive_sudo_failure_without_pkexec_fallback(
     service = AdminService(write_config(tmp_path))
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
-    monkeypatch.setattr("agent_sandbox.admin.service._can_prompt_for_privileges", lambda: False)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.can_prompt_for_privileges", lambda: False
+    )
 
     calls: list[list[str]] = []
 
@@ -13162,13 +13311,18 @@ def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: An
         ),
     )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._virsh_lines", lambda args: ["lab-vm"])
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+        "agent_sandbox.admin.services.vm_helpers.virsh_lines", lambda args: ["lab-vm"]
     )
-    monkeypatch.setattr("agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.0.2.10")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._probe_agent_state",
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "running",
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.0.2.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.vm_helpers.probe_agent_state",
         lambda vm_name, vm_ip, vm_user: (
             "idle",
             ["sample-repo"],
@@ -13187,10 +13341,11 @@ def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: An
 def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "running",
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ssh_access",
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ssh_access",
         lambda vm_name, vm_user: ("192.168.122.10", Path("/tmp/test-key")),
     )
 
@@ -13203,7 +13358,7 @@ def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -
             args=cmd, returncode=0, stdout="terminated pid=4321 state_files=1\n", stderr=""
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.run_subprocess", _fake_run)
 
     result = service.kill_agent("vm-123", 4321)
 
@@ -13234,7 +13389,8 @@ def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -
 def test_kill_agent_falls_back_to_legacy_agent_user(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
+        lambda vm_name, field_name: "running",
     )
 
     def _fake_resolve_vm_ssh_access(vm_name: str, vm_user: str):
@@ -13243,7 +13399,7 @@ def test_kill_agent_falls_back_to_legacy_agent_user(tmp_path: Path, monkeypatch)
         return "192.168.122.10", Path("/tmp/test-key")
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ssh_access", _fake_resolve_vm_ssh_access
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ssh_access", _fake_resolve_vm_ssh_access
     )
 
     captured: dict[str, object] = {}
@@ -13254,7 +13410,7 @@ def test_kill_agent_falls_back_to_legacy_agent_user(tmp_path: Path, monkeypatch)
             args=cmd, returncode=0, stdout="terminated pid=4321 state_files=1\n", stderr=""
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.run_subprocess", _fake_run)
 
     result = service.kill_agent("vm-123", 4321)
 
@@ -13267,16 +13423,17 @@ def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> Non
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_host_python_with_pip",
+        "agent_sandbox.admin.services.process_helpers.resolve_host_python_with_pip",
         lambda: str(REPO_ROOT / ".venv" / "bin" / "python"),
     )
 
@@ -13344,13 +13501,14 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -13406,13 +13564,14 @@ def test_clone_repo_into_vm_generated_script_allows_existing_checkout(
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -13463,13 +13622,14 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -13531,13 +13691,14 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -13589,13 +13750,14 @@ def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(
     remote_source = "git@ssh.dev.azure.com:v3/example/project/sample-repo"
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -13645,13 +13807,13 @@ def test_bootstrap_python_in_vm_runs_python_bootstrap(tmp_path: Path, monkeypatc
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_host_python_with_pip",
+        "agent_sandbox.admin.services.process_helpers.resolve_host_python_with_pip",
         lambda: str(REPO_ROOT / ".venv" / "bin" / "python"),
     )
 
@@ -13691,10 +13853,10 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
     service = AdminService(write_config(tmp_path))
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
         "agent_sandbox.admin.service.subprocess.run",
@@ -13757,10 +13919,10 @@ def test_create_vm_fast_forwards_discord_cursor_for_new_target(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
         "agent_sandbox.admin.service.subprocess.run",
@@ -13810,10 +13972,10 @@ def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
         "agent_sandbox.admin.service.subprocess.run",
@@ -13858,10 +14020,10 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
         "agent_sandbox.admin.service.subprocess.run",
@@ -13900,10 +14062,10 @@ def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
     service = AdminService(write_config(tmp_path))
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
         "agent_sandbox.admin.service.subprocess.run",
@@ -13937,25 +14099,21 @@ def test_create_vm_sets_allowed_script_names_on_session_manifest(
             "contacts": {
                 "ops": {
                     "name": "Ops",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550001", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550001", "primary": True}],
                 },
                 "support": {
                     "name": "Support",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550002", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550002", "primary": True}],
                 },
             }
         },
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
     monkeypatch.setattr(
         "agent_sandbox.admin.service.subprocess.run",
@@ -13985,7 +14143,7 @@ def test_bootstrap_frontend_in_vm_bootstraps_frontend_runtime(
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -14022,10 +14180,10 @@ def test_create_vm_passes_codex_skills_to_setup_script(tmp_path: Path, monkeypat
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -14067,10 +14225,10 @@ def test_create_vm_uses_runtime_skill_library_for_managed_codex_skills(
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -14112,7 +14270,7 @@ def test_create_vm_preserves_session_when_bootstrap_fails_after_launch(
     service = AdminService(write_config(tmp_path))
     state = {"launched": False}
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field",
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
         lambda vm_name, field_name: (
             "running" if state["launched"] and field_name == "State" else None
         ),
@@ -14144,7 +14302,7 @@ def test_create_vm_failure_preserves_stdout_and_stderr(tmp_path: Path, monkeypat
     service = AdminService(write_config(tmp_path))
     state = {"launched": False}
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field",
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field",
         lambda vm_name, field_name: (
             "running" if state["launched"] and field_name == "State" else None
         ),
@@ -14174,10 +14332,10 @@ def test_create_vm_failure_preserves_stdout_and_stderr(tmp_path: Path, monkeypat
 def test_create_vm_waits_for_ssh_before_bootstrap(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+        "agent_sandbox.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.154"
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.154"
     )
     captured_cmds: list[list[str]] = []
     monkeypatch.setattr(
@@ -14523,10 +14681,13 @@ def test_resolve_host_python_with_pip_prefers_current_interpreter(monkeypatch: A
     monkeypatch.delenv("HOST_PYTHON_BIN", raising=False)
     monkeypatch.setattr(admin_service.sys, "executable", "/work/.venv/bin/python")
 
-    def _fake_has_pip(candidate: str) -> bool:
+    def _fake_ensure_pip(candidate: str) -> bool:
         return candidate == "/work/.venv/bin/python"
 
-    monkeypatch.setattr("agent_sandbox.admin.service._python_has_pip", _fake_has_pip)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.ensure_python_has_pip",
+        _fake_ensure_pip,
+    )
 
     assert admin_service._resolve_host_python_with_pip() == "/work/.venv/bin/python"
 
@@ -14534,7 +14695,7 @@ def test_resolve_host_python_with_pip_prefers_current_interpreter(monkeypatch: A
 def test_resolve_host_python_with_pip_honors_configured_override(monkeypatch: Any) -> None:
     monkeypatch.setenv("HOST_PYTHON_BIN", "/custom/python")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._ensure_python_has_pip",
+        "agent_sandbox.admin.services.process_helpers.ensure_python_has_pip",
         lambda candidate: candidate == "/custom/python",
     )
 
@@ -14550,7 +14711,10 @@ def test_resolve_host_python_with_pip_bootstraps_pip_with_ensurepip(monkeypatch:
         attempts.append(candidate)
         return candidate == "/work/.venv/bin/python3"
 
-    monkeypatch.setattr("agent_sandbox.admin.service._ensure_python_has_pip", _fake_ensure)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.ensure_python_has_pip",
+        _fake_ensure,
+    )
 
     assert admin_service._resolve_host_python_with_pip() == "/work/.venv/bin/python3"
     assert attempts == ["/work/.venv/bin/python3"]
@@ -14578,9 +14742,11 @@ def test_wait_for_vm_ip_uses_pkexec_when_requested(monkeypatch) -> None:
         calls.append(True)
         return "192.168.250.10"
 
-    monkeypatch.setattr("agent_sandbox.admin.service._resolve_vm_ip", _fake_plain)
-    monkeypatch.setattr("agent_sandbox.admin.service._resolve_vm_ip_with_pkexec", _fake_pkexec)
-    monkeypatch.setattr("agent_sandbox.admin.service.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("agent_sandbox.admin.services.vm_helpers.resolve_vm_ip", _fake_plain)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.vm_helpers.resolve_vm_ip_with_pkexec", _fake_pkexec
+    )
+    monkeypatch.setattr("agent_sandbox.admin.services.vm_helpers.time.sleep", lambda _seconds: None)
 
     ip = admin_service._wait_for_vm_ip(
         "vm-test",
@@ -14655,15 +14821,15 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._prune_approvals_for_sessions",
+        "agent_sandbox.admin.services.session_helpers.prune_approvals_for_sessions",
         lambda runtime, session_ids: len(session_ids),
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._prune_pr_map",
+        "agent_sandbox.admin.services.git_helpers.prune_pr_map",
         lambda path, session_ids: (len(session_ids), {"stream-a"} if session_ids else set()),
     )
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._prune_pr_feedback_store",
+        "agent_sandbox.admin.services.git_helpers.prune_pr_feedback_store",
         lambda path, streams: (len(streams), len(streams)),
     )
 
@@ -14685,7 +14851,9 @@ def test_destroy_vm_does_not_try_pkexec_when_no_prompt_is_available(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    monkeypatch.setattr("agent_sandbox.admin.service._can_prompt_for_privileges", lambda: False)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.can_prompt_for_privileges", lambda: False
+    )
     calls: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -14708,7 +14876,9 @@ def test_destroy_vm_falls_back_to_pkexec_when_prompt_is_available(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    monkeypatch.setattr("agent_sandbox.admin.service._can_prompt_for_privileges", lambda: True)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.can_prompt_for_privileges", lambda: True
+    )
     calls: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -15116,7 +15286,9 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
             stderr="",
         )
 
-    monkeypatch.setattr(admin_service, "_run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.process_helpers.run_subprocess", fake_run_subprocess
+    )
 
     result = service.pr_create(
         host_repo_path="/tmp/repos/ExampleIndustryAPP",

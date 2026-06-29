@@ -6,13 +6,15 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable
 from urllib.parse import quote
 
 from pydantic import BaseModel
 
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.admin.service import (
     CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
     CONFORMANCE_REPORT_SNIPPET_LIMIT,
@@ -65,13 +67,11 @@ from agent_sandbox.admin.service import (
     _coerce_optional_string,
     _collect_workflow_artifact_ids,
     _collect_workflow_keyed_values,
-    _iter_file_lines_reverse,
     _join_conformance_process_output,
     _merge_run_node_activity,
     _normalize_workflow_failure_signature,
     _read_json_object,
     _read_merged_json_objects,
-    _tool_call_audit_entry_from_payload,
     _trim_conformance_process_output,
     _trim_conformance_text,
     _utc_now,
@@ -80,37 +80,40 @@ from agent_sandbox.admin.service import (
     ensure_orchestration_schema,
     json_loads_object,
 )
+from agent_sandbox.admin.services.approval_audit_service import (
+    iter_file_lines_reverse as _iter_file_lines_reverse,
+    tool_call_audit_entry_from_payload as _tool_call_audit_entry_from_payload,
+)
 
-class _WorkflowReportsAdminServiceHost(Protocol):
-    def _read_workflow_graph_activity_report(
-        self,
-        *,
-        period_start: datetime | None = None,
-        period_end: datetime | None = None,
-        limit: int | None = None,
-    ) -> "WorkflowGraphActivityReportPayload": ...
-    def _read_workflow_failure_clusters_report(
-        self,
-        *,
-        period_start: datetime | None = None,
-        period_end: datetime | None = None,
-        limit: int | None = None,
-        recent_threshold_seconds: int | None = None,
-    ) -> "WorkflowFailureClusterReportPayload": ...
-    def _read_conformance_reports(self) -> "ConformanceReportsPayload": ...
-    def _run_conformance_report(
-        self, kind: str
-    ) -> "ConformanceReportRunPayload": ...
+
+@dataclass(slots=True)
+class WorkflowReportsAdminDependencies:
+    project_dir: Path
+    config: Any
+    runtime: Any
+    trigger_event_repository: Any
+    workflow_config_admin: Any
+    list_agents: Callable[..., list[AgentRecord]]
+    project_dir_provider: Callable[[], Path] | None = None
 
 
 class WorkflowReportsAdminService:
     """Workflow reporting operations extracted from AdminService."""
 
-    def __init__(self, host: _WorkflowReportsAdminServiceHost) -> None:
-        self._host = host
+    def __init__(self, dependencies: WorkflowReportsAdminDependencies) -> None:
+        self._project_dir = dependencies.project_dir
+        self._project_dir_provider = dependencies.project_dir_provider
+        self.config = dependencies.config
+        self.runtime = dependencies.runtime
+        self.trigger_event_repository = dependencies.trigger_event_repository
+        self._workflow_config_admin = dependencies.workflow_config_admin
+        self._list_agents = dependencies.list_agents
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._host, name)
+    @property
+    def project_dir(self) -> Path:
+        if self._project_dir_provider is not None:
+            return self._project_dir_provider()
+        return self._project_dir
 
     def read_workflow_graph_activity_report(
         self,
@@ -119,7 +122,7 @@ class WorkflowReportsAdminService:
         period_end: datetime | None = None,
         limit: int | None = None,
     ) -> "WorkflowGraphActivityReportPayload":
-        return self._host._read_workflow_graph_activity_report(
+        return self._read_workflow_graph_activity_report(
             period_start=period_start, period_end=period_end, limit=limit
         )
 
@@ -131,7 +134,7 @@ class WorkflowReportsAdminService:
         limit: int | None = None,
         recent_threshold_seconds: int | None = None,
     ) -> "WorkflowFailureClusterReportPayload":
-        return self._host._read_workflow_failure_clusters_report(
+        return self._read_workflow_failure_clusters_report(
             period_start=period_start,
             period_end=period_end,
             limit=limit,
@@ -139,10 +142,42 @@ class WorkflowReportsAdminService:
         )
 
     def read_conformance_reports(self) -> "ConformanceReportsPayload":
-        return self._host._read_conformance_reports()
+        return self._read_conformance_reports()
 
     def run_conformance_report(self, kind: str) -> "ConformanceReportRunPayload":
-        return self._host._run_conformance_report(kind)
+        return self._run_conformance_report(kind)
+
+    def list_agents(self, **kwargs: Any) -> list[AgentRecord]:
+        return self._list_agents(**kwargs)
+
+    def _workflow_run_store_paths(self):
+        return self._workflow_config_admin._workflow_run_store_paths()
+
+    def _workflow_uses_sqlite_store(self, *args: Any, **kwargs: Any):
+        return self._workflow_config_admin._workflow_uses_sqlite_store(*args, **kwargs)
+
+    def _workflow_run_store_bundle(self, *args: Any, **kwargs: Any):
+        return self._workflow_config_admin._workflow_run_store_bundle(*args, **kwargs)
+
+    def _workflow_run_event_records(self, *args: Any, **kwargs: Any):
+        return self._workflow_config_admin._workflow_run_event_records(*args, **kwargs)
+
+    def _read_composed_workflow_editor_document(self):
+        return self._workflow_config_admin._read_composed_workflow_editor_document()
+
+    def _workflow_editor_revision(self, *args: Any, **kwargs: Any):
+        return self._workflow_config_admin._workflow_editor_revision(*args, **kwargs)
+
+    def _workflow_config_snapshot_repository(self, *args: Any, **kwargs: Any):
+        return self._workflow_config_admin._workflow_config_snapshot_repository(*args, **kwargs)
+
+    def _latest_resumable_failed_workflow_record(self, *args: Any, **kwargs: Any):
+        return self._workflow_config_admin._latest_resumable_failed_workflow_record(
+            *args, **kwargs
+        )
+
+    def _communication_artifact_store(self) -> CommunicationArtifactStore:
+        return CommunicationArtifactStore(self.config.runtime_dir)
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()

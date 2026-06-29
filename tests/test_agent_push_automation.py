@@ -42,9 +42,9 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     clone_runtime = (
         ROOT / "src" / "agent_sandbox" / "admin" / "services" / "vm_agent_service.py"
     ).read_text(encoding="utf-8")
-    admin_service = (ROOT / "src" / "agent_sandbox" / "admin" / "service.py").read_text(
-        encoding="utf-8"
-    )
+    project_helpers = (
+        ROOT / "src" / "agent_sandbox" / "admin" / "services" / "project_helpers.py"
+    ).read_text(encoding="utf-8")
     guest_agents_template = (ROOT / "templates" / "guest-AGENTS.md.tmpl").read_text(
         encoding="utf-8"
     )
@@ -53,10 +53,10 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     assert 'AGENT_PR_NOTE_HELPER_B64="' in clone_runtime
     assert 'AGENT_PUSH_HELPER_B64="' in clone_runtime
     assert 'SYNC_BASE_HELPER_B64="' in clone_runtime
-    assert "def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:" in admin_service
-    assert "def _guest_push_agent_helper_b64(project_dir: Path) -> str:" in admin_service
-    assert "def _guest_sync_base_helper_b64(project_dir: Path) -> str:" in admin_service
-    assert 'return base64.b64encode(helper_path.read_bytes()).decode("ascii")' in admin_service
+    assert "def guest_agent_pr_note_helper_b64(project_dir: Path) -> str:" in project_helpers
+    assert "def guest_push_agent_helper_b64(project_dir: Path) -> str:" in project_helpers
+    assert "def guest_sync_base_helper_b64(project_dir: Path) -> str:" in project_helpers
+    assert 'return base64.b64encode(helper_path.read_bytes()).decode("ascii")' in project_helpers
     assert (
         'python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}"'
         in clone_runtime

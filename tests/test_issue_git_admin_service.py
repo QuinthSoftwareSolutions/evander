@@ -64,6 +64,9 @@ class FakeIssueGitFacade:
     def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
         return self._record("session_update_metadata", **kwargs)
 
+    def import_git_repo(self, **kwargs: object) -> dict[str, object]:
+        return self._record("import_git_repo", **kwargs)
+
     def create_issue(self, **kwargs: object) -> dict[str, object]:
         return self._record("create_issue", **kwargs)
 
@@ -103,6 +106,26 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
+    def resolve_issue_setup(directory_path: str, *, root_dir: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            directory_path=directory_path,
+            root_dir=root_dir,
+            git_root=str(tmp_path / "git"),
+            git_ssh_alias="gitbox",
+        )
+
+    def sync_repo_into_bare_remote(
+        repo_name: str,
+        resolved_repo_path: str,
+        *,
+        issue_setup: SimpleNamespace,
+        repo_source: str | None = None,
+    ) -> Path:
+        del resolved_repo_path, repo_source
+        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
+        bare_repo_path.mkdir(parents=True, exist_ok=True)
+        return bare_repo_path
+
     admin = SimpleNamespace(
         project_dir=tmp_path,
         runtime=runtime,
@@ -120,6 +143,9 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
         _refresh_proxy_cache_from_remote=lambda issue, remote_payload: issue,
         _write_local_issue_yaml=write_yaml,
         _direct_owned_entity_ids=lambda directory_path, kind: set(),
+        _resolve_issue_setup=resolve_issue_setup,
+        _resolve_repo_source=lambda repo_source: (repo_source, "sample-repo"),
+        _sync_repo_into_bare_remote=sync_repo_into_bare_remote,
         issue_service=SimpleNamespace(
             read_remote_issue=lambda **kwargs: {},
             post_remote_comment=lambda **kwargs: {"comment_added": True},
@@ -168,6 +194,13 @@ def _issue_git_dependencies(admin: SimpleNamespace) -> IssueGitAdminDependencies
                 directory_path, **kwargs
             )
         ),
+        resolve_issue_setup=lambda directory_path, **kwargs: admin._resolve_issue_setup(
+            directory_path, **kwargs
+        ),
+        resolve_repo_source=lambda repo_source: admin._resolve_repo_source(repo_source),
+        sync_repo_into_bare_remote=lambda *args, **kwargs: admin._sync_repo_into_bare_remote(
+            *args, **kwargs
+        ),
     )
 
 
@@ -187,7 +220,7 @@ def test_issue_git_admin_service_pr_create_invokes_script_and_parses_result(
             stderr="prepared\n",
         )
 
-    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
 
     result = service.pr_create(
         host_repo_path="/repo", local_branch="feature", title="Add PR", draft=True
@@ -206,6 +239,94 @@ def test_issue_git_admin_service_pr_create_invokes_script_and_parses_result(
     ]
     assert result["success"] is True
     assert result["pr_number"] == 42
+
+
+def test_issue_git_admin_service_import_git_repo_uses_explicit_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, _store = _build_issue_admin(tmp_path)
+    calls: list[tuple[str, object]] = []
+    git_root = tmp_path / "git"
+    issue_setup = SimpleNamespace(git_root=str(git_root), git_ssh_alias="gitbox")
+
+    def resolve_issue_setup(directory_path: str, *, root_dir: Path) -> SimpleNamespace:
+        calls.append(("issue_setup", {"directory_path": directory_path, "root_dir": root_dir}))
+        return issue_setup
+
+    def resolve_repo_source(repo_source: str) -> tuple[str, str]:
+        calls.append(("repo_source", repo_source))
+        return "/src/trusted", "trusted"
+
+    def sync_repo_into_bare_remote(
+        repo_name: str,
+        resolved_repo_path: str,
+        *,
+        issue_setup: SimpleNamespace,
+        repo_source: str | None = None,
+    ) -> Path:
+        calls.append(
+            (
+                "sync",
+                {
+                    "repo_name": repo_name,
+                    "resolved_repo_path": resolved_repo_path,
+                    "git_root": issue_setup.git_root,
+                    "repo_source": repo_source,
+                },
+            )
+        )
+        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
+        bare_repo_path.mkdir(parents=True, exist_ok=True)
+        return bare_repo_path
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(("git", cmd))
+        key = cmd[-1]
+        if key == "agent-sandbox.canonicalOriginUrl":
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="https://github.com/example/trusted.git\n",
+                stderr="",
+            )
+        if key == "agent-sandbox.baseBranch":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="main\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+
+    admin._resolve_issue_setup = resolve_issue_setup
+    admin._resolve_repo_source = resolve_repo_source
+    admin._sync_repo_into_bare_remote = sync_repo_into_bare_remote
+    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
+
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+
+    result = service.import_git_repo(
+        repo_source=" /src/trusted ",
+        bare_repo_name="custom.git",
+        directory_path="root/team",
+    )
+
+    assert result["success"] is True
+    assert result["repo_name"] == "custom"
+    assert result["bare_repo_name"] == "custom.git"
+    assert result["bare_repo_path"] == str(git_root / "custom.git")
+    assert result["remote_url"] == f"ssh://gitbox{git_root / 'custom.git'}"
+    assert result["directory_path"] == "root/team"
+    assert result["base_branch"] == "main"
+    assert result["canonical_origin_url"] == "https://github.com/example/trusted.git"
+    assert result["provider"] == "github"
+    assert ("repo_source", "/src/trusted") in calls
+    assert (
+        "sync",
+        {
+            "repo_name": "custom",
+            "resolved_repo_path": "/src/trusted",
+            "git_root": str(git_root),
+            "repo_source": "/src/trusted",
+        },
+    ) in calls
 
 
 def _git_args(cmd: list[str]) -> list[str]:
@@ -254,7 +375,7 @@ def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
             )
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
 
     result = service.push_branch(
         host_repo_path=str(repo),
@@ -334,7 +455,7 @@ def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_
             )
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
 
     result = service.push_branch(
         host_repo_path=str(repo),
@@ -416,7 +537,7 @@ def test_issue_git_admin_service_push_branch_reports_destination_ahead_without_p
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="3 2\n", stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
 
     result = service.push_branch(
         host_repo_path=str(repo),
@@ -447,7 +568,7 @@ def test_issue_git_admin_service_push_branch_rejects_refspec_branch_values(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
 
     with pytest.raises(ValueError, match="valid origin_branch"):
         service.push_branch(
@@ -493,7 +614,7 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
     monkeypatch.setattr(
-        issue_git_module._admin_service, "_dominfo_field", lambda *args, **kwargs: None
+        issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None
     )
 
     created = service.create_issue(title="Fix dashboard", body="Build it")
@@ -525,8 +646,8 @@ def test_issue_git_admin_service_delete_local_issue_names_vm_blocker(
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
     monkeypatch.setattr(
-        issue_git_module._admin_service,
-        "_dominfo_field",
+        issue_git_module.vm_helpers,
+        "dominfo_field",
         lambda vm_name, field_name: "running" if vm_name == "vm-1" else None,
     )
 
@@ -547,7 +668,7 @@ def test_issue_git_admin_service_delete_local_issue_names_session_blockers(
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
     monkeypatch.setattr(
-        issue_git_module._admin_service, "_dominfo_field", lambda *args, **kwargs: None
+        issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None
     )
 
     created = service.create_issue(title="Fix dashboard", body="Build it")
@@ -734,6 +855,12 @@ def test_admin_service_delegates_issue_git_methods() -> None:
         == "git_pr_note_query"
     )
     assert (
+        service.import_git_repo(repo_source="/repo", bare_repo_name="repo", directory_path="root")[
+            "name"
+        ]
+        == "import_git_repo"
+    )
+    assert (
         service.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"]
         == "session_update_metadata"
     )
@@ -786,6 +913,11 @@ def test_admin_service_delegates_issue_git_methods() -> None:
                 "remote_name": None,
                 "notes_ref": None,
             },
+        ),
+        (
+            "import_git_repo",
+            (),
+            {"repo_source": "/repo", "bare_repo_name": "repo", "directory_path": "root"},
         ),
         ("session_update_metadata", (), {"target": "session-1", "metadata": {"foo": "bar"}}),
         (

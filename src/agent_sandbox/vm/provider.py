@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
-from agent_sandbox.admin import service as admin_service_module
+from agent_sandbox.admin.services import process_helpers, session_helpers, vm_helpers
 from agent_sandbox.models import SessionManifest, VmActionResult, VmSummary
 from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
@@ -157,7 +157,7 @@ def _resolve_azure_agent_admin_ssh_public_key(azure_config: Any) -> str:
     if ssh_key_path:
         return _read_ssh_public_key(Path(ssh_key_path))
 
-    private_key_path = admin_service_module._resolve_private_key_path()
+    private_key_path = vm_helpers.resolve_private_key_path()
     if private_key_path is None:
         return ""
     public_key = _read_ssh_public_key(Path(f"{private_key_path}.pub"))
@@ -361,7 +361,7 @@ class LibvirtVmProvider(VmProvider):
             if direct_only
             else set()
         )
-        vm_names = admin_service_module._virsh_lines(
+        vm_names = vm_helpers.virsh_lines(
             ["list", "--all" if include_inactive else "--state-running", "--name"]
         )
         summaries: list[VmSummary] = []
@@ -374,11 +374,11 @@ class LibvirtVmProvider(VmProvider):
                     continue
             elif directory_path is not None and normalized_directory_path not in vm_directory_paths:
                 continue
-            provider_state = admin_service_module._dominfo_field(vm_name, "State") or "unknown"
+            provider_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
             power_state = normalize_power_state(provider_state)
             host_control_status = deps.agent_control_store.status_for_vm(vm_name)
             ip_address = (
-                admin_service_module._resolve_vm_ip(vm_name) if power_state == "running" else None
+                vm_helpers.resolve_vm_ip(vm_name) if power_state == "running" else None
             )
             if power_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
@@ -398,13 +398,13 @@ class LibvirtVmProvider(VmProvider):
                 dispatch_id = None
             else:
                 agent_state, repo_names, updated_at, dispatch_id, agent_pid = (
-                    admin_service_module._probe_agent_state(vm_name, ip_address, vm_user)
+                    vm_helpers.probe_agent_state(vm_name, ip_address, vm_user)
                 )
             summaries.append(
                 VmSummary(
                     vm_name=vm_name,
                     provider=self.name,
-                    issue_number=admin_service_module._extract_issue_number(vm_name),
+                    issue_number=session_helpers.extract_issue_number(vm_name),
                     session_ids=session_ids_by_vm.get(vm_name, []),
                     labels=labels_by_vm.get(vm_name, {}),
                     directory_paths=vm_directory_paths,
@@ -557,7 +557,7 @@ class AzureVmProvider(VmProvider):
                 VmSummary(
                     vm_name=vm_name,
                     provider=self.name,
-                    issue_number=admin_service_module._extract_issue_number(vm_name),
+                    issue_number=session_helpers.extract_issue_number(vm_name),
                     session_ids=session_ids_by_vm.get(vm_name, []),
                     labels=labels_by_vm.get(vm_name, {}),
                     directory_paths=vm_directory_paths,
@@ -892,7 +892,7 @@ def _libvirt_create_vm(
         return VmActionResult(
             success=False, vm_name="", action="create_vm", message="VM name is required."
         )
-    if admin_service_module._dominfo_field(resolved_vm_name, "State") is not None:
+    if vm_helpers.dominfo_field(resolved_vm_name, "State") is not None:
         return VmActionResult(
             success=False,
             vm_name=resolved_vm_name,
@@ -905,7 +905,7 @@ def _libvirt_create_vm(
     resolved_session_id = (
         session_id.strip()
         if session_id and session_id.strip()
-        else admin_service_module._default_vm_session_id(resolved_vm_name)
+        else session_helpers.default_vm_session_id(resolved_vm_name)
     )
     session_repository = _runtime_session_repository(deps.runtime)
     existing_session = session_repository.get_session(resolved_session_id)
@@ -932,7 +932,7 @@ def _libvirt_create_vm(
         policy_update: dict[str, Any] = {}
         if tool_argument_policies is not None:
             policy_update["tool_argument_policies"] = (
-                admin_service_module._session_tool_argument_policies_from_payload(
+                session_helpers.session_tool_argument_policies_from_payload(
                     existing_session,
                     tool_argument_policies,
                 )
@@ -951,7 +951,7 @@ def _libvirt_create_vm(
             }
         )
     else:
-        manifest = admin_service_module._build_issue_session_manifest(
+        manifest = session_helpers.build_issue_session_manifest(
             policy=policy,
             session_id=resolved_session_id,
             vm_id=resolved_vm_name,
@@ -977,12 +977,12 @@ def _libvirt_create_vm(
             ),
             web_search_enabled=bool(web_search_enabled),
         )
-    normalized_labels = admin_service_module._normalize_session_labels(labels or {})
+    normalized_labels = session_helpers.normalize_session_labels(labels or {})
     if normalized_labels:
         manifest.metadata = dict(manifest.metadata)
         manifest.metadata["labels"] = normalized_labels
     if metadata:
-        manifest.metadata = admin_service_module._deep_merge_mapping(
+        manifest.metadata = session_helpers.deep_merge_mapping(
             manifest.metadata,
             metadata,
         )
@@ -1059,7 +1059,7 @@ def _libvirt_create_vm(
             response = helper.call(
                 "run_script", script_path=str(setup_script), args=setup_args, env=run_env
             )
-            message = admin_service_module._combined_process_message(
+            message = process_helpers.combined_process_message(
                 str(response.get("stdout") or ""),
                 str(response.get("stderr") or ""),
             )
@@ -1089,23 +1089,23 @@ def _libvirt_create_vm(
                 "MSSQL_SA_PASSWORD",
                 "HOST_REPO_CODEX_SKILLS_DIR",
             )
-            launch_step = admin_service_module._sudo_env_command(
+            launch_step = process_helpers.sudo_env_command(
                 [str(setup_script), *setup_args], run_env, allowed_env_keys
             )
-            completed = admin_service_module._run_subprocess(
+            completed = process_helpers.run_subprocess(
                 launch_step, capture_output=True, text=True, env=run_env
             )
-            message = admin_service_module._combined_process_message(
+            message = process_helpers.combined_process_message(
                 completed.stdout, completed.stderr
             )
-            if completed.returncode != 0 and admin_service_module._can_prompt_for_privileges():
-                launch_step = admin_service_module._pkexec_env_command(
+            if completed.returncode != 0 and process_helpers.can_prompt_for_privileges():
+                launch_step = process_helpers.pkexec_env_command(
                     [str(setup_script), *setup_args], run_env, allowed_env_keys
                 )
-                completed = admin_service_module._run_subprocess(
+                completed = process_helpers.run_subprocess(
                     launch_step, capture_output=True, text=True, env=run_env
                 )
-                message = admin_service_module._combined_process_message(
+                message = process_helpers.combined_process_message(
                     completed.stdout, completed.stderr
                 )
             if completed.returncode != 0:
@@ -1113,7 +1113,7 @@ def _libvirt_create_vm(
                     message or f"{setup_script.name} exited with code {completed.returncode}"
                 )
     except Exception as exc:
-        preserved_vm = admin_service_module._dominfo_field(resolved_vm_name, "State") is not None
+        preserved_vm = vm_helpers.dominfo_field(resolved_vm_name, "State") is not None
         if not preserved_vm and not had_existing_session:
             session_repository.delete_session(resolved_session_id)
         detail = f"Failed to create VM {resolved_vm_name}: {exc}"
@@ -1156,7 +1156,7 @@ def _persist_session_last_known_vm_ip(
     session = session_repository.get_session(session_id)
     if session is None:
         return
-    metadata = admin_service_module._deep_merge_mapping(
+    metadata = session_helpers.deep_merge_mapping(
         getattr(session, "metadata", {}) or {},
         {"last_known_vm_ip": vm_ip},
     )
@@ -1164,8 +1164,8 @@ def _persist_session_last_known_vm_ip(
 
 
 def _libvirt_start_vm(target: str) -> VmActionResult:
-    vm_name = admin_service_module._resolve_vm_name(target)
-    current_state = admin_service_module._dominfo_field(vm_name, "State")
+    vm_name = session_helpers.resolve_vm_name(target)
+    current_state = vm_helpers.dominfo_field(vm_name, "State")
     if current_state is None:
         return VmActionResult(
             success=False, vm_name=vm_name, action="start", message=f"VM not found: {vm_name}"
@@ -1174,7 +1174,7 @@ def _libvirt_start_vm(target: str) -> VmActionResult:
         return VmActionResult(
             success=True, vm_name=vm_name, action="start", message=f"VM already running: {vm_name}"
         )
-    result = admin_service_module._run_virsh(["start", vm_name])
+    result = vm_helpers.run_virsh(["start", vm_name])
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         return VmActionResult(
@@ -1189,8 +1189,8 @@ def _libvirt_start_vm(target: str) -> VmActionResult:
 
 
 def _libvirt_shutdown_vm(target: str, *, timeout_seconds: int = 60) -> VmActionResult:
-    vm_name = admin_service_module._resolve_vm_name(target)
-    current_state = admin_service_module._dominfo_field(vm_name, "State")
+    vm_name = session_helpers.resolve_vm_name(target)
+    current_state = vm_helpers.dominfo_field(vm_name, "State")
     if current_state is None:
         return VmActionResult(
             success=False, vm_name=vm_name, action="shutdown", message=f"VM not found: {vm_name}"
@@ -1202,7 +1202,7 @@ def _libvirt_shutdown_vm(target: str, *, timeout_seconds: int = 60) -> VmActionR
             action="shutdown",
             message=f"VM already stopped: {vm_name}",
         )
-    result = admin_service_module._run_virsh(["shutdown", vm_name])
+    result = vm_helpers.run_virsh(["shutdown", vm_name])
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         return VmActionResult(
@@ -1213,7 +1213,7 @@ def _libvirt_shutdown_vm(target: str, *, timeout_seconds: int = 60) -> VmActionR
         )
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        state = admin_service_module._dominfo_field(vm_name, "State")
+        state = vm_helpers.dominfo_field(vm_name, "State")
         if state and state != "running":
             return VmActionResult(
                 success=True, vm_name=vm_name, action="shutdown", message=f"Shut down VM {vm_name}"
@@ -1310,14 +1310,14 @@ def _libvirt_vm_exec(
     check: bool = True,
 ) -> dict[str, Any]:
     vm_name = session_repository.resolve_vm_name_from_target(target)
-    vm_ip, ssh_private_key_path = admin_service_module._resolve_vm_ssh_access(vm_name, vm_user)
-    remote_script = admin_service_module._remote_shell_script(
+    vm_ip, ssh_private_key_path = vm_helpers.resolve_vm_ssh_access(vm_name, vm_user)
+    remote_script = vm_helpers.remote_shell_script(
         command=command, working_directory=working_directory, environment=environment
     )
-    completed = admin_service_module._run_subprocess(
+    completed = process_helpers.run_subprocess(
         [
             "ssh",
-            *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+            *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
             f"{vm_user}@{vm_ip}",
             "bash",
             "-s",
@@ -1350,7 +1350,7 @@ def _libvirt_vm_copy_files(
     vm_user: str = "agent",
 ) -> dict[str, Any]:
     vm_name = session_repository.resolve_vm_name_from_target(target)
-    vm_ip, ssh_private_key_path = admin_service_module._resolve_vm_ssh_access(vm_name, vm_user)
+    vm_ip, ssh_private_key_path = vm_helpers.resolve_vm_ssh_access(vm_name, vm_user)
     copied_paths: list[str] = []
     for index, file_spec in enumerate(files):
         destination_path = str(file_spec.get("destination_path") or "").strip()
@@ -1382,10 +1382,10 @@ def _libvirt_vm_copy_files(
             source_path = Path(str(source_path_raw)).expanduser().resolve()
             if not source_path.exists():
                 raise ValueError(f"files[{index}] source_path does not exist: {source_path}")
-            completed = admin_service_module._run_subprocess(
+            completed = process_helpers.run_subprocess(
                 [
                     "ssh",
-                    *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                     f"{vm_user}@{vm_ip}",
                     "bash",
                     "-s",
@@ -1402,10 +1402,10 @@ def _libvirt_vm_copy_files(
             scp_args = ["scp"]
             if source_path.is_dir():
                 scp_args.append("-r")
-            scp_result = admin_service_module._run_subprocess(
+            scp_result = process_helpers.run_subprocess(
                 [
                     *scp_args,
-                    *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                     str(source_path),
                     f"{vm_user}@{vm_ip}:{destination_path}",
                 ],
@@ -1421,10 +1421,10 @@ def _libvirt_vm_copy_files(
                 if source_path.is_dir():
                     chmod_args.append("-R")
                 chmod_args.extend([mode, destination_path])
-                chmod_result = admin_service_module._run_subprocess(
+                chmod_result = process_helpers.run_subprocess(
                     [
                         "ssh",
-                        *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                        *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                         f"{vm_user}@{vm_ip}",
                         *chmod_args,
                     ],
@@ -1465,10 +1465,10 @@ def _libvirt_vm_copy_files(
                 )
                 + "\n"
             )
-            completed = admin_service_module._run_subprocess(
+            completed = process_helpers.run_subprocess(
                 [
                     "ssh",
-                    *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                     f"{vm_user}@{vm_ip}",
                     "bash",
                     "-s",
@@ -1507,7 +1507,7 @@ def _libvirt_vm_delete_files(
     if not paths:
         raise ValueError("paths must not be empty")
     vm_name = session_repository.resolve_vm_name_from_target(target)
-    vm_ip, ssh_private_key_path = admin_service_module._resolve_vm_ssh_access(vm_name, vm_user)
+    vm_ip, ssh_private_key_path = vm_helpers.resolve_vm_ssh_access(vm_name, vm_user)
     normalized_paths: list[str] = []
     for index, raw_path in enumerate(paths):
         path = str(raw_path or "").strip()
@@ -1521,10 +1521,10 @@ def _libvirt_vm_delete_files(
     if not missing_ok:
         commands.extend(f"test -e {shlex.quote(path)}" for path in normalized_paths)
     commands.extend(f"rm {rm_flag} -- {shlex.quote(path)}" for path in normalized_paths)
-    completed = admin_service_module._run_subprocess(
+    completed = process_helpers.run_subprocess(
         [
             "ssh",
-            *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+            *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
             f"{vm_user}@{vm_ip}",
             "bash",
             "-s",
@@ -1569,7 +1569,7 @@ def _labels_by_vm(sessions: list[Any], *, provider: str | None = None) -> dict[s
             continue
         if provider is not None and session_vm_provider(session) != provider:
             continue
-        labels = admin_service_module._normalize_session_labels(
+        labels = session_helpers.normalize_session_labels(
             getattr(session, "metadata", {}).get("labels")
         )
         current = mapping.get(vm_id)
@@ -1608,20 +1608,20 @@ def _ssh_exec(
     timeout_seconds: float | None,
     check: bool,
 ) -> dict[str, Any]:
-    ssh_private_key_path = admin_service_module._resolve_private_key_path()
+    ssh_private_key_path = vm_helpers.resolve_private_key_path()
     if ssh_private_key_path is None:
         raise RuntimeError(
             "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the VM access key."
         )
-    remote_script = admin_service_module._remote_shell_script(
+    remote_script = vm_helpers.remote_shell_script(
         command=command,
         working_directory=working_directory,
         environment=environment,
     )
-    completed = admin_service_module._run_subprocess(
+    completed = process_helpers.run_subprocess(
         [
             "ssh",
-            *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+            *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
             f"{vm_user}@{vm_ip}",
             "bash",
             "-s",
@@ -1656,7 +1656,7 @@ def _ssh_copy_files(
     vm_user: str,
     files: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    ssh_private_key_path = admin_service_module._resolve_private_key_path()
+    ssh_private_key_path = vm_helpers.resolve_private_key_path()
     if ssh_private_key_path is None:
         raise RuntimeError(
             "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the VM access key."
@@ -1692,10 +1692,10 @@ def _ssh_copy_files(
             source_path = Path(str(source_path_raw)).expanduser().resolve()
             if not source_path.exists():
                 raise ValueError(f"files[{index}] source_path does not exist: {source_path}")
-            completed = admin_service_module._run_subprocess(
+            completed = process_helpers.run_subprocess(
                 [
                     "ssh",
-                    *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                     f"{vm_user}@{vm_ip}",
                     "bash",
                     "-s",
@@ -1712,10 +1712,10 @@ def _ssh_copy_files(
             scp_args = ["scp"]
             if source_path.is_dir():
                 scp_args.append("-r")
-            scp_result = admin_service_module._run_subprocess(
+            scp_result = process_helpers.run_subprocess(
                 [
                     *scp_args,
-                    *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                     str(source_path),
                     f"{vm_user}@{vm_ip}:{destination_path}",
                 ],
@@ -1731,10 +1731,10 @@ def _ssh_copy_files(
                 if source_path.is_dir():
                     chmod_args.append("-R")
                 chmod_args.extend([mode, destination_path])
-                chmod_result = admin_service_module._run_subprocess(
+                chmod_result = process_helpers.run_subprocess(
                     [
                         "ssh",
-                        *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                        *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                         f"{vm_user}@{vm_ip}",
                         *chmod_args,
                     ],
@@ -1775,10 +1775,10 @@ def _ssh_copy_files(
                 )
                 + "\n"
             )
-            completed = admin_service_module._run_subprocess(
+            completed = process_helpers.run_subprocess(
                 [
                     "ssh",
-                    *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
                     f"{vm_user}@{vm_ip}",
                     "bash",
                     "-s",
@@ -1817,7 +1817,7 @@ def _ssh_delete_files(
     recursive: bool,
     missing_ok: bool,
 ) -> dict[str, Any]:
-    ssh_private_key_path = admin_service_module._resolve_private_key_path()
+    ssh_private_key_path = vm_helpers.resolve_private_key_path()
     if ssh_private_key_path is None:
         raise RuntimeError(
             "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the VM access key."
@@ -1835,10 +1835,10 @@ def _ssh_delete_files(
     if not missing_ok:
         commands.extend(f"test -e {shlex.quote(path)}" for path in normalized_paths)
     commands.extend(f"rm {rm_flag} -- {shlex.quote(path)}" for path in normalized_paths)
-    completed = admin_service_module._run_subprocess(
+    completed = process_helpers.run_subprocess(
         [
             "ssh",
-            *admin_service_module._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+            *vm_helpers.ssh_options(vm_name, vm_ip, ssh_private_key_path),
             f"{vm_user}@{vm_ip}",
             "bash",
             "-s",

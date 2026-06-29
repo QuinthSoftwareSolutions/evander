@@ -4,6 +4,26 @@
   scroll preservation, and post-review timeline refreshes, and kept chat
   scroll application stable across layout settling.
 
+- Moved workflow config, editor, run-store control, and trigger/effect mutation
+  logic into `WorkflowConfigAdminService` with explicit composition dependencies.
+
+- Moved workflow reports and workflow generation ownership into explicit admin
+  services, leaving `AdminService` as the compatibility facade for those APIs.
+
+- Moved VM, agent, session execution, git mirror, and guest SSH/subprocess helper
+  ownership into focused VM admin helper modules while keeping `AdminService` compatibility.
+
+- Moved issue/git helper ownership, approval/tool-call audit operations, and published
+  artifact/artifact-space operations into focused admin services while keeping `AdminService`
+  compatibility delegates.
+
+- Finished the final AdminService extraction slice by moving capacity health, model usage
+  dependencies, operator steering interrupts, assistant settings/chat, release, and deployment
+  status ownership behind extracted admin services.
+
+- Completed the model-usage, tool-visibility, and tool-call audit facade cleanup so
+  `AdminService` delegates those APIs while preserving `tool_call_audit_index` compatibility.
+
 - Added `effect:team:create-task` so workflows can directly create or update
   operator-authored Team Add-on tasks for a project owner.
 
