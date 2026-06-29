@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Fixed VM-agent package exports so the mixins advertised by `__all__` support direct imports and
+  star imports.
+
 - Split `VmAgentAdminService` internals into focused VM-agent mixins for container sessions,
   inventory, create operations, agent actions, chat assistant setup, container backend access, and
   VM lifecycle behavior while keeping the public admin facade compatible.
