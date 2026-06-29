@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import evander_team_addon.services.domain_helpers as team_domain_helpers
+import evander_team_addon.services.domain.common as team_domain_common
 from evander_team_addon.models import (
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -49,25 +49,37 @@ from evander_team_addon.repository import (
     TeamStateConflictError,
     TeamStateRepository,
 )
-from evander_team_addon.services.domain_helpers import (
-    AGENT_WAKE_REQUESTED_EVENT_TYPE,
-    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
-    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from evander_team_addon.services.domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+from evander_team_addon.services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
     EPHEMERAL_REQUESTED_EVENT_TYPE,
-    GIT_PROMOTION_EVENT_TYPE,
-    GIT_RELEASE_RECOVERY_EVENT_TYPE,
 )
+from evander_team_addon.services.domain.git_promotion import GIT_PROMOTION_EVENT_TYPE
+from evander_team_addon.services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
+from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from evander_team_addon.services.command_service import (
+from evander_team_addon.services.commands import (
+    TeamAgentControlCommandService,
+    TeamAgentMessageCommandService,
+    TeamCaseCommandService,
+    TeamChatCommandService,
     TeamCommandApplyResult,
     TeamCommandContext,
-    TeamCommandService,
+    TeamDeliverableSubmissionCommandService,
+    TeamEphemeralCommandService,
+    TeamGitReleaseCommandService,
+    TeamGovernanceCommandService,
+    TeamNoteCommandService,
+    TeamOperatorEscalationCommandService,
+    TeamReviewCommandService,
+    TeamTaskCreationCommandService,
+    TeamTaskUpdateCommandService,
 )
 from evander_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
@@ -76,8 +88,26 @@ from evander_team_addon.sqlite_store import (
 )
 
 
-def _command_service(repo: TeamStateRepository) -> TeamCommandService:
-    return TeamCommandService(repo)
+class _TeamCommandTestHarness(
+    TeamNoteCommandService,
+    TeamAgentMessageCommandService,
+    TeamChatCommandService,
+    TeamOperatorEscalationCommandService,
+    TeamCaseCommandService,
+    TeamTaskCreationCommandService,
+    TeamTaskUpdateCommandService,
+    TeamAgentControlCommandService,
+    TeamGovernanceCommandService,
+    TeamDeliverableSubmissionCommandService,
+    TeamReviewCommandService,
+    TeamGitReleaseCommandService,
+    TeamEphemeralCommandService,
+):
+    """Local test harness for cases that intentionally span command families."""
+
+
+def _command_service(repo: TeamStateRepository) -> _TeamCommandTestHarness:
+    return _TeamCommandTestHarness(repo)
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -1822,7 +1852,7 @@ def test_create_task_command_reports_stored_debounced_wake_outbox_id(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(team_domain_helpers, "utc_now", lambda: now)
+    monkeypatch.setattr(team_domain_common, "utc_now", lambda: now)
 
     _state, first = _command_service(repo).create_task_command(
         session_id="session-lead",
@@ -3433,7 +3463,7 @@ def test_task_state_entered_at_changes_only_on_state_transition(
     def fake_now() -> datetime:
         return next(moments)
 
-    monkeypatch.setattr(team_domain_helpers, "utc_now", fake_now)
+    monkeypatch.setattr(team_domain_common, "utc_now", fake_now)
     monkeypatch.setattr("evander_team_addon.repository.utc_now", fake_now)
 
     state = _team_admin_service(repo).create_or_reprioritize_task(

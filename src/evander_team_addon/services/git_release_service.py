@@ -4,25 +4,29 @@ from typing import Any
 from uuid import uuid4
 
 from ..repository import TeamStateRepository
-from .domain_helpers import (
+from ..models import (
     AgentInboxItem,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
-    _accepted_source_deliverables_for_feature_promotion,
+)
+from .domain.common import (
     _append_unique,
-    _attach_feature_promotion_to_accepted_deliverables,
-    _attach_promotion_failure,
-    _attach_promotion_success,
-    _is_safe_synthetic_feature_deliverable,
     _optional_text,
-    _recalculate_project_status,
-    _release_failure_recipient,
     _require_present,
     _required_text,
     utc_now,
 )
+from .domain.git_promotion import (
+    _accepted_source_deliverables_for_feature_promotion,
+    _attach_feature_promotion_to_accepted_deliverables,
+    _attach_promotion_failure,
+    _attach_promotion_success,
+    _is_safe_synthetic_feature_deliverable,
+)
+from .domain.project_status import _recalculate_project_status
+from .domain.release_packages import _release_failure_recipient
 
 
 class TeamGitReleaseService:

@@ -6117,33 +6117,33 @@ class AdminService:
         return self.operations_admin.privileged_helper_required()
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
-        return self.vm_agent_admin._session_ids_by_vm()
+        return self.vm_agent_admin.session_ids_by_vm()
 
     def _directory_paths_by_vm(self) -> dict[str, list[str]]:
-        return self.vm_agent_admin._directory_paths_by_vm()
+        return self.vm_agent_admin.directory_paths_by_vm()
 
     def _labels_by_vm(self) -> dict[str, dict[str, str]]:
-        return self.vm_agent_admin._labels_by_vm()
+        return self.vm_agent_admin.labels_by_vm()
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
-        return self.vm_agent_admin._normalize_directory_path(directory_path)
+        return self.vm_agent_admin.normalize_directory_path(directory_path)
 
     def _resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:
-        return self.vm_agent_admin._resolve_vm_defaults(directory_path)
+        return self.vm_agent_admin.resolve_vm_defaults(directory_path)
 
     def _resolve_issue_setup(
         self, directory_path: str, *, root_dir: Path
     ) -> EffectiveIssueSetupConfig:
-        return self.vm_agent_admin._resolve_issue_setup(directory_path, root_dir=root_dir)
+        return self.vm_agent_admin.resolve_issue_setup(directory_path, root_dir=root_dir)
 
     def _resolve_agent_model_for_session(self, session_or_id: SessionManifest | str) -> str:
-        return self.vm_agent_admin._resolve_agent_model_for_session(session_or_id)
+        return self.vm_agent_admin.resolve_agent_model_for_session(session_or_id)
 
     def resolve_agent_model_for_target(self, target: str) -> str:
         return self.vm_agent_admin.resolve_agent_model_for_target(target)
 
     def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
-        return self.vm_agent_admin._resolve_repo_source(repo_source)
+        return self.vm_agent_admin.resolve_repo_source(repo_source)
 
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         return self.issue_git_support.direct_owned_entity_ids(directory_path, kind=kind)
@@ -6383,99 +6383,99 @@ class AdminService:
 
     @staticmethod
     def _agent_record_directory_path(directory_path: str | None) -> str:
-        return VmAgentAdminService._agent_record_directory_path(directory_path)
+        return VmAgentAdminService.agent_record_directory_path(directory_path)
 
     @classmethod
     def _agent_record_matches_directory(
         cls, record_directory_path: str | None, selected_directory_path: str, *, direct_only: bool
     ) -> bool:
-        return VmAgentAdminService._agent_record_matches_directory(
+        return VmAgentAdminService.agent_record_matches_directory(
             record_directory_path, selected_directory_path, direct_only=direct_only
         )
 
     @staticmethod
     def _container_agent_status(last_status: str | None) -> str:
-        return VmAgentAdminService._container_agent_status(last_status)
+        return VmAgentAdminService.container_agent_status(last_status)
 
     @staticmethod
     def _container_codex_outcome(record: Any) -> Mapping[str, Any] | None:
-        return VmAgentAdminService._container_codex_outcome(record)
+        return VmAgentAdminService.container_codex_outcome(record)
 
     @classmethod
     def _container_execution_status(cls, record: Any) -> str:
-        return VmAgentAdminService._container_execution_status(record)
+        return VmAgentAdminService.container_execution_status(record)
 
     @staticmethod
     def _agent_status_is_active(status: str | None) -> bool:
-        return VmAgentAdminService._agent_status_is_active(status)
+        return VmAgentAdminService.agent_status_is_active(status)
 
     @staticmethod
     def _container_execution_sort_key(record: Any) -> tuple[datetime, str]:
-        return VmAgentAdminService._container_execution_sort_key(record)
+        return VmAgentAdminService.container_execution_sort_key(record)
 
     @classmethod
     def _container_session_status(cls, records: list[Any]) -> str:
-        return VmAgentAdminService._container_session_status(records)
+        return VmAgentAdminService.container_session_status(records)
 
     @staticmethod
     def _normalize_agent_backend(backend: str | None) -> str:
-        return VmAgentAdminService._normalize_agent_backend(backend)
+        return VmAgentAdminService.normalize_agent_backend(backend)
 
     @classmethod
     def _normalize_agent_log_view(cls, view: str | None) -> str:
-        return VmAgentAdminService._normalize_agent_log_view(view)
+        return VmAgentAdminService.normalize_agent_log_view(view)
 
     @staticmethod
     def _container_log_thread_id(text: str) -> str | None:
-        return VmAgentAdminService._container_log_thread_id(text)
+        return VmAgentAdminService.container_log_thread_id(text)
 
     @staticmethod
     def _container_log_without_session_id_lines(text: str) -> str:
-        return VmAgentAdminService._container_log_without_session_id_lines(text)
+        return VmAgentAdminService.container_log_without_session_id_lines(text)
 
     @staticmethod
     def _container_execution_stored_thread_id(execution: Any) -> str | None:
-        return VmAgentAdminService._container_execution_stored_thread_id(execution)
+        return VmAgentAdminService.container_execution_stored_thread_id(execution)
 
     @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
-        return VmAgentAdminService._normalize_agent_backend_filter(backend)
+        return VmAgentAdminService.normalize_agent_backend_filter(backend)
 
     @staticmethod
     def _agent_optional_string(payload: Mapping[str, Any], key: str) -> str | None:
-        return VmAgentAdminService._agent_optional_string(payload, key)
+        return VmAgentAdminService.agent_optional_string(payload, key)
 
     @staticmethod
     def _agent_string_list(payload: Mapping[str, Any], key: str) -> list[str] | None:
-        return VmAgentAdminService._agent_string_list(payload, key)
+        return VmAgentAdminService.agent_string_list(payload, key)
 
     @staticmethod
     def _agent_int_or_none(payload: Mapping[str, Any], key: str) -> int | None:
-        return VmAgentAdminService._agent_int_or_none(payload, key)
+        return VmAgentAdminService.agent_int_or_none(payload, key)
 
     @staticmethod
     def _container_session_target_name(session: SessionManifest) -> str:
-        return VmAgentAdminService._container_session_target_name(session)
+        return VmAgentAdminService.container_session_target_name(session)
 
     @staticmethod
     def _is_container_session(session: SessionManifest) -> bool:
-        return VmAgentAdminService._is_container_session(session)
+        return VmAgentAdminService.is_container_session(session)
 
     @staticmethod
     def _container_lifecycle_action(
         *, supported: bool, kind: str | None, label: str, reason: str | None = None
     ) -> ContainerSessionLifecycleAction:
-        return VmAgentAdminService._container_lifecycle_action(
+        return VmAgentAdminService.container_lifecycle_action(
             supported=supported, kind=kind, label=label, reason=reason
         )
 
     @staticmethod
     def _container_session_lifecycle_metadata(session: SessionManifest) -> dict[str, Any]:
-        return VmAgentAdminService._container_session_lifecycle_metadata(session)
+        return VmAgentAdminService.container_session_lifecycle_metadata(session)
 
     @staticmethod
     def _container_record_lifecycle_metadata(record: Any) -> dict[str, Any]:
-        return VmAgentAdminService._container_record_lifecycle_metadata(record)
+        return VmAgentAdminService.container_record_lifecycle_metadata(record)
 
     @staticmethod
     def _container_session_lifecycle_tombstone(
@@ -6487,7 +6487,7 @@ class AdminService:
         completed_at: datetime,
         cleanup_error: str | None,
     ) -> SessionManifest:
-        return VmAgentAdminService._container_session_lifecycle_tombstone(
+        return VmAgentAdminService.container_session_lifecycle_tombstone(
             session,
             state=state,
             cleanup_status=cleanup_status,
@@ -6498,25 +6498,25 @@ class AdminService:
 
     @staticmethod
     def _container_execution_lifecycle_status(record: Any) -> str:
-        return VmAgentAdminService._container_execution_lifecycle_status(record)
+        return VmAgentAdminService.container_execution_lifecycle_status(record)
 
     def _session_summary_with_container_lifecycle(self, summary: SessionSummary) -> SessionSummary:
-        return self.vm_agent_admin._session_summary_with_container_lifecycle(summary)
+        return self.vm_agent_admin.session_summary_with_container_lifecycle(summary)
 
     def _container_session_lifecycle(
         self, session: SessionManifest, *, executions: list[Any] | None = None
     ) -> ContainerSessionLifecycle | None:
-        return self.vm_agent_admin._container_session_lifecycle(session, executions=executions)
+        return self.vm_agent_admin.container_session_lifecycle(session, executions=executions)
 
     def _agent_session_policy_payload(
         self, session: SessionManifest | None
     ) -> dict[str, Any] | None:
-        return self.vm_agent_admin._agent_session_policy_payload(session)
+        return self.vm_agent_admin.agent_session_policy_payload(session)
 
     def _approval_notification_target_options(
         self, session: SessionManifest | None
     ) -> list[WorkflowEditorFieldOption]:
-        return self.vm_agent_admin._approval_notification_target_options(session)
+        return self.vm_agent_admin.approval_notification_target_options(session)
 
     def effective_tool_policy_payload(
         self, session: SessionManifest | None
@@ -6539,22 +6539,22 @@ class AdminService:
         )
 
     def _read_agent_prompt_queue_records(self) -> tuple[dict[str, Any], str | None]:
-        return self.vm_agent_admin._read_agent_prompt_queue_records()
+        return self.vm_agent_admin.read_agent_prompt_queue_records()
 
     @staticmethod
     def _agent_prompt_queue_candidates(agent: AgentRecord) -> set[str]:
-        return VmAgentAdminService._agent_prompt_queue_candidates(agent)
+        return VmAgentAdminService.agent_prompt_queue_candidates(agent)
 
     @staticmethod
     def _agent_prompt_queue_record_matches(record: Any, *, candidates: set[str]) -> bool:
-        return VmAgentAdminService._agent_prompt_queue_record_matches(record, candidates=candidates)
+        return VmAgentAdminService.agent_prompt_queue_record_matches(record, candidates=candidates)
 
     @staticmethod
     def _agent_prompt_queue_preview(prompt: str) -> tuple[str | None, int]:
-        return VmAgentAdminService._agent_prompt_queue_preview(prompt)
+        return VmAgentAdminService.agent_prompt_queue_preview(prompt)
 
     def _agent_prompt_queue_record_payload(self, record: Any) -> AgentPromptQueueRecord:
-        return self.vm_agent_admin._agent_prompt_queue_record_payload(record)
+        return self.vm_agent_admin.agent_prompt_queue_record_payload(record)
 
     def _agent_prompt_queue_summary(
         self,
@@ -6564,16 +6564,16 @@ class AdminService:
         read_error: str | None,
         record_limit: int = 20,
     ) -> AgentPromptQueueSummary:
-        return self.vm_agent_admin._agent_prompt_queue_summary(
+        return self.vm_agent_admin.agent_prompt_queue_summary(
             agent, queued_records, read_error=read_error, record_limit=record_limit
         )
 
     def _agent_records_with_prompt_queue(self, records: list[AgentRecord]) -> list[AgentRecord]:
-        return self.vm_agent_admin._agent_records_with_prompt_queue(records)
+        return self.vm_agent_admin.agent_records_with_prompt_queue(records)
 
     @staticmethod
     def _runtime_image_ref_display_details(image_ref: str) -> tuple[str, bool]:
-        return VmAgentAdminService._runtime_image_ref_display_details(image_ref)
+        return VmAgentAdminService.runtime_image_ref_display_details(image_ref)
 
     def session_runtime_image_payload(
         self, session: SessionManifest | SessionSummary
@@ -6608,11 +6608,11 @@ class AdminService:
     def _agent_create_operation_details(
         self, payload: Mapping[str, Any]
     ) -> tuple[str, str, str | None, str]:
-        return self.vm_agent_admin._agent_create_operation_details(payload)
+        return self.vm_agent_admin.agent_create_operation_details(payload)
 
     @staticmethod
     def _agent_create_operation_worker_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-        return VmAgentAdminService._agent_create_operation_worker_payload(payload)
+        return VmAgentAdminService.agent_create_operation_worker_payload(payload)
 
     def submit_admin_agent_create(self, payload: Mapping[str, Any]) -> AgentCreateOperation:
         return self.vm_agent_admin.submit_admin_agent_create(payload)
@@ -6630,14 +6630,14 @@ class AdminService:
     def _update_agent_create_operation(
         self, operation_id: str, updater: Any
     ) -> AgentCreateOperation | None:
-        return self.vm_agent_admin._update_agent_create_operation(operation_id, updater)
+        return self.vm_agent_admin.update_agent_create_operation(operation_id, updater)
 
     def _run_agent_create_operation(self, operation_id: str) -> None:
-        return self.vm_agent_admin._run_agent_create_operation(operation_id)
+        return self.vm_agent_admin.run_agent_create_operation(operation_id)
 
     @staticmethod
     def _agent_create_operation_owner_is_alive(owner_pid: int | None) -> bool:
-        return VmAgentAdminService._agent_create_operation_owner_is_alive(owner_pid)
+        return VmAgentAdminService.agent_create_operation_owner_is_alive(owner_pid)
 
     def mark_abandoned_agent_create_operations_failed(self) -> None:
         return self.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
@@ -6655,53 +6655,53 @@ class AdminService:
     def _resolve_container_agent_session(
         self, agent_id: str, *, require_session: bool
     ) -> tuple[SessionManifest | None, Any | None]:
-        return self.vm_agent_admin._resolve_container_agent_session(
+        return self.vm_agent_admin.resolve_container_agent_session(
             agent_id, require_session=require_session
         )
 
     def _container_execution_records_for_session(self, session_id: str) -> list[Any]:
-        return self.vm_agent_admin._container_execution_records_for_session(session_id)
+        return self.vm_agent_admin.container_execution_records_for_session_compat(session_id)
 
     def _session_associated_agent_description(
         self, session_id: str, session: SessionManifest
     ) -> str | None:
-        return self.vm_agent_admin._session_associated_agent_description(session_id, session)
+        return self.vm_agent_admin.session_associated_agent_description(session_id, session)
 
     def _delete_chat_assistant_session_mappings(self, session_ids: set[str]) -> int:
-        return self.vm_agent_admin._delete_chat_assistant_session_mappings(session_ids)
+        return self.vm_agent_admin.delete_chat_assistant_session_mappings(session_ids)
 
     def _delete_detached_worker_session_state(self, session_id: str) -> tuple[bool, int]:
-        return self.vm_agent_admin._delete_detached_worker_session_state(session_id)
+        return self.vm_agent_admin.delete_detached_worker_session_state(session_id)
 
     @staticmethod
     def _worker_delete_session_removed(result: Any) -> bool:
-        return VmAgentAdminService._worker_delete_session_removed(result)
+        return VmAgentAdminService.worker_delete_session_removed(result)
 
     def _resolve_vm_agent_session(self, agent_id: str) -> SessionManifest:
-        return self.vm_agent_admin._resolve_vm_agent_session(agent_id)
+        return self.vm_agent_admin.resolve_vm_agent_session(agent_id)
 
     def _record_installed_codex_skills(self, session_id: str, skill_names: list[str]) -> None:
-        return self.vm_agent_admin._record_installed_codex_skills(session_id, skill_names)
+        return self.vm_agent_admin.record_installed_codex_skills(session_id, skill_names)
 
     @staticmethod
     def _skill_install_files_for_codex_home(
         entries: list[SkillLibraryEntry], *, codex_home: str
     ) -> list[dict[str, Any]]:
-        return VmAgentAdminService._skill_install_files_for_codex_home(
+        return VmAgentAdminService.skill_install_files_for_codex_home(
             entries, codex_home=codex_home
         )
 
     def _install_codex_skills_into_vm_agent(
         self, agent_id: str, *, skill_names: list[str], vm_user: str
     ) -> dict[str, Any]:
-        return self.vm_agent_admin._install_codex_skills_into_vm_agent(
+        return self.vm_agent_admin.install_codex_skills_into_vm_agent(
             agent_id, skill_names=skill_names, vm_user=vm_user
         )
 
     def _install_codex_skills_into_container_agent(
         self, agent_id: str, *, skill_names: list[str]
     ) -> dict[str, Any]:
-        return self.vm_agent_admin._install_codex_skills_into_container_agent(
+        return self.vm_agent_admin.install_codex_skills_into_container_agent(
             agent_id, skill_names=skill_names
         )
 
@@ -6742,47 +6742,47 @@ class AdminService:
     def _container_execution_log_chunk(
         self, worker_backend: Any, execution: Any, *, lines: int, mode: str
     ) -> str:
-        return self.vm_agent_admin._container_execution_log_chunk(
+        return self.vm_agent_admin.container_execution_log_chunk(
             worker_backend, execution, lines=lines, mode=mode
         )
 
     @staticmethod
     def _join_container_log_chunks(chunks: list[str]) -> str:
-        return VmAgentAdminService._join_container_log_chunks(chunks)
+        return VmAgentAdminService.join_container_log_chunks(chunks)
 
     def _container_thread_execution_fallback_log(
         self, worker_backend: Any, records: list[Any], *, lines: int
     ) -> str:
-        return self.vm_agent_admin._container_thread_execution_fallback_log(
+        return self.vm_agent_admin.container_thread_execution_fallback_log(
             worker_backend, records, lines=lines
         )
 
     def _container_thread_transcript(
         self, worker_backend: Any, records: list[Any], *, lines: int
     ) -> str:
-        return self.vm_agent_admin._container_thread_transcript(
+        return self.vm_agent_admin.container_thread_transcript(
             worker_backend, records, lines=lines
         )
 
     def _container_execution_thread_probe_text(self, worker_backend: Any, execution: Any) -> str:
-        return self.vm_agent_admin._container_execution_thread_probe_text(worker_backend, execution)
+        return self.vm_agent_admin.container_execution_thread_probe_text(worker_backend, execution)
 
     def _container_thread_log_chunks(
         self, worker_backend: Any, execution_records: list[Any], *, lines: int
     ) -> list[str]:
-        return self.vm_agent_admin._container_thread_log_chunks(
+        return self.vm_agent_admin.container_thread_log_chunks(
             worker_backend, execution_records, lines=lines
         )
 
     def _container_thread_groups(
         self, worker_backend: Any, execution_records: list[Any]
     ) -> list[tuple[tuple[datetime, str], str | None, list[Any], str | None]]:
-        return self.vm_agent_admin._container_thread_groups(worker_backend, execution_records)
+        return self.vm_agent_admin.container_thread_groups(worker_backend, execution_records)
 
     def _container_thread_window_chunks(
         self, worker_backend: Any, execution_records: list[Any], *, target_lines: int
     ) -> tuple[list[str], bool]:
-        return self.vm_agent_admin._container_thread_window_chunks(
+        return self.vm_agent_admin.container_thread_window_chunks(
             worker_backend, execution_records, target_lines=target_lines
         )
 
@@ -6794,7 +6794,7 @@ class AdminService:
         records: list[Any],
         raw_text: str | None,
     ) -> str:
-        return self.vm_agent_admin._container_thread_group_chunk(
+        return self.vm_agent_admin.container_thread_group_chunk(
             worker_backend, thread_id=thread_id, records=records, raw_text=raw_text
         )
 
@@ -6808,7 +6808,7 @@ class AdminService:
         offset: int,
         query: str | None,
     ) -> dict[str, object]:
-        return self.vm_agent_admin._container_thread_log_page(
+        return self.vm_agent_admin.container_thread_log_page(
             session_id=session_id,
             execution_records=execution_records,
             worker_backend=worker_backend,
@@ -6827,7 +6827,7 @@ class AdminService:
         offset: int,
         query: str | None,
     ) -> dict[str, object]:
-        return self.vm_agent_admin._container_execution_log_page(
+        return self.vm_agent_admin.container_execution_log_page(
             session_id=session_id,
             execution_records=execution_records,
             worker_backend=worker_backend,
@@ -6881,7 +6881,7 @@ class AdminService:
         attempted_at: datetime,
         error: RuntimeError,
     ) -> dict[str, Any] | None:
-        return self.vm_agent_admin._queued_admin_prompt_result_after_dispatch_error(
+        return self.vm_agent_admin.queued_admin_prompt_result_after_dispatch_error(
             queue_key=queue_key,
             target_name=target_name,
             session_id=session_id,
@@ -6903,7 +6903,7 @@ class AdminService:
         directory_path: str,
         result: Mapping[str, Any],
     ) -> None:
-        return self.vm_agent_admin._record_direct_container_admin_prompt_execution(
+        return self.vm_agent_admin.record_direct_container_admin_prompt_execution(
             effect_id=effect_id,
             target=target,
             target_name=target_name,
@@ -6916,7 +6916,7 @@ class AdminService:
         )
 
     def _resolve_optional_vm_agent_session(self, agent_id: str) -> SessionManifest | None:
-        return self.vm_agent_admin._resolve_optional_vm_agent_session(agent_id)
+        return self.vm_agent_admin.resolve_optional_vm_agent_session(agent_id)
 
     # Deprecated compatibility wrappers: new internal callers should depend on
     # operations_admin for background-worker operations.
@@ -6948,7 +6948,7 @@ class AdminService:
     def _run_script(
         self, script_name: str, args: list[str], *, env: dict[str, str] | None = None
     ) -> VmActionResult:
-        return self.vm_agent_admin._run_script(script_name, args, env=env)
+        return self.vm_agent_admin.run_script(script_name, args, env=env)
 
     # Deprecated compatibility wrappers: new internal callers should depend on
     # vm_agent_admin for VM and agent-control operations.
@@ -6995,7 +6995,7 @@ class AdminService:
         session_id: str | None,
         directory_path: str | None,
     ) -> None:
-        return self.vm_agent_admin._spawn_agent_completion_watcher(
+        return self.vm_agent_admin.spawn_agent_completion_watcher(
             vm_name=vm_name,
             dispatch_id=dispatch_id,
             vm_user=vm_user,

@@ -4,9 +4,25 @@
   `trigger:team:deliverable-created` and
   `effect:team:create-review-request`.
 
+- Fixed VM-agent package exports so the mixins advertised by `__all__` support direct imports and
+  star imports.
+
+- Split `VmAgentAdminService` internals into focused VM-agent mixins for container sessions,
+  inventory, create operations, agent actions, chat assistant setup, container backend access, and
+  VM lifecycle behavior while keeping the public admin facade compatible.
+
+- Split the Team Add-on domain helper module into focused domain helper modules and updated
+  Team services, providers, API/MCP surfaces, and tests to import those helpers directly.
+
+- Removed remaining Team Add-on imports from the legacy domain helper module so provider,
+  service, command, API, MCP, and test code target the focused domain helper modules directly.
+
 - Refactored the Team Add-on state repository into a storage-only persistence facade, moving
   command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
   focused Team services.
+
+- Split Team Add-on command handling into command-family services and wired MCP callers
+  directly to those families instead of keeping an all-command facade.
 
 - Restored Team Add-on UI smoke coverage for exact revision payloads, chat
   scroll preservation, and post-review timeline refreshes, and kept chat

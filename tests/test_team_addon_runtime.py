@@ -99,21 +99,19 @@ from evander_team_addon.providers import (
     _publish_team_events,
 )
 from evander_team_addon.repository import TeamStateRepository
-from evander_team_addon.services.domain_helpers import (
-    AGENT_WAKE_REQUESTED_EVENT_TYPE,
-    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
-)
+from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from evander_team_addon.services.command_service import TeamCommandService
+from evander_team_addon.services.commands import TeamEphemeralCommandService
 from evander_team_addon.workflow_packs import team_runtime_v1
 
 
-def _command_service(repo: TeamStateRepository) -> TeamCommandService:
-    return TeamCommandService(repo)
+def _command_service(repo: TeamStateRepository) -> TeamEphemeralCommandService:
+    return TeamEphemeralCommandService(repo)
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
