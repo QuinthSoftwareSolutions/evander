@@ -64,10 +64,22 @@ from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from evander_team_addon.services.command_service import (
+from evander_team_addon.services.commands import (
+    TeamAgentControlCommandService,
+    TeamAgentMessageCommandService,
+    TeamCaseCommandService,
+    TeamChatCommandService,
     TeamCommandApplyResult,
     TeamCommandContext,
-    TeamCommandService,
+    TeamDeliverableSubmissionCommandService,
+    TeamEphemeralCommandService,
+    TeamGitReleaseCommandService,
+    TeamGovernanceCommandService,
+    TeamNoteCommandService,
+    TeamOperatorEscalationCommandService,
+    TeamReviewCommandService,
+    TeamTaskCreationCommandService,
+    TeamTaskUpdateCommandService,
 )
 from evander_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
@@ -76,8 +88,26 @@ from evander_team_addon.sqlite_store import (
 )
 
 
-def _command_service(repo: TeamStateRepository) -> TeamCommandService:
-    return TeamCommandService(repo)
+class _TeamCommandTestHarness(
+    TeamNoteCommandService,
+    TeamAgentMessageCommandService,
+    TeamChatCommandService,
+    TeamOperatorEscalationCommandService,
+    TeamCaseCommandService,
+    TeamTaskCreationCommandService,
+    TeamTaskUpdateCommandService,
+    TeamAgentControlCommandService,
+    TeamGovernanceCommandService,
+    TeamDeliverableSubmissionCommandService,
+    TeamReviewCommandService,
+    TeamGitReleaseCommandService,
+    TeamEphemeralCommandService,
+):
+    """Local test harness for cases that intentionally span command families."""
+
+
+def _command_service(repo: TeamStateRepository) -> _TeamCommandTestHarness:
+    return _TeamCommandTestHarness(repo)
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:

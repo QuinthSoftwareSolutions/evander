@@ -8,6 +8,9 @@
   command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
   focused Team services.
 
+- Split Team Add-on command handling into command-family services and wired MCP callers
+  directly to those families instead of keeping an all-command facade.
+
 - Restored Team Add-on UI smoke coverage for exact revision payloads, chat
   scroll preservation, and post-review timeline refreshes, and kept chat
   scroll application stable across layout settling.

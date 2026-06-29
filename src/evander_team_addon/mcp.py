@@ -31,7 +31,21 @@ from .repository import (
 from .services.domain_helpers import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
 )
-from .services.command_service import TeamCommandService
+from .services.commands import (
+    TeamAgentControlCommandService,
+    TeamAgentMessageCommandService,
+    TeamCaseCommandService,
+    TeamChatCommandService,
+    TeamDeliverableSubmissionCommandService,
+    TeamEphemeralCommandService,
+    TeamGitReleaseCommandService,
+    TeamGovernanceCommandService,
+    TeamNoteCommandService,
+    TeamOperatorEscalationCommandService,
+    TeamReviewCommandService,
+    TeamTaskCreationCommandService,
+    TeamTaskUpdateCommandService,
+)
 
 TEAM_RECORD_NOTE_TOOL = "team_record_note"
 TEAM_MARK_INBOX_HANDLED_TOOL = "team_mark_inbox_handled"
@@ -169,7 +183,19 @@ MCP_TOOL_NAMES = (
 
 def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
     repo = TeamStateRepository(context.runtime_dir)
-    command_service = TeamCommandService(repo)
+    note_commands = TeamNoteCommandService(repo)
+    agent_message_commands = TeamAgentMessageCommandService(repo)
+    chat_commands = TeamChatCommandService(repo)
+    operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
+    case_commands = TeamCaseCommandService(repo)
+    task_creation_commands = TeamTaskCreationCommandService(repo)
+    task_update_commands = TeamTaskUpdateCommandService(repo)
+    agent_control_commands = TeamAgentControlCommandService(repo)
+    governance_commands = TeamGovernanceCommandService(repo)
+    deliverable_submission_commands = TeamDeliverableSubmissionCommandService(repo)
+    review_commands = TeamReviewCommandService(repo)
+    git_release_commands = TeamGitReleaseCommandService(repo)
+    ephemeral_commands = TeamEphemeralCommandService(repo)
     resolver = TeamMcpContextResolver(repo=repo, context=context)
 
     @server.tool()
@@ -191,7 +217,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             tool_name=TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
         )
         try:
-            _state, result = command_service.create_operator_directive_command(
+            _state, result = governance_commands.create_operator_directive_command(
                 session_id=caller.session_id,
                 team_id=team_id,
                 message=message,
@@ -222,7 +248,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             tool_name=TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
         )
         try:
-            state, item = command_service.mark_governance_agenda_handled_by_session(
+            state, item = governance_commands.mark_governance_agenda_handled_by_session(
                 agenda_item_id=agenda_item_id,
                 requesting_session_id=caller.session_id,
                 expected_revision=expected_revision,
@@ -251,11 +277,33 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             governance_agenda_item=item.model_dump(mode="json"),
         )
 
-    _register_slice5_tools(server, command_service, resolver, context)
-    _register_slice6_tools(server, command_service, resolver, context)
-    _register_slice7_tools(server, command_service, resolver, context)
-    _register_slice8_tools(server, command_service, resolver, context)
-    _register_slice9_tools(server, command_service, resolver, context)
+    _register_slice5_tools(
+        server,
+        note_commands,
+        agent_message_commands,
+        chat_commands,
+        operator_escalation_commands,
+        resolver,
+        context,
+    )
+    _register_slice6_tools(
+        server,
+        case_commands,
+        task_creation_commands,
+        task_update_commands,
+        agent_control_commands,
+        resolver,
+        context,
+    )
+    _register_slice7_tools(
+        server,
+        deliverable_submission_commands,
+        review_commands,
+        resolver,
+        context,
+    )
+    _register_slice8_tools(server, git_release_commands, resolver, context)
+    _register_slice9_tools(server, ephemeral_commands, resolver, context)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
         if tool_name in IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -275,7 +323,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
 
 def _register_slice5_tools(
     server: FastMCP,
-    command_service: TeamCommandService,
+    note_commands: TeamNoteCommandService,
+    agent_message_commands: TeamAgentMessageCommandService,
+    chat_commands: TeamChatCommandService,
+    operator_escalation_commands: TeamOperatorEscalationCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
@@ -292,7 +343,7 @@ def _register_slice5_tools(
             tool_name=TEAM_RECORD_NOTE_TOOL,
         )
         try:
-            _state, result = command_service.record_team_note_command(
+            _state, result = note_commands.record_team_note_command(
                 session_id=caller.session_id,
                 body=body,
                 request_id=request_id,
@@ -324,7 +375,7 @@ def _register_slice5_tools(
             tool_name=TEAM_MARK_INBOX_HANDLED_TOOL,
         )
         try:
-            _state, result = command_service.mark_inbox_handled_command(
+            _state, result = note_commands.mark_inbox_handled_command(
                 session_id=caller.session_id,
                 inbox_item_ids=inbox_item_ids,
                 correlation_id=correlation_id,
@@ -360,7 +411,7 @@ def _register_slice5_tools(
             tool_name=TEAM_REQUEST_STATUS_TOOL,
         )
         try:
-            _state, result = command_service.request_status_command(
+            _state, result = agent_message_commands.request_status_command(
                 session_id=caller.session_id,
                 recipient_agent_id=recipient_agent_id,
                 task_id=task_id,
@@ -404,7 +455,7 @@ def _register_slice5_tools(
             tool_name=TEAM_ASK_QUESTION_TOOL,
         )
         try:
-            _state, result = command_service.ask_question_command(
+            _state, result = agent_message_commands.ask_question_command(
                 session_id=caller.session_id,
                 recipient_agent_id=recipient_agent_id,
                 task_id=task_id,
@@ -449,7 +500,7 @@ def _register_slice5_tools(
             tool_name=TEAM_SEND_PROGRESS_REPORT_TOOL,
         )
         try:
-            _state, result = command_service.send_progress_report_command(
+            _state, result = agent_message_commands.send_progress_report_command(
                 session_id=caller.session_id,
                 recipient_agent_id=recipient_agent_id,
                 task_id=task_id,
@@ -490,7 +541,7 @@ def _register_slice5_tools(
             tool_name=TEAM_REPLY_TO_CHAT_TOOL,
         )
         try:
-            _state, result = command_service.reply_to_chat_command(
+            _state, result = chat_commands.reply_to_chat_command(
                 session_id=caller.session_id,
                 conversation_id=conversation_id,
                 message_id=message_id,
@@ -528,7 +579,7 @@ def _register_slice5_tools(
             tool_name=TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         )
         try:
-            _state, result = command_service.send_operator_chat_message_command(
+            _state, result = chat_commands.send_operator_chat_message_command(
                 session_id=caller.session_id,
                 recipient_operator_user_id=recipient_operator_user_id,
                 body=body,
@@ -568,7 +619,7 @@ def _register_slice5_tools(
             tool_name=TEAM_ESCALATE_OPERATOR_TOOL,
         )
         try:
-            _state, result = command_service.escalate_operator_command(
+            _state, result = operator_escalation_commands.escalate_operator_command(
                 session_id=caller.session_id,
                 title=title,
                 message=message,
@@ -596,7 +647,10 @@ def _register_slice5_tools(
 
 def _register_slice6_tools(
     server: FastMCP,
-    command_service: TeamCommandService,
+    case_commands: TeamCaseCommandService,
+    task_creation_commands: TeamTaskCreationCommandService,
+    task_update_commands: TeamTaskUpdateCommandService,
+    agent_control_commands: TeamAgentControlCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
@@ -623,7 +677,7 @@ def _register_slice6_tools(
             tool_name=TEAM_CREATE_CASE_TOOL,
         )
         try:
-            _state, result = command_service.create_case_command(
+            _state, result = case_commands.create_case_command(
                 session_id=caller.session_id,
                 case_id=id,
                 project_id=project_id,
@@ -691,7 +745,7 @@ def _register_slice6_tools(
             if value is not None:
                 updates[name] = value
         try:
-            _state, result = command_service.update_case_command(
+            _state, result = case_commands.update_case_command(
                 session_id=caller.session_id,
                 case_id=case_id,
                 request_id=request_id,
@@ -732,7 +786,7 @@ def _register_slice6_tools(
             tool_name=TEAM_CREATE_TASK_TOOL,
         )
         try:
-            _state, result = command_service.create_task_command(
+            _state, result = task_creation_commands.create_task_command(
                 session_id=caller.session_id,
                 task_id=task_id,
                 owner_agent_id=owner_agent_id,
@@ -772,7 +826,7 @@ def _register_slice6_tools(
             tool_name=TEAM_CREATE_TASKS_TOOL,
         )
         try:
-            _state, result = command_service.create_tasks_command(
+            _state, result = task_creation_commands.create_tasks_command(
                 session_id=caller.session_id,
                 tasks=tasks,
                 request_id=request_id,
@@ -820,7 +874,7 @@ def _register_slice6_tools(
             if value is not None:
                 updates[name] = value
         try:
-            _state, result = command_service.update_task_command(
+            _state, result = task_update_commands.update_task_command(
                 session_id=caller.session_id,
                 task_id=task_id,
                 request_id=request_id,
@@ -854,7 +908,7 @@ def _register_slice6_tools(
             tool_name=TEAM_UPDATE_GOAL_TOOL,
         )
         try:
-            _state, result = command_service.update_goal_command(
+            _state, result = task_update_commands.update_goal_command(
                 session_id=caller.session_id,
                 project_id=project_id,
                 goal_id=goal_id,
@@ -888,7 +942,7 @@ def _register_slice6_tools(
             tool_name=TEAM_STAND_DOWN_AGENT_TOOL,
         )
         try:
-            _state, result = command_service.stand_down_agent_command(
+            _state, result = agent_control_commands.stand_down_agent_command(
                 session_id=caller.session_id,
                 agent_id=agent_id,
                 reason=reason,
@@ -920,7 +974,7 @@ def _register_slice6_tools(
             tool_name=TEAM_REVOKE_STAND_DOWN_TOOL,
         )
         try:
-            _state, result = command_service.revoke_stand_down_command(
+            _state, result = agent_control_commands.revoke_stand_down_command(
                 session_id=caller.session_id,
                 agent_id=agent_id,
                 request_id=request_id,
@@ -941,7 +995,8 @@ def _register_slice6_tools(
 
 def _register_slice7_tools(
     server: FastMCP,
-    command_service: TeamCommandService,
+    deliverable_commands: TeamDeliverableSubmissionCommandService,
+    review_commands: TeamReviewCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
@@ -968,7 +1023,7 @@ def _register_slice7_tools(
             tool_name=TEAM_SUBMIT_DELIVERABLE_TOOL,
         )
         try:
-            _state, result = command_service.submit_deliverable_command(
+            _state, result = deliverable_commands.submit_deliverable_command(
                 session_id=caller.session_id,
                 id=id,
                 task_id=task_id,
@@ -1016,7 +1071,7 @@ def _register_slice7_tools(
             tool_name=TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL,
         )
         try:
-            _state, result = command_service.submit_deliverable_for_review_command(
+            _state, result = deliverable_commands.submit_deliverable_for_review_command(
                 session_id=caller.session_id,
                 deliverable=deliverable,
                 reviews=reviews,
@@ -1059,7 +1114,7 @@ def _register_slice7_tools(
             tool_name=TEAM_REQUEST_REVIEW_TOOL,
         )
         try:
-            _state, result = command_service.request_review_command(
+            _state, result = review_commands.request_review_command(
                 session_id=caller.session_id,
                 id=id,
                 deliverable_id=deliverable_id,
@@ -1102,7 +1157,7 @@ def _register_slice7_tools(
             tool_name=TEAM_DECIDE_REVIEW_TOOL,
         )
         try:
-            _state, result = command_service.decide_review_command(
+            _state, result = review_commands.decide_review_command(
                 session_id=caller.session_id,
                 review_request_id=review_request_id,
                 state=state,
@@ -1130,7 +1185,7 @@ def _register_slice7_tools(
 
 def _register_slice8_tools(
     server: FastMCP,
-    command_service: TeamCommandService,
+    command_service: TeamGitReleaseCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
@@ -1338,7 +1393,7 @@ def _team_mcp_deliverable_artifact_publisher(context: AddonContext):
 
 def _register_slice9_tools(
     server: FastMCP,
-    command_service: TeamCommandService,
+    command_service: TeamEphemeralCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
