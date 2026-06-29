@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent_sandbox.admin.services.process_helpers import resolve_path_setting
 from agent_sandbox.admin.services.workflow_config_service import (
     WorkflowConfigAdminDependencies,
     WorkflowConfigAdminService,
@@ -91,3 +92,28 @@ def test_workflow_config_service_uses_injected_mutation_lock(tmp_path: Path) -> 
         events.append("body")
 
     assert events == ["enter", "body", "exit"]
+
+
+def test_resolve_path_setting_preserves_home_and_relative_expansion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home_dir = tmp_path / "home"
+    project_dir = tmp_path / "project"
+    fallback = tmp_path / "fallback-runtime"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    assert resolve_path_setting(
+        base_dir=project_dir,
+        value="~/agent-runtime",
+        fallback=fallback,
+    ) == (home_dir / "agent-runtime").resolve()
+    assert resolve_path_setting(
+        base_dir=project_dir,
+        value="custom-workflow-runtime",
+        fallback=fallback,
+    ) == (project_dir / "custom-workflow-runtime").resolve()
+    assert resolve_path_setting(
+        base_dir=project_dir,
+        value="",
+        fallback=fallback,
+    ) == fallback.resolve()

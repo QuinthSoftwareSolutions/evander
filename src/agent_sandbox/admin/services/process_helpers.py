@@ -86,14 +86,16 @@ def resolve_host_python_with_pip() -> str:
 
 def resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
     if value is None:
-        return fallback
-    text = str(value).strip()
-    if not text:
-        return fallback
-    path = Path(text)
-    if not path.is_absolute():
-        path = base_dir / path
-    return path
+        candidate = fallback
+    elif isinstance(value, Path):
+        candidate = value
+    else:
+        text = str(value).strip()
+        candidate = Path(text) if text else fallback
+    candidate = candidate.expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (base_dir / candidate).resolve()
 
 
 def pkexec_env_command(

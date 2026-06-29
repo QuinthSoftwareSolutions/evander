@@ -24,6 +24,9 @@
 - Completed the model-usage, tool-visibility, and tool-call audit facade cleanup so
   `AdminService` delegates those APIs while preserving `tool_call_audit_index` compatibility.
 
+- Restored home-directory expansion for extracted workflow path settings so
+  trigger-orchestrator runtime and store paths continue to support `~`.
+
 - Added `effect:team:create-task` so workflows can directly create or update
   operator-authored Team Add-on tasks for a project owner.
 
