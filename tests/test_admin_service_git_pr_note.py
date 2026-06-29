@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 
 
@@ -13,7 +13,7 @@ def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     captured: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -34,9 +34,9 @@ def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(
             )
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.git_pr_note_query(
+    result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo", local_branch="review/session-1/topic"
     )
 
@@ -52,7 +52,7 @@ def test_admin_service_git_pr_note_query_fetches_configured_per_session_ref(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     notes_ref = agent_pr_notes_ref_for_session("session-1")
     fetch_refspecs: list[str] = []
 
@@ -74,9 +74,9 @@ def test_admin_service_git_pr_note_query_fetches_configured_per_session_ref(
             )
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.git_pr_note_query(
+    result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo",
         local_branch="review/session-1/topic",
         notes_ref=notes_ref,
@@ -92,7 +92,7 @@ def test_admin_service_git_pr_note_query_returns_has_note_false_when_note_missin
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox-auto"]:
@@ -109,9 +109,9 @@ def test_admin_service_git_pr_note_query_returns_has_note_false_when_note_missin
             return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="missing")
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.git_pr_note_query(
+    result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo", local_branch="review/session-1/topic"
     )
 
@@ -124,7 +124,7 @@ def test_admin_service_git_pr_note_query_falls_back_to_recent_first_parent_commi
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox-auto"]:
@@ -164,9 +164,9 @@ def test_admin_service_git_pr_note_query_falls_back_to_recent_first_parent_commi
                 )
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.git_pr_note_query(
+    result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo", local_branch="review/session-1/topic"
     )
 

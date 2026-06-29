@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
@@ -69,7 +69,7 @@ def _int_query(request: Request, name: str, *, default: int) -> int:
 
 
 def agent_routes(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     _auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
@@ -87,7 +87,7 @@ def agent_routes(
             omit_vm_state = summary_only
         try:
             records = await run_in_threadpool(
-                service.list_agents,
+                service.vm_agent_admin.list_agents,
                 directory_path=directory_path,
                 direct_only=direct_only,
                 include_inactive=include_inactive,
@@ -126,7 +126,7 @@ def agent_routes(
             query_requested = request.query_params.get("query") is not None
             if limit_requested or offset_requested or query_requested:
                 page = await run_in_threadpool(
-                    service.get_admin_agent_log_page,
+                    service.vm_agent_admin.get_admin_agent_log_page,
                     agent_id,
                     backend=backend,
                     view=view,
@@ -153,7 +153,7 @@ def agent_routes(
                     }
                 )
             text = await run_in_threadpool(
-                service.get_admin_agent_log_snapshot,
+                service.vm_agent_admin.get_admin_agent_log_snapshot,
                 agent_id,
                 backend=backend,
                 view=view,
@@ -178,7 +178,7 @@ def agent_routes(
         directory_path = _string_query(request, "directory_path")
         try:
             options = await run_in_threadpool(
-                service.agent_create_options,
+                service.vm_agent_admin.agent_create_options,
                 directory_path,
             )
         except ValueError as exc:
@@ -190,7 +190,7 @@ def agent_routes(
     async def create_agent(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
-            result = await run_in_threadpool(service.create_admin_agent, payload)
+            result = await run_in_threadpool(service.vm_agent_admin.create_admin_agent, payload)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except Exception as exc:
@@ -201,7 +201,7 @@ def agent_routes(
     async def submit_create_operation(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
-            operation = await run_in_threadpool(service.submit_admin_agent_create, payload)
+            operation = await run_in_threadpool(service.vm_agent_admin.submit_admin_agent_create, payload)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except Exception as exc:
@@ -212,7 +212,7 @@ def agent_routes(
         directory_path = _string_query(request, "directory_path")
         try:
             operations = await run_in_threadpool(
-                service.list_admin_agent_create_operations,
+                service.vm_agent_admin.list_admin_agent_create_operations,
                 limit=_int_query(request, "limit", default=50),
                 directory_path=directory_path,
             )
@@ -226,7 +226,7 @@ def agent_routes(
         operation_id = request.path_params["operation_id"]
         try:
             operation = await run_in_threadpool(
-                service.get_admin_agent_create_operation,
+                service.vm_agent_admin.get_admin_agent_create_operation,
                 operation_id,
             )
         except LookupError as exc:
@@ -241,7 +241,7 @@ def agent_routes(
         try:
             payload = await _json_body(request)
             result = await run_in_threadpool(
-                service.update_admin_agent,
+                service.vm_agent_admin.update_admin_agent,
                 agent_id,
                 backend=backend,
                 payload=payload,
@@ -257,7 +257,7 @@ def agent_routes(
         backend = _string_query(request, "backend")
         try:
             result = await run_in_threadpool(
-                service.delete_admin_agent,
+                service.vm_agent_admin.delete_admin_agent,
                 agent_id,
                 backend=backend,
             )
@@ -275,7 +275,7 @@ def agent_routes(
         try:
             payload = await _json_body(request)
             result = await run_in_threadpool(
-                service.run_admin_agent_action,
+                service.vm_agent_admin.run_admin_agent_action,
                 agent_id,
                 action,
                 backend=backend,

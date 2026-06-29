@@ -33,7 +33,7 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
         context = self._context()
         promote = getattr(context.git_branch_promoter, "promote_agent_branch", None)
         if not callable(promote):
-            raise RuntimeError("AdminService.promote_agent_branch is not available")
+            raise RuntimeError("Admin runtime promote_agent_branch is not available")
 
         result = promote(
             host_repo_path=host_repo_path,

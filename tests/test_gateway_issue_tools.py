@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import create_server
@@ -121,9 +121,9 @@ def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> No
         ),
     )
     server = create_server(context)
-    admin = AdminService(context.config.runtime_dir)
-    created = admin.create_local_issue(title="Rejected issue", body="x")
-    admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+    admin = build_admin_runtime(context.config.runtime_dir)
+    created = admin.issue_git_admin.create_local_issue(title="Rejected issue", body="x")
+    admin.issue_git_admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
 
     result = call_tool(
         server,
@@ -150,13 +150,13 @@ def test_list_issues_returns_rejected_closed_local_issue(tmp_path: Path) -> None
         ),
     )
     server = create_server(context)
-    admin = AdminService(context.config.runtime_dir)
-    created = admin.create_local_issue(
+    admin = build_admin_runtime(context.config.runtime_dir)
+    created = admin.issue_git_admin.create_local_issue(
         title="Rejected issue",
         body="x",
         directory_path="root/team-a",
     )
-    admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+    admin.issue_git_admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
 
     result = call_tool(
         server,
@@ -200,8 +200,8 @@ def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
         ),
     )
     server = create_server(context)
-    admin = AdminService(context.config.runtime_dir)
-    created = admin.create_local_issue(title="Planned issue", body="x")
+    admin = build_admin_runtime(context.config.runtime_dir)
+    created = admin.issue_git_admin.create_local_issue(title="Planned issue", body="x")
 
     result = call_tool(
         server,

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from agent_sandbox.gates.registry import GateProviderFactory, GateProviderRegistry
 from agent_sandbox.orchestration.effect_extensions import (
@@ -13,6 +13,7 @@ from agent_sandbox.orchestration.effect_extensions import (
     AgentRunStatusPort,
 )
 from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from agent_sandbox.queries.registry import QueryProviderFactory, QueryProviderRegistry
 from agent_sandbox.triggers.registry import TriggerProviderFactory, TriggerProviderRegistry
 
@@ -38,6 +39,10 @@ def _env_or_default(env: Mapping[str, str] | None) -> dict[str, str]:
     return dict(os.environ if env is None else env)
 
 
+def _admin_runtime_adapter(runtime_dir: Path) -> AdminRuntimeProviderAdapter:
+    return AdminRuntimeProviderAdapter(build_admin_runtime(runtime_dir))
+
+
 def build_effect_provider_factory(
     *,
     runtime_dir: Path,
@@ -48,7 +53,7 @@ def build_effect_provider_factory(
     return EffectProviderFactory(
         provider_config_resolver,
         registry=EffectProviderRegistry(initial=_ExplicitProviderMapping(effect_providers)),
-        admin_service=AdminService(runtime_dir),
+        admin_service=_admin_runtime_adapter(runtime_dir),
         env=_env_or_default(env),
     )
 
@@ -63,7 +68,7 @@ def build_query_provider_factory(
     return QueryProviderFactory(
         provider_config_resolver,
         registry=QueryProviderRegistry(initial=_ExplicitProviderMapping(query_providers)),
-        admin_service=AdminService(runtime_dir),
+        admin_service=_admin_runtime_adapter(runtime_dir),
         env=_env_or_default(env),
     )
 
@@ -78,7 +83,7 @@ def build_gate_provider_factory(
     return GateProviderFactory(
         provider_config_resolver,
         registry=GateProviderRegistry(initial=_ExplicitProviderMapping(gate_providers)),
-        admin_service=AdminService(runtime_dir),
+        admin_service=_admin_runtime_adapter(runtime_dir),
         env=_env_or_default(env),
     )
 
@@ -93,26 +98,26 @@ def build_trigger_provider_factory(
     return TriggerProviderFactory(
         provider_config_resolver,
         registry=TriggerProviderRegistry(initial=_ExplicitProviderMapping(trigger_providers)),
-        admin_service=AdminService(runtime_dir),
+        admin_service=_admin_runtime_adapter(runtime_dir),
         env=_env_or_default(env),
     )
 
 
 def build_agent_run_status_port(*, runtime_dir: Path) -> AgentRunStatusPort:
-    return _AdminServiceAgentRunStatusPort(AdminService(runtime_dir))
+    return _AdminRuntimeAgentRunStatusPort(build_admin_runtime(runtime_dir))
 
 
 def build_agent_prompt_dispatch_port(*, runtime_dir: Path) -> AgentPromptDispatchPort:
-    return _AdminServiceAgentPromptDispatchPort(AdminService(runtime_dir))
+    return _AdminRuntimeAgentPromptDispatchPort(build_admin_runtime(runtime_dir))
 
 
-class _AdminServiceAgentRunStatusPort:
-    def __init__(self, admin_service: AdminService) -> None:
-        self._admin_service = admin_service
+class _AdminRuntimeAgentRunStatusPort:
+    def __init__(self, admin_runtime: AdminRuntimeComponents) -> None:
+        self._admin_runtime = admin_runtime
 
     def list_vm_summaries(self) -> list[Any]:
         return list(
-            self._admin_service.list_vms(
+            self._admin_runtime.vm_agent_admin.list_vms(
                 include_inactive=True,
                 omit_state=False,
                 vm_user="agent",
@@ -122,9 +127,9 @@ class _AdminServiceAgentRunStatusPort:
         )
 
 
-class _AdminServiceAgentPromptDispatchPort:
-    def __init__(self, admin_service: AdminService) -> None:
-        self._admin_service = admin_service
+class _AdminRuntimeAgentPromptDispatchPort:
+    def __init__(self, admin_runtime: AdminRuntimeComponents) -> None:
+        self._admin_runtime = admin_runtime
 
     def dispatch_agent_prompt(
         self,
@@ -138,7 +143,7 @@ class _AdminServiceAgentPromptDispatchPort:
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> Any:
-        return self._admin_service.resume_agent(
+        return self._admin_runtime.vm_agent_admin.resume_agent(
             target=target,
             prompt=prompt,
             model=model,

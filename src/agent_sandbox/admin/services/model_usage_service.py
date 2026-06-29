@@ -66,7 +66,7 @@ def _empty_model_pricing_catalog_payload() -> dict[str, Any]:
 
 
 class ModelUsageAdminService:
-    """Model usage and operator-steering operations extracted from AdminService."""
+    """Model usage and operator-steering operations."""
 
     def __init__(self, dependencies: ModelUsageAdminDependencies) -> None:
         self._deps = dependencies

@@ -10,6 +10,19 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent_sandbox.admin.common import (
+    _coerce_optional_datetime,
+    _read_json_object,
+    _utc_now,
+)
+from agent_sandbox.admin.payloads import (
+    DeploymentStatusPayload,
+    ReleaseChangelogEntryPayload,
+    ReleaseChangelogPayload,
+    ReleaseInfoPayload,
+    ReleaseNewsBlockPayload,
+    ReleaseNewsPayload,
+)
 from agent_sandbox.admin.release_metadata import read_release_metadata
 from agent_sandbox.admin.services.ports import PrivilegedHelperFactoryPort, PrivilegedHelperPort
 from agent_sandbox.config import AssistantSettingsConfig, TriggerOrchestratorWorkerGlobalConfig
@@ -296,13 +309,6 @@ class OperationsAdminService:
         )
 
     def read_deployment_status(self):
-        from agent_sandbox.admin.service import (
-            DeploymentStatusPayload,
-            _coerce_optional_datetime,
-            _read_json_object,
-            _utc_now,
-        )
-
         payload_path = self._config.runtime_dir / "deployment-status.json"
         raw = _read_json_object(payload_path)
         if not raw:
@@ -327,14 +333,6 @@ class OperationsAdminService:
         return status
 
     def read_release_info(self, *, news_index: int = 0):
-        from agent_sandbox.admin.service import (
-            ReleaseChangelogEntryPayload,
-            ReleaseChangelogPayload,
-            ReleaseInfoPayload,
-            ReleaseNewsBlockPayload,
-            ReleaseNewsPayload,
-        )
-
         release_metadata = read_release_metadata(self._project_dir, news_index=news_index)
         return ReleaseInfoPayload(
             version=release_metadata.version,
@@ -429,8 +427,6 @@ class OperationsAdminService:
         backend: str | None = None,
         assistant_capability_mode: str | None = None,
     ) -> dict[str, object]:
-        from agent_sandbox.admin.service import _utc_now
-
         document = self.ensure_chat_assistant_workflow()
         worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
         if worker_config.orchestration_store_backend == "sqlite":

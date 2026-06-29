@@ -1649,9 +1649,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if target in sessions:
             return target
         try:
-            from agent_sandbox.admin.service import _resolve_session_target
+            from agent_sandbox.admin.services.session_helpers import resolve_session_target
 
-            session_id, _session = _resolve_session_target(target, sessions)
+            session_id, _session = resolve_session_target(target, sessions)
         except Exception:
             return None
         return session_id
@@ -1663,9 +1663,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if session is not None:
                 return session
         try:
-            from agent_sandbox.admin.service import _resolve_session_target
+            from agent_sandbox.admin.services.session_helpers import resolve_session_target
 
-            _resolved_session_id, session = _resolve_session_target(target, sessions)
+            _resolved_session_id, session = resolve_session_target(target, sessions)
         except Exception:
             return None
         return session

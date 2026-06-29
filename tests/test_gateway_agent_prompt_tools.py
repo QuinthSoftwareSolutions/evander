@@ -207,7 +207,7 @@ def test_prompt_agent_rejects_cross_directory_dispatch(
             del kwargs
             raise AssertionError("VM inventory should not be read for a target without a VM")
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminService", FailingAdminService)
+    monkeypatch.setattr("agent_sandbox.gateway.AdminRuntimeComponents", FailingAdminService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="outside the session directory scope"):

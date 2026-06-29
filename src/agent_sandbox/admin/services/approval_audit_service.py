@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from agent_sandbox.admin.service import (
+from agent_sandbox.admin.payloads import (
     ToolCallAuditCountsPayload,
     ToolCallAuditEntryPayload,
     ToolCallAuditListPayload,

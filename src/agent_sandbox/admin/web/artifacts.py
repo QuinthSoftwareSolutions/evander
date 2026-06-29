@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import json_error
 from agent_sandbox.artifact_spaces import ArtifactSpaceConflictError
 from agent_sandbox.communication_artifact_links import (
@@ -20,14 +20,14 @@ from agent_sandbox.communication_artifact_links import (
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 
 
-def artifact_routes(service: AdminService) -> list[BaseRoute]:
+def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
     async def list_artifacts(request: Request) -> JSONResponse:
         params = request.query_params
         try:
             published_after = _parse_datetime(params.get("published_after"))
             published_before = _parse_datetime(params.get("published_before"))
             limit = int(params.get("limit") or "50")
-            payload = service.list_published_artifacts(
+            payload = service.artifact_admin.list_published_artifacts(
                 key=params.get("key") or None,
                 published_after=published_after,
                 published_before=published_before,
@@ -41,7 +41,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
     async def get_artifact(request: Request) -> JSONResponse:
         key = request.path_params.get("key", "")
         try:
-            payload = service.get_published_artifact(key)
+            payload = service.artifact_admin.get_published_artifact(key)
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
         except ValueError as exc:
@@ -51,7 +51,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
     async def download_artifact(request: Request) -> FileResponse | JSONResponse:
         key = request.path_params.get("key", "")
         try:
-            artifact = service.published_artifact_file(key)
+            artifact = service.artifact_admin.published_artifact_file(key)
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
         except ValueError as exc:
@@ -107,7 +107,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
             return json_error("file is required")
         try:
             content = await file_value.read()
-            payload = service.upload_published_artifact(
+            payload = service.artifact_admin.upload_published_artifact(
                 key=key,
                 filename=file_value.filename or "artifact",
                 content=content,
@@ -121,7 +121,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
     async def list_artifact_spaces(request: Request) -> JSONResponse:
         params = request.query_params
         try:
-            payload = service.list_artifact_spaces(
+            payload = service.artifact_admin.list_artifact_spaces(
                 path=params.get("path") or None,
                 recursive=_parse_bool(params.get("recursive"), default=True),
                 subject=params.get("subject") or None,
@@ -139,7 +139,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object")
         try:
-            result = service.create_artifact_space(
+            result = service.artifact_admin.create_artifact_space(
                 path=_required_string(payload.get("path"), "path"),
                 display_name=_optional_string(payload.get("display_name")),
                 metadata=_optional_object(payload.get("metadata"), "metadata"),
@@ -161,7 +161,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object")
         try:
-            result = service.publish_artifact_space_version(
+            result = service.artifact_admin.publish_artifact_space_version(
                 space_path=_required_string(payload.get("space_path"), "space_path"),
                 artifact_id=_required_string(payload.get("artifact_id"), "artifact_id"),
                 artifact_key=_required_string(payload.get("artifact_key"), "artifact_key"),
@@ -184,7 +184,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
     async def latest_artifact_space_versions(request: Request) -> JSONResponse:
         params = request.query_params
         try:
-            payload = service.latest_artifact_space_versions(
+            payload = service.artifact_admin.latest_artifact_space_versions(
                 space_path=_required_string(params.get("space_path"), "space_path"),
                 artifact_id=params.get("artifact_id") or None,
                 subject=params.get("subject") or None,

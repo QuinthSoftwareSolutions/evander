@@ -460,7 +460,9 @@ def _container_git_mirror_resolver(context: Any, directory_path: str) -> Contain
         runtime = getattr(admin_service, "runtime", None)
         config = getattr(admin_service, "config", None)
         if runtime is not None and config is not None:
-            from agent_sandbox.admin.service import resolve_effective_issue_setup_config
+            from agent_sandbox.admin.services.issue_setup_helpers import (
+                resolve_effective_issue_setup_config,
+            )
 
             issue_setup = resolve_effective_issue_setup_config(
                 config=config,

@@ -1007,8 +1007,8 @@ def request_has_privileged_operations(
     if not auth.privileged_for_request(request):
         return False
     return (
-        not service.privileged_helper_required()
-        or service.privileged_operations_unlocked()
+        not service.operations_admin.privileged_helper_required()
+        or service.operations_admin.privileged_operations_unlocked()
     )
 
 

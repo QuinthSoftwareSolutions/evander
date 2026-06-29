@@ -26,6 +26,7 @@ from agent_sandbox.effects.providers.schemas import AgentExecEffectDefinition
 from agent_sandbox.gateway.dependencies import GatewayToolDependencies, _compat_gateway_attr
 from agent_sandbox.models import CommunicationFileArtifact
 from agent_sandbox.policy import PolicyError
+from agent_sandbox.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from agent_sandbox.runtime import RuntimeContext
 
 _WORKSPACE_FILE_PAYLOAD_BEGIN = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_BEGIN__"
@@ -84,8 +85,11 @@ class CommunicationArtifactHelpers:
     context: RuntimeContext
     deps: GatewayToolDependencies
 
+    def admin_runtime(self) -> Any:
+        return self.deps.admin_runtime_factory()
+
     def admin_service(self) -> Any:
-        return self.deps.admin_service_factory()
+        return AdminRuntimeProviderAdapter(self.admin_runtime())
 
     def communication_artifact_store(self) -> CommunicationArtifactStore:
         return self.deps.communication_artifact_store_factory()

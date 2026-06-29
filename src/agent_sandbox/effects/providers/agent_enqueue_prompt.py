@@ -781,9 +781,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             if session is not None:
                 return session
         try:
-            from agent_sandbox.admin.service import _resolve_session_target
+            from agent_sandbox.admin.services.session_helpers import resolve_session_target
 
-            _resolved_session_id, session = _resolve_session_target(target, sessions)
+            _resolved_session_id, session = resolve_session_target(target, sessions)
         except Exception:
             return None
         return session
@@ -845,9 +845,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         if context.session_lookup is None:
             raise RuntimeError("effect:agent:enqueue-prompt session_lookup is not available")
 
-        from agent_sandbox.admin.service import _resolve_vm_name_from_target
+        from agent_sandbox.admin.services.session_helpers import resolve_vm_name_from_target
 
-        vm_name = _resolve_vm_name_from_target(target, context.session_lookup.read_all_sessions())
+        vm_name = resolve_vm_name_from_target(target, context.session_lookup.read_all_sessions())
         if not vm_name:
             raise ValueError(f"Unknown VM target: {target}")
         return vm_name
@@ -858,9 +858,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             if context.session_lookup is None:
                 return None
 
-            from agent_sandbox.admin.service import _resolve_session_target
+            from agent_sandbox.admin.services.session_helpers import resolve_session_target
 
-            session_id, _manifest = _resolve_session_target(
+            session_id, _manifest = resolve_session_target(
                 target, context.session_lookup.read_all_sessions()
             )
         except ValueError:

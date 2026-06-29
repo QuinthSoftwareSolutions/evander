@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error, request_has_privileged_operations
 from agent_sandbox.messaging.teams_auth import (
     AuthorizationPendingError,
@@ -81,10 +81,10 @@ def _sanitize_teams_auth_payload(value: Any) -> Any:
     return normalized
 
 
-def _directory_path_from_request(service: AdminService, request: Request) -> str:
+def _directory_path_from_request(service: AdminRuntimeComponents, request: Request) -> str:
     requested = str(request.query_params.get("directory_path") or "root").strip() or "root"
     try:
-        return service._normalize_directory_reference(requested)
+        return service.teams_admin.normalize_directory_reference(requested)
     except ValueError:
         return "root"
 
@@ -169,7 +169,7 @@ def _teams_auth_polling_payload(
     return payload
 
 
-def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRoute]:
+def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[BaseRoute]:
     login_sessions: dict[str, DeviceCodeLoginSession | Mapping[str, Any] | Any] = {}
     lock = RLock()
 
@@ -178,7 +178,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         directory_path = _directory_path_from_request(service, request)
         try:
             result = await run_in_threadpool(
-                service.teams_auth_status, directory=directory_path
+                service.operations_admin.teams_auth_status, directory=directory_path
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -194,7 +194,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
     async def identities(request: Request) -> JSONResponse:
         auth.require(request)
         try:
-            result = await run_in_threadpool(service.teams_auth_list)
+            result = await run_in_threadpool(service.operations_admin.teams_auth_list)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse({"items": _sanitize_teams_auth_payload(result)})
@@ -206,7 +206,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         directory_path = _directory_path_from_request(service, request)
         try:
             session = await run_in_threadpool(
-                service.teams_auth_login, directory=directory_path
+                service.operations_admin.teams_auth_login, directory=directory_path
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -252,7 +252,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
             return json_error("Unknown login_session_id", status_code=404)
         try:
             result = await run_in_threadpool(
-                service.teams_auth_complete_login,
+                service.operations_admin.teams_auth_complete_login,
                 login_session,
                 directory=directory_path,
                 timeout_seconds=timeout_seconds,
@@ -302,7 +302,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         directory_path = _directory_path_from_request(service, request)
         try:
             result = await run_in_threadpool(
-                service.teams_auth_logout, directory=directory_path
+                service.operations_admin.teams_auth_logout, directory=directory_path
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -329,7 +329,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
             return json_error(str(exc))
         try:
             result = await run_in_threadpool(
-                service.teams_auth_list_channels,
+                service.operations_admin.teams_auth_list_channels,
                 directory=directory_path,
                 team_id=team_id,
                 channel_name=channel_name,

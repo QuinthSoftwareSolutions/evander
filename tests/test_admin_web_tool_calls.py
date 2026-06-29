@@ -6,7 +6,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.audit import AuditLogger
 from agent_sandbox.models import AuditEvent
@@ -149,7 +149,7 @@ def _write_audit_log(path: Path) -> None:
 def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     _write_audit_log(service.config.audit_log_path)
 
     default_page = service.list_tool_call_audit_entries(limit=2)
@@ -231,7 +231,7 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
 
 
 def test_admin_service_tool_call_recent_only_reads_from_log_tail(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     entries = [
         {
             "event_type": "tool_call",
@@ -283,7 +283,7 @@ def test_admin_service_tool_call_recent_only_reads_from_log_tail(tmp_path: Path)
 def test_admin_service_tool_call_fallback_reads_jsonl_when_index_is_disabled(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.tool_call_audit_index = None
     _write_audit_log(service.config.audit_log_path)
 
@@ -302,7 +302,7 @@ def test_admin_service_tool_call_fallback_reads_jsonl_when_index_is_disabled(
 def test_admin_service_directory_filter_falls_back_when_audit_index_is_incomplete(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     entries = [
         {
             "event_type": "tool_call",
@@ -343,7 +343,7 @@ def test_admin_service_directory_filter_falls_back_when_audit_index_is_incomplet
 def test_admin_service_default_read_falls_back_when_tail_index_is_sparse(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     entries = [
         {
             "event_type": "tool_call",
@@ -415,7 +415,7 @@ def test_audit_logger_writes_jsonl_and_indexes_tool_call_entries(tmp_path: Path)
 
 
 def test_audit_index_backfill_is_idempotent_and_skips_bad_lines(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     _write_audit_log(service.config.audit_log_path)
     index = ToolCallAuditIndex(audit_index_path_for_log_path(service.config.audit_log_path))
 
@@ -532,7 +532,7 @@ def test_audit_index_directory_prefix_escapes_like_wildcards(tmp_path: Path) -> 
 
 
 def test_admin_service_date_window_uses_index_without_full_jsonl_scan(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     entries = [
         {
             "event_type": "tool_call",
@@ -582,7 +582,7 @@ def test_admin_service_date_window_uses_index_without_full_jsonl_scan(tmp_path: 
 def test_admin_web_tool_calls_route_returns_empty_payload_when_audit_log_is_missing(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/admin/tool-calls")
     invalid_status_response = client.get("/api/admin/tool-calls?status=maybe")
@@ -605,7 +605,7 @@ def test_admin_web_tool_calls_route_returns_empty_payload_when_audit_log_is_miss
 def test_admin_web_tool_calls_route_recent_only_uses_bounded_recent_read(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.tool_call_audit_index = None
     entries = [
         {

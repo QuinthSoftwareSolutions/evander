@@ -4,27 +4,35 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from agent_sandbox.admin.services.ports import DirectoryOwnershipPort, WorkflowConfigPort
 from urllib.parse import quote
 
 import httpx
 
-from agent_sandbox.admin import service as admin_service_module
-from agent_sandbox.admin.service import (
-    _WORKER_DEFINITIONS,
-    _worker_definition,
+from agent_sandbox.admin.operations_helpers import (
+    _journalctl_tail,
+    _run_systemd_control,
+    _systemctl_show,
+)
+from agent_sandbox.admin.payloads import (
     EffectConfigMutationPayload,
     TriggerConfigMutationPayload,
-    WorkflowEditorCatalogPayload,
     WorkflowEditorDocumentPayload,
     WorkflowEditorSavePayload,
     WorkflowEditorValidationPayload,
     WorkflowRunDetailPayload,
     WorkflowRunSearchPayload,
     WorkflowRunSnapshotPayload,
-    WorkerActionResult,
-    WorkerSummary,
 )
+from agent_sandbox.admin.services import session_helpers, vm_helpers
+from agent_sandbox.admin.services.ports import DirectoryOwnershipPort, WorkflowConfigPort
+from agent_sandbox.admin.services.vm_agent.common_helpers import (
+    _resolve_session_approval_notification_target_ids,
+)
+from agent_sandbox.admin.worker_config import (
+    _WORKER_DEFINITIONS,
+    _worker_definition,
+)
+from agent_sandbox.workflow.catalog import WorkflowEditorCatalogPayload
 from agent_sandbox.workflow.events import WorkflowEventJournal
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.config import GatewayConfig
@@ -36,6 +44,8 @@ from agent_sandbox.models import (
     VmSummary,
     WakeScheduledRequest,
     WakeScheduleDefinition,
+    WorkerActionResult,
+    WorkerSummary,
     normalize_tool_name,
     tool_name_value,
 )
@@ -323,7 +333,7 @@ class SessionAdminFacade:
         if include_expired and expired_only:
             raise ValueError("include_expired and expired_only cannot both be true")
 
-        now = admin_service_module._utc_now()
+        now = session_helpers.utc_now()
         normalized_directory_path = (
             self._deps.directory_ownership.normalize_directory_path(directory_path)
         )
@@ -336,7 +346,7 @@ class SessionAdminFacade:
         )
         summaries: list[SessionSummary] = []
         for session_id, manifest in sorted(
-            self._sessions_by_id().items(), key=admin_service_module._session_sort_key
+            self._sessions_by_id().items(), key=session_helpers.session_sort_key
         ):
             if direct_only:
                 if session_id not in owned_session_ids:
@@ -354,8 +364,8 @@ class SessionAdminFacade:
             summaries.append(
                 SessionSummary(
                     **manifest.model_dump(),
-                    issue_number=admin_service_module._extract_issue_number(manifest.vm_id)
-                    or admin_service_module._extract_issue_number(session_id),
+                    issue_number=session_helpers.extract_issue_number(manifest.vm_id)
+                    or session_helpers.extract_issue_number(session_id),
                     is_expired=is_expired,
                 )
             )
@@ -506,7 +516,7 @@ class SessionAdminFacade:
         if resume_at is None and not run_now:
             raise ValueError("Either resume_at or run_now=true is required.")
 
-        now = admin_service_module._utc_now()
+        now = session_helpers.utc_now()
         validated_resume_at = None
         updated_schedule = request.schedule
         if resume_at is not None:
@@ -575,13 +585,13 @@ class SessionAdminFacade:
         normalized_prompt = str(prompt or "").strip()
         if not normalized_prompt:
             raise ValueError("prompt cannot be empty")
-        normalized_resume_mode = admin_service_module._normalize_resume_mode(resume_mode)
+        normalized_resume_mode = session_helpers.normalize_resume_mode(resume_mode)
         normalized_source = str(source or "admin_cli").strip() or "admin_cli"
         if normalized_source.startswith("mcp") and normalized_resume_mode != "same_context":
             raise ValueError("MCP scheduling only supports resume_mode='same_context'.")
         normalized_cron = None
         if cron is not None and str(cron).strip():
-            normalized_cron = admin_service_module._require_valid_cron(str(cron))
+            normalized_cron = session_helpers.require_valid_cron(str(cron))
         schedule = WakeScheduleDefinition(resume_at=resume_at, cron=normalized_cron)
         normalized_session_id = session_id.strip()
         self._enforce_wake_schedule_guardrails(
@@ -625,7 +635,7 @@ class SessionAdminFacade:
         updated_mode = (
             existing.resume_mode
             if resume_mode is None
-            else admin_service_module._normalize_resume_mode(resume_mode)
+            else session_helpers.normalize_resume_mode(resume_mode)
         )
         if str(existing.source or "").strip().startswith("mcp") and updated_mode != "same_context":
             raise ValueError("MCP scheduling only supports resume_mode='same_context'.")
@@ -637,7 +647,7 @@ class SessionAdminFacade:
             updated_schedule = WakeScheduleDefinition(resume_at=resume_at, cron=None)
         elif cron_changed:
             normalized_cron = (
-                admin_service_module._require_valid_cron(str(cron)) if str(cron).strip() else None
+                session_helpers.require_valid_cron(str(cron)) if str(cron).strip() else None
             )
             updated_schedule = WakeScheduleDefinition(resume_at=None, cron=normalized_cron)
         else:
@@ -655,11 +665,11 @@ class SessionAdminFacade:
         existing.resume_mode = updated_mode
         if enabled is not None:
             existing.enabled = bool(enabled)
-        existing.updated_at = admin_service_module._utc_now()
+        existing.updated_at = session_helpers.utc_now()
         if existing.schedule.resume_at is not None:
             existing.next_run_at = existing.schedule.resume_at
         elif cron_changed:
-            existing.next_run_at = admin_service_module._utc_now()
+            existing.next_run_at = session_helpers.utc_now()
         self._deps.runtime.wake_store.upsert_request(existing)
         return existing
 
@@ -670,13 +680,13 @@ class SessionAdminFacade:
         return self._deps.runtime.wake_store.delete_request(normalized)
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(
+        session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
         previous_expires_at = manifest.expires_at
         manifest.expires_at = (
-            admin_service_module._utc_now()
-            + admin_service_module._parse_session_extension(extension)
+            session_helpers.utc_now()
+            + session_helpers.parse_session_extension(extension)
         )
         self._session_repository().upsert_session(manifest)
         return SessionActionResult(
@@ -691,11 +701,11 @@ class SessionAdminFacade:
         )
 
     def revoke_session(self, target: str) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(
+        session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
         previous_expires_at = manifest.expires_at
-        manifest.expires_at = admin_service_module._utc_now()
+        manifest.expires_at = session_helpers.utc_now()
         self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,
@@ -709,7 +719,7 @@ class SessionAdminFacade:
         )
 
     def delete_session(self, target: str) -> SessionActionResult:
-        session_id, _ = admin_service_module._resolve_session_target(target, self._sessions_by_id())
+        session_id, _ = session_helpers.resolve_session_target(target, self._sessions_by_id())
         self._session_repository().delete_session(session_id)
         return SessionActionResult(
             success=True,
@@ -721,7 +731,7 @@ class SessionAdminFacade:
     def set_session_allowed_tools(
         self, target: str, allowed_tools: list[str | ToolName]
     ) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(
+        session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
         previous_manifest = manifest.model_copy(deep=True)
@@ -747,7 +757,7 @@ class SessionAdminFacade:
             if tool_name in allowed_values
         }
         self._session_repository().upsert_session(manifest)
-        admin_service_module._sync_added_discord_session_cursors(
+        session_helpers.sync_added_discord_session_cursors(
             self._deps.runtime,
             previous_session=previous_manifest,
             updated_session=manifest,
@@ -762,10 +772,10 @@ class SessionAdminFacade:
     def set_session_allowed_script_names(
         self, target: str, allowed_script_names: list[str]
     ) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(
+        session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
-        manifest.allowed_script_names = admin_service_module._normalize_allowed_script_names(
+        manifest.allowed_script_names = session_helpers.normalize_allowed_script_names(
             allowed_script_names
         )
         self._session_repository().upsert_session(manifest)
@@ -779,7 +789,7 @@ class SessionAdminFacade:
     def update_session_policy(
         self, target: str, payload: dict[str, Any]
     ) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(
+        session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
         contacts_config = None
@@ -787,14 +797,14 @@ class SessionAdminFacade:
             contacts_config = self._deps.runtime.provider_config.resolve_contacts_for_session_id(
                 manifest.session_id
             )
-        update = admin_service_module._session_policy_update_from_payload(
+        update = session_helpers.session_policy_update_from_payload(
             manifest,
             payload,
             contacts_config=contacts_config,
         )
         if "approval_notification_target_ids" in update:
             update["approval_notification_target_ids"] = (
-                admin_service_module._resolve_session_approval_notification_target_ids(
+                _resolve_session_approval_notification_target_ids(
                     self._deps.runtime,
                     self._deps.config,
                     manifest,
@@ -805,7 +815,7 @@ class SessionAdminFacade:
             previous_manifest = manifest
             manifest = manifest.model_copy(update=update)
             self._session_repository().upsert_session(manifest)
-            admin_service_module._sync_added_discord_session_cursors(
+            session_helpers.sync_added_discord_session_cursors(
                 self._deps.runtime,
                 previous_session=previous_manifest,
                 updated_session=manifest,
@@ -818,7 +828,7 @@ class SessionAdminFacade:
         )
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(
+        session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
         normalized_model = str(model).strip()
@@ -868,7 +878,7 @@ class SessionAdminFacade:
         min_interval_seconds = self._deps.config.wake_schedule_min_interval_seconds
         cron = str(schedule.cron or "").strip()
         if min_interval_seconds is not None and cron:
-            actual_interval_seconds = admin_service_module._cron_min_interval_seconds(cron)
+            actual_interval_seconds = session_helpers.cron_min_interval_seconds_for_schedule(cron)
             if actual_interval_seconds is None:
                 raise ValueError(f"Unable to determine cron interval for schedule: {cron}")
             if actual_interval_seconds < min_interval_seconds:
@@ -911,7 +921,7 @@ class WorkerAdminFacade:
             session = sessions[session_id]
             if not session.vm_id:
                 continue
-            labels = admin_service_module._normalize_session_labels(session.metadata.get("labels"))
+            labels = session_helpers.normalize_session_labels(session.metadata.get("labels"))
             current = mapping.get(session.vm_id)
             if current is None:
                 mapping[session.vm_id] = dict(labels)
@@ -930,7 +940,7 @@ class WorkerAdminFacade:
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[VmSummary]:
-        vm_names = admin_service_module._virsh_lines(
+        vm_names = vm_helpers.virsh_lines(
             ["list", "--all" if include_inactive else "--state-running", "--name"]
         )
         session_ids_by_vm = self._session_ids_by_vm()
@@ -956,10 +966,10 @@ class WorkerAdminFacade:
                     continue
             elif directory_path is not None and normalized_directory_path not in vm_directory_paths:
                 continue
-            libvirt_state = admin_service_module._dominfo_field(vm_name, "State") or "unknown"
+            libvirt_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
             host_control_status = self._deps.agent_control_store.status_for_vm(vm_name)
             ip_address = (
-                admin_service_module._resolve_vm_ip(vm_name) if libvirt_state == "running" else None
+                vm_helpers.resolve_vm_ip(vm_name) if libvirt_state == "running" else None
             )
             if libvirt_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
@@ -978,12 +988,12 @@ class WorkerAdminFacade:
                 dispatch_id = None
             else:
                 agent_state, repo_names, updated_at, dispatch_id, agent_pid = (
-                    admin_service_module._probe_agent_state(vm_name, ip_address, vm_user)
+                    vm_helpers.probe_agent_state(vm_name, ip_address, vm_user)
                 )
             summaries.append(
                 VmSummary(
                     vm_name=vm_name,
-                    issue_number=admin_service_module._extract_issue_number(vm_name),
+                    issue_number=session_helpers.extract_issue_number(vm_name),
                     session_ids=session_ids_by_vm.get(vm_name, []),
                     labels=labels_by_vm.get(vm_name, {}),
                     directory_paths=vm_directory_paths,
@@ -1006,7 +1016,7 @@ class WorkerAdminFacade:
         summaries: list[WorkerSummary] = []
         for worker_id, name, unit in _WORKER_DEFINITIONS:
             try:
-                payload = admin_service_module._systemctl_show(unit)
+                payload = _systemctl_show(unit)
             except RuntimeError as exc:
                 summaries.append(
                     WorkerSummary(
@@ -1062,7 +1072,7 @@ class WorkerAdminFacade:
         if worker is None:
             return f"Worker log unavailable: unknown worker '{worker_id}'."
         _, name, unit = worker
-        text = admin_service_module._journalctl_tail(unit, lines=lines)
+        text = _journalctl_tail(unit, lines=lines)
         return f"Worker: {name}\nUnit: {unit}\n\n{text}".strip()
 
     def start_background_worker(self, worker_id: str) -> WorkerActionResult:
@@ -1076,7 +1086,7 @@ class WorkerAdminFacade:
                 message=f"Unknown worker: {worker_id}",
             )
         resolved_worker_id, name, unit = worker
-        completed = admin_service_module._run_systemd_control("start", unit)
+        completed = _run_systemd_control("start", unit)
         message = (completed.stdout or completed.stderr or "").strip() or f"Started {name}"
         return WorkerActionResult(
             success=completed.returncode == 0,
@@ -1097,7 +1107,7 @@ class WorkerAdminFacade:
                 message=f"Unknown worker: {worker_id}",
             )
         resolved_worker_id, name, unit = worker
-        completed = admin_service_module._run_systemd_control("stop", unit)
+        completed = _run_systemd_control("stop", unit)
         message = (completed.stdout or completed.stderr or "").strip() or f"Stopped {name}"
         return WorkerActionResult(
             success=completed.returncode == 0,

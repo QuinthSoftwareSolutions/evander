@@ -229,7 +229,7 @@ def test_setup_admin_assistant_verification_queues_smoke_message(
             self.published.append(kwargs)
             return {"event_id": f"chat:{kwargs['user_message_id']}"}
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.AdminService", FakeAdminService)
+    monkeypatch.setattr("agent_sandbox.setup.engine.AdminRuntimeComponents", FakeAdminService)
 
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()

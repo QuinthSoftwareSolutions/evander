@@ -11,11 +11,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import (
-    COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
-    AdminRevisionConflict,
-    AdminService,
-)
+from agent_sandbox.admin.composition import AdminRuntimeComponents
+from agent_sandbox.admin.payloads import AdminRevisionConflict
+from agent_sandbox.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
 from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
@@ -830,12 +828,12 @@ def _worker_config_schema(worker_id: str) -> dict[str, Any] | None:
     return {"worker_id": worker_id, "fields": fields}
 
 
-def _worker_detail(service: AdminService, worker_id: str) -> dict[str, Any]:
-    summaries = service.list_background_workers()
+def _worker_detail(service: AdminRuntimeComponents, worker_id: str) -> dict[str, Any]:
+    summaries = service.operations_admin.list_background_workers()
     summary = next((entry for entry in summaries if entry.worker_id == worker_id), None)
     if summary is None:
         raise ValueError(f"Unknown worker: {worker_id}")
-    config = service.read_worker_global_config(worker_id)
+    config = service.workflow_config_admin.read_worker_global_config(worker_id)
     return {
         "summary": _normalize_worker_summary(summary),
         "config": _json_payload(config),
@@ -878,10 +876,10 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
 
 
 def _approval_notification_target_options(
-    service: AdminService, directory_path: str
+    service: AdminRuntimeComponents, directory_path: str
 ) -> tuple[str, ...]:
     try:
-        result = service.compute_directory_effective_config(
+        result = service.operations_admin.compute_directory_effective_config(
             directory_path, COMMUNICATION_TARGETS_DOMAIN
         )
     except Exception:
@@ -908,7 +906,7 @@ def _approval_notification_target_options(
 
 
 def _directory_config_field_metadata(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     directory_path: str,
     tab_key: str,
     source_domain: str,
@@ -962,7 +960,7 @@ def _directory_config_field_metadata(
 
 
 def _directory_tab_metadata(
-    service: AdminService, directory_path: str, tab_key: str
+    service: AdminRuntimeComponents, directory_path: str, tab_key: str
 ) -> dict[str, Any]:
     sections = []
     for title, field_sources, prefixes in _DIRECTORY_CONFIG_TAB_SECTIONS.get(tab_key, ()):
@@ -1008,12 +1006,12 @@ def _directory_tab_metadata(
     }
 
 
-def _domain_snapshot(service: AdminService, directory_path: str, domain: str) -> dict[str, Any]:
-    raw_result = service.read_directory_domain_config(directory_path, domain)
-    effective_result = service.compute_directory_effective_config(directory_path, domain)
+def _domain_snapshot(service: AdminRuntimeComponents, directory_path: str, domain: str) -> dict[str, Any]:
+    raw_result = service.operations_admin.read_directory_domain_config(directory_path, domain)
+    effective_result = service.operations_admin.compute_directory_effective_config(directory_path, domain)
     parent_directory_path = _parent_directory_path(directory_path)
     parent_result = (
-        service.compute_directory_effective_config(parent_directory_path, domain)
+        service.operations_admin.compute_directory_effective_config(parent_directory_path, domain)
         if parent_directory_path is not None
         else None
     )
@@ -1062,9 +1060,9 @@ def _domain_snapshot(service: AdminService, directory_path: str, domain: str) ->
     }
 
 
-def _assistant_settings_snapshot(service: AdminService) -> dict[str, Any]:
-    path = service.assistant_settings_path()
-    config = service.read_assistant_settings()
+def _assistant_settings_snapshot(service: AdminRuntimeComponents) -> dict[str, Any]:
+    path = service.operations_admin.assistant_settings_path()
+    config = service.operations_admin.read_assistant_settings()
     result = {
         "ok": True,
         "data": {
@@ -1103,7 +1101,7 @@ def _assistant_settings_snapshot(service: AdminService) -> dict[str, Any]:
 
 
 def _aggregate_tab_snapshot(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     directory_path: str,
     tab_key: str,
     domain_snapshots: dict[str, dict[str, Any]],
@@ -1262,14 +1260,14 @@ def _tab_fields_by_source_domain(tab_key: str) -> dict[str, set[str]]:
 
 
 def worker_config_routes(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
             _normalize_worker_summary(summary)
-            for summary in service.list_background_workers()
+            for summary in service.operations_admin.list_background_workers()
         ]
         return JSONResponse({"workers": workers})
 
@@ -1289,7 +1287,7 @@ def worker_config_routes(
             return _error_response("lines must be an integer", status_code=400)
         try:
             detail = _worker_detail(service, worker_id)
-            text = service.get_background_worker_log_snapshot(worker_id, lines=lines)
+            text = service.operations_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
         except ValueError as exc:
             return _error_response(str(exc), status_code=404)
         return JSONResponse(
@@ -1315,7 +1313,7 @@ def worker_config_routes(
         if expected_revision is None:
             return _error_response("expected_revision is required", status_code=428)
         try:
-            service.write_worker_global_config(
+            service.workflow_config_admin.write_worker_global_config(
                 worker_id, config, expected_revision=expected_revision
             )
             detail = _worker_detail(service, worker_id)
@@ -1331,9 +1329,9 @@ def worker_config_routes(
         worker_id = str(request.path_params.get("worker_id") or "").strip()
         action = str(request.path_params.get("action") or "").strip()
         if action == "start":
-            result = service.start_background_worker(worker_id)
+            result = service.operations_admin.start_background_worker(worker_id)
         elif action == "stop":
-            result = service.stop_background_worker(worker_id)
+            result = service.operations_admin.stop_background_worker(worker_id)
         else:
             return _error_response(f"Unsupported worker action: {action}", status_code=404)
         status_code = (
@@ -1349,8 +1347,8 @@ def worker_config_routes(
 
     async def configuration_state(request: Request) -> JSONResponse:
         directory_path = _directory_path_from_request(request)
-        tree_result = service.list_directory_tree()
-        directory_result = service.get_directory(directory_path)
+        tree_result = service.operations_admin.list_directory_tree()
+        directory_result = service.operations_admin.get_directory(directory_path)
         selected_path = (
             directory_result.data.details.directory.path
             if directory_result.ok and directory_result.data is not None
@@ -1370,15 +1368,15 @@ def worker_config_routes(
             for tab_key in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES
         }
         payload = {
-            "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
+            "directory_scoped_config_enabled": service.config.enable_directory_scoped_config,
             "selected_directory_path": selected_path,
-            "execution_backend": service.effective_execution_backend(selected_path),
+            "execution_backend": service.vm_agent_admin.effective_execution_backend(selected_path),
             "selected_directory": {
                 "path": selected_path,
                 "parent_path": _parent_directory_path(selected_path),
-                "can_create": bool(service.directory_scoped_config_enabled),
+                "can_create": bool(service.config.enable_directory_scoped_config),
                 "can_delete": bool(
-                    service.directory_scoped_config_enabled and selected_path != "root"
+                    service.config.enable_directory_scoped_config and selected_path != "root"
                 ),
             },
             "tree": _normalize_admin_result(tree_result),
@@ -1396,7 +1394,7 @@ def worker_config_routes(
         return JSONResponse(payload)
 
     async def get_model_pricing_catalog(_: Request) -> JSONResponse:
-        return JSONResponse(service.read_model_pricing_catalog_status())
+        return JSONResponse(service.model_usage_admin.read_model_pricing_catalog_status())
 
     async def put_model_pricing_catalog(request: Request) -> JSONResponse:
         if not request_has_privileged_operations(auth=auth, service=service, request=request):
@@ -1412,7 +1410,7 @@ def worker_config_routes(
         if expected_revision is None:
             return _error_response("expected_revision is required", status_code=428)
         try:
-            status = service.write_model_pricing_catalog(
+            status = service.model_usage_admin.write_model_pricing_catalog(
                 catalog, expected_revision=expected_revision
             )
         except AdminRevisionConflict as exc:
@@ -1430,7 +1428,7 @@ def worker_config_routes(
         name = str(payload.get("name") or "").strip()
         if not name:
             return _error_response("name is required", status_code=400)
-        result = service.create_directory_child(parent_path, name)
+        result = service.operations_admin.create_directory_child(parent_path, name)
         status_code = 200 if result.ok else 400
         return JSONResponse(_normalize_admin_result(result), status_code=status_code)
 
@@ -1463,7 +1461,7 @@ def worker_config_routes(
             except ValueError as exc:
                 return _error_response(str(exc), status_code=400)
             tab_fields_by_source = _tab_fields_by_source_domain(domain)
-            with service.admin_config_mutation_lock():
+            with service.operations_admin.admin_config_mutation_lock():
                 domain_snapshots = {
                     source_domain: _domain_snapshot(service, directory_path, source_domain)
                     for source_domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
@@ -1497,7 +1495,7 @@ def worker_config_routes(
                         merged_settings = dict(existing_settings)
                         merged_settings.update(source_payload)
                         try:
-                            service.write_assistant_settings(merged_settings)
+                            service.operations_admin.write_assistant_settings(merged_settings)
                         except Exception as exc:
                             return _error_response(str(exc), status_code=400)
                         continue
@@ -1508,7 +1506,7 @@ def worker_config_routes(
                         if field_name not in tab_fields_by_source[source_domain]
                     }
                     merged_payload.update(source_payload)
-                    result = service.write_directory_domain_config(
+                    result = service.operations_admin.write_directory_domain_config(
                         directory_path, source_domain, merged_payload
                     )
                     if not result.ok:
@@ -1541,7 +1539,7 @@ def worker_config_routes(
                     }
                 )
 
-        with service.admin_config_mutation_lock():
+        with service.operations_admin.admin_config_mutation_lock():
             try:
                 current_snapshot = _domain_snapshot(service, directory_path, domain)
             except ValueError as exc:
@@ -1555,7 +1553,7 @@ def worker_config_routes(
                         "snapshot": current_snapshot,
                     },
                 )
-            result = service.write_directory_domain_config(directory_path, domain, config)
+            result = service.operations_admin.write_directory_domain_config(directory_path, domain, config)
             status_code = 200 if result.ok else 400
             response_payload = {
                 "write_result": _normalize_admin_result(result),

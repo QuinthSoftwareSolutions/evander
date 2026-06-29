@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import Event
 from textwrap import dedent
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.daemons.effect_orchestrator import (
     EffectOrchestratorWorker,
@@ -252,13 +252,13 @@ def _workflow_config_path(project_dir: Path) -> Path:
 
 
 def _save_workflow(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     *,
     runtime_dir: Path,
     trigger_id: str,
     effect_id: str,
 ) -> None:
-    service.save_workflow_editor_document(
+    service.workflow_config_admin.save_workflow_editor_document(
         config={
             "runtime_dir": str(runtime_dir),
             "poll_interval_seconds": 1,
@@ -306,7 +306,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     trigger_runtime_id = id(trigger_worker.runtime)
     effect_runtime_id = id(effect_worker.runtime)
 
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
 
     _save_workflow(
         service, runtime_dir=runtime_dir, trigger_id="trigger-old", effect_id="effect-old"
@@ -772,7 +772,7 @@ def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(
         effect.id, executed_effect_ids
     )  # type: ignore[assignment]
 
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     _save_workflow(
         service, runtime_dir=runtime_dir, trigger_id="trigger-stable", effect_id="effect-stable"
     )

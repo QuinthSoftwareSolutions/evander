@@ -37,7 +37,7 @@ class VmExecEffectProvider(EffectProviderBase):
                 check=check,
             )
             if not isinstance(result, Mapping):
-                raise RuntimeError("AdminService.vm_exec must return a mapping")
+                raise RuntimeError("Admin runtime vm_exec must return a mapping")
             payload = dict(result)
             payload.setdefault("vm_name", vm_name)
             payload.setdefault("action", "vm_exec")
@@ -97,14 +97,14 @@ class VmExecEffectProvider(EffectProviderBase):
         environment: Mapping[str, str],
     ) -> dict[str, Any]:
 
-        from agent_sandbox.admin.service import (
-            _resolve_private_key_path,
-            _resolve_vm_ip,
-            _ssh_options,
+        from agent_sandbox.admin.services.vm_helpers import (
+            resolve_private_key_path,
+            resolve_vm_ip,
+            ssh_options,
         )
 
-        vm_ip = _resolve_vm_ip(vm_name)
-        ssh_private_key_path = _resolve_private_key_path()
+        vm_ip = resolve_vm_ip(vm_name)
+        ssh_private_key_path = resolve_private_key_path()
         if not vm_ip:
             raise RuntimeError(f"Unable to resolve VM IP for {vm_name!r}")
         if ssh_private_key_path is None:
@@ -121,7 +121,7 @@ class VmExecEffectProvider(EffectProviderBase):
         completed = subprocess.run(
             [
                 "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 f"{vm_user}@{vm_ip}",
                 "bash",
                 "-s",

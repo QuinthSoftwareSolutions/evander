@@ -104,7 +104,7 @@ def register_issue_tools(
         try:
             session = context.policy.require_tool(session_id, ToolName.LIST_ISSUES)
             status_filter = _normalize_issue_status_filters(status)
-            issues = deps.admin_service_factory().list_local_issues(
+            issues = deps.admin_runtime_factory().issue_git_admin.list_local_issues(
                 directory_path=session.directory_path,
                 direct_only=True,
             )
@@ -165,7 +165,7 @@ def register_issue_tools(
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.GET_ISSUE)
-            result = deps.admin_service_factory().get_issue(
+            result = deps.admin_runtime_factory().issue_git_admin.get_issue(
                 issue_id,
                 include_remote_comments=include_remote_comments,
                 sync_proxy_cache=sync_proxy_cache,
@@ -216,7 +216,7 @@ def register_issue_tools(
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
-            admin_service = deps.admin_service_factory()
+            issue_admin = deps.admin_runtime_factory().issue_git_admin
             metadata = _issue_creation_metadata(session)
             issue_kwargs: dict[str, Any] = {
                 "title": title,
@@ -225,10 +225,10 @@ def register_issue_tools(
                 "directory_path": session.directory_path,
             }
             if metadata and _method_accepts_keyword_argument(
-                admin_service.create_local_issue, "metadata"
+                issue_admin.create_local_issue, "metadata"
             ):
                 issue_kwargs["metadata"] = metadata
-            issue = admin_service.create_local_issue(**issue_kwargs)
+            issue = issue_admin.create_local_issue(**issue_kwargs)
             result = payload_from_result(issue) or {}
             audit_success(
                 session_id,
@@ -275,7 +275,7 @@ def register_issue_tools(
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
-            result = deps.admin_service_factory().set_issue_plan(
+            result = deps.admin_runtime_factory().issue_git_admin.set_issue_plan(
                 issue_id, steps, summary=summary
             )
             audit_success(
@@ -332,7 +332,7 @@ def register_issue_tools(
                     fields["Reason"] = reason
                 if priority is not None:
                     fields["Priority"] = priority
-            result = deps.admin_service_factory().update_issue(
+            result = deps.admin_runtime_factory().issue_git_admin.update_issue(
                 issue_id,
                 state="Approved",
                 fields=fields,
@@ -372,7 +372,7 @@ def register_issue_tools(
         args = {"session_id": session_id}
         try:
             session = context.policy.require_tool(session_id, ToolName.CLAIM_NEXT_ISSUE)
-            result = deps.admin_service_factory().claim_next_issue(
+            result = deps.admin_runtime_factory().issue_git_admin.claim_next_issue(
                 session_id=session_id
             )
             payload = payload_from_result(result)
@@ -417,7 +417,7 @@ def register_issue_tools(
         args = {"session_id": session_id, "issue_id": issue_id, "summary": summary}
         try:
             session = context.policy.require_tool(session_id, ToolName.COMPLETE_ISSUE)
-            result = deps.admin_service_factory().complete_issue(
+            result = deps.admin_runtime_factory().issue_git_admin.complete_issue(
                 session_id=session_id,
                 issue_id=issue_id,
                 summary=summary,
@@ -470,7 +470,7 @@ def register_issue_tools(
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
-            result = deps.admin_service_factory().update_issue(
+            result = deps.admin_runtime_factory().issue_git_admin.update_issue(
                 issue_id,
                 state="Closed",
                 fields=fields,
@@ -520,7 +520,7 @@ def register_issue_tools(
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
-            result = deps.admin_service_factory().update_issue(
+            result = deps.admin_runtime_factory().issue_git_admin.update_issue(
                 issue_id,
                 state="Committed",
                 fields=fields,

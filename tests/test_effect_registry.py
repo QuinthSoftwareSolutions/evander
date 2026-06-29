@@ -5183,7 +5183,7 @@ def test_agent_create_container_writes_managed_codex_skills(
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
     )
-    SkillLibraryRepository(tmp_path).create_skill(
+    SkillLibraryRepository(tmp_path).skill_admin.create_skill(
         name="managed.skill",
         content="# Managed\n",
     )

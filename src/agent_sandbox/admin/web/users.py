@@ -5,7 +5,7 @@ from typing import Any
 from starlette.requests import Request
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error, json_ok
 from agent_sandbox.admin.web.user_store import (
     AdminWebGroupRecord,
@@ -228,15 +228,15 @@ def _require_group_manager(auth: AdminWebAuth, request: Request) -> None:
         raise PermissionError("Group-management permission is required")
 
 
-def _directory_path_from_request(service: AdminService, request: Request) -> str:
+def _directory_path_from_request(service: AdminRuntimeComponents, request: Request) -> str:
     requested = str(request.query_params.get("directory_path") or "root").strip() or "root"
-    return service._normalize_directory_reference(requested)
+    return service.teams_admin.normalize_directory_reference(requested)
 
 
 def _contacts_config_for_directory(
-    service: AdminService, directory_path: str
+    service: AdminRuntimeComponents, directory_path: str
 ) -> ContactDirectoryConfig:
-    result = service.compute_directory_effective_config(directory_path, "contacts")
+    result = service.operations_admin.compute_directory_effective_config(directory_path, "contacts")
     if not result.ok or result.data is None:
         return ContactDirectoryConfig()
     return ContactDirectoryConfig.model_validate(result.data.resolution.effective_config)
@@ -256,17 +256,17 @@ def _normalize_contact_update(
 
 
 def _write_user_contact_link(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     *,
     directory_path: str,
     login: str,
     contact_id: str | None,
 ) -> None:
-    if not service.directory_scoped_config_enabled:
+    if not service.config.enable_directory_scoped_config:
         raise ValueError(
             "directory-scoped config is disabled; user contact attachments are read-only"
         )
-    existing_result = service.read_directory_domain_config(directory_path, "contacts")
+    existing_result = service.operations_admin.read_directory_domain_config(directory_path, "contacts")
     existing_config = (
         dict(existing_result.data.config)
         if existing_result.ok
@@ -284,13 +284,13 @@ def _write_user_contact_link(
         existing_config["user_contact_links"] = links
     else:
         existing_config.pop("user_contact_links", None)
-    result = service.write_directory_domain_config(directory_path, "contacts", existing_config)
+    result = service.operations_admin.write_directory_domain_config(directory_path, "contacts", existing_config)
     if not result.ok:
         raise ValueError(result.errors[0].message if result.errors else "Unable to save contact link")
 
 
 def admin_user_routes(
-    user_store: AdminWebUserStore, auth: AdminWebAuth, service: AdminService
+    user_store: AdminWebUserStore, auth: AdminWebAuth, service: AdminRuntimeComponents
 ) -> list[BaseRoute]:
     async def list_users(request: Request):
         try:
@@ -304,7 +304,7 @@ def admin_user_routes(
         return json_ok(
             {
                 "directory_path": directory_path,
-                "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
+                "directory_scoped_config_enabled": service.config.enable_directory_scoped_config,
                 "contacts": _contact_options_payload(contacts_config),
                 "permission_catalog": sorted(PERMISSION_CATALOG),
                 "groups": [_group_payload(group) for group in user_store.list_groups()],
@@ -344,7 +344,7 @@ def admin_user_routes(
                 and not has_password
             ):
                 return json_error("password is required for new local password users")
-            if "contact_id" in payload and not service.directory_scoped_config_enabled:
+            if "contact_id" in payload and not service.config.enable_directory_scoped_config:
                 return json_error(
                     "directory-scoped config is disabled; user contact attachments are read-only"
                 )
@@ -412,7 +412,7 @@ def admin_user_routes(
             has_password, password = _optional_password_payload(payload)
             if has_password and auth.config.auth_mode != "local_password":
                 return json_error("password can only be set when auth mode is local_password")
-            if "contact_id" in payload and not service.directory_scoped_config_enabled:
+            if "contact_id" in payload and not service.config.enable_directory_scoped_config:
                 return json_error(
                     "directory-scoped config is disabled; user contact attachments are read-only"
                 )
@@ -468,7 +468,7 @@ def admin_user_routes(
             user = user_store.delete_user(login)
             if user is None:
                 return json_error("Admin web user not found", status_code=404)
-            if service.directory_scoped_config_enabled:
+            if service.config.enable_directory_scoped_config:
                 _write_user_contact_link(
                     service,
                     directory_path=directory_path,

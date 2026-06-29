@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.tool_visibility import (
     ToolVisibilityBindingState,
     ToolVisibilityExecutionState,
@@ -59,8 +59,8 @@ def _write_audit_log(path: Path) -> None:
 def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_directory_domain_config(
         "root",
         "policy",
         {"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": True}}},
@@ -177,7 +177,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
 def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -204,7 +204,7 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
 def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -229,7 +229,7 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
 def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     initial_session = SessionManifest(
         session_id="session-1",
         vm_id="vm-1",
@@ -272,7 +272,7 @@ def test_admin_service_tool_visibility_payload_flags_stale_manifest(
 def test_admin_service_tool_visibility_payload_reports_mismatch_for_other_session(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     session_a = SessionManifest(
         session_id="session-a",
         vm_id="vm-a",

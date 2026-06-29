@@ -23,7 +23,7 @@ class GitPrNoteQueryProvider(QueryProviderBase):
         context = self._context()
         query_fn = getattr(context.git_pr_note_reader, "git_pr_note_query", None)
         if not callable(query_fn):
-            raise RuntimeError("AdminService.git_pr_note_query is not available")
+            raise RuntimeError("Admin runtime git_pr_note_query is not available")
 
         result = query_fn(
             host_repo_path=host_repo_path,

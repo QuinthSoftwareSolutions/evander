@@ -19,7 +19,7 @@ class SessionContextQueryProvider(QueryProviderBase):
         context = self._context()
         query_fn = getattr(context.session_context_reader, "session_context_query", None)
         if not callable(query_fn):
-            raise RuntimeError("AdminService.session_context_query is not available")
+            raise RuntimeError("Admin runtime session_context_query is not available")
         result = query_fn(target=target)
         return self._coerce_result(result)
 

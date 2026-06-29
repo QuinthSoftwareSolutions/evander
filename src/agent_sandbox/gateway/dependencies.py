@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import sys
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.issues.service import IssueService
@@ -29,7 +29,7 @@ class GatewayToolDependencies:
     instances are kept for dependencies that are safe to construct once for the gateway server.
     """
 
-    admin_service_factory: Callable[[], AdminService]
+    admin_runtime_factory: Callable[[], AdminRuntimeComponents]
     issue_service_factory: Callable[[], IssueService]
     chat_store_factory: Callable[[], ChatStore]
     semantic_adapter: GatewaySemanticAdapter
@@ -39,7 +39,7 @@ class GatewayToolDependencies:
     def from_context(cls, context: RuntimeContext) -> "GatewayToolDependencies":
         """Build gateway dependencies from a runtime context."""
 
-        admin_service_cls = _compat_gateway_attr("AdminService", AdminService)
+        admin_runtime_builder = _compat_gateway_attr("build_admin_runtime", build_admin_runtime)
         issue_service_cls = _compat_gateway_attr("IssueService", IssueService)
         communication_artifact_store_cls = _compat_gateway_attr(
             "CommunicationArtifactStore",
@@ -52,7 +52,7 @@ class GatewayToolDependencies:
             return store
 
         return cls(
-            admin_service_factory=lambda: admin_service_cls(context.config.runtime_dir),
+            admin_runtime_factory=lambda: admin_runtime_builder(context.config.runtime_dir),
             issue_service_factory=lambda: issue_service_cls(context.provider_config),
             chat_store_factory=lambda: ChatStore(admin_chat_store_path(context.config.runtime_dir)),
             semantic_adapter=GatewaySemanticAdapter(context),

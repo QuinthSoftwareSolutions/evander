@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.services import (
     PrIntegrationPreflightAdminDependencies,
     PrIntegrationPreflightAdminService,
@@ -162,7 +162,7 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
         provider_config_resolver=provider_config_resolver,
     )
 
-    report = service.run_pr_integration_preflight(
+    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],
@@ -232,7 +232,7 @@ def test_run_pr_integration_preflight_prefers_explicit_repo_source(
         provider_config_resolver=provider_config_resolver,
     )
 
-    report = service.run_pr_integration_preflight(
+    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
         provider="azure-devops",
         repo="repo-1",
         pr_ids=["17"],
@@ -274,7 +274,7 @@ def test_run_pr_integration_preflight_requires_repo_source_when_missing(
         ValueError,
         match=r"repo_source or ado_worker\.ado_repo_source",
     ):
-        service.run_pr_integration_preflight(
+        service.pr_integration_preflight_admin.run_pr_integration_preflight(
             provider="ado",
             repo="repo-1",
             pr_ids=["17"],
@@ -314,7 +314,7 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
         provider_config_resolver=provider_config_resolver,
     )
 
-    report = service.run_pr_integration_preflight(
+    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],
@@ -352,7 +352,7 @@ def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
     )
 
     missing_repo = tmp_path / "missing-repo"
-    report = service.run_pr_integration_preflight(
+    report = service.pr_integration_preflight_admin.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],
@@ -370,12 +370,12 @@ def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
 
 
 def test_admin_service_delegates_run_pr_integration_preflight() -> None:
-    admin = object.__new__(AdminService)
+    admin = object.__new__(AdminRuntimeComponents)
     admin.pr_integration_preflight_admin = SimpleNamespace(
         run_pr_integration_preflight=lambda **kwargs: {"kwargs": kwargs}
     )
 
-    result = admin.run_pr_integration_preflight(
+    result = admin.pr_integration_preflight_admin.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],

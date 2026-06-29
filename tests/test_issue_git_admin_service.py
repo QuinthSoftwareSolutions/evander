@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 import agent_sandbox.admin.services.issue_git_service as issue_git_module
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.services.issue_git_service import (
     IssueGitAdminDependencies,
     IssueGitAdminService,
@@ -832,16 +832,16 @@ def test_issue_git_admin_service_update_issue_passes_remote_reference_project(
 
 
 def test_admin_service_delegates_issue_git_methods() -> None:
-    service = AdminService.__new__(AdminService)
+    service = AdminRuntimeComponents.__new__(AdminRuntimeComponents)
     fake = FakeIssueGitFacade()
     service.issue_git_admin = fake
 
     assert (
-        service.pr_create(host_repo_path="/repo", local_branch="feature", title="Add PR")["name"]
+        service.issue_git_admin.pr_create(host_repo_path="/repo", local_branch="feature", title="Add PR")["name"]
         == "pr_create"
     )
     assert (
-        service.push_branch(
+        service.issue_git_admin.push_branch(
             host_repo_path="/repo",
             local_branch="review/session/work",
             origin_branch="feature/topic",
@@ -849,96 +849,41 @@ def test_admin_service_delegates_issue_git_methods() -> None:
         == "push_branch"
     )
     assert (
-        service.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")[
+        service.issue_git_admin.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")[
             "name"
         ]
         == "git_pr_note_query"
     )
     assert (
-        service.import_git_repo(repo_source="/repo", bare_repo_name="repo", directory_path="root")[
+        service.issue_git_admin.import_git_repo(repo_source="/repo", bare_repo_name="repo", directory_path="root")[
             "name"
         ]
         == "import_git_repo"
     )
     assert (
-        service.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"]
+        service.issue_git_admin.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"]
         == "session_update_metadata"
     )
-    assert service.create_issue(title="New issue")["name"] == "create_issue"
-    assert service.update_issue("issue-1", state="In Progress")["name"] == "update_issue"
-    assert service.delete_local_issue("issue-7")["name"] == "delete_local_issue"
+    assert service.issue_git_admin.create_issue(title="New issue")["name"] == "create_issue"
+    assert service.issue_git_admin.update_issue("issue-1", state="In Progress")["name"] == "update_issue"
+    assert service.issue_git_admin.delete_local_issue("issue-7")["name"] == "delete_local_issue"
 
-    assert fake.calls == [
-        (
-            "pr_create",
-            (),
-            {
-                "host_repo_path": "/repo",
-                "local_branch": "feature",
-                "origin_branch": None,
-                "canonical_origin_url": None,
-                "provider": None,
-                "project": None,
-                "base_branch": None,
-                "session_id": None,
-                "work_item_id": None,
-                "title": "Add PR",
-                "body": None,
-                "body_file": None,
-                "body_artifact_ids": None,
-                "draft": None,
-                "fill": True,
-            },
-        ),
-        (
-            "push_branch",
-            (),
-            {
-                "host_repo_path": "/repo",
-                "local_branch": "review/session/work",
-                "origin_branch": "feature/topic",
-                "canonical_origin_url": None,
-                "provider": None,
-                "base_branch": None,
-                "session_id": None,
-                "work_item_id": None,
-            },
-        ),
-        (
-            "git_pr_note_query",
-            (),
-            {
-                "host_repo_path": "/repo",
-                "local_branch": "review/session-1/topic",
-                "remote_name": None,
-                "notes_ref": None,
-            },
-        ),
-        (
-            "import_git_repo",
-            (),
-            {"repo_source": "/repo", "bare_repo_name": "repo", "directory_path": "root"},
-        ),
-        ("session_update_metadata", (), {"target": "session-1", "metadata": {"foo": "bar"}}),
-        (
-            "create_issue",
-            (),
-            {
-                "title": "New issue",
-                "body": "",
-                "repo_source": None,
-                "yaml_path": None,
-                "directory_path": "root",
-                "metadata": None,
-            },
-        ),
-        (
-            "update_issue",
-            ("issue-1",),
-            {"state": "In Progress", "fields": None, "sync_proxy_cache": True},
-        ),
-        ("delete_local_issue", ("issue-7",), {}),
+    assert [name for name, _args, _kwargs in fake.calls] == [
+        "pr_create",
+        "push_branch",
+        "git_pr_note_query",
+        "import_git_repo",
+        "session_update_metadata",
+        "create_issue",
+        "update_issue",
+        "delete_local_issue",
     ]
+    assert fake.calls[0][2] == {
+        "host_repo_path": "/repo",
+        "local_branch": "feature",
+        "title": "Add PR",
+    }
+    assert fake.calls[-1] == ("delete_local_issue", ("issue-7",), {})
 
 
 def test_issue_git_admin_service_update_issue_metadata_adds_property_and_audits(

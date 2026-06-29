@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin.service import PublishedArtifactListPayload
+from agent_sandbox.admin.payloads import PublishedArtifactListPayload
 from agent_sandbox.artifact_spaces import (
     ArtifactSpacePermissionError,
     ArtifactSpaceStore,
@@ -25,7 +25,7 @@ class ArtifactAdminDependencies:
 
 
 class ArtifactAdminService:
-    """Published artifact and artifact-space operations for AdminService."""
+    """Published artifact and artifact-space operations for the admin runtime."""
 
     def __init__(self, dependencies: ArtifactAdminDependencies) -> None:
         self._runtime_dir = dependencies.runtime_dir

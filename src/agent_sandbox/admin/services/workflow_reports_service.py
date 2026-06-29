@@ -14,24 +14,18 @@ from urllib.parse import quote
 
 from pydantic import BaseModel
 
-from agent_sandbox.communication_artifacts import CommunicationArtifactStore
-from agent_sandbox.admin.service import (
-    CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
-    CONFORMANCE_REPORT_SNIPPET_LIMIT,
-    CONFORMANCE_REPORT_SPECS,
-    CONFORMANCE_REPORT_STALE_AFTER,
-    WORKFLOW_FAILURE_CLUSTER_DEFAULT_RECENT_THRESHOLD_SECONDS,
-    WORKFLOW_FAILURE_CLUSTER_EXAMPLE_LIMIT,
-    WORKFLOW_FAILURE_CLUSTER_LIMIT_MAX,
-    WORKFLOW_FAILURE_CLUSTER_STATE_PRIORITY,
-    WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT,
-    AgentRecord,
-    ApprovalRequest,
+from agent_sandbox.admin.common import (
+    _coerce_optional_datetime,
+    _coerce_optional_string,
+    _read_json_object,
+    _read_merged_json_objects,
+    _utc_now,
+)
+from agent_sandbox.admin.payloads import (
     ConformanceReportPayload,
     ConformanceReportRunPayload,
     ConformanceRequirementSnippetPayload,
     ConformanceReportsPayload,
-    SessionManifest,
     ToolCallAuditEntryPayload,
     WorkflowFailureClusterExamplePayload,
     WorkflowFailureClusterPayload,
@@ -62,19 +56,29 @@ from agent_sandbox.admin.service import (
     WorkflowRunSummaryPayload,
     WorkflowRunToolCallLinkPayload,
     WorkflowRunTriggerEventPayload,
+    WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT,
+)
+from agent_sandbox.admin.workflow_report_helpers import (
+    CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
+    CONFORMANCE_REPORT_SNIPPET_LIMIT,
+    CONFORMANCE_REPORT_SPECS,
+    CONFORMANCE_REPORT_STALE_AFTER,
+    WORKFLOW_FAILURE_CLUSTER_DEFAULT_RECENT_THRESHOLD_SECONDS,
+    WORKFLOW_FAILURE_CLUSTER_EXAMPLE_LIMIT,
+    WORKFLOW_FAILURE_CLUSTER_LIMIT_MAX,
+    WORKFLOW_FAILURE_CLUSTER_STATE_PRIORITY,
     _as_utc,
-    _coerce_optional_datetime,
-    _coerce_optional_string,
     _collect_workflow_artifact_ids,
     _collect_workflow_keyed_values,
     _join_conformance_process_output,
     _merge_run_node_activity,
     _normalize_workflow_failure_signature,
-    _read_json_object,
-    _read_merged_json_objects,
     _trim_conformance_process_output,
     _trim_conformance_text,
-    _utc_now,
+)
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.models import AgentRecord, ApprovalRequest, SessionManifest
+from agent_sandbox.repositories.orchestration_db import (
     connect_orchestration_db,
     datetime_to_storage,
     ensure_orchestration_schema,
@@ -98,7 +102,7 @@ class WorkflowReportsAdminDependencies:
 
 
 class WorkflowReportsAdminService:
-    """Workflow reporting operations extracted from AdminService."""
+    """Workflow reporting operations."""
 
     def __init__(self, dependencies: WorkflowReportsAdminDependencies) -> None:
         self._project_dir = dependencies.project_dir

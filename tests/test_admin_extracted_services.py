@@ -5,16 +5,20 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
+from agent_sandbox.admin.facades import SessionAdminFacade, TeamsAdminFacade
 from agent_sandbox.admin.services import (
     ApprovalAuditAdminDependencies,
     ApprovalAuditAdminService,
     CapacityHealthAdminDependencies,
     CapacityHealthAdminService,
+    IssueGitAdminService,
+    IssueGitAdminSupport,
     ModelUsageAdminDependencies,
     ModelUsageAdminService,
     OperatorSteeringAdminDependencies,
     OperatorSteeringAdminService,
+    OperationsAdminService,
     WorkflowGenerationAdminDependencies,
     WorkflowGenerationAdminService,
     WorkflowReportsAdminDependencies,
@@ -84,7 +88,7 @@ def test_admin_extracted_services_do_not_keep_raw_admin_service_hosts() -> None:
         text = path.read_text(encoding="utf-8")
         hits = [
             token
-            for token in ("self._host", "_host = host", "Legacy" + "AdminService")
+            for token in ("self._host", "_host = host", "Legacy" + "AdminRuntimeComponents")
             if token in text
         ]
         if hits:
@@ -96,8 +100,8 @@ def test_admin_refactor_does_not_add_legacy_dumping_ground() -> None:
     paths = [*ADMIN_SRC_DIR.rglob("*.py"), *(Path(__file__).resolve().parents[1] / "tests").glob("test_*.py")]
     forbidden_tokens = (
         "service_" + "legacy",
-        "Legacy" + "AdminService",
-        "AdminService" + "WorkflowConfigPort",
+        "Legacy" + "AdminRuntimeComponents",
+        "AdminRuntimeComponents" + "WorkflowConfigPort",
     )
     offenders: dict[str, list[str]] = {}
     for path in paths:
@@ -108,60 +112,24 @@ def test_admin_refactor_does_not_add_legacy_dumping_ground() -> None:
     assert offenders == {}
 
 
-def test_admin_service_issue_git_local_issue_methods_are_thin_delegates() -> None:
-    method_names = (
-        "import_git_repo",
-        "_extract_local_issue_id_candidate",
-        "_next_local_issue_number",
-        "_local_issue_creation_lock",
-        "_canonical_local_issue_id",
-        "_canonical_issue_id",
-        "_write_local_issue_yaml",
-        "_refresh_proxy_cache_from_remote",
-        "_proxy_target_for_issue",
-    )
-    delegate_expectations = {
-        "import_git_repo": "issue_git_admin",
-        "_extract_local_issue_id_candidate": "issue_git_support",
-        "_next_local_issue_number": "issue_git_support",
-        "_local_issue_creation_lock": "issue_git_support",
-        "_canonical_local_issue_id": "issue_git_support",
-        "_canonical_issue_id": "issue_git_support",
-        "_write_local_issue_yaml": "issue_git_support",
-        "_refresh_proxy_cache_from_remote": "issue_git_support",
-        "_proxy_target_for_issue": "issue_git_support",
-    }
-    implementation_tokens = (
-        "normalized_source =",
-        "resolve_repo_source(",
-        "sync_repo_into_bare_remote(",
-        "_normalize_import_bare_repo_name",
-        "_bare_repo_agent_refs",
-        "_git_config_value",
-        "_infer_git_provider_from_url",
-        "GitImportConflictError(",
-        "local_issue_counter_path",
-        "local_issue_create_lock_path",
-        "fcntl.flock",
-        "os.open",
-        "yaml.safe_load",
-        "yaml.safe_dump",
-        "_scoped_issue_id",
-        "remote.work_item_id",
-        "metadata_steps",
-        '"proxy_cache"',
-        "last_synced_at",
-        "resolve_proxy_target(",
+def test_issue_git_local_issue_methods_live_on_issue_git_components() -> None:
+    service_methods = ("import_git_repo",)
+    support_methods = (
+        "next_local_issue_number",
+        "local_issue_creation_lock",
+        "canonical_local_issue_id",
+        "canonical_issue_id",
+        "write_local_issue_yaml",
+        "refresh_proxy_cache_from_remote",
+        "proxy_target_for_issue",
     )
 
-    offenders: dict[str, list[str]] = {}
-    for method_name in method_names:
-        source = inspect.getsource(getattr(AdminService, method_name))
-        assert delegate_expectations[method_name] in source
-        hits = [token for token in implementation_tokens if token in source]
-        if hits:
-            offenders[method_name] = hits
-    assert offenders == {}
+    for method_name in service_methods:
+        assert hasattr(IssueGitAdminService, method_name)
+        assert not hasattr(AdminRuntimeComponents, method_name)
+    for method_name in support_methods:
+        assert hasattr(IssueGitAdminSupport, method_name)
+        assert not hasattr(AdminRuntimeComponents, method_name)
 
 
 def test_admin_service_model_pricing_methods_are_thin_delegates() -> None:
@@ -172,26 +140,18 @@ def test_admin_service_model_pricing_methods_are_thin_delegates() -> None:
         "_model_pricing_error_revision",
         "_model_pricing_rule_summary",
     )
-    implementation_tokens = (
+    service_source = inspect.getsource(ModelUsageAdminService)
+    for method_name in method_names:
+        assert hasattr(ModelUsageAdminService, method_name)
+        assert not hasattr(AdminRuntimeComponents, method_name)
+    for token in (
         "default_model_pricing_catalog_path",
         "load_model_pricing_catalog_payload",
         "normalize_model_pricing_catalog_payload",
         "clear_model_pricing_catalog_cache",
         "admin_config_mutation_lock",
-        "_write_json_file_atomic",
-        "_stable_json_revision",
-        "json.loads",
-        "path.read_text",
-        "path.parent.mkdir",
-    )
-    offenders: dict[str, list[str]] = {}
-    for method_name in method_names:
-        source = inspect.getsource(getattr(AdminService, method_name))
-        assert "model_usage_admin" in source
-        hits = [token for token in implementation_tokens if token in source]
-        if hits:
-            offenders[method_name] = hits
-    assert offenders == {}
+    ):
+        assert token in service_source
 
 
 def test_admin_service_model_usage_visibility_and_audit_methods_are_thin_delegates() -> None:
@@ -211,44 +171,20 @@ def test_admin_service_model_usage_visibility_and_audit_methods_are_thin_delegat
             "approval_audit_admin._list_tool_call_audit_entries_from_index"
         ),
     }
-    implementation_tokens = (
-        "model_usage_store(",
-        "build_tool_visibility_payload(",
-        "runtime.session_repository",
-        "Unknown session",
-        "target is required",
-        "tool_call_audit_index =",
-    )
-
-    offenders: dict[str, list[str]] = {}
     for method_name in method_names:
-        source = inspect.getsource(getattr(AdminService, method_name))
-        assert delegate_expectations[method_name] in source
-        hits = [token for token in implementation_tokens if token in source]
-        if hits:
-            offenders[method_name] = hits
-    assert offenders == {}
+        owner = (
+            ModelUsageAdminService
+            if method_name == "list_model_usage_events"
+            else ApprovalAuditAdminService
+        )
+        assert hasattr(owner, method_name)
+        assert not hasattr(AdminRuntimeComponents, method_name)
 
 
-def test_admin_service_tool_call_audit_index_property_proxies_approval_service() -> None:
-    service = AdminService.__new__(AdminService)
-    initial_index = object()
-    service.tool_call_audit_index = initial_index
-
-    assert service.tool_call_audit_index is initial_index
-
-    approval_audit_admin = SimpleNamespace(tool_call_audit_index=initial_index)
-    service.approval_audit_admin = approval_audit_admin
-    replacement_index = object()
-    service.tool_call_audit_index = replacement_index
-
-    assert service.tool_call_audit_index is replacement_index
-    assert approval_audit_admin.tool_call_audit_index is replacement_index
-
-    service.tool_call_audit_index = None
-
-    assert service.tool_call_audit_index is None
-    assert approval_audit_admin.tool_call_audit_index is None
+def test_tool_call_audit_index_is_owned_by_approval_audit_service() -> None:
+    assert "tool_call_audit_index" in inspect.signature(ApprovalAuditAdminDependencies).parameters
+    assert "tool_call_audit_index" in inspect.getsource(ApprovalAuditAdminService)
+    assert "tool_call_audit_index" in AdminRuntimeComponents.__dataclass_fields__
 
 
 def test_admin_service_scheduled_wake_ledger_retry_methods_are_thin_delegates() -> None:
@@ -260,37 +196,14 @@ def test_admin_service_scheduled_wake_ledger_retry_methods_are_thin_delegates() 
         "_active_wake_requests",
         "_enforce_wake_schedule_guardrails",
     )
-    implementation_tokens = (
-        "allowed_statuses",
-        "Invalid wake ledger status",
-        "latest_dispatch_by_request_id",
-        "list_ledger_entries",
-        "Wake schedule not found",
-        "is not retryable in status",
-        "retry_history.append",
-        "previous_auto_retry_started_at",
-        "auto_dispatch_attempts = 0",
-        "list_requests(include_disabled=False)",
-        "wake_schedule_max_active_per_session",
-        "_cron_min_interval_seconds",
-    )
-    delegate_expectations = {
-        "_normalize_wake_ledger_statuses": "_admin_service_normalize_wake_ledger_statuses",
-        "_wake_ledger_entry_for_request": "session_admin",
-        "list_scheduled_wake_ledger": "operations_admin",
-        "retry_scheduled_wake": "operations_admin",
-        "_active_wake_requests": "session_admin",
-        "_enforce_wake_schedule_guardrails": "session_admin",
-    }
-
-    offenders: dict[str, list[str]] = {}
     for method_name in method_names:
-        source = inspect.getsource(getattr(AdminService, method_name))
-        assert delegate_expectations[method_name] in source
-        hits = [token for token in implementation_tokens if token in source]
-        if hits:
-            offenders[method_name] = hits
-    assert offenders == {}
+        owner = (
+            OperationsAdminService
+            if method_name in {"list_scheduled_wake_ledger", "retry_scheduled_wake"}
+            else SessionAdminFacade
+        )
+        assert hasattr(owner, method_name)
+        assert not hasattr(AdminRuntimeComponents, method_name)
 
 
 def test_admin_service_teams_auth_private_helpers_are_thin_delegates() -> None:
@@ -313,14 +226,10 @@ def test_admin_service_teams_auth_private_helpers_are_thin_delegates() -> None:
         '"store_path"',
     )
 
-    offenders: dict[str, list[str]] = {}
     for method_name in method_names:
-        source = inspect.getsource(getattr(AdminService, method_name))
-        assert "teams_admin" in source
-        hits = [token for token in implementation_tokens if token in source]
-        if hits:
-            offenders[method_name] = hits
-    assert offenders == {}
+        source = inspect.getsource(getattr(TeamsAdminFacade, method_name))
+        assert not hasattr(AdminRuntimeComponents, method_name)
+        assert any(token in source for token in implementation_tokens)
 
 
 def test_workflow_generation_service_enforces_in_flight_and_cooldown() -> None:

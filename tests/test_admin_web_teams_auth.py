@@ -10,7 +10,7 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.admin.web.teams_auth import teams_auth_routes
 from agent_sandbox.messaging.teams_auth import DeviceCodeLoginSession
@@ -230,8 +230,8 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
     monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
     monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
 
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    created = service.create_directory_child("root", "operations")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.directory_admin.create_child("root", "operations")
     assert created.ok is True and created.data is not None
     selected_directory_path = created.data.details.directory.path
 
@@ -471,7 +471,7 @@ def test_admin_web_teams_auth_requires_auth_when_enabled(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     status = client.get("/api/teams-auth/status")
     login = client.post("/api/teams-auth/login")
@@ -488,7 +488,7 @@ def test_admin_web_teams_auth_mutations_are_locked_until_privileged_unlock(
     monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
     monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
 
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     calls: list[str] = []
 
     def fail_login(self, *, directory: str = "root"):
@@ -556,10 +556,10 @@ def test_admin_web_teams_auth_reports_configuration_errors(
     directory_name: str | None,
     expected_fragment: str,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     directory_path = "root"
     if provider_payload is not None:
-        created = service.create_directory_child("root", directory_name or "ops")
+        created = service.directory_admin.create_child("root", directory_name or "ops")
         assert created.ok is True and created.data is not None
         directory_path = created.data.details.directory.path
         provider_payload = dict(provider_payload)

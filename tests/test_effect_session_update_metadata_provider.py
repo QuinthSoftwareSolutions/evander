@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.admin.service import _deep_merge_mapping
+from agent_sandbox.admin.services.session_helpers import deep_merge_mapping as _deep_merge_mapping
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.session_update_metadata import (
@@ -75,7 +75,7 @@ def test_session_update_metadata_provider_requires_admin_service_method(tmp_path
     )
 
     with pytest.raises(
-        RuntimeError, match="AdminService\\.session_update_metadata is not available"
+        RuntimeError, match="Admin runtime session_update_metadata is not available"
     ):
         provider.execute(
             resolved_config={"session_id": "session-1", "metadata": {"issue_number": "14084"}}

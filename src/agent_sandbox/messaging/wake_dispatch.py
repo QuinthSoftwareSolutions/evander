@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin.service import (
+from agent_sandbox.admin.services.issue_setup_helpers import (
     resolve_agent_model_for_manifest,
     resolve_effective_issue_setup_config,
 )

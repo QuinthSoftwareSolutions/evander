@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
 
@@ -36,15 +36,15 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return payload
 
 
-def skill_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
+def skill_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> list[BaseRoute]:
     async def list_skills(_: Request) -> JSONResponse:
-        items = await run_in_threadpool(service.list_skills)
+        items = await run_in_threadpool(service.skill_admin.list_skills)
         return JSONResponse({"items": [_jsonable(item) for item in items]})
 
     async def create_skill(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
-            metadata = await run_in_threadpool(service.create_skill, payload)
+            metadata = await run_in_threadpool(service.skill_admin.create_skill, payload)
         except FileExistsError as exc:
             return json_error(str(exc), status_code=409)
         except ValueError as exc:
@@ -54,7 +54,7 @@ def skill_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
     async def get_skill(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         try:
-            entry = await run_in_threadpool(service.get_skill, name)
+            entry = await run_in_threadpool(service.skill_admin.get_skill, name)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except LookupError as exc:
@@ -66,7 +66,7 @@ def skill_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
     async def delete_skill(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         try:
-            metadata = await run_in_threadpool(service.delete_skill, name)
+            metadata = await run_in_threadpool(service.skill_admin.delete_skill, name)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except LookupError as exc:

@@ -299,10 +299,10 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         ).copied_count
         == 1
     )
-    assert worker.read_session_artifact_text("session-1", "reports/summary.txt") == (
+    assert worker.vm_agent_admin.read_session_artifact_text("session-1", "reports/summary.txt") == (
         "daily summary\n"
     )
-    assert worker.delete_session("session-1") == {"deleted": True, "session_id": "session-1"}
+    assert worker.vm_agent_admin.delete_session("session-1") == {"deleted": True, "session_id": "session-1"}
     assert seen == [
         ("POST", "/v1/sessions"),
         ("POST", "/v1/sessions/session-1/repo"),

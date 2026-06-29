@@ -122,7 +122,7 @@ def register_agent_tools(
                 vm_user=vm_user,
             )
             safe_lines = max(1, min(lines, 1000))
-            logs = deps.admin_service_factory().get_agent_log_snapshot(
+            logs = deps.admin_runtime_factory().vm_agent_admin.get_agent_log_snapshot(
                 vm_name,
                 lines=safe_lines,
                 repo_name=repo_name,

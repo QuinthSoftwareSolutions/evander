@@ -6,7 +6,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 
 
@@ -72,7 +72,7 @@ def test_admin_web_exposes_enabled_addon_routes_and_navigation(tmp_path: Path, m
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
-    client = TestClient(create_app(AdminService(_write_config(tmp_path, module_name="admin_addon"))))
+    client = TestClient(create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon"))))
 
     state = client.get("/api/admin/state")
     assert state.status_code == 200
@@ -110,7 +110,7 @@ def test_admin_web_addon_api_routes_follow_admin_auth(
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
-    client = TestClient(create_app(AdminService(_write_config(tmp_path, module_name="admin_addon"))))
+    client = TestClient(create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon"))))
 
     response = client.get("/api/addons/team-addon/ping")
 
@@ -129,7 +129,7 @@ def test_admin_web_addon_ui_routes_follow_admin_auth(
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
-    client = TestClient(create_app(AdminService(_write_config(tmp_path, module_name="admin_addon"))))
+    client = TestClient(create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon"))))
 
     response = client.get("/addons/team-addon/")
 

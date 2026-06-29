@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.bootstrap import load_host_bootstrap_config
 from agent_sandbox.directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES
 from agent_sandbox.gateway.session_context import _resolve_session_id_from_context
@@ -67,8 +67,8 @@ def register_admin_tools(
 ) -> None:
     """Register admin tools with the MCP gateway server."""
 
-    def _admin_service() -> AdminService:
-        return deps.admin_service_factory()
+    def _admin_runtime() -> AdminRuntimeComponents:
+        return deps.admin_runtime_factory()
 
     @server.tool()
     def assistant_read_status(
@@ -83,9 +83,9 @@ def register_admin_tools(
             session = context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_READ_STATUS
             )
-            service = _admin_service()
-            settings = service.read_assistant_settings()
-            workflow_runs = service.read_workflow_run_snapshot()
+            runtime = _admin_runtime()
+            settings = runtime.operations_admin.read_assistant_settings()
+            workflow_runs = runtime.workflow_config_admin.read_workflow_run_snapshot()
             result = {
                 "assistant": {
                     "enabled": bool(settings.get("enabled")),
@@ -138,7 +138,7 @@ def register_admin_tools(
             )
             list_all_directories = bool(all_directories and not directory_path)
             target_directory = directory_path or session.directory_path
-            records = _admin_service().list_agents(
+            records = _admin_runtime().vm_agent_admin.list_agents(
                 directory_path=target_directory,
                 direct_only=False,
                 include_inactive=include_inactive,
@@ -200,11 +200,11 @@ def register_admin_tools(
         args = {"session_id": resolved_session_id, "include_runs": include_runs}
         try:
             context.policy.require_tool(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT)
-            service = _admin_service()
-            document = service.read_workflow_editor_document()
+            runtime = _admin_runtime()
+            document = runtime.workflow_config_admin.read_workflow_editor_document()
             result = document.model_dump(mode="json")
             if include_runs:
-                runs = service.read_workflow_run_snapshot()
+                runs = runtime.workflow_config_admin.read_workflow_run_snapshot()
                 result["runs"] = runs.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -245,15 +245,15 @@ def register_admin_tools(
             context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS
             )
-            service = _admin_service()
-            document = service.read_workflow_editor_document()
+            runtime = _admin_runtime()
+            document = runtime.workflow_config_admin.read_workflow_editor_document()
             result = {
                 "config_path": document.config_path,
                 "revision": document.revision,
                 "config": document.config,
             }
             if include_runs:
-                runs = service.read_workflow_run_snapshot()
+                runs = runtime.workflow_config_admin.read_workflow_run_snapshot()
                 result["runs"] = runs.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -302,10 +302,11 @@ def register_admin_tools(
         }
 
         def directory_snapshot(
-            service: AdminService,
+            runtime: AdminRuntimeComponents,
             target_directory: str,
             target_domain: str,
         ) -> dict[str, Any]:
+            operations = runtime.operations_admin
             snapshot: dict[str, Any] = {
                 "scope": "directory",
                 "domain": target_domain,
@@ -314,7 +315,7 @@ def register_admin_tools(
             if target_domain == "gateway":
                 snapshot["raw"] = None
             else:
-                raw_result = service.read_directory_domain_config(
+                raw_result = operations.read_directory_domain_config(
                     target_directory, target_domain
                 )
                 raw_payload = _admin_result_payload_or_raise(
@@ -328,7 +329,7 @@ def register_admin_tools(
                 }
 
             if include_effective or target_domain == "gateway":
-                effective_result = service.compute_directory_effective_config(
+                effective_result = operations.compute_directory_effective_config(
                     target_directory, target_domain
                 )
                 effective_payload = _admin_result_payload_or_raise(
@@ -365,24 +366,26 @@ def register_admin_tools(
             session = context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_READ_CONFIG
             )
-            service = _admin_service()
+            runtime = _admin_runtime()
+            operations = runtime.operations_admin
+            workflow_config = runtime.workflow_config_admin
             normalized_scope = str(scope or "directory").strip() or "directory"
             normalized_domain = str(domain or "").strip()
 
             if normalized_scope == "global":
                 target_domain = normalized_domain or "assistant_settings"
                 if target_domain == "assistant_settings":
-                    path = service.assistant_settings_path()
+                    path = operations.assistant_settings_path()
                     result = {
                         "scope": "global",
                         "domain": target_domain,
                         "path": str(path),
                         "exists": path.exists(),
-                        "config": service.read_assistant_settings(),
+                        "config": operations.read_assistant_settings(),
                     }
                 elif target_domain == "host":
                     host_config = load_host_bootstrap_config(
-                        runtime_dir=service.config.runtime_dir
+                        runtime_dir=runtime.config.runtime_dir
                     )
                     result = {
                         "scope": "global",
@@ -395,7 +398,7 @@ def register_admin_tools(
                         "scope": "global",
                         "domain": target_domain,
                         "config_kind": "effective_root_gateway",
-                        "config": service.config.model_dump(mode="json"),
+                        "config": runtime.config.model_dump(mode="json"),
                     }
                 else:
                     raise ValueError(
@@ -416,7 +419,7 @@ def register_admin_tools(
                     raise ValueError(
                         "worker_id is required for worker_global config reads"
                     )
-                payload = service.read_worker_global_config(
+                payload = workflow_config.read_worker_global_config(
                     target_worker_id
                 ).model_dump(mode="json")
                 result = {"scope": "worker_global", **payload}
@@ -439,7 +442,7 @@ def register_admin_tools(
 
             target_directory = directory_path or session.directory_path
             if normalized_domain:
-                result = directory_snapshot(service, target_directory, normalized_domain)
+                result = directory_snapshot(runtime, target_directory, normalized_domain)
                 audit_result = {
                     "scope": "directory",
                     "directory_path": target_directory,
@@ -449,7 +452,7 @@ def register_admin_tools(
             else:
                 snapshots = {
                     target_domain: directory_snapshot(
-                        service,
+                        runtime,
                         target_directory,
                         target_domain,
                     )
@@ -509,12 +512,13 @@ def register_admin_tools(
             session = context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_UPSERT_CONFIG
             )
-            service = _admin_service()
+            runtime = _admin_runtime()
+            operations = runtime.operations_admin
             normalized_domain = str(domain or "").strip()
             if normalized_domain == "assistant_settings":
                 _assistant_require_writable_scope(session, "config/assistant")
-                before = service.read_assistant_settings()
-                after = service.write_assistant_settings(payload)
+                before = operations.read_assistant_settings()
+                after = operations.write_assistant_settings(payload)
                 result = {
                     "status": "success",
                     "domain": normalized_domain,
@@ -524,10 +528,10 @@ def register_admin_tools(
             else:
                 _assistant_require_writable_scope(session, "config/directory")
                 target_directory = directory_path or session.directory_path
-                before_payload = service.read_directory_domain_config(
+                before_payload = operations.read_directory_domain_config(
                     target_directory, normalized_domain
                 )
-                write_result = service.write_directory_domain_config(
+                write_result = operations.write_directory_domain_config(
                     target_directory, normalized_domain, payload
                 )
                 after_payload = (
@@ -588,11 +592,11 @@ def register_admin_tools(
                 resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW
             )
             _assistant_require_writable_scope(session, "config/workflow")
-            service = _admin_service()
-            before = service.read_workflow_editor_document(
+            workflow_config = _admin_runtime().workflow_config_admin
+            before = workflow_config.read_workflow_editor_document(
                 workflow_pack=workflow_pack
             ).config
-            saved = service.save_workflow_editor_document(
+            saved = workflow_config.save_workflow_editor_document(
                 config=config,
                 layout=layout,
                 workflow_pack=workflow_pack,
@@ -648,15 +652,15 @@ def register_admin_tools(
                 resolved_session_id, ToolName.ASSISTANT_RUN_SAFE_OPERATION
             )
             _assistant_require_writable_scope(session, "runtime/agents")
-            service = _admin_service()
+            workflow_config = _admin_runtime().workflow_config_admin
             params = parameters or {}
             normalized_operation = str(operation or "").strip()
             if normalized_operation == "clear_workflow_run":
-                result_payload = service.clear_workflow_run(
+                result_payload = workflow_config.clear_workflow_run(
                     str(params.get("event_id") or "")
                 )
             elif normalized_operation == "resume_workflow_run":
-                result_payload = service.resume_workflow_run(
+                result_payload = workflow_config.resume_workflow_run(
                     str(params.get("event_id") or "")
                 )
             else:

@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import (
@@ -312,9 +312,9 @@ def test_semantic_upsert_uses_session_directory_config_and_payload(
     install_semantic_fakes(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("QDRANT_API_KEY", "qdrant-key")
-    service = AdminService(tmp_path)
-    service.create_directory_child("root", "team")
-    service.write_directory_domain_config(
+    service = build_admin_runtime(tmp_path)
+    service.directory_admin.create_child("root", "team")
+    service.operations_admin.write_directory_domain_config(
         "root/team",
         "providers",
         {"qdrant_base_url": "http://qdrant.team"},

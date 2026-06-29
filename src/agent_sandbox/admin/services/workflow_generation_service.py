@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import httpx
 
-    from agent_sandbox.admin.service import (
+    from agent_sandbox.admin.payloads import (
         WorkflowEditorCatalogPayload,
         WorkflowEditorGeneratedDraftPayload,
         WorkflowEditorGraphMetadata,
@@ -46,7 +46,7 @@ class WorkflowGenerationAdminDependencies:
 
 
 class WorkflowGenerationAdminService:
-    """Workflow draft generation operations extracted from AdminService."""
+    """Workflow draft generation operations."""
 
     def __init__(self, dependencies: WorkflowGenerationAdminDependencies) -> None:
         self.config = dependencies.config
@@ -193,7 +193,7 @@ class WorkflowGenerationAdminService:
             graphs=[graph.model_dump(mode="json") for graph in graphs],
             base_config={},
         )
-        from agent_sandbox.admin.service import WorkflowEditorGeneratedDraftPayload
+        from agent_sandbox.admin.payloads import WorkflowEditorGeneratedDraftPayload
 
         return WorkflowEditorGeneratedDraftPayload(
             model=model,
@@ -501,7 +501,7 @@ class WorkflowGenerationAdminService:
         list["WorkflowEditorGraphMetadata"],
         list[str],
     ]:
-        from agent_sandbox.admin.service import WorkflowEditorGraphMetadata
+        from agent_sandbox.admin.payloads import WorkflowEditorGraphMetadata
 
         catalog_by_type = {entry.type: entry for entry in catalog.nodes}
         nodes_payload = payload.get("nodes")

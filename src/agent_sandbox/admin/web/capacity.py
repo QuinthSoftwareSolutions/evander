@@ -9,7 +9,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
@@ -27,13 +27,13 @@ def _jsonable(value: Any) -> Any:
 
 
 def capacity_routes(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     _auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
     async def get_capacity_health(_: Request) -> JSONResponse:
         try:
-            payload = await run_in_threadpool(service.read_capacity_health)
+            payload = await run_in_threadpool(service.capacity_health_admin.read_capacity_health)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except Exception as exc:

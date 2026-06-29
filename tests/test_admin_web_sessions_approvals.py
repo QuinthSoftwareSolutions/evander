@@ -10,8 +10,7 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-import agent_sandbox.admin.service as admin_service
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.admin.web.shared import AdminWebAuth, AdminWebConfig
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
@@ -122,7 +121,7 @@ def test_mcp_tools_page_renders_tool_descriptions() -> None:
 
 
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
@@ -251,7 +250,7 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
 
 
 def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
@@ -285,7 +284,7 @@ def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_p
 
 
 def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
@@ -338,7 +337,7 @@ def test_admin_web_uses_authenticated_identity_for_approval_decision(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
@@ -380,7 +379,7 @@ def test_admin_web_uses_authenticated_identity_for_approval_decision(
 
 
 def test_admin_web_revokes_valid_approved_approval(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
@@ -435,7 +434,7 @@ def test_admin_web_revokes_valid_approved_approval(tmp_path: Path) -> None:
 
 
 def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14085-session",
@@ -665,7 +664,7 @@ def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
         encoding="utf-8",
     )
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/sessions/catalog")
@@ -687,7 +686,7 @@ def test_admin_web_sessions_catalog_returns_empty_model_options_when_pricing_cat
         "AGENT_SANDBOX_MODEL_PRICING_PATH",
         str(tmp_path / "runtime" / "missing-pricing.json"),
     )
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/sessions/catalog")
@@ -701,7 +700,7 @@ def test_admin_web_sessions_catalog_returns_empty_model_options_when_pricing_cat
 def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     explicit_session_id = "libvirt-explicit"
     default_session_id = "libvirt-default"
     legacy_session_id = "libvirt-legacy"
@@ -836,7 +835,7 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
     config_path = write_config(tmp_path)
     with config_path.open("a", encoding="utf-8") as handle:
         handle.write("\nenable_directory_scoped_config: true\n")
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     auth = AdminWebAuth(AdminWebConfig.from_env())
     routes = session_approval_routes(service, auth)
     get_mcp_tools = next(
@@ -896,7 +895,7 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
     )
     assert locked_response.status_code == 403
 
-    service.unlock_privileged_operations()
+    service.operations_admin.unlock_privileged_operations()
     update_request = _admin_json_request(
         method="PUT",
         path="/api/admin/mcp-tools",
@@ -932,7 +931,7 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
         "payload_mode": "exact",
     }
     assert by_tool["get_agent_status"]["denied"] is True
-    stored = service.read_directory_domain_config("root", "policy")
+    stored = service.operations_admin.read_directory_domain_config("root", "policy")
     assert stored.ok
     assert stored.data is not None
     assert stored.data.config["mcp_tool_policies"]["get_agent_status"]["denied"] is True
@@ -941,7 +940,7 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
 def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
     service.runtime.session_repository.upsert_session(
@@ -1033,7 +1032,7 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
 def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
     service.runtime.session_repository.upsert_session(
@@ -1122,8 +1121,8 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
 
 
 def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.operations_admin.write_directory_domain_config(
         "root",
         "contacts",
         {
@@ -1274,7 +1273,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
 
 
 def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14085-session",
@@ -1293,7 +1292,7 @@ def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> No
 
 
 def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14085-session",
@@ -1314,7 +1313,7 @@ def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
 
 
 def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1359,7 +1358,7 @@ def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
 
 
 def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1368,7 +1367,7 @@ def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    failed = service.create_wake_schedule(
+    failed = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Resume work",
         resume_at=datetime.now(UTC) + timedelta(minutes=10),
@@ -1387,7 +1386,7 @@ def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
             error="stack trace\nsecret token",
         )
     )
-    completed = service.create_wake_schedule(
+    completed = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Already finished",
         resume_at=datetime.now(UTC) + timedelta(minutes=20),
@@ -1443,7 +1442,7 @@ def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
 
 
 def test_admin_web_lists_dispatched_wakes_with_confirmation_state(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1452,7 +1451,7 @@ def test_admin_web_lists_dispatched_wakes_with_confirmation_state(tmp_path: Path
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    dispatched = service.create_wake_schedule(
+    dispatched = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Still waiting",
         resume_at=datetime.now(UTC) + timedelta(minutes=20),
@@ -1490,7 +1489,7 @@ def test_admin_web_lists_dispatched_wakes_with_confirmation_state(tmp_path: Path
 
 
 def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1499,7 +1498,7 @@ def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    completed = service.create_wake_schedule(
+    completed = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Already finished",
         resume_at=datetime.now(UTC) + timedelta(minutes=20),
@@ -1534,7 +1533,7 @@ def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
 
 
 def test_admin_web_reschedules_failed_wake_with_resume_at(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1543,7 +1542,7 @@ def test_admin_web_reschedules_failed_wake_with_resume_at(tmp_path: Path) -> Non
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    failed = service.create_wake_schedule(
+    failed = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Resume work",
         resume_at=datetime.now(UTC) + timedelta(minutes=10),
@@ -1580,7 +1579,7 @@ def test_admin_web_reschedules_failed_wake_with_resume_at(tmp_path: Path) -> Non
 
 
 def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1589,7 +1588,7 @@ def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Pa
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    service.create_wake_schedule(
+    service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Resume work",
         cron="*/30 * * * *",
@@ -1609,7 +1608,7 @@ def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Pa
 
 
 def test_admin_web_session_detail_exposes_cancelled_wake_history(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1618,7 +1617,7 @@ def test_admin_web_session_detail_exposes_cancelled_wake_history(tmp_path: Path)
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    created = service.create_wake_schedule(
+    created = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Resume work later",
         resume_at=datetime.now(UTC) + timedelta(hours=1),
@@ -1646,7 +1645,7 @@ def test_admin_web_session_detail_exposes_cancelled_wake_history(tmp_path: Path)
 
 
 def test_admin_web_rejects_cancelled_wake_schedule_reenable(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
@@ -1655,7 +1654,7 @@ def test_admin_web_rejects_cancelled_wake_schedule_reenable(tmp_path: Path) -> N
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
-    created = service.create_wake_schedule(
+    created = service.operations_admin.create_wake_schedule(
         session_id="issue-14086-session",
         prompt="Resume work later",
         resume_at=datetime.now(UTC) + timedelta(hours=1),
@@ -1698,7 +1697,7 @@ def test_admin_web_rejects_cancelled_wake_schedule_reenable(tmp_path: Path) -> N
 
 
 def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14087-session",

@@ -168,7 +168,7 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(event_id=event.event_id)
 
-    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(watcher, "AdminRuntimeComponents", _AdminServiceStub)
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     monkeypatch.setattr(watcher.time, "sleep", lambda _: None)
     wake_paths: list[Path] = []
@@ -263,7 +263,7 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(event_id=event.event_id)
 
-    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(watcher, "AdminRuntimeComponents", _AdminServiceStub)
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     monkeypatch.setattr(watcher, "notify_wake_socket_for_lock", lambda lock_path: True)
 
@@ -331,7 +331,7 @@ def test_await_agent_completion_uses_configured_event_queue_path(
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(event_id=event.event_id)
 
-    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(watcher, "AdminRuntimeComponents", _AdminServiceStub)
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     wake_paths: list[Path] = []
     monkeypatch.setattr(

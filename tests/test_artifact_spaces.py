@@ -188,7 +188,7 @@ def test_artifact_space_effects_and_queries(tmp_path: Path) -> None:
 def test_artifact_space_admin_api(tmp_path: Path) -> None:
     from starlette.testclient import TestClient
 
-    from agent_sandbox.admin.service import AdminService
+    from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
     from agent_sandbox.admin.web.app import create_app
 
     config_path = tmp_path / "gateway.yaml"
@@ -204,7 +204,7 @@ def test_artifact_space_admin_api(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    client = TestClient(create_app(AdminService(config_path)))
+    client = TestClient(create_app(build_admin_runtime(config_path)))
     upload = client.post(
         "/api/admin/artifacts/uploads",
         data={"key": "uploads/spec"},

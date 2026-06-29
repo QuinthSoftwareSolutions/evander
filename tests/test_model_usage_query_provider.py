@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.events.provider_models import ModelUsageListQueryDefinition
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
@@ -92,7 +92,7 @@ def test_admin_service_list_model_usage_events_delegates_to_model_usage_admin(
 
     model_usage_admin = _ModelUsageAdminServiceStub(store)
     runtime_stub = SimpleNamespace(model_usage_admin=model_usage_admin)
-    events = AdminService.list_model_usage_events(
+    events = AdminRuntimeComponents.list_model_usage_events(
         runtime_stub,
         directory_path="root/team-a",
         include_directory_descendants=True,

@@ -21,8 +21,8 @@ import typer
 from pydantic import ValidationError
 from typer.core import TyperGroup
 
-from agent_sandbox.admin.service import (
-    AdminService,
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from agent_sandbox.admin.services.issue_setup_helpers import (
     resolve_agent_model_for_manifest,
     resolve_effective_issue_setup_config,
 )
@@ -39,6 +39,7 @@ from agent_sandbox.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
     normalize_model_provider_mode_override,
 )
+from agent_sandbox.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from agent_sandbox.messaging.discord_wake import build_discord_wake_worker
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
@@ -205,7 +206,9 @@ def _build_execution_backend_from_option(config: Path):
     cfg = _load_runtime_config_from_option(config)
     return build_execution_backend(
         cfg,
-        admin_service=AdminService(config) if str(cfg.execution_backend) == "libvirt_vm" else None,
+        admin_service=AdminRuntimeProviderAdapter(build_admin_runtime(config))
+        if str(cfg.execution_backend) == "libvirt_vm"
+        else None,
         project_dir=_project_dir_for_config_option(config),
     )
 
@@ -268,7 +271,7 @@ def _build_execution_backend_for_kind(
     )
     return build_execution_backend(
         libvirt_cfg,
-        admin_service=AdminService(config_path),
+        admin_service=AdminRuntimeProviderAdapter(build_admin_runtime(config_path)),
         project_dir=_project_dir_for_config_option(config_path),
     )
 
@@ -968,16 +971,16 @@ def execution_smoke_container_worker(
     typer.echo(run2_logs, nl=False)
 
 
-def _teams_auth_service(config: ConfigOption) -> AdminService:
-    return AdminService(config)
+def _teams_auth_service(config: ConfigOption) -> AdminRuntimeComponents:
+    return build_admin_runtime(config)
 
 
-def _teams_auth_call(service: AdminService, action: str, **kwargs: object) -> object:
-    method = getattr(service, f"teams_auth_{action}", None)
+def _teams_auth_call(service: AdminRuntimeComponents, action: str, **kwargs: object) -> object:
+    method = getattr(service.teams_admin, action, None)
     if not callable(method):
         raise typer.BadParameter(
             f"Teams auth {action} is unavailable in this build. "
-            f"Expected AdminService.teams_auth_{action}()."
+            f"Expected TeamsAdminFacade.{action}()."
         )
     return method(**kwargs)
 
@@ -1549,8 +1552,8 @@ def directories_list(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
 ) -> None:
-    service = AdminService(config)
-    result = service.directory_admin.list(parent)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.directory_admin.list(parent)
     _echo_admin_result_or_exit(result)
     payload = result.data
     assert payload is not None
@@ -1562,8 +1565,8 @@ def directories_show(
     reference: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
-    result = service.get_directory(reference)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.directory_admin.get(reference)
     _echo_admin_result_or_exit(result)
     payload = result.data
     assert payload is not None
@@ -1576,8 +1579,8 @@ def directories_create(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
 ) -> None:
-    service = AdminService(config)
-    result = service.create_directory_child(parent, name)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.directory_admin.create_child(parent=parent, name=name)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(result.data.details.directory.path)
@@ -1589,8 +1592,8 @@ def directories_rename(
     new_name: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
-    result = service.directory_admin.update(reference, new_name=new_name)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.directory_admin.update(reference, new_name=new_name)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(result.data.details.directory.path)
@@ -1604,8 +1607,8 @@ def directories_move(
         str, typer.Option("--new-parent", help="New parent directory path or id.")
     ] = "root",
 ) -> None:
-    service = AdminService(config)
-    result = service.directory_admin.update(reference, new_parent=new_parent)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.directory_admin.update(reference, new_parent=new_parent)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(result.data.details.directory.path)
@@ -1619,8 +1622,8 @@ def directories_delete(
         bool, typer.Option("--recursive", help="Delete non-empty directories recursively.")
     ] = False,
 ) -> None:
-    service = AdminService(config)
-    result = service.directory_admin.delete(reference, recursive=recursive)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.directory_admin.delete(reference, recursive=recursive)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
@@ -1634,9 +1637,10 @@ def directories_config_show(
     domain: Annotated[str, typer.Option("--domain", help="Directory config domain name.")],
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
-    raw_result = service.read_directory_domain_config(reference, domain)
-    effective_result = service.compute_directory_effective_config(reference, domain)
+    admin_runtime = build_admin_runtime(config)
+    operations = admin_runtime.operations_admin
+    raw_result = operations.read_directory_domain_config(reference, domain)
+    effective_result = operations.compute_directory_effective_config(reference, domain)
     _echo_admin_result_or_exit(raw_result)
     _echo_admin_result_or_exit(effective_result)
     assert raw_result.data is not None
@@ -1669,8 +1673,8 @@ def directories_config_set(
         raise typer.BadParameter(f"invalid JSON payload: {exc}") from exc
     if not isinstance(parsed, dict):
         raise typer.BadParameter("config payload must be a JSON object")
-    service = AdminService(config)
-    result = service.write_directory_domain_config(reference, domain, parsed)
+    admin_runtime = build_admin_runtime(config)
+    result = admin_runtime.operations_admin.write_directory_domain_config(reference, domain, parsed)
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
@@ -2849,7 +2853,7 @@ def delete_session(
     target: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     try:
         result = service.delete_session(target)
     except ValueError as exc:
@@ -2866,10 +2870,10 @@ def delete_session(
 def delete_expired_sessions(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    admin_runtime = build_admin_runtime(config)
     sessions = {
         session.session_id: session
-        for session in service.runtime.session_repository.list_sessions()
+        for session in admin_runtime.runtime.session_repository.list_sessions()
     }
     now = datetime.now(UTC)
     expired_session_ids = [
@@ -2879,7 +2883,7 @@ def delete_expired_sessions(
     skipped: list[str] = []
     for session_id in expired_session_ids:
         try:
-            service.delete_session(session_id)
+            admin_runtime.vm_agent_admin.delete_session(session_id)
         except ValueError as exc:
             skipped.append(f"{session_id}: {exc}")
             continue
@@ -2900,7 +2904,7 @@ def destroy_vm(
     target: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     result = service.destroy_vm(target)
     _echo_action_result_or_exit(result)
 
@@ -3081,7 +3085,7 @@ def list_vms(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     if as_json:
-        service = AdminService(config)
+        service = build_admin_runtime(config).vm_agent_admin
         payload = [
             summary.model_dump(mode="json")
             for summary in service.list_vms(
@@ -3116,7 +3120,7 @@ def start_vm(
     target: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     _echo_action_result_or_exit(service.start_vm(target))
 
 
@@ -3133,7 +3137,7 @@ def shutdown_vm(
         typer.Option("--timeout-seconds", min=1, help="How long to wait for graceful shutdown."),
     ] = 60,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     _echo_action_result_or_exit(service.shutdown_vm(target, timeout_seconds=timeout_seconds))
 
 
@@ -3166,7 +3170,7 @@ def create_issue(
         ),
     ] = None,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).issue_git_admin
     issue = service.create_issue(
         title=title,
         body=body,
@@ -3206,7 +3210,7 @@ def create_local_issue(
         ),
     ] = None,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).issue_git_admin
     issue = service.create_local_issue(
         title=title,
         body=body,
@@ -3228,7 +3232,7 @@ def list_issues(
         typer.Option("--json", help="Emit machine-readable local issue records."),
     ] = False,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).issue_git_admin
     issues = service.list_issues()
     if as_json:
         typer.echo(
@@ -3286,7 +3290,7 @@ def get_issue(
         typer.Option("--json", help="Emit machine-readable issue details."),
     ] = False,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).issue_git_admin
     payload = service.get_issue(
         issue_id,
         include_remote_comments=include_remote_comments,
@@ -3326,7 +3330,7 @@ def add_issue_comment(
         typer.Option("--json", help="Emit machine-readable write result."),
     ] = False,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).issue_git_admin
     payload = service.add_issue_comment(
         issue_id, comment, sync_proxy_cache=sync_proxy_cache
     )
@@ -3362,7 +3366,7 @@ def set_issue_state(
         typer.Option("--json", help="Emit machine-readable write result."),
     ] = False,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).issue_git_admin
     payload = service.set_issue_state(
         issue_id, state, sync_proxy_cache=sync_proxy_cache
     )
@@ -3431,7 +3435,7 @@ def logs(
         _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
         return
 
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     output = service.get_agent_log_snapshot(
         target, lines=lines, repo_name=repo_name, vm_user=vm_user
     )
@@ -3536,7 +3540,7 @@ def resume_agent(
     normalized = target.strip()
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    admin = AdminService(config)
+    admin = build_admin_runtime(config).vm_agent_admin
     sessions = _runtime_sessions_by_id(runtime)
     try:
         resolved_session_id, _ = _resolve_session_target(normalized, sessions)
@@ -3727,7 +3731,7 @@ def create_vm(
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     result = service.create_vm(
         vm_name=vm_name,
         session_id=session_id,
@@ -3778,7 +3782,7 @@ def clone_repo_into_vm(
     ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     result = service.clone_repo_into_vm(
         vm_name=vm_name,
         session_id=session_id,
@@ -3815,7 +3819,7 @@ def bootstrap_python_in_vm(
     ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     result = service.bootstrap_python_in_vm(
         vm_name=vm_name,
         session_id=session_id,
@@ -3853,7 +3857,7 @@ def bootstrap_frontend_in_vm(
     ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     result = service.bootstrap_frontend_in_vm(
         vm_name=vm_name,
         session_id=session_id,
@@ -3948,7 +3952,7 @@ def create_issue_vm(
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
-    service = AdminService(config)
+    service = build_admin_runtime(config).vm_agent_admin
     result = service.create_issue_vm(
         issue=issue,
         session_id=session_id,
@@ -4164,7 +4168,7 @@ def approve(
         str, typer.Option("--reason", help="Operator-entered reason for the decision.")
     ] = "",
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).approval_audit_admin
     normalized_reason = reason.strip() or ("approved-via-cli" if approve else "denied-via-cli")
     try:
         request = service.decide_approval_request(
@@ -4207,7 +4211,7 @@ def list_approvals(
         bool, typer.Option("--show-payload", help="Show redacted payloads inline.")
     ] = False,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).approval_audit_admin
     statuses = set(status) or None
     health = service.approval_queue_health(
         statuses=statuses,
@@ -4265,7 +4269,7 @@ def show_approval(
     request_id: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).approval_audit_admin
     try:
         payload = service.get_approval_review(request_id)
     except ValueError as exc:
@@ -4377,7 +4381,7 @@ def wake_schedule_create(
 ) -> None:
     if bool(resume_at) == bool(cron):
         raise typer.BadParameter("Provide exactly one of --resume-at or --cron.")
-    service = AdminService(config)
+    service = build_admin_runtime(config).operations_admin
     parsed_resume_at = _parse_utc_datetime(resume_at) if resume_at else None
     try:
         created = service.create_wake_schedule(
@@ -4416,7 +4420,7 @@ def wake_schedule_list(
     include_disabled: Annotated[bool, typer.Option("--include-disabled/--enabled-only")] = True,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).operations_admin
     schedules = service.list_wake_schedules(
         session_id=session_id, include_disabled=include_disabled
     )
@@ -4441,7 +4445,7 @@ def wake_schedule_edit(
     ] = None,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).operations_admin
     parsed_resume_at = _parse_utc_datetime(resume_at) if resume_at else None
     try:
         updated = service.edit_wake_schedule(
@@ -4477,7 +4481,7 @@ def wake_schedule_delete(
     request_id: Annotated[str, typer.Argument(help="Wake schedule request id.")],
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    service = AdminService(config)
+    service = build_admin_runtime(config).operations_admin
     deleted = service.delete_wake_schedule(request_id)
     if not deleted:
         raise typer.BadParameter(f"Wake schedule not found: {request_id}")

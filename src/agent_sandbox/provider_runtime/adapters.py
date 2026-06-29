@@ -12,97 +12,133 @@ from agent_sandbox.provider_config import (
 from agent_sandbox.provider_runtime.contracts import ProviderRuntimePorts
 
 
-class AdminServiceProviderAdapter:
+class AdminRuntimeProviderAdapter:
     """Narrow provider-runtime adapter over a host runtime object."""
 
-    def __init__(self, admin_service: object) -> None:
-        self._admin_service = admin_service
+    def __init__(self, admin_runtime: object) -> None:
+        self._admin_runtime = admin_runtime
+        self.runtime = getattr(admin_runtime, "runtime", None)
+        self.config = getattr(admin_runtime, "config", None)
+        self.project_dir = getattr(admin_runtime, "project_dir", None)
+        self.vm_agent_admin = getattr(admin_runtime, "vm_agent_admin", None)
+        self.issue_git_admin = getattr(admin_runtime, "issue_git_admin", None)
+
+    def _vm_agent_admin(self) -> object:
+        return self.vm_agent_admin or self._admin_runtime
+
+    def _issue_git_admin(self) -> object:
+        return self.issue_git_admin or self._admin_runtime
+
+    def _operations_admin(self) -> object:
+        return getattr(self._admin_runtime, "operations_admin", self._admin_runtime)
+
+    def _skill_admin(self) -> object:
+        return getattr(self._admin_runtime, "skill_admin", self._admin_runtime)
 
     def create_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.create_vm(**kwargs)
+        return self._vm_agent_admin().create_vm(**kwargs)
 
     def resolve_vm_defaults(self, directory_path: str) -> Any:
-        return self._admin_service.resolve_vm_defaults(directory_path)
+        return self._vm_agent_admin().resolve_vm_defaults(directory_path)
 
     def clone_repo_into_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.clone_repo_into_vm(**kwargs)
+        return self._vm_agent_admin().clone_repo_into_vm(**kwargs)
 
     def bootstrap_python_in_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.bootstrap_python_in_vm(**kwargs)
+        return self._vm_agent_admin().bootstrap_python_in_vm(**kwargs)
 
     def bootstrap_frontend_in_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.bootstrap_frontend_in_vm(**kwargs)
+        return self._vm_agent_admin().bootstrap_frontend_in_vm(**kwargs)
 
     def resume_agent(self, **kwargs: Any) -> Any:
-        return self._admin_service.resume_agent(**kwargs)
+        return self._vm_agent_admin().resume_agent(**kwargs)
 
     def start_vm(self, target: str) -> Any:
-        return self._admin_service.start_vm(target)
+        return self._vm_agent_admin().start_vm(target)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> Any:
-        return self._admin_service.shutdown_vm(target, timeout_seconds=timeout_seconds)
+        return self._vm_agent_admin().shutdown_vm(target, timeout_seconds=timeout_seconds)
 
     def list_vms(self, **kwargs: Any) -> list[Any]:
-        return self._admin_service.list_vms(**kwargs)
+        return self._vm_agent_admin().list_vms(**kwargs)
 
     def vm_exec(self, **kwargs: Any) -> Mapping[str, Any]:
-        return self._admin_service.vm_exec(**kwargs)
+        return self._vm_agent_admin().vm_exec(**kwargs)
 
     def vm_copy_files(self, **kwargs: Any) -> Mapping[str, Any]:
-        return self._admin_service.vm_copy_files(**kwargs)
+        return self._vm_agent_admin().vm_copy_files(**kwargs)
 
     def vm_delete_files(self, **kwargs: Any) -> Mapping[str, Any]:
-        return self._admin_service.vm_delete_files(**kwargs)
+        return self._vm_agent_admin().vm_delete_files(**kwargs)
 
     def read_all_sessions(self) -> Mapping[str, Any]:
-        runtime = getattr(self._admin_service, "runtime", None)
+        runtime = self.runtime
         session_repository = getattr(runtime, "session_repository", None)
         if session_repository is not None:
             return {session.session_id: session for session in session_repository.list_sessions()}
         return {}
 
     def update_issue(self, issue_id: str, **kwargs: Any) -> Any:
-        return self._admin_service.update_issue(issue_id, **kwargs)
+        return self._issue_git_admin().update_issue(issue_id, **kwargs)
 
     def update_issue_metadata(self, **kwargs: Any) -> Any:
-        return self._admin_service.update_issue_metadata(**kwargs)
+        return self._issue_git_admin().update_issue_metadata(**kwargs)
 
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any:
-        return self._admin_service.session_update_metadata(target=target, metadata=metadata)
+        return self._issue_git_admin().session_update_metadata(target=target, metadata=metadata)
 
     def promote_agent_branch(self, **kwargs: Any) -> Any:
-        return self._admin_service.promote_agent_branch(**kwargs)
+        return self._issue_git_admin().promote_agent_branch(**kwargs)
 
     def push_branch(self, **kwargs: Any) -> Any:
-        return self._admin_service.push_branch(**kwargs)
+        return self._issue_git_admin().push_branch(**kwargs)
 
     def pr_create(self, **kwargs: Any) -> Any:
-        return self._admin_service.pr_create(**kwargs)
+        return self._issue_git_admin().pr_create(**kwargs)
 
     def git_pr_note_query(self, **kwargs: Any) -> Any:
-        return self._admin_service.git_pr_note_query(**kwargs)
+        return self._issue_git_admin().git_pr_note_query(**kwargs)
 
     def get_issue(self, **kwargs: Any) -> Any:
-        return self._admin_service.get_issue(**kwargs)
+        return self._issue_git_admin().get_issue(**kwargs)
 
     def list_issues(self, **kwargs: Any) -> Any:
-        return self._admin_service.list_issues(**kwargs)
+        return self._issue_git_admin().list_issues(**kwargs)
 
     def session_context_query(self, **kwargs: Any) -> Any:
-        return self._admin_service.session_context_query(**kwargs)
+        return self._issue_git_admin().session_context_query(**kwargs)
 
     def read_session_artifact_text(self, **kwargs: Any) -> Any:
-        return self._admin_service.read_session_artifact_text(**kwargs)
+        return self._vm_agent_admin().read_session_artifact_text(**kwargs)
+
+    def sync_added_discord_session_cursors(self, session_ids: list[str] | set[str]) -> None:
+        return self._vm_agent_admin().sync_added_discord_session_cursors(session_ids)
+
+    def validate_managed_codex_skills(self, skill_names: list[str]) -> list[str]:
+        return self._skill_admin().validate_managed_codex_skills(skill_names)
+
+    def destroy_vm(self, target: str) -> Any:
+        return self._vm_agent_admin().destroy_vm(target)
+
+    def delete_admin_agent(self, agent_id: str, *, backend: str | None = None) -> Any:
+        return self._vm_agent_admin().delete_admin_agent(agent_id, backend=backend)
+
+    def read_assistant_settings(self) -> dict[str, object]:
+        return self._operations_admin().read_assistant_settings()
+
+    def _resolve_issue_setup(self, directory_path: str, *, root_dir: Any) -> Any:
+        return self._vm_agent_admin()._resolve_issue_setup(directory_path, root_dir=root_dir)
 
 
 class GateProviderAdapter:
     """Narrow gate-runtime adapter over a host runtime object."""
 
-    def __init__(self, admin_service: object) -> None:
-        self._admin_service = admin_service
+    def __init__(self, admin_runtime: object) -> None:
+        self._admin_runtime = admin_runtime
 
     def list_vms(self, **kwargs: Any) -> list[Any]:
-        return self._admin_service.list_vms(**kwargs)
+        vm_agent_admin = getattr(self._admin_runtime, "vm_agent_admin", self._admin_runtime)
+        return vm_agent_admin.list_vms(**kwargs)
 
 
 def build_provider_runtime_ports(
@@ -113,7 +149,7 @@ def build_provider_runtime_ports(
     gate_adapter: object | None = None,
 ) -> ProviderRuntimePorts:
     if admin_adapter is None and admin_service is not None:
-        admin_adapter = AdminServiceProviderAdapter(admin_service)
+        admin_adapter = AdminRuntimeProviderAdapter(admin_service)
     if gate_adapter is None and admin_service is not None:
         gate_adapter = GateProviderAdapter(admin_service)
     provider_metadata = _extract_mapping_attr(provider_runtime, "metadata")
@@ -138,7 +174,7 @@ def build_provider_runtime_ports(
         issue_reader=_pick(provider_runtime, "issue_reader", admin_adapter),
         session_context_reader=_pick(provider_runtime, "session_context_reader", admin_adapter),
         session_artifact_reader=_pick(provider_runtime, "session_artifact_reader", admin_adapter),
-        admin_service=_pick(provider_runtime, "admin_service", admin_service, admin_adapter),
+        admin_service=_pick(provider_runtime, "admin_service", admin_adapter, admin_service),
         metadata=provider_metadata,
     )
 

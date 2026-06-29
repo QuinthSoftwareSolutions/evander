@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import (
     AdminWebAuth,
     json_error,
@@ -427,7 +427,7 @@ def _prewarm_key(
 def _run_chat_assistant_prewarm(
     *,
     key: tuple[str, str, str, str, str],
-    service: AdminService,
+    service: AdminRuntimeComponents,
     store: ChatStore,
     user_id: str,
     backend: str,
@@ -462,7 +462,7 @@ def _run_chat_assistant_prewarm(
 
 def _schedule_chat_assistant_prewarm(
     *,
-    service: AdminService,
+    service: AdminRuntimeComponents,
     store: ChatStore,
     user_id: str,
     backend: str,
@@ -502,7 +502,7 @@ def _schedule_chat_assistant_prewarm(
         return True
 
 
-def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
+def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Route]:
     store = ChatStore(admin_chat_store_path(service.config.runtime_dir))
 
     def user_id_for_request(request: Request) -> str:
@@ -514,7 +514,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         return "anonymous"
 
     def capability_mode(request: Request) -> str:
-        settings = service.read_assistant_settings()
+        settings = service.operations_admin.read_assistant_settings()
         if bool(settings.get("read_only")):
             return "read-only"
         if request_has_privileged_operations(auth=auth, service=service, request=request):
@@ -522,7 +522,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         return "read-only"
 
     def effective_assistant_settings(request: Request) -> dict[str, Any]:
-        settings = dict(service.read_assistant_settings())
+        settings = dict(service.operations_admin.read_assistant_settings())
         if capability_mode(request) != "full-access":
             settings["read_only"] = True
             settings["default_profile"] = "read-only"
@@ -549,7 +549,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         thread_id: str,
         force: bool = False,
     ) -> tuple[str, dict[str, str | None]]:
-        settings = service.read_assistant_settings()
+        settings = service.operations_admin.read_assistant_settings()
         effective_capability_mode = (
             "read-only" if bool(settings.get("read_only")) else capability_mode(request)
         )
@@ -675,7 +675,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return json_error("thread_id is required")
         if not content:
             return json_error("content is required")
-        settings = service.read_assistant_settings()
+        settings = service.operations_admin.read_assistant_settings()
         if not bool(settings.get("enabled")):
             return json_error("Assistant is disabled by admin settings.", status_code=403)
         user_id = user_id_for_request(request)
@@ -691,7 +691,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return json_error(str(exc), status_code=404)
         effective_capability_mode = capability_mode(request)
         try:
-            service.publish_chat_assistant_message(
+            service.operations_admin.publish_chat_assistant_message(
                 user_id=user_id,
                 thread_id=thread_id,
                 user_message_id=user_message["id"],
@@ -783,7 +783,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
 
     async def get_settings(request: Request) -> JSONResponse:
         auth.require(request)
-        return JSONResponse(service.read_assistant_settings())
+        return JSONResponse(service.operations_admin.read_assistant_settings())
 
     async def put_settings(request: Request) -> JSONResponse:
         auth.require(request)
@@ -796,7 +796,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object")
         try:
-            result = service.write_assistant_settings(payload)
+            result = service.operations_admin.write_assistant_settings(payload)
         except Exception as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse(result)

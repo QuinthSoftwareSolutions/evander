@@ -30,7 +30,7 @@ class IssueUpdateMetadataEffectProvider(EffectProviderBase):
         context = self._context()
         update_fn = getattr(context.issue_updater, "update_issue_metadata", None)
         if not callable(update_fn):
-            raise RuntimeError("AdminService.update_issue_metadata is not available")
+            raise RuntimeError("Admin runtime update_issue_metadata is not available")
 
         kwargs: dict[str, Any] = {
             "issue_id": issue_id,

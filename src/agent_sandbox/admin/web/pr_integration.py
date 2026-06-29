@@ -9,7 +9,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.rbac import WORKFLOWS_WRITE_PERMISSION
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 from agent_sandbox.pr_merge_preflight import MergePreflightMode
@@ -125,7 +125,7 @@ def _response_payload(
     return payload
 
 
-def pr_integration_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
+def pr_integration_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Route]:
     async def run_pr_integration_preflight(request: Request) -> JSONResponse:
         try:
             body = await request.json()
@@ -151,7 +151,7 @@ def pr_integration_routes(service: AdminService, auth: AdminWebAuth) -> list[Rou
 
         try:
             report = await run_in_threadpool(
-                service.run_pr_integration_preflight,
+                service.pr_integration_preflight_admin.run_pr_integration_preflight,
                 provider=payload.provider,
                 repo=payload.repo,
                 pr_ids=payload.pr_ids,

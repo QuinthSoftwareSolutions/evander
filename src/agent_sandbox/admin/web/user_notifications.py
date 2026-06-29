@@ -6,7 +6,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.user_notifications import (
     AdminUserNotificationStore,
     normalize_admin_notification_user_id,
@@ -14,7 +14,7 @@ from agent_sandbox.admin.user_notifications import (
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
 
-def user_notification_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
+def user_notification_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Route]:
     store = AdminUserNotificationStore(service.config.runtime_dir)
 
     def _current_user_id(request: Request) -> str:

@@ -21,7 +21,7 @@ class PrCreateEffectProvider(EffectProviderBase):
         context = self._context()
         pr_create = getattr(context.pull_request_creator, "pr_create", None)
         if not callable(pr_create):
-            raise RuntimeError("AdminService.pr_create is not available")
+            raise RuntimeError("Admin runtime pr_create is not available")
 
         title = self._normalize_optional_string(payload.get("title"))
         if title is None:

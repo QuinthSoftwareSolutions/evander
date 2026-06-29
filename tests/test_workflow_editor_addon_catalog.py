@@ -5,7 +5,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 
 
@@ -75,7 +75,7 @@ def _write_invalid_trigger_config_with_team_addon(tmp_path: Path) -> None:
 
 def _catalog_payload(tmp_path: Path, *, enable_team_addon: bool) -> dict[str, object]:
     _write_trigger_config(tmp_path, enable_team_addon=enable_team_addon)
-    client = TestClient(create_app(AdminService(_write_gateway_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(_write_gateway_config(tmp_path))))
     response = client.get("/api/workflow-editor/catalog?directory_path=root")
     assert response.status_code == 200
     return response.json()
@@ -160,7 +160,7 @@ def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_in
     tmp_path: Path,
 ) -> None:
     _write_invalid_trigger_config_with_team_addon(tmp_path)
-    client = TestClient(create_app(AdminService(_write_gateway_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(_write_gateway_config(tmp_path))))
 
     response = client.get("/api/workflow-editor/catalog?directory_path=root")
 

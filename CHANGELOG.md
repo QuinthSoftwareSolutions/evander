@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Removed the legacy `AdminService` facade and routed Admin Web, gateway, CLI,
+  provider runtime, and tests through the explicit `build_admin_runtime`
+  component graph and focused admin services.
+
 - Added Team Add-on workflow primitives for deterministic review routing:
   `trigger:team:deliverable-created` and
   `effect:team:create-review-request`.

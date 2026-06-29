@@ -218,7 +218,7 @@ def test_delete_session_removes_mismatched_raw_key(tmp_path) -> None:
     )
     repository = JsonSessionManifestRepository(path)
 
-    assert repository.delete_session("canonical-session") is True
+    assert repository.vm_agent_admin.delete_session("canonical-session") is True
     assert json.loads(path.read_text(encoding="utf-8")) == {}
 
 
@@ -242,8 +242,8 @@ def test_session_repository_supports_lifecycle_queries_and_mutations(tmp_path) -
     assert [session.session_id for session in repository.list_active_sessions(now=now)] == [
         "active-session"
     ]
-    assert repository.delete_session("expired-session") is True
-    assert repository.delete_session("missing-session") is False
+    assert repository.vm_agent_admin.delete_session("expired-session") is True
+    assert repository.vm_agent_admin.delete_session("missing-session") is False
 
 
 def test_session_repository_round_trips_notification_target_ids(tmp_path) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import build_admin_runtime
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
 from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
@@ -129,7 +129,7 @@ def await_agent_completion_and_publish(
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> bool:
-    admin_service = AdminService(runtime_dir=runtime_dir)
+    admin_runtime = build_admin_runtime(runtime_dir=runtime_dir)
     if orchestration_store_backend == "sqlite":
         event_queue = SqliteTriggerEventQueue(
             orchestration_store_path or runtime_dir / "orchestration.db",
@@ -149,7 +149,7 @@ def await_agent_completion_and_publish(
     started_at = time.monotonic()
 
     while time.monotonic() - started_at < timeout_seconds:
-        summaries = admin_service.list_vms(
+        summaries = admin_runtime.vm_agent_admin.list_vms(
             include_inactive=True,
             omit_state=False,
             vm_user=vm_user,
@@ -176,7 +176,7 @@ def await_agent_completion_and_publish(
             )
             already_queued = event_queue.contains(event.event_id)
             record = event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
-            _mark_wake_completed_from_event(admin_service=admin_service, event=event)
+            _mark_wake_completed_from_event(admin_service=admin_runtime, event=event)
             if not already_queued and record.event_id == event.event_id:
                 notify_wake_socket_for_lock(resolved_effect_lock_path)
             return True
