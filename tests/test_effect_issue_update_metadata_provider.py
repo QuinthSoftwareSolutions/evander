@@ -122,5 +122,5 @@ def test_issue_update_metadata_provider_requires_admin_service_method(tmp_path: 
         runtime_context=_build_context(tmp_path, SimpleNamespace()),
     )
 
-    with pytest.raises(RuntimeError, match=r"AdminRuntimeComponents\.update_issue_metadata is not available"):
+    with pytest.raises(RuntimeError, match=r"Admin runtime update_issue_metadata is not available"):
         provider.execute()

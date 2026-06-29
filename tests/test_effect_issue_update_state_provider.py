@@ -72,7 +72,7 @@ def test_issue_update_state_provider_requires_admin_service_method(tmp_path: Pat
         ),
     )
 
-    with pytest.raises(RuntimeError, match="AdminRuntimeComponents\\.update_issue is not available"):
+    with pytest.raises(RuntimeError, match="Admin runtime update_issue is not available"):
         provider.execute(resolved_config={"issue_id": "14084", "state": "In Progress"})
 
 
