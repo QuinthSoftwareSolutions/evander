@@ -3,6 +3,9 @@
 - Split the Team Add-on domain helper module into focused domain helper modules and updated
   Team services, providers, API/MCP surfaces, and tests to import those helpers directly.
 
+- Preserved `evander_team_addon.services.domain_helpers` compatibility exports for moved Team
+  review helpers so provider imports continue to survive branch merges.
+
 - Refactored the Team Add-on state repository into a storage-only persistence facade, moving
   command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
   focused Team services.
