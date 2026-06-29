@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Fixed provider-runtime adapter regressions from the admin facade removal so
+  narrow VM providers no longer advertise unavailable skill validation, model
+  usage query providers delegate through `model_usage_admin`, and tests no
+  longer import the removed `admin.service` module.
+
 - Split the remaining admin facade concerns into focused Teams, session, wake
   schedule, VM inventory, and worker-control services, and replaced private
   composition wiring with public workflow-config service ports.
