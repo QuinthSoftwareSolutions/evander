@@ -75,7 +75,9 @@ class _ModelUsageAdminServiceStub:
         return self.store.list_events(**kwargs)
 
 
-def test_admin_service_list_model_usage_events_reads_runtime_store(tmp_path: Path) -> None:
+def test_admin_service_list_model_usage_events_delegates_to_model_usage_admin(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = ModelUsageStore(runtime_dir / "model-usage.db")
     occurred_at = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
@@ -88,7 +90,8 @@ def test_admin_service_list_model_usage_events_reads_runtime_store(tmp_path: Pat
         )
     )
 
-    runtime_stub = SimpleNamespace(config=SimpleNamespace(runtime_dir=runtime_dir))
+    model_usage_admin = _ModelUsageAdminServiceStub(store)
+    runtime_stub = SimpleNamespace(model_usage_admin=model_usage_admin)
     events = AdminService.list_model_usage_events(
         runtime_stub,
         directory_path="root/team-a",
@@ -100,6 +103,25 @@ def test_admin_service_list_model_usage_events_reads_runtime_store(tmp_path: Pat
 
     assert [event.event_id for event in events] == ["event-1"]
     assert events[0].directory_path == "root/team-a"
+    assert model_usage_admin.calls == [
+        {
+            "session_id": "session-1",
+            "workflow_run_id": None,
+            "effect_id": None,
+            "dispatch_id": None,
+            "directory_path": "root/team-a",
+            "include_directory_descendants": True,
+            "provider": "openai",
+            "model": None,
+            "agent_harness": None,
+            "execution_backend": None,
+            "normalized_usage_status": None,
+            "request_status": None,
+            "occurred_after": None,
+            "occurred_before": None,
+            "limit": 1,
+        }
+    ]
 
 
 def test_model_usage_list_query_provider_filters_and_serializes_events(tmp_path: Path) -> None:

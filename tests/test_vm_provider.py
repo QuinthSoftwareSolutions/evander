@@ -153,7 +153,7 @@ def test_azure_cloud_init_adds_default_host_key_to_agent_admin(
     private_key.write_text("private-key", encoding="utf-8")
     public_key.write_text("ssh-ed25519 AAAATEST jonathan@example", encoding="utf-8")
     monkeypatch.setattr(
-        "agent_sandbox.admin.service._resolve_private_key_path",
+        "agent_sandbox.admin.services.vm_helpers.resolve_private_key_path",
         lambda: private_key,
     )
     vm_defaults = SimpleNamespace(

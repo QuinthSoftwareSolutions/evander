@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from agent_sandbox.admin.services.ports import DirectoryOwnershipPort, WorkflowConfigPort
@@ -72,6 +73,9 @@ class WorkerAdminDependencies:
 class TeamsAdminFacade:
     def __init__(self, dependencies: TeamsAdminDependencies) -> None:
         self._deps = dependencies
+
+    def normalize_directory_reference(self, reference: str | None) -> str:
+        return self._deps.normalize_directory_reference(reference)
 
     def _teams_auth_provider_for_directory(
         self,
@@ -415,6 +419,145 @@ class SessionAdminFacade:
             )
         schedules.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         return schedules
+
+    @staticmethod
+    def _normalize_wake_ledger_statuses(statuses: list[str] | None) -> list[str] | None:
+        if statuses is None:
+            return None
+        allowed_statuses = {
+            "pending",
+            "due",
+            "dispatching",
+            "queued",
+            "dispatched",
+            "failed",
+            "missed_or_late",
+            "completed_or_acknowledged",
+            "cancelled",
+        }
+        normalized_statuses: list[str] = []
+        seen: set[str] = set()
+        for status in statuses:
+            normalized = str(status or "").strip().casefold()
+            if not normalized:
+                continue
+            if normalized not in allowed_statuses:
+                raise ValueError(f"Invalid wake ledger status: {status}")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_statuses.append(normalized)
+        return normalized_statuses or None
+
+    def _wake_ledger_entry_for_request(self, request: WakeScheduledRequest) -> dict[str, Any]:
+        latest_dispatch = self._deps.runtime.wake_store.latest_dispatch_by_request_id().get(
+            request.request_id
+        )
+        status = self._deps.runtime.wake_store._ledger_status_for_request(
+            request,
+            latest_dispatch=latest_dispatch,
+        )
+        return self._deps.runtime.wake_store._ledger_entry_for_request(
+            request,
+            latest_dispatch=latest_dispatch,
+            status=status,
+        )
+
+    def list_scheduled_wake_ledger(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+        include_completed: bool = True,
+    ) -> list[dict[str, Any]]:
+        normalized_statuses = self._normalize_wake_ledger_statuses(statuses)
+        return self._deps.runtime.wake_store.list_ledger_entries(
+            session_id=session_id,
+            statuses=normalized_statuses,
+            include_completed=include_completed,
+            limit=limit,
+        )
+
+    def retry_scheduled_wake(
+        self,
+        request_id: str,
+        *,
+        resume_at: datetime | None = None,
+        run_now: bool = True,
+    ) -> dict[str, Any]:
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            raise ValueError("request_id cannot be empty")
+
+        request = self._deps.runtime.wake_store.get_request(normalized_request_id)
+        if request is None:
+            raise ValueError(f"Wake schedule not found: {normalized_request_id}")
+
+        current_entry = self._wake_ledger_entry_for_request(request)
+        current_status = str(current_entry.get("status") or "").strip().casefold()
+        if current_status not in {"failed", "missed_or_late", "due"}:
+            raise ValueError(
+                f"Wake schedule {normalized_request_id} is not retryable in status {current_status}."
+            )
+
+        if resume_at is not None and run_now:
+            raise ValueError("Provide either resume_at or run_now=true, not both.")
+        if resume_at is None and not run_now:
+            raise ValueError("Either resume_at or run_now=true is required.")
+
+        now = admin_service_module._utc_now()
+        validated_resume_at = None
+        updated_schedule = request.schedule
+        if resume_at is not None:
+            updated_schedule = WakeScheduleDefinition(resume_at=resume_at)
+            validated_resume_at = updated_schedule.resume_at
+            next_run_at = validated_resume_at or now
+        else:
+            next_run_at = now
+        self._enforce_wake_schedule_guardrails(
+            session_id=request.session_id,
+            schedule=updated_schedule,
+            enabled=True,
+            exclude_request_id=request.request_id,
+        )
+
+        metadata = dict(request.resume_prompt.metadata or {})
+        existing_history = metadata.get("retry_history")
+        retry_history = list(existing_history) if isinstance(existing_history, list) else []
+        retry_history.append(
+            {
+                "retried_at": now,
+                "previous_status": current_entry.get("status"),
+                "previous_status_reason": current_entry.get("status_reason"),
+                "previous_failure_reason": current_entry.get("failure_reason"),
+                "previous_last_dispatch_id": current_entry.get("latest_dispatch_id"),
+                "previous_last_dispatch_status": current_entry.get("latest_dispatch_status"),
+                "previous_auto_dispatch_attempts": request.auto_dispatch_attempts,
+                "previous_auto_retry_started_at": request.auto_retry_started_at,
+                "previous_auto_retry_last_backoff_seconds": request.auto_retry_last_backoff_seconds,
+                "previous_auto_retry_exhausted_at": request.auto_retry_exhausted_at,
+                "requested_run_now": bool(run_now and resume_at is None),
+                "requested_resume_at": validated_resume_at,
+            }
+        )
+        metadata["retry_history"] = retry_history[-10:]
+        request.resume_prompt.metadata = metadata
+        request.schedule = updated_schedule
+        request.enabled = True
+        request.next_run_at = next_run_at
+        request.status = "due" if next_run_at <= now else "pending"
+        request.status_reason = None
+        request.status_updated_at = now
+        request.last_error = None
+        request.last_error_at = None
+        request.auto_dispatch_attempts = 0
+        request.auto_retry_started_at = None
+        request.auto_retry_last_backoff_seconds = None
+        request.auto_retry_exhausted_at = None
+        request.updated_at = now
+        self._deps.runtime.wake_store.upsert_request(request)
+        return self._wake_ledger_entry_for_request(request)
 
     def create_wake_schedule(
         self,

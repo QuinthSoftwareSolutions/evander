@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -8,10 +10,12 @@ from typing import Any
 
 import pytest
 
+import agent_sandbox.admin.service as admin_service_module
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.admin import service as admin_service_module
 from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
+from agent_sandbox.admin.services import process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from agent_sandbox.admin.services.vm_agent_service import AgentCreateOperation
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
@@ -21,6 +25,130 @@ class CallRecord:
     name: str
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
+
+
+def test_admin_service_vm_agent_boundary_uses_public_ports() -> None:
+    source = Path(admin_service_module.__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    admin_class = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "AdminService"
+    )
+    admin_method_names = {
+        node.name for node in admin_class.body if isinstance(node, ast.FunctionDef)
+    }
+    removed_private_wrappers = {
+        "_agent_record_from_container_session",
+        "_clone_repo_into_vm",
+        "_container_worker_backend",
+        "_container_worker_url_for_target",
+        "_prompt_admin_agent",
+        "_sync_repo_into_bare_remote",
+    }
+    assert admin_method_names.isdisjoint(removed_private_wrappers)
+
+    public_facade_methods = {
+        "agent_create_options",
+        "cleanup_container_session",
+        "create_admin_agent",
+        "delete_admin_agent",
+        "delete_session",
+        "install_admin_agent_skills",
+        "list_agents",
+        "list_vms",
+        "read_session_artifact_text",
+        "resume_agent",
+        "run_admin_agent_action",
+        "submit_admin_agent_create",
+        "update_admin_agent",
+        "vm_copy_files",
+        "vm_delete_files",
+        "vm_exec",
+    }
+    assert public_facade_methods.issubset(admin_method_names)
+
+    dependency_fields = set(VmAgentAdminDependencies.__dataclass_fields__)
+    assert "admin_service_override" not in dependency_fields
+    assert "list_vms_for_agents" not in dependency_fields
+    assert {
+        "vm_lifecycle",
+        "agent_create",
+        "agent_prompt_dispatch",
+        "container_worker_backend_port",
+    }.issubset(dependency_fields)
+
+
+def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
+    running_record = SimpleNamespace(last_status="running", metadata={})
+    failed_record = SimpleNamespace(
+        last_status="exited",
+        metadata={"codex_outcome": {"status": "failed"}},
+    )
+
+    assert (
+        AdminService._agent_record_matches_directory("root/team", "root", direct_only=False) is True
+    )
+    assert (
+        AdminService._agent_record_matches_directory("root/team", "root", direct_only=True) is False
+    )
+    assert AdminService._container_execution_status(running_record) == "running"
+    assert AdminService._container_execution_status(failed_record) == "failed"
+    assert AdminService._container_session_status([]) == "prepared"
+    assert AdminService._container_session_status([running_record]) == "running"
+    assert AdminService._normalize_agent_log_view(None) == "executions"
+    assert AdminService._normalize_agent_log_view("threads") == "threads"
+    assert AdminService._normalize_agent_backend_filter(None) == "all"
+    assert AdminService._normalize_agent_backend_filter("libvirt") == "libvirt_vm"
+
+
+def test_admin_service_vm_domain_class_compat_wrappers_are_classmethod_delegates() -> None:
+    source = Path(admin_service_module.__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    admin_class = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "AdminService"
+    )
+    wrapper_names = {
+        "_agent_record_matches_directory",
+        "_container_execution_status",
+        "_container_session_status",
+        "_normalize_agent_log_view",
+        "_normalize_agent_backend_filter",
+    }
+    methods = {
+        node.name: node
+        for node in admin_class.body
+        if isinstance(node, ast.FunctionDef) and node.name in wrapper_names
+    }
+    assert set(methods) == wrapper_names
+    for name, method in methods.items():
+        assert method.args.args and method.args.args[0].arg == "cls", name
+        assert any(
+            isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+            for decorator in method.decorator_list
+        ), name
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "self" for node in ast.walk(method)
+        ), name
+
+        body = [
+            node
+            for node in method.body
+            if not (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            )
+        ]
+        assert len(body) == 1, name
+        assert isinstance(body[0], ast.Return), name
+        assert isinstance(body[0].value, ast.Call), name
+        target = body[0].value.func
+        assert isinstance(target, ast.Attribute), name
+        assert isinstance(target.value, ast.Name), name
+        assert target.value.id == "VmAgentAdminService", name
 
 
 class FakeVmAgentService:
@@ -268,7 +396,7 @@ class FakeAdmin:
         return "/home/agent/repo"
 
 
-def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
+def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDependencies:
     return VmAgentAdminDependencies(
         config=admin.config,
         runtime=admin.runtime,
@@ -304,7 +432,133 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
             *args, **kwargs
         ),
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
+        **overrides,
     )
+
+
+def test_vm_agent_admin_service_uses_explicit_ports_for_boundary_operations(
+    tmp_path: Path,
+) -> None:
+    admin = FakeAdmin()
+    admin.config.runtime_dir = tmp_path
+    lifecycle_calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+    prompt_calls: list[tuple[str, str, dict[str, Any]]] = []
+    backend_calls: list[dict[str, Any]] = []
+    create_payloads: list[dict[str, Any]] = []
+
+    class LifecyclePort:
+        def create_vm(self, **kwargs: Any) -> VmActionResult:
+            lifecycle_calls.append(("create_vm", (), dict(kwargs)))
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs.get("vm_name") or ""),
+                action="create_vm",
+                message="created",
+            )
+
+        def start_vm(self, target: str) -> VmActionResult:
+            lifecycle_calls.append(("start_vm", (target,), {}))
+            return VmActionResult(
+                success=True,
+                vm_name=target,
+                action="start",
+                message="started",
+            )
+
+    class PromptPort:
+        def prompt_admin_agent(
+            self,
+            agent_id: str,
+            *,
+            backend: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            prompt_calls.append((agent_id, backend, dict(payload)))
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "backend": backend,
+                "action": "prompt-agent",
+                "status": "queued",
+            }
+
+    class ContainerBackendPort:
+        def container_worker_backend(self, **kwargs: Any) -> object:
+            backend_calls.append(dict(kwargs))
+            return "container-backend"
+
+    class AgentCreatePort:
+        def create_admin_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+            create_payloads.append(dict(payload))
+            return {
+                "success": True,
+                "agent_id": "created-agent",
+                "message": "created through port",
+            }
+
+    class OperationStore:
+        def __init__(self) -> None:
+            self.items: dict[str, AgentCreateOperation] = {}
+
+        def get(self, key: str) -> AgentCreateOperation | None:
+            return self.items.get(key)
+
+        def update_all(self, updater: Any) -> Any:
+            return updater(self.items)
+
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(
+            admin,
+            vm_lifecycle=LifecyclePort(),
+            agent_prompt_dispatch=PromptPort(),
+            container_worker_backend_port=ContainerBackendPort(),
+            agent_create=AgentCreatePort(),
+        )
+    )
+
+    start_result = service.run_admin_agent_action("vm-1", "start", backend="libvirt_vm")
+    prompt_result = service.run_admin_agent_action(
+        "vm-1",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "continue"},
+    )
+    backend = service.container_worker_backend(
+        directory_path="root/team-a", worker_url="http://worker.test"
+    )
+
+    operation_store = OperationStore()
+    operation_store.items["operation-1"] = AgentCreateOperation(
+        operation_id="operation-1",
+        status="queued",
+        backend="container_worker_vm",
+        target_name="container-target",
+        session_id="container-session",
+    )
+    service.configure_admin_collaborators(
+        agent_create_operations=operation_store,
+        agent_create_operation_payloads={
+            "operation-1": {"backend": "container_worker_vm", "session_id": "container-session"}
+        },
+        agent_create_operation_payloads_lock=threading.Lock(),
+    )
+    service._run_agent_create_operation("operation-1")
+
+    assert start_result["message"] == "started"
+    assert lifecycle_calls == [("start_vm", ("vm-1",), {})]
+    assert prompt_result["status"] == "queued"
+    assert prompt_calls == [("vm-1", "libvirt_vm", {"prompt": "continue"})]
+    assert backend == "container-backend"
+    assert backend_calls == [
+        {"directory_path": "root/team-a", "worker_url": "http://worker.test"}
+    ]
+    assert create_payloads == [
+        {"backend": "container_worker_vm", "session_id": "container-session"}
+    ]
+    operation = operation_store.items["operation-1"]
+    assert operation.status == "succeeded"
+    assert operation.result is not None
+    assert operation.result["message"] == "created through port"
 
 
 def test_chat_assistant_session_resolution_is_backend_aware(
@@ -369,19 +623,17 @@ def test_chat_assistant_session_resolution_is_backend_aware(
             return SimpleNamespace(session_id=session_id, copied_count=len(files))
 
     fake_container_backend = FakeContainerBackend()
-    monkeypatch.setattr(admin_service_module, "_dominfo_field", fake_dominfo_field)
+    monkeypatch.setattr(vm_helpers, "dominfo_field", fake_dominfo_field)
     monkeypatch.setattr(VmAgentAdminService, "create_vm", fake_create_vm)
     monkeypatch.setattr(VmAgentAdminService, "vm_copy_files", fake_vm_copy_files)
     monkeypatch.setattr(
         VmAgentAdminService,
         "_ensure_libvirt_chat_assistant_runtime",
-        lambda self, *, session_id, vm_name, settings: runtime_checks.append(
-            (session_id, vm_name)
-        ),
+        lambda self, *, session_id, vm_name, settings: runtime_checks.append((session_id, vm_name)),
     )
     monkeypatch.setattr(
         VmAgentAdminService,
-        "_container_worker_backend",
+        "container_worker_backend",
         lambda self, *, directory_path=None: fake_container_backend,
     )
 
@@ -570,7 +822,8 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     )
     assert alice_session_reused is not None
     assert {
-        value["user_message_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
+        value["user_message_id"]
+        for value in alice_session_reused.metadata["admin_chat_threads"].values()
     } == {"msg-c", "msg-c2"}
     assert {
         value["thread_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
@@ -618,7 +871,9 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         "agent_thread_id": "",
         "thread_id": "thread-c-explicit-reset",
     }
-    alice_session_reset = admin.runtime.session_repository.get_session(alice_container["session_id"])
+    alice_session_reset = admin.runtime.session_repository.get_session(
+        alice_container["session_id"]
+    )
     assert alice_session_reset is not None
     assert "agent_thread_id" not in alice_session_reset.metadata
     assert [item[0] for item in fake_container_backend.prepared] == [
@@ -670,10 +925,10 @@ def test_chat_assistant_libvirt_bootstraps_codex_when_missing(
         runs.append((cmd, kwargs.get("env")))  # type: ignore[arg-type]
         return type("Completed", (), {"returncode": 0, "stdout": "bootstrapped", "stderr": ""})()
 
-    monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: "running")
+    monkeypatch.setattr(vm_helpers, "dominfo_field", lambda vm_name, field_name: "running")
     monkeypatch.setattr(VmAgentAdminService, "vm_copy_files", fake_vm_copy_files)
     monkeypatch.setattr(VmAgentAdminService, "vm_exec", fake_vm_exec)
-    monkeypatch.setattr(admin_service_module, "_run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(process_helpers, "run_subprocess", fake_run_subprocess)
 
     result = service.resolve_chat_assistant_session(
         user_id="alice@example.com",
@@ -714,10 +969,8 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
         stdout = "setup ok"
         stderr = ""
 
-    monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: None)
-    monkeypatch.setattr(
-        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
-    )
+    monkeypatch.setattr(vm_helpers, "dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr(process_helpers, "run_subprocess", lambda *args, **kwargs: Completed())
 
     result = service.create_vm(
         provider="libvirt",
@@ -1066,10 +1319,28 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
     ]
 
 
-def test_admin_service_routes_phase_1_vm_operations_through_execution_backend() -> None:
+def test_admin_service_routes_phase_1_vm_operations_through_vm_agent_admin() -> None:
     admin = object.__new__(AdminService)
-    backend = FakeExecutionBackend()
-    admin._execution_backend_instance = backend
+    calls: list[CallRecord] = []
+
+    class FakeVmAgentAdmin:
+        def get_agent_log_snapshot(self, target: str, **kwargs: Any) -> str:
+            calls.append(CallRecord("get_agent_log_snapshot", (target,), kwargs))
+            return "log-result"
+
+        def start_vm(self, target: str) -> str:
+            calls.append(CallRecord("start_vm", (target,), {}))
+            return "start-result"
+
+        def shutdown_vm(self, target: str, **kwargs: Any) -> str:
+            calls.append(CallRecord("shutdown_vm", (target,), kwargs))
+            return "stop-result"
+
+        def destroy_vm(self, target: str) -> str:
+            calls.append(CallRecord("destroy_vm", (target,), {}))
+            return "destroy-result"
+
+    admin.vm_agent_admin = FakeVmAgentAdmin()
 
     assert (
         admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
@@ -1079,13 +1350,15 @@ def test_admin_service_routes_phase_1_vm_operations_through_execution_backend() 
     assert admin.shutdown_vm("vm-3", timeout_seconds=10) == "stop-result"
     assert admin.destroy_vm("vm-4") == "destroy-result"
 
-    assert backend.calls == [
+    assert calls == [
         CallRecord(
-            "get_log_snapshot", ("vm-1",), {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"}
+            "get_agent_log_snapshot",
+            ("vm-1",),
+            {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"},
         ),
-        CallRecord("start", ("vm-2",), {}),
-        CallRecord("stop", ("vm-3",), {"timeout_seconds": 10}),
-        CallRecord("destroy", ("vm-4",), {}),
+        CallRecord("start_vm", ("vm-2",), {}),
+        CallRecord("shutdown_vm", ("vm-3",), {"timeout_seconds": 10}),
+        CallRecord("destroy_vm", ("vm-4",), {}),
     ]
 
 
@@ -1176,28 +1449,24 @@ def test_libvirt_provider_skips_agent_state_probe_when_omit_state_is_true(
                 runtime=SimpleNamespace(session_repository=session_store),
                 normalize_directory_path=lambda directory_path: directory_path or "root",
                 direct_owned_entity_ids=lambda directory_path, kind="vm": {"vm-libvirt-1"},
-                agent_control_store=SimpleNamespace(
-                    status_for_vm=lambda vm_name: "enabled"
-                ),
+                agent_control_store=SimpleNamespace(status_for_vm=lambda vm_name: "enabled"),
             )
         )
     )
 
-    monkeypatch.setattr(admin_service_module, "_virsh_lines", lambda args: ["vm-libvirt-1"])
+    monkeypatch.setattr(vm_helpers, "virsh_lines", lambda args: ["vm-libvirt-1"])
     monkeypatch.setattr(
-        admin_service_module,
-        "_dominfo_field",
+        vm_helpers,
+        "dominfo_field",
         lambda vm_name, field_name: "running",
     )
-    monkeypatch.setattr(
-        admin_service_module, "_resolve_vm_ip", lambda vm_name: "10.0.0.5"
-    )
+    monkeypatch.setattr(vm_helpers, "resolve_vm_ip", lambda vm_name: "10.0.0.5")
 
     def fail_probe(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
         del args, kwargs
         raise AssertionError("_probe_agent_state should not be called when omit_state is true")
 
-    monkeypatch.setattr(admin_service_module, "_probe_agent_state", fail_probe)
+    monkeypatch.setattr(vm_helpers, "probe_agent_state", fail_probe)
 
     summaries = provider.list_vms(directory_path="root", direct_only=True, omit_state=True)
 
@@ -1221,7 +1490,7 @@ def test_libvirt_provider_skips_agent_state_probe_when_omit_state_is_true(
             4321,
         )
 
-    monkeypatch.setattr(admin_service_module, "_probe_agent_state", record_probe)
+    monkeypatch.setattr(vm_helpers, "probe_agent_state", record_probe)
 
     deep_summaries = provider.list_vms(directory_path="root", direct_only=True, omit_state=False)
 
@@ -1251,18 +1520,16 @@ def test_vm_agent_admin_service_start_vm_uses_libvirt_helpers(
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
     virsh_calls: list[list[str]] = []
 
-    monkeypatch.setattr(admin_service_module, "_resolve_vm_name", lambda target: "vm-1")
-    monkeypatch.setattr(
-        admin_service_module, "_dominfo_field", lambda vm_name, field_name: "shut off"
-    )
+    monkeypatch.setattr(session_helpers, "resolve_vm_name", lambda target: "vm-1")
+    monkeypatch.setattr(vm_helpers, "dominfo_field", lambda vm_name, field_name: "shut off")
 
     class Completed:
         returncode = 0
         stderr = ""
 
     monkeypatch.setattr(
-        admin_service_module,
-        "_run_virsh",
+        vm_helpers,
+        "run_virsh",
         lambda args: virsh_calls.append(list(args)) or Completed(),
     )
 
@@ -1294,16 +1561,14 @@ def test_vm_agent_admin_service_resume_agent_updates_session_and_spawns_watcher(
         stderr = ""
 
     monkeypatch.setattr(
-        admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+        session_helpers, "resolve_vm_name_from_target", lambda target, sessions: "vm-1"
     )
     monkeypatch.setattr(
-        admin_service_module,
-        "_resolve_session_target",
+        session_helpers,
+        "resolve_session_target",
         lambda target, sessions: ("session-1", manifest),
     )
-    monkeypatch.setattr(
-        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
-    )
+    monkeypatch.setattr(process_helpers, "run_subprocess", lambda *args, **kwargs: Completed())
 
     result = service.resume_agent("target", "Resume now", dispatch_id="dispatch-1")
 
@@ -1342,16 +1607,14 @@ def test_vm_agent_admin_service_resume_agent_can_skip_thread_id_persistence(
         stderr = ""
 
     monkeypatch.setattr(
-        admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+        session_helpers, "resolve_vm_name_from_target", lambda target, sessions: "vm-1"
     )
     monkeypatch.setattr(
-        admin_service_module,
-        "_resolve_session_target",
+        session_helpers,
+        "resolve_session_target",
         lambda target, sessions: ("session-1", manifest),
     )
-    monkeypatch.setattr(
-        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
-    )
+    monkeypatch.setattr(process_helpers, "run_subprocess", lambda *args, **kwargs: Completed())
 
     result = service.resume_agent(
         "target", "Resume now", dispatch_id="dispatch-1", persist_thread_id=False
@@ -1374,16 +1637,16 @@ def test_vm_agent_admin_service_resume_agent_rejects_expired_session(
     )
 
     monkeypatch.setattr(
-        admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+        session_helpers, "resolve_vm_name_from_target", lambda target, sessions: "vm-1"
     )
     monkeypatch.setattr(
-        admin_service_module,
-        "_resolve_session_target",
+        session_helpers,
+        "resolve_session_target",
         lambda target, sessions: ("session-1", expired_session),
     )
     monkeypatch.setattr(
-        admin_service_module,
-        "_run_subprocess",
+        process_helpers,
+        "run_subprocess",
         lambda *args, **kwargs: pytest.fail("resume subprocess must not run for expired sessions"),
     )
 
@@ -1406,8 +1669,8 @@ def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
 
     monkeypatch.setattr(
-        admin_service_module,
-        "_build_issue_session_manifest",
+        session_helpers,
+        "build_issue_session_manifest",
         lambda **kwargs: FakeManifest(directory_path=kwargs["directory_path"]),
     )
 
@@ -1416,10 +1679,8 @@ def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(
         stdout = "setup ok"
         stderr = ""
 
-    monkeypatch.setattr(
-        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
-    )
-    monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr(process_helpers, "run_subprocess", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(vm_helpers, "dominfo_field", lambda vm_name, field_name: None)
 
     result = service.create_issue_vm(issue="7", session_id="session-1")
 
@@ -1512,7 +1773,7 @@ def test_vm_agent_admin_service_create_issue_vm_from_local_issue_rejects_unknown
     admin.local_issue_store = SimpleNamespace(read_all=lambda: {}, get=lambda key: None)
     admin._resolve_local_issue_record = LocalIssueIdentityResolver(
         local_issue_store=admin.local_issue_store,
-        read_issue_number_from_yaml=admin_service_module._read_issue_number_from_yaml,
+        read_issue_number_from_yaml=session_helpers.read_issue_number_from_yaml,
     ).resolve_record
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
 
@@ -1596,9 +1857,7 @@ def test_vm_agent_admin_service_create_vm_rejects_unknown_allowed_contact_id(
 
     class UnexpectedRegistry:
         def get(self, provider: str) -> Any:
-            raise AssertionError(
-                "provider should not be called when contact validation fails"
-            )
+            raise AssertionError("provider should not be called when contact validation fails")
 
     monkeypatch.setattr(service, "_provider_registry", lambda: UnexpectedRegistry())
 

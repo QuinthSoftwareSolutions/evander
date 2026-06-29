@@ -12,18 +12,14 @@ import sys
 import tempfile
 import threading
 import time
-import fcntl
-from collections import Counter, deque
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
-import httpx
 from pydantic import (
     BaseModel,
     Field,
@@ -63,7 +59,6 @@ from agent_sandbox.config import (
     AssistantSettingsConfig,
     DiscordWakeWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
-    GatewayConfig,
     ProxyIssueSyncWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
@@ -73,11 +68,24 @@ from agent_sandbox.config import (
 from agent_sandbox.cron import cron_min_interval_seconds, validate_cron_expression
 from agent_sandbox.admin.directory import DirectoryAdminService
 from agent_sandbox.admin.release_metadata import read_release_metadata
-from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
-from agent_sandbox.admin.tool_visibility import (
-    ToolVisibilityPayload,
-    build_tool_visibility_payload,
+from agent_sandbox.admin.services import (
+    git_helpers,
+    issue_helpers,
+    issue_setup_helpers,
+    process_helpers,
+    project_helpers,
+    session_helpers,
+    vm_agent_service,
+    vm_helpers,
 )
+from agent_sandbox.admin.services.vm_agent_service import (
+    AgentCreateOperation,
+    AgentCreateOperationStatus,
+    VmAgentAdminService,
+)
+from agent_sandbox.admin.services.issue_git_service import GitImportConflictError
+from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from agent_sandbox.admin.tool_visibility import ToolVisibilityPayload
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
@@ -88,18 +96,7 @@ from agent_sandbox.model_usage.models import (
     ModelInferenceUsageEvent,
     ModelUsageCorrelationContext,
 )
-from agent_sandbox.model_usage.pricing import (
-    MODEL_PRICING_PATH_ENV,
-    ModelPricingRule,
-    clear_model_pricing_catalog_cache,
-    default_model_pricing_catalog_path,
-    load_model_pricing_catalog_payload,
-    normalize_model_pricing_catalog_payload,
-)
-from agent_sandbox.model_usage.runtime import (
-    model_usage_store,
-    register_model_usage_correlation_context,
-)
+from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.operator_steering import (
     OPERATOR_STEERING_NOTE_MAX_LENGTH,
     OperatorSteeringNote,
@@ -136,7 +133,6 @@ from agent_sandbox.execution.container_worker_client import (
     ContainerWorkerClientError,
 )
 from agent_sandbox.execution.models import (
-    ExecutionBackendKind,
     ExecutionSpec,
     ExecutionStatusKind,
 )
@@ -144,7 +140,6 @@ from agent_sandbox.published_artifacts import (
     PublishedArtifact,
     PublishedArtifactMetadata,
     PublishedArtifactStore,
-    validate_artifact_key,
 )
 from agent_sandbox.session_artifacts import (
     AGENT_ARTIFACTS_ENV,
@@ -238,16 +233,9 @@ from agent_sandbox.repositories.orchestration_db import (
     json_loads_object,
 )
 from agent_sandbox.repositories.audit_index import (
-    DEFAULT_TAIL_IMPORT_MAX_LINES,
     ToolCallAuditIndex,
 )
-from agent_sandbox.messaging.teams_auth import (
-    DeviceCodeLoginSession,
-    JsonTeamsIdentityCredentialStore,
-    MicrosoftDeviceCodeAuthConfig,
-    TeamsAuthCredentials,
-    TeamsDeviceCodeTokenProvider,
-)
+from agent_sandbox.messaging.teams_auth import DeviceCodeLoginSession
 from agent_sandbox.events.internal import (
     EXTERNAL_WORKFLOW_EVENT_PREFIX,
     InternalEventBus,
@@ -335,144 +323,18 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
-_ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
-_AGENT_CREATE_OPERATION_MAX_WORKERS = 4
-_CONTAINER_SESSION_ID_LOG_PATTERN = re.compile(
-    r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
+_AGENT_CREATE_OPERATION_MAX_WORKERS = vm_agent_service.AGENT_CREATE_OPERATION_MAX_WORKERS
+_CONTAINER_SESSION_ID_LOG_PATTERN = vm_agent_service._CONTAINER_SESSION_ID_LOG_PATTERN
+_CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT = (
+    vm_agent_service._CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT
 )
-_CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT = 100
-ISSUE_STATES: tuple[str, ...] = (
-    "New",
-    "Approved",
-    "Committed",
-    "In Progress",
-    "Completed",
-    "Closed",
-)
-_ISSUE_STATE_SET = set(ISSUE_STATES)
-_ISSUE_PRIORITY_ORDER: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-_APPROVAL_STATUS_ORDER: dict[ApprovalStatus, int] = {
-    ApprovalStatus.PENDING: 0,
-    ApprovalStatus.EXPIRED: 1,
-    ApprovalStatus.DENIED: 2,
-    ApprovalStatus.APPROVED: 3,
-}
-_SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
-    "token",
-    "secret",
-    "password",
-    "pat",
-    "authorization",
-    "cookie",
-    "private_key",
-    "ssh_key",
-)
-_PROTECTED_MIRROR_HEAD_REFSPECS = ("^refs/heads/agents/*", "^refs/heads/review/*")
+ISSUE_STATES = issue_helpers.ISSUE_STATES
+_PROTECTED_MIRROR_HEAD_REFSPECS = git_helpers.PROTECTED_MIRROR_HEAD_REFSPECS
 
 
-AgentCreateOperationStatus = Literal["queued", "running", "succeeded", "failed"]
-
-
-class AgentCreateOperation(BaseModel):
-    operation_id: str
-    status: AgentCreateOperationStatus
-    backend: str
-    target_name: str
-    session_id: str | None = None
-    directory_path: str = "root"
-    owner_id: str | None = None
-    owner_pid: int | None = None
-    result: dict[str, Any] | None = None
-    error: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-
-class EffectiveIssueSetupConfig(BaseModel):
-    git_root: str
-    git_host: str
-    git_user: str
-    git_ssh_alias: str
-    default_model: str | None = None
-    post_exec_verification_prompt: str | None = None
-    enable_guest_heartbeat: bool = False
-    guest_heartbeat_prompt: str = "Resume work for this session. Check for pending feedback first, then continue the most recent task."
-    issue_setup_azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
-
-
-def resolve_effective_issue_setup_config(
-    *,
-    config,
-    runtime: RuntimeContext,
-    directory_path: str,
-    root_dir: Path,
-) -> EffectiveIssueSetupConfig:
-    resolver = DirectoryConfigResolver(
-        DirectoryService(runtime.directories),
-        base_gateway_config=config,
-        config_store=DirectoryConfigStore(runtime.directories, runtime_dir=config.runtime_dir),
-    )
-    resolution = resolver.resolve_domain(
-        directory_path,
-        domain="issue_setup",
-        base_config=get_domain_base_config(config, "issue_setup"),
-        validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
-    )
-    effective = resolution.effective_config
-    provider_config = ProviderConfigResolver(
-        config,
-        directory_store=runtime.directories,
-        session_store=as_session_manifest_repository(runtime.session_repository),
-    ).resolve_for_directory(directory_path)
-    provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
-    issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
-    issue_setup_pat_env = (
-        str(issue_setup_pat_env_raw).strip() if isinstance(issue_setup_pat_env_raw, str) else ""
-    ) or provider_pat_env
-    if not issue_setup_pat_env:
-        raise ValueError(
-            "Missing env-var name for Azure DevOps PR PAT lookup. "
-            "Set issue_setup_azure_devops_pr_pat_env or providers.azure_devops_pr_pat_env."
-        )
-    return EffectiveIssueSetupConfig.model_validate(
-        {
-            "git_root": str(effective.get("git_root") or _resolve_git_root(root_dir)),
-            "git_host": str(effective.get("git_host") or "192.168.250.1"),
-            "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
-            "git_ssh_alias": str(effective.get("git_ssh_alias") or "agent-sandbox-git-host"),
-            "default_model": str(effective.get("default_model") or "").strip() or None,
-            "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
-            "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
-            "guest_heartbeat_prompt": str(
-                effective.get("guest_heartbeat_prompt")
-                or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
-            ),
-            "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
-        }
-    )
-
-
-def resolve_agent_model_for_manifest(
-    session: SessionManifest,
-    *,
-    issue_setup: EffectiveIssueSetupConfig,
-) -> str:
-    session_id = session.session_id
-    directory_path = session.directory_path
-    session_model = str(session.model or "").strip()
-    if session_model:
-        return session_model
-    default_model = str(issue_setup.default_model or "").strip()
-    if default_model:
-        return default_model
-    raise ValueError(
-        f"Cannot resolve AGENT_MODEL for session '{session_id}' in directory '{directory_path}': "
-        "missing session.model and missing issue_setup.default_model. "
-        f"Remediation: set session.model for session '{session_id}' or configure "
-        f"issue_setup.default_model for directory '{directory_path}' (or an inherited parent)."
-    )
+EffectiveIssueSetupConfig = issue_setup_helpers.EffectiveIssueSetupConfig
+resolve_effective_issue_setup_config = issue_setup_helpers.resolve_effective_issue_setup_config
+resolve_agent_model_for_manifest = issue_setup_helpers.resolve_agent_model_for_manifest
 
 
 class WorkerGlobalConfigPayload(BaseModel):
@@ -494,10 +356,6 @@ class AdminRevisionConflict(ValueError):
     def __init__(self, message: str, *, details: dict[str, Any]) -> None:
         super().__init__(message)
         self.details = details
-
-
-class GitImportConflictError(RuntimeError):
-    status_code = 409
 
 
 class TriggerConfigMutationPayload(BaseModel):
@@ -1435,8 +1293,7 @@ _SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset(
 )
 
 
-def _module_project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+_module_project_root = project_helpers.module_project_root
 
 
 def _resolve_project_dir_for_admin_service(
@@ -1460,23 +1317,10 @@ def _resolve_project_dir_for_admin_service(
     return runtime_root.parent if runtime_root.parent != runtime_root else runtime_root
 
 
-def _guest_script_helper_b64(project_dir: Path, helper_name: str) -> str:
-    helper_path = project_dir / "scripts" / "guest" / helper_name
-    if not helper_path.exists():
-        helper_path = _module_project_root() / "scripts" / "guest" / helper_name
-    return base64.b64encode(helper_path.read_bytes()).decode("ascii")
-
-
-def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:
-    return _guest_script_helper_b64(project_dir, "agent_pr_note.sh")
-
-
-def _guest_push_agent_helper_b64(project_dir: Path) -> str:
-    return _guest_script_helper_b64(project_dir, "push_agent.sh")
-
-
-def _guest_sync_base_helper_b64(project_dir: Path) -> str:
-    return _guest_script_helper_b64(project_dir, "sync_base.sh")
+_guest_script_helper_b64 = project_helpers.guest_script_helper_b64
+_guest_agent_pr_note_helper_b64 = project_helpers.guest_agent_pr_note_helper_b64
+_guest_push_agent_helper_b64 = project_helpers.guest_push_agent_helper_b64
+_guest_sync_base_helper_b64 = project_helpers.guest_sync_base_helper_b64
 
 
 def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
@@ -1938,9 +1782,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:teams:direct-message": (
         "Start from allowlisted one-on-one Microsoft Teams direct messages."
     ),
-    "trigger:email:new-message": (
-        "Start from new messages in configured email mailboxes."
-    ),
+    "trigger:email:new-message": ("Start from new messages in configured email mailboxes."),
     "trigger:pull-request:new-feedback": (
         "Start when new pull-request feedback arrives from the configured provider."
     ),
@@ -2072,37 +1914,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:semantic:get": "Retrieve semantic points by explicit point IDs.",
 }
 
-_VM_ARTIFACT_TEXT_READ_COMMAND = f"""python3 - <<'PY'
-from pathlib import Path, PurePosixPath
-import os
-import sys
-
-root = Path(os.environ.get({AGENT_ARTIFACTS_ENV!r}) or {DEFAULT_AGENT_ARTIFACTS_DIR!r})
-relative_text = os.environ.get("AGENT_SANDBOX_ARTIFACT_RELATIVE_PATH") or ""
-relative = PurePosixPath(relative_text)
-if not relative_text or relative.is_absolute() or any(part in {{"", ".", ".."}} for part in relative.parts):
-    print("artifact path must be relative and must not contain dot or parent segments", file=sys.stderr)
-    raise SystemExit(64)
-try:
-    root_resolved = root.resolve(strict=True)
-    target = (root / relative.as_posix()).resolve(strict=True)
-    target.relative_to(root_resolved)
-except FileNotFoundError:
-    print(f"artifact file not found: {{relative.as_posix()}}", file=sys.stderr)
-    raise SystemExit(66)
-except ValueError:
-    print("artifact path must stay within the session artifacts folder", file=sys.stderr)
-    raise SystemExit(64)
-if not target.is_file():
-    print(f"artifact path is not a regular file: {{relative.as_posix()}}", file=sys.stderr)
-    raise SystemExit(66)
-try:
-    sys.stdout.write(target.read_text(encoding="utf-8"))
-except UnicodeDecodeError:
-    print("artifact file is not valid UTF-8 text", file=sys.stderr)
-    raise SystemExit(65)
-PY
-"""
+_VM_ARTIFACT_TEXT_READ_COMMAND = vm_agent_service._VM_ARTIFACT_TEXT_READ_COMMAND
 
 
 _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
@@ -5350,30 +5162,13 @@ def _safe_validation_error(exc: ValidationError, *, context: str) -> ValueError:
     return ValueError(f"{context}: {suffix}")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
+_utc_now = session_helpers.utc_now
 
 
-def _coerce_optional_string(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+_coerce_optional_string = vm_agent_service._coerce_optional_string
 
 
-def _coerce_optional_datetime(value: object) -> datetime | None:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+_coerce_optional_datetime = vm_agent_service._coerce_optional_datetime
 
 
 def _read_json_object(path: Path | None) -> dict[str, object]:
@@ -5621,18 +5416,7 @@ def _join_conformance_process_output(*values: object) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
-    if value is None:
-        candidate = fallback
-    elif isinstance(value, Path):
-        candidate = value
-    else:
-        text = str(value).strip()
-        candidate = Path(text) if text else fallback
-    candidate = candidate.expanduser()
-    if candidate.is_absolute():
-        return candidate.resolve()
-    return (base_dir / candidate).resolve()
+_resolve_path_setting = process_helpers.resolve_path_setting
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -5702,55 +5486,27 @@ def _cron_min_interval_seconds(expression: str) -> float | None:
 
 
 def _normalize_local_issue_state(state: str | None, *, allow_empty: bool = False) -> str | None:
-    normalized = str(state or "").strip()
-    if not normalized:
-        return None if allow_empty else "New"
-    if normalized not in _ISSUE_STATE_SET:
-        allowed = ", ".join(ISSUE_STATES)
-        raise ValueError(f"Invalid issue state: {normalized!r}. Allowed values: {allowed}.")
-    return normalized
+    return issue_helpers.normalize_local_issue_state(state, allow_empty=allow_empty)
 
 
 def _normalize_issue_priority(priority: str | None) -> str | None:
-    normalized = str(priority or "").strip().upper()
-    if not normalized:
-        return None
-    if normalized not in _ISSUE_PRIORITY_ORDER:
-        allowed = ", ".join(sorted(_ISSUE_PRIORITY_ORDER))
-        raise ValueError(f"Invalid issue priority: {normalized!r}. Allowed values: {allowed}.")
-    return normalized
+    return issue_helpers.normalize_issue_priority(priority)
 
 
 def _local_issue_fields(issue: LocalIssueRecord) -> dict[str, object]:
-    fields = issue.metadata.get("fields")
-    if isinstance(fields, dict):
-        return dict(fields)
-    return {}
+    return issue_helpers.local_issue_fields(issue)
 
 
 def _issue_priority_sort_key(issue: LocalIssueRecord) -> tuple[int, datetime, datetime, str]:
-    fields = _local_issue_fields(issue)
-    priority_value = fields.get("priority")
-    if priority_value is None:
-        priority_value = fields.get("Priority")
-    priority = _normalize_issue_priority(str(priority_value or "").strip()) or "P3"
-    return (
-        _ISSUE_PRIORITY_ORDER[priority],
-        issue.updated_at,
-        issue.created_at,
-        issue.issue_number,
-    )
+    return issue_helpers.issue_priority_sort_key(issue)
 
 
 def _issue_number_sort_key(issue: LocalIssueRecord) -> tuple[int, int | str, str]:
-    normalized = issue.issue_number.strip()
-    if normalized.isdigit():
-        return (0, int(normalized), issue.issue_id)
-    return (1, normalized, issue.issue_id)
+    return issue_helpers.issue_number_sort_key(issue)
 
 
 def _approval_sort_key(request: ApprovalRequest) -> tuple[int, datetime, str]:
-    return (_APPROVAL_STATUS_ORDER[request.status], request.created_at, request.request_id)
+    return issue_helpers.approval_sort_key(request)
 
 
 def _directory_path_matches_scope(
@@ -5759,109 +5515,29 @@ def _directory_path_matches_scope(
     *,
     direct_only: bool,
 ) -> bool:
-    request_path = str(request_directory_path or "root").strip() or "root"
-    selected_path = str(selected_directory_path or "root").strip() or "root"
-    if request_path == selected_path:
-        return True
-    if direct_only:
-        return False
-    return request_path.startswith(f"{selected_path}/")
-
-
-def _redact_sensitive_payload(value: Any, *, key_name: str | None = None) -> Any:
-    normalized_key = (key_name or "").strip().lower()
-    if normalized_key and any(marker in normalized_key for marker in _SENSITIVE_PAYLOAD_MARKERS):
-        return "<redacted>"
-    if isinstance(value, dict):
-        return {
-            str(key): _redact_sensitive_payload(item, key_name=str(key))
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_sensitive_payload(item) for item in value]
-    return value
-
-
-def _extract_issue_number(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = value.strip()
-    if normalized.isdigit():
-        return normalized
-    if normalized.startswith("vm-") and normalized[3:].isdigit():
-        return normalized[3:]
-    match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
-    if match:
-        return match.group(1)
-    return None
-
-
-def _read_issue_number_from_yaml(issue_path: Path) -> str:
-    text = issue_path.read_text(encoding="utf-8")
-    patterns = [
-        r"(?m)^\s*issue_number\s*:\s*[\"']?([0-9]+)[\"']?\s*$",
-        r"(?m)^\s*number\s*:\s*[\"']?([0-9]+)[\"']?\s*$",
-        r"(?m)^\s*id\s*:\s*[\"']?([0-9]+)[\"']?\s*$",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
-    raise ValueError(
-        f"Could not read issue number from YAML file: {issue_path}. "
-        "Expected one of: issue_number:, number:, or id:."
+    return issue_helpers.directory_path_matches_scope(
+        request_directory_path, selected_directory_path, direct_only=direct_only
     )
 
 
+def _redact_sensitive_payload(value: Any, *, key_name: str | None = None) -> Any:
+    from agent_sandbox.admin.services.approval_audit_service import redact_sensitive_payload
+
+    return redact_sensitive_payload(value, key_name=key_name)
+
+
+_extract_issue_number = session_helpers.extract_issue_number
+_read_issue_number_from_yaml = session_helpers.read_issue_number_from_yaml
+
+
 def _extract_issue_number_from_payload(payload: dict[str, Any]) -> str | None:
-    for key in ("issue_number", "number", "id"):
-        value = payload.get(key)
-        if value is None:
-            continue
-        normalized = str(value).strip()
-        if normalized.isdigit():
-            return normalized
-    source = payload.get("source")
-    if isinstance(source, dict):
-        for key in ("work_item_id", "issue_id", "work_item_url"):
-            value = str(source.get(key) or "").strip()
-            if value.isdigit():
-                return value
-            parsed = _extract_issue_number(value)
-            if parsed is not None:
-                return parsed
-    for key in ("url",):
-        parsed = _extract_issue_number(str(payload.get(key) or "").strip())
-        if parsed is not None:
-            return parsed
-    return None
+    return issue_helpers.extract_issue_number_from_payload(payload)
 
 
-def _resolve_issue_number(issue_input: str) -> str:
-    candidate = Path(issue_input)
-    if candidate.is_file():
-        return _read_issue_number_from_yaml(candidate)
-    return issue_input
-
-
-def _resolve_vm_name(target: str) -> str:
-    normalized = target.strip()
-    if normalized.isdigit():
-        return f"vm-{normalized}"
-    return normalized
-
-
-def _resolve_vm_name_from_target(target: str, sessions: dict[str, SessionManifest]) -> str:
-    normalized = target.strip()
-    if not normalized:
-        return ""
-    if normalized in sessions:
-        return sessions[normalized].vm_id or normalized
-    return _resolve_vm_name(normalized)
-
-
-def _issue_session_id_prefix(issue_number: str) -> str:
-    return f"issue-{issue_number}-"
+_resolve_issue_number = session_helpers.resolve_issue_number
+_resolve_vm_name = session_helpers.resolve_vm_name
+_resolve_vm_name_from_target = session_helpers.resolve_vm_name_from_target
+_issue_session_id_prefix = session_helpers.issue_session_id_prefix
 
 
 def _scoped_issue_id(
@@ -5872,41 +5548,16 @@ def _scoped_issue_id(
     organization: str | None = None,
     project: str | None = None,
 ) -> str:
-    normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
-    parts = [normalized_directory_path, provider]
-    if organization and project:
-        parts.extend([organization.rstrip("/"), project])
-    parts.append(issue_number)
-    return "::".join(parts)
+    return issue_helpers.scoped_issue_id(
+        issue_number,
+        directory_path=directory_path,
+        provider=provider,
+        organization=organization,
+        project=project,
+    )
 
 
-def _parse_session_extension(value: str | None) -> timedelta:
-    raw_value = (value or "1d").strip().lower()
-    match = re.fullmatch(r"(\d+)([hd])", raw_value)
-    if match is None:
-        raise ValueError("Extension must use the format <number><h|d>, for example 8h or 2d.")
-    amount = int(match.group(1))
-    unit = match.group(2)
-    return timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
-
-
-def _default_session_ttl(policy: EffectivePolicyConfig) -> timedelta:
-    return timedelta(seconds=policy.default_session_ttl_seconds)
-
-
-def _resolve_session_ttl(
-    policy: EffectivePolicyConfig,
-    ttl_hours: int | None,
-    *,
-    ttl_seconds: int | None = None,
-) -> timedelta:
-    if ttl_seconds is not None:
-        if ttl_seconds <= 0:
-            raise ValueError("ttl_seconds must be a positive integer")
-        return timedelta(seconds=ttl_seconds)
-    if ttl_hours is not None:
-        return timedelta(hours=ttl_hours)
-    return _default_session_ttl(policy)
+_parse_session_extension = session_helpers.parse_session_extension
 
 
 def _load_optional_env_file(path: Path) -> dict[str, str]:
@@ -5925,512 +5576,38 @@ def _load_optional_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _resolve_git_root(root_dir: Path) -> Path:
-    env_value = os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
-    if env_value:
-        return Path(env_value)
-    return root_dir / "git-remotes"
+_resolve_git_root = git_helpers.resolve_git_root
 
 
-def _matching_issue_session_ids(
-    issue_number: str, sessions: dict[str, SessionManifest]
-) -> set[str]:
-    vm_name = f"vm-{issue_number}"
-    prefix = _issue_session_id_prefix(issue_number)
-    matches: set[str] = set()
-    for session_id, session in sessions.items():
-        if session.vm_id == vm_name or session_id == issue_number or session_id.startswith(prefix):
-            matches.add(session_id)
-    return matches
+_matching_issue_session_ids = session_helpers.matching_issue_session_ids
+_session_sort_key = session_helpers.session_sort_key
+_resolve_session_target = session_helpers.resolve_session_target
 
 
-def _session_sort_key(item: tuple[str, SessionManifest]) -> tuple[datetime, datetime, str]:
-    session_id, manifest = item
-    return (manifest.created_at, manifest.expires_at, session_id)
+_default_base_branch_for_repo = git_helpers.default_base_branch_for_repo
+_default_base_branch_for_repo_remote = git_helpers.default_base_branch_for_repo_remote
+_resolve_canonical_origin_url_for_repo = git_helpers.resolve_canonical_origin_url_for_repo
+_is_remote_git_source = git_helpers.is_remote_git_source
+_mirror_remote_name_for_repo = git_helpers.mirror_remote_name_for_repo
 
 
-def _resolve_session_target(
-    target: str, sessions: dict[str, SessionManifest]
-) -> tuple[str, SessionManifest]:
-    normalized = target.strip()
-    if not normalized:
-        raise ValueError("Target must be a non-empty issue number, vm name, or session id.")
+_prune_pr_map = git_helpers.prune_pr_map
+_prune_pr_feedback_store = git_helpers.prune_pr_feedback_store
+_prune_approvals_for_sessions = session_helpers.prune_approvals_for_sessions
+_remove_issue_bare_repo = git_helpers.remove_issue_bare_repo
 
-    direct_match = sessions.get(normalized)
-    if direct_match is not None:
-        return normalized, direct_match
 
-    matching_ids: set[str] = set()
-    issue_number = _extract_issue_number(normalized)
-    if issue_number is not None:
-        matching_ids.update(_matching_issue_session_ids(issue_number, sessions))
-    matching_ids.update(_matching_vm_session_ids(normalized, sessions))
+_caller_home = vm_helpers.caller_home
+_resolve_private_key_path = vm_helpers.resolve_private_key_path
+_known_hosts_path = vm_helpers.known_hosts_path
+_run_subprocess = process_helpers.run_subprocess
+_combined_process_message = process_helpers.combined_process_message
+_python_has_pip = process_helpers.python_has_pip
+_ensure_python_has_pip = process_helpers.ensure_python_has_pip
+_resolve_host_python_with_pip = process_helpers.resolve_host_python_with_pip
 
-    if not matching_ids:
-        raise ValueError(f"Unknown session target: {target}")
 
-    resolved_session_id = max(
-        matching_ids,
-        key=lambda session_id: _session_sort_key((session_id, sessions[session_id])),
-    )
-    return resolved_session_id, sessions[resolved_session_id]
-
-
-def _default_base_branch_for_repo(repo_path: str) -> str | None:
-    return _default_base_branch_for_repo_remote(repo_path, "origin")
-
-
-def _default_base_branch_for_repo_remote(repo_path: str, remote_name: str) -> str | None:
-    candidates = [
-        [
-            "git",
-            "-C",
-            repo_path,
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            f"refs/remotes/{remote_name}/HEAD",
-        ],
-        ["git", "-C", repo_path, "branch", "--show-current"],
-    ]
-    for cmd in candidates:
-        result = _run_subprocess(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            continue
-        value = (result.stdout or "").strip()
-        if not value:
-            continue
-        remote_prefix = f"{remote_name}/"
-        if value.startswith(remote_prefix):
-            value = value[len(remote_prefix) :]
-        return value or None
-    return None
-
-
-def _resolve_canonical_origin_url_for_repo(repo_path: str, remote_name: str = "origin") -> str:
-    remote_result = _run_subprocess(
-        ["git", "-C", repo_path, "remote", "get-url", remote_name],
-        capture_output=True,
-        text=True,
-    )
-    remote_url = (remote_result.stdout or "").strip() if remote_result.returncode == 0 else ""
-    if not remote_url:
-        return ""
-
-    try:
-        resolved_remote = str(Path(remote_url).resolve(strict=False))
-    except OSError:
-        resolved_remote = remote_url
-
-    if "/runtime/repo-cache/" in resolved_remote and resolved_remote.endswith(".git"):
-        mirror_origin_result = _run_subprocess(
-            ["git", f"--git-dir={resolved_remote}", "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-        )
-        mirror_origin_url = (
-            (mirror_origin_result.stdout or "").strip()
-            if mirror_origin_result.returncode == 0
-            else ""
-        )
-        if mirror_origin_url:
-            return mirror_origin_url
-
-    return remote_url
-
-
-def _is_remote_git_source(source: str) -> bool:
-    text = str(source or "").strip()
-    if not text:
-        return False
-    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text):
-        return True
-    return bool(re.match(r"^[^/@:\s]+@[^:\s]+:.+", text))
-
-
-def _mirror_remote_name_for_repo(repo_path: str) -> str:
-    current_branch_result = _run_subprocess(
-        ["git", "-C", repo_path, "branch", "--show-current"],
-        capture_output=True,
-        text=True,
-    )
-    current_branch = (
-        (current_branch_result.stdout or "").strip()
-        if current_branch_result.returncode == 0
-        else ""
-    )
-    if current_branch:
-        tracking_remote_result = _run_subprocess(
-            ["git", "-C", repo_path, "config", "--get", f"branch.{current_branch}.remote"],
-            capture_output=True,
-            text=True,
-        )
-        tracking_remote = (
-            (tracking_remote_result.stdout or "").strip()
-            if tracking_remote_result.returncode == 0
-            else ""
-        )
-        if tracking_remote:
-            return tracking_remote
-
-    remote_head_result = _run_subprocess(
-        ["git", "-C", repo_path, "for-each-ref", "--format=%(refname)", "refs/remotes/*/HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if remote_head_result.returncode == 0:
-        remote_heads = []
-        for line in (remote_head_result.stdout or "").splitlines():
-            remote_head_ref = line.strip()
-            if not remote_head_ref:
-                continue
-            ref_parts = remote_head_ref.split("/")
-            if (
-                len(ref_parts) >= 4
-                and ref_parts[:2] == ["refs", "remotes"]
-                and ref_parts[-1] == "HEAD"
-            ):
-                remote_heads.append(ref_parts[2])
-        if remote_heads:
-            return remote_heads[0]
-
-    remotes_result = _run_subprocess(
-        ["git", "-C", repo_path, "remote"],
-        capture_output=True,
-        text=True,
-    )
-    if remotes_result.returncode == 0:
-        remotes = [
-            line.strip() for line in (remotes_result.stdout or "").splitlines() if line.strip()
-        ]
-        if remotes:
-            return remotes[0]
-
-    return "origin"
-
-
-def _normalize_import_bare_repo_name(value: str) -> str:
-    normalized = str(value or "").strip()
-    if normalized.endswith(".git"):
-        normalized = normalized[: -len(".git")]
-    if not normalized:
-        raise ValueError("bare_repo_name is required")
-    if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
-        raise ValueError("bare_repo_name must be a single repository name, not a path")
-    return normalized
-
-
-def _git_config_value(git_dir: Path, key: str) -> str | None:
-    result = _run_subprocess(
-        ["git", f"--git-dir={git_dir}", "config", "--get", key],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    value = (result.stdout or "").strip()
-    return value or None
-
-
-def _bare_repo_agent_refs(git_dir: Path) -> list[str]:
-    if not git_dir.exists():
-        return []
-    result = _run_subprocess(
-        [
-            "git",
-            f"--git-dir={git_dir}",
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads/agents",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(message or f"Failed to inspect agent branches in {git_dir}")
-    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-
-
-def _infer_git_provider_from_url(url: str | None) -> str | None:
-    normalized = str(url or "").strip().lower()
-    if not normalized:
-        return None
-    if "github.com" in normalized:
-        return "github"
-    if "dev.azure.com" in normalized or "visualstudio.com" in normalized:
-        return "azure_devops"
-    return None
-
-
-def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
-    if not path.exists():
-        return 0, set()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0, set()
-    entries = payload.get("entries")
-    if not isinstance(entries, dict):
-        return 0, set()
-
-    removed_streams: set[tuple[str, str, str]] = set()
-    kept_entries: dict[str, object] = {}
-    removed_count = 0
-    for entry_key, raw_entry in entries.items():
-        if not isinstance(raw_entry, dict):
-            kept_entries[entry_key] = raw_entry
-            continue
-        session_id = str(raw_entry.get("session_id", "")).strip()
-        if session_id in session_ids:
-            provider = str(raw_entry.get("provider", "")).strip()
-            repo = str(raw_entry.get("repo", "")).strip()
-            pr_id = str(raw_entry.get("pr_id", "")).strip()
-            if provider and repo and pr_id:
-                removed_streams.add((provider, repo, pr_id))
-            removed_count += 1
-            continue
-        kept_entries[entry_key] = raw_entry
-
-    if removed_count:
-        payload["entries"] = kept_entries
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return removed_count, removed_streams
-
-
-def _prune_pr_feedback_store(path: Path, *, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
-    if not streams:
-        return 0, 0
-    if not path.exists():
-        return 0, 0
-    return PrFeedbackStore(path).prune_streams(streams)
-
-
-def _prune_approvals_for_sessions(runtime: RuntimeContext, *, session_ids: set[str]) -> int:
-    if not session_ids:
-        return 0
-    approvals = runtime.approvals.read_all()
-    removed_count = 0
-    remaining = {}
-    for request_id, approval in approvals.items():
-        if approval.session_id in session_ids:
-            removed_count += 1
-            continue
-        remaining[request_id] = approval
-    if removed_count:
-        runtime.approvals.write_all(remaining)
-    return removed_count
-
-
-def _remove_issue_bare_repo(
-    issue_number: str, *, root_dir: Path, runtime_dir: Path
-) -> tuple[bool, str | None]:
-    git_root = _resolve_git_root(root_dir)
-    bare_repo_path = git_root / f"{issue_number}_repo.git"
-    hook_log_paths = [
-        root_dir / "runtime" / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
-        runtime_dir / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
-    ]
-    trusted_repo_path: str | None = None
-    if bare_repo_path.exists():
-        try:
-            config_result = subprocess.run(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "config",
-                    "--get",
-                    "agent-sandbox.trustedRepoPath",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            config_result = None
-        if config_result is not None and config_result.returncode == 0:
-            trusted_repo_path = (config_result.stdout or "").strip() or None
-        shutil.rmtree(bare_repo_path, ignore_errors=True)
-    for hook_log_path in hook_log_paths:
-        if hook_log_path.exists():
-            hook_log_path.unlink()
-    if trusted_repo_path:
-        mirror_remote_name = f"{issue_number}-mirror"
-        try:
-            subprocess.run(
-                ["git", "-C", trusted_repo_path, "remote", "remove", mirror_remote_name],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            pass
-    return bare_repo_path.exists() is False, str(
-        bare_repo_path
-    ) if bare_repo_path.exists() else str(bare_repo_path)
-
-
-def _caller_home() -> Path:
-    caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
-    caller_home = os.environ.get("HOME", "")
-    if caller_user:
-        try:
-            passwd_entry = subprocess.run(
-                ["getent", "passwd", caller_user],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            passwd_entry = None
-        if passwd_entry and passwd_entry.returncode == 0:
-            fields = (passwd_entry.stdout or "").strip().split(":")
-            if len(fields) >= 6 and fields[5]:
-                caller_home = fields[5]
-    return Path(caller_home or Path.home())
-
-
-def _resolve_private_key_path() -> Path | None:
-    configured = os.environ.get("SSH_PRIVATE_KEY_PATH", "").strip()
-    if configured:
-        path = Path(configured)
-        return path if path.is_file() else None
-
-    home = _caller_home()
-    for candidate in (home / ".ssh" / "id_ed25519", home / ".ssh" / "id_rsa"):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _known_hosts_path() -> Path:
-    configured = os.environ.get("AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE", "").strip()
-    if configured:
-        path = Path(configured)
-    else:
-        path = _caller_home() / ".ssh" / "agent-sandbox-known_hosts"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(exist_ok=True)
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
-        return path
-    except OSError:
-        fallback = (
-            Path("/tmp")
-            / f"agent-sandbox-known_hosts-{os.environ.get('SUDO_USER') or os.environ.get('USER') or 'agent'}"
-        )
-        fallback.parent.mkdir(parents=True, exist_ok=True)
-        fallback.touch(exist_ok=True)
-        try:
-            fallback.chmod(0o600)
-        except OSError:
-            pass
-        return fallback
-
-
-def _run_subprocess(
-    cmd: list[str],
-    *,
-    check: bool = False,
-    capture_output: bool = True,
-    text: bool = True,
-    timeout: float | None = None,
-    input: str | None = None,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        text=text,
-        timeout=timeout,
-        input=input,
-        env=env,
-    )
-
-
-def _combined_process_message(stdout: str | None, stderr: str | None) -> str:
-    stdout_text = (stdout or "").strip()
-    stderr_text = (stderr or "").strip()
-    if stdout_text and stderr_text:
-        if stdout_text == stderr_text:
-            return stdout_text
-        return f"{stdout_text}\n{stderr_text}"
-    return stdout_text or stderr_text
-
-
-def _python_has_pip(python_bin: str) -> bool:
-    version_check = _run_subprocess([python_bin, "--version"], capture_output=True, text=True)
-    if version_check.returncode != 0:
-        return False
-    pip_check = _run_subprocess(
-        [python_bin, "-m", "pip", "--version"], capture_output=True, text=True
-    )
-    return pip_check.returncode == 0
-
-
-def _ensure_python_has_pip(python_bin: str) -> bool:
-    if _python_has_pip(python_bin):
-        return True
-    ensurepip_result = _run_subprocess(
-        [python_bin, "-m", "ensurepip", "--upgrade", "--default-pip"],
-        capture_output=True,
-        text=True,
-    )
-    if ensurepip_result.returncode != 0:
-        return False
-    return _python_has_pip(python_bin)
-
-
-def _resolve_host_python_with_pip() -> str:
-    configured = os.environ.get("HOST_PYTHON_BIN", "").strip()
-    if configured:
-        if _ensure_python_has_pip(configured):
-            return configured
-        raise RuntimeError(f"Host Python must provide pip: {configured}")
-
-    candidates: list[str] = []
-    if sys.executable:
-        candidates.append(sys.executable)
-    candidates.extend(["python3", "python"])
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        if _ensure_python_has_pip(candidate):
-            return candidate
-
-    preferred = sys.executable or "python3"
-    raise RuntimeError(f"Host Python must provide pip: {preferred}")
-
-
-def _run_virsh(args: list[str]) -> subprocess.CompletedProcess[str]:
-    # These VMs are managed under the system libvirt daemon. Service processes may
-    # not inherit LIBVIRT_DEFAULT_URI/XDG_RUNTIME_DIR, so prefer an explicit
-    # connection target before falling back to ambient virsh behavior.
-    commands = [
-        ["virsh", "-c", "qemu:///system", *args],
-        ["sudo", "-n", "virsh", "-c", "qemu:///system", *args],
-        ["virsh", *args],
-        ["sudo", "-n", "virsh", *args],
-    ]
-    last_result: subprocess.CompletedProcess[str] | None = None
-    for cmd in commands:
-        try:
-            result = _run_subprocess(cmd)
-        except OSError:
-            continue
-        last_result = result
-        if result.returncode == 0:
-            return result
-    if last_result is None:
-        raise RuntimeError(f"Unable to execute virsh command: {' '.join(args)}")
-    return last_result
+_run_virsh = vm_helpers.run_virsh
 
 
 def _run_system_service_command(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -6514,1015 +5691,71 @@ def _run_systemd_control(action: str, unit: str) -> subprocess.CompletedProcess[
     return last_result
 
 
-def _virsh_lines(args: list[str]) -> list[str]:
-    result = _run_virsh(args)
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        raise RuntimeError(stderr or f"virsh {' '.join(args)} failed")
-    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+_virsh_lines = vm_helpers.virsh_lines
+_dominfo_field = vm_helpers.dominfo_field
+_resolve_vm_ip = vm_helpers.resolve_vm_ip
+_resolve_vm_ip_with_pkexec = vm_helpers.resolve_vm_ip_with_pkexec
+_wait_for_vm_ip = vm_helpers.wait_for_vm_ip
+_wait_for_vm_ssh = vm_helpers.wait_for_vm_ssh
+_ssh_options = vm_helpers.ssh_options
+_resolve_vm_ssh_access = vm_helpers.resolve_vm_ssh_access
+_remote_shell_script = vm_helpers.remote_shell_script
+_probe_agent_state = vm_helpers.probe_agent_state
 
 
-def _dominfo_field(vm_name: str, field_name: str) -> str | None:
-    result = _run_virsh(["dominfo", vm_name])
-    if result.returncode != 0:
-        return None
-    for line in (result.stdout or "").splitlines():
-        key, _, value = line.partition(":")
-        if key.strip() == field_name:
-            stripped = value.strip()
-            return stripped or None
-    return None
+_default_issue_session_id = session_helpers.default_issue_session_id
+_default_vm_session_id = session_helpers.default_vm_session_id
+_copilot_host_auth_enabled = session_helpers.copilot_host_auth_enabled
+_build_issue_session_manifest = session_helpers.build_issue_session_manifest
+_matching_vm_session_ids = session_helpers.matching_vm_session_ids
+_normalize_session_labels = session_helpers.normalize_session_labels
 
 
-def _resolve_vm_ip(vm_name: str) -> str | None:
-    result = _run_virsh(["domifaddr", vm_name])
-    if result.returncode != 0:
-        return None
-    for line in (result.stdout or "").splitlines():
-        parts = line.split()
-        if "ipv4" in parts and len(parts) >= 4:
-            address = parts[3]
-            return address.split("/", 1)[0]
-    return None
+_append_unique_string_values = vm_agent_service._append_unique_string_values
 
 
-def _resolve_vm_ip_with_pkexec(vm_name: str) -> str | None:
-    result = _run_subprocess(
-        ["pkexec", "virsh", "domifaddr", vm_name], capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        return None
-    for line in (result.stdout or "").splitlines():
-        parts = line.split()
-        if "ipv4" in parts and len(parts) >= 4:
-            address = parts[3]
-            return address.split("/", 1)[0]
-    return None
+_email_mailbox_id_from_auth_profile_ref = vm_agent_service._email_mailbox_id_from_auth_profile_ref
 
 
-def _wait_for_vm_ip(
-    vm_name: str, *, timeout_seconds: int = 180, allow_pkexec: bool = False
-) -> str | None:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        ip = _resolve_vm_ip(vm_name)
-        if ip:
-            return ip
-        if allow_pkexec:
-            ip = _resolve_vm_ip_with_pkexec(vm_name)
-            if ip:
-                return ip
-        time.sleep(2)
-    return None
+_admin_agent_communication_allowlists = vm_agent_service._admin_agent_communication_allowlists
 
 
-def _wait_for_vm_ssh(
-    vm_name: str,
-    vm_ip: str,
-    vm_user: str,
-    *,
-    timeout_seconds: int = 180,
-) -> None:
-    ssh_private_key_path = _resolve_private_key_path()
-    if ssh_private_key_path is None:
-        raise RuntimeError(
-            "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
-        )
-
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        completed = _run_subprocess(
-            [
-                "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                f"{vm_user}@{vm_ip}",
-                "true",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode == 0:
-            return
-        time.sleep(2)
-
-    raise RuntimeError(
-        f"Timed out waiting for SSH on '{vm_user}@{vm_ip}' after {timeout_seconds}s (VM '{vm_name}')."
-    )
-
-
-def _ssh_options(vm_name: str, vm_ip: str, ssh_private_key_path: Path) -> list[str]:
-    return [
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        f"UserKnownHostsFile={_known_hosts_path()}",
-        "-o",
-        f"HostKeyAlias={vm_name}",
-        "-o",
-        "CheckHostIP=no",
-        "-o",
-        "ConnectTimeout=5",
-        "-i",
-        str(ssh_private_key_path),
-    ]
-
-
-def _resolve_vm_ssh_access(
-    vm_name: str, vm_user: str, *, timeout_seconds: int = 180
-) -> tuple[str, Path]:
-    vm_ip = _resolve_vm_ip(vm_name)
-    if vm_ip is None:
-        vm_ip = _wait_for_vm_ip(vm_name, timeout_seconds=timeout_seconds)
-    if vm_ip is None:
-        raise RuntimeError(f"Timed out waiting for an IP address for VM '{vm_name}'.")
-    _wait_for_vm_ssh(vm_name, vm_ip, vm_user, timeout_seconds=timeout_seconds)
-    ssh_private_key_path = _resolve_private_key_path()
-    if ssh_private_key_path is None:
-        raise RuntimeError(
-            "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
-        )
-    return vm_ip, ssh_private_key_path
-
-
-def _remote_shell_script(
-    *,
-    command: str | list[str],
-    working_directory: str | None = None,
-    environment: dict[str, str] | None = None,
-) -> str:
-    script_lines = ["set -euo pipefail"]
-    for key, value in sorted((environment or {}).items()):
-        script_lines.append(f"export {key}={shlex.quote(value)}")
-    if working_directory:
-        script_lines.append(f"cd {shlex.quote(working_directory)}")
-    if isinstance(command, str):
-        script_lines.append(command)
-    else:
-        script_lines.append(shlex.join(command))
-    return "\n".join(script_lines) + "\n"
-
-
-def _probe_agent_state(
-    vm_name: str, vm_ip: str, vm_user: str
-) -> tuple[str, list[str], datetime | None, str | None, int | None]:
-    ssh_private_key_path = _resolve_private_key_path()
-    if ssh_private_key_path is None:
-        return "unknown", [], None, None, None
-
-    remote_script = r"""
-set -euo pipefail
-
-LOG_DIR="${HOME}/.agent-sandbox"
-CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"
-STATE_MAX_AGE_SECONDS="${VM_AGENT_STATE_MAX_AGE_SECONDS:-600}"
-
-read_state_value() {
-  local state_path="$1"
-  local key="$2"
-  [[ -f "${state_path}" ]] || return 1
-  awk -F= -v target_key="${key}" '$1 == target_key {print substr($0, index($0, "=") + 1); exit}' "${state_path}" 2>/dev/null
-}
-
-is_active_agent_pid() {
-  local pid="$1"
-  local cmdline_path="/proc/${pid}/cmdline"
-  local cmdline=""
-
-  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "${pid}" >/dev/null 2>&1 || return 1
-  [[ -r "${cmdline_path}" ]] || return 1
-  cmdline="$(tr '\000' ' ' < "${cmdline_path}" 2>/dev/null || true)"
-  [[ -n "${cmdline}" ]] || return 1
-  [[ "${cmdline}" == *"agent_runner_exec"* || "${cmdline}" == *"agent_runner_resume_last"* ]]
-}
-
-iso_to_epoch() {
-  local raw="$1"
-  [[ -n "${raw}" ]] || return 1
-  date -u -d "${raw}" +%s 2>/dev/null
-}
-
-state_is_fresh() {
-  local updated_at="$1"
-  local updated_at_epoch now
-  updated_at_epoch="$(iso_to_epoch "${updated_at}")" || return 1
-  now="$(date -u +%s)"
-  (( now - updated_at_epoch <= STATE_MAX_AGE_SECONDS ))
-}
-
-if [[ ! -d "${LOG_DIR}" ]]; then
-  printf '{"state":"not_started","repos":[],"updated_at":null}\n'
-  exit 0
-fi
-
-control_status=""
-control_updated_at=""
-if [[ -f "${CONTROL_STATE_PATH}" ]]; then
-  control_status="$(read_state_value "${CONTROL_STATE_PATH}" "status" || true)"
-  control_updated_at="$(read_state_value "${CONTROL_STATE_PATH}" "updated_at" || true)"
-  if [[ "${control_status}" == "disabled" ]]; then
-    printf '{"state":"disabled","repos":[],"updated_at":%s}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${control_updated_at}")"
-    exit 0
-  fi
-fi
-
-shopt -s nullglob
-active_entries=()
-newest_updated_at="${control_updated_at}"
-newest_dispatch_id=""
-active_pid=""
-found_any_state=0
-for state_path in "${LOG_DIR}"/agent-*.state; do
-  found_any_state=1
-  status="$(read_state_value "${state_path}" "status" || true)"
-  updated_at="$(read_state_value "${state_path}" "updated_at" || true)"
-  dispatch_id="$(read_state_value "${state_path}" "dispatch_id" || true)"
-  pid="$(read_state_value "${state_path}" "pid" || true)"
-  if [[ -n "${updated_at}" && ( -z "${newest_updated_at}" || "${updated_at}" > "${newest_updated_at}" ) ]]; then
-    newest_updated_at="${updated_at}"
-    newest_dispatch_id="${dispatch_id}"
-  fi
-  if [[ "${status}" != "running" ]]; then
-    continue
-  fi
-  if ! state_is_fresh "${updated_at}" && ! is_active_agent_pid "${pid}"; then
-    continue
-  fi
-  name="$(basename "${state_path}")"
-  name="${name#agent-}"
-  name="${name%.state}"
-  active_entries+=("${name}")
-  if [[ -z "${active_pid}" ]]; then
-    active_pid="${pid}"
-  fi
-done
-codex_state_path="${LOG_DIR}/codex-resume-last.state"
-if [[ -f "${codex_state_path}" ]]; then
-  found_any_state=1
-  status="$(read_state_value "${codex_state_path}" "status" || true)"
-  updated_at="$(read_state_value "${codex_state_path}" "updated_at" || true)"
-  dispatch_id="$(read_state_value "${codex_state_path}" "dispatch_id" || true)"
-  pid="$(read_state_value "${codex_state_path}" "pid" || true)"
-  if [[ -n "${updated_at}" && ( -z "${newest_updated_at}" || "${updated_at}" > "${newest_updated_at}" ) ]]; then
-    newest_updated_at="${updated_at}"
-    newest_dispatch_id="${dispatch_id}"
-  fi
-  if [[ "${status}" == "running" ]] && ( state_is_fresh "${updated_at}" || is_active_agent_pid "${pid}" ); then
-    active_entries+=("codex-heartbeat")
-    if [[ -z "${active_pid}" ]]; then
-      active_pid="${pid}"
-    fi
-  fi
-fi
-shopt -u nullglob
-
-if [[ ${#active_entries[@]} -gt 0 ]]; then
-  repos_json="$(printf '%s\n' "${active_entries[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')"
-  updated_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")"
-  dispatch_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_dispatch_id}")"
-  pid_json="$(python3 -c 'import json,sys; value=sys.argv[1].strip(); print(json.dumps(int(value) if value.isdigit() else None))' "${active_pid}")"
-  printf '{"state":"running","repos":%s,"updated_at":%s,"dispatch_id":%s,"pid":%s}\n' "${repos_json}" "${updated_json}" "${dispatch_json}" "${pid_json}"
-  exit 0
-fi
-
-if [[ "${found_any_state}" == "1" || -n "${control_updated_at}" ]]; then
-  printf '{"state":"idle","repos":[],"updated_at":%s,"dispatch_id":%s,"pid":null}\n' \
-    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")" \
-    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_dispatch_id}")"
-  exit 0
-fi
-
-printf '{"state":"not_started","repos":[],"updated_at":null,"dispatch_id":null,"pid":null}\n'
-"""
-
-    result = _run_subprocess(
-        [
-            "ssh",
-            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-            f"{vm_user}@{vm_ip}",
-            "bash",
-            "-s",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15.0,
-        input=remote_script,
-    )
-    if result.returncode != 0:
-        return "unknown", [], None, None, None
-    try:
-        payload = json.loads((result.stdout or "").strip() or "{}")
-    except json.JSONDecodeError:
-        return "unknown", [], None, None, None
-    updated_at = payload.get("updated_at")
-    return (
-        str(payload.get("state") or "unknown"),
-        [str(item) for item in payload.get("repos", []) if str(item).strip()],
-        datetime.fromisoformat(updated_at) if isinstance(updated_at, str) and updated_at else None,
-        str(payload.get("dispatch_id")).strip()
-        if payload.get("dispatch_id") is not None and str(payload.get("dispatch_id")).strip()
-        else None,
-        int(payload["pid"]) if isinstance(payload.get("pid"), int) else None,
-    )
-
-
-def _default_issue_session_id(issue_number: str) -> str:
-    return f"issue-{issue_number}-{_utc_now():%Y%m%dT%H%M%SZ}-{os.getpid()}"
-
-
-def _default_vm_session_id(vm_name: str) -> str:
-    normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", vm_name.strip()).strip("-") or "vm"
-    return f"{normalized}-{_utc_now():%Y%m%dT%H%M%SZ}-{os.getpid()}"
-
-
-def _copilot_host_auth_enabled() -> bool:
-    return str(os.environ.get("AGENT_PROVIDER", "")).strip().lower() == "copilot"
-
-
-def _build_issue_session_manifest(
-    *,
-    policy: EffectivePolicyConfig,
-    session_id: str,
-    vm_id: str,
-    issue_number: str | None,
-    directory_path: str,
-    ttl_hours: int | None,
-    ttl_seconds: int | None = None,
-    extra_allowed_tools: list[str | ToolName] | None = None,
-    tool_argument_policies: dict[str, list[Any]] | None = None,
-    allowed_script_names: list[str] | None = None,
-    allowed_contact_ids: list[str] | None = None,
-    discord_channels: list[str],
-    teams_channel_allowlist: list[str] | None = None,
-    teams_chat_allowlist: list[str] | None = None,
-    teams_user_allowlist: list[str] | None = None,
-    email_mailboxes: list[str],
-    email_folders: list[str],
-    communication_file_receive_enabled: bool | None = None,
-    communication_file_send_enabled: bool | None = None,
-    communication_file_max_bytes: int | None = None,
-    communication_file_require_approval_for_send: bool | None = None,
-    web_search_enabled: bool = False,
-) -> SessionManifest:
-    resolved_allowed_tools: list[McpToolName] = [
-        ToolName.APPROVAL_SUBMIT,
-        ToolName.APPROVAL_CHECK,
-        ToolName.STAGE_ARTIFACT,
-    ]
-    if discord_channels:
-        resolved_allowed_tools.extend(
-            [
-                ToolName.DISCORD_GET_COMMANDS,
-                ToolName.DISCORD_POST_STATUS,
-                ToolName.ADD_MESSAGE_REACTION,
-                ToolName.HAS_PENDING_DISCORD_MESSAGES,
-                ToolName.LIST_UNREAD_DISCORD_MESSAGES,
-                ToolName.LIST_ALL_DISCORD_MESSAGES,
-            ]
-        )
-
-    email_requested = bool(email_mailboxes or email_folders)
-    resolved_email_mailboxes = email_mailboxes or (
-        policy.email_mailbox_allowlist if email_requested else []
-    )
-    resolved_email_folders = email_folders or (
-        sorted(
-            {
-                folder
-                for folders in policy.email_folder_allowlist_by_mailbox.values()
-                for folder in folders
-            }
-        )
-        if email_requested
-        else []
-    )
-    if email_requested:
-        resolved_allowed_tools.extend(
-            [ToolName.EMAIL_LIST_UNREAD, ToolName.EMAIL_GET_MESSAGE, ToolName.EMAIL_CREATE_DRAFT]
-        )
-        if policy.email_send_enabled:
-            resolved_allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
-
-    metadata = {"issue_number": issue_number} if issue_number is not None else {}
-    if _copilot_host_auth_enabled():
-        resolved_allowed_tools.append(ToolName.COPILOT_HOST_AUTH)
-        metadata["agent_provider"] = "copilot"
-
-    if extra_allowed_tools:
-        seen = {tool_name_value(tool) for tool in resolved_allowed_tools}
-        for tool in _normalize_allowed_tools(extra_allowed_tools):
-            tool_value = tool_name_value(tool)
-            if tool_value in seen:
-                continue
-            seen.add(tool_value)
-            resolved_allowed_tools.append(tool)
-
-    return SessionManifest(
-        session_id=session_id,
-        vm_id=vm_id,
-        directory_path=directory_path,
-        allowed_tools=_normalize_allowed_tools([tool_name_value(tool) for tool in resolved_allowed_tools]),
-        approval_required_tools=list(policy.approval_required_tools),
-        tool_argument_policies=tool_argument_policies or {},
-        allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
-        allowed_contact_ids=allowed_contact_ids,
-        discord_channel_allowlist=discord_channels,
-        teams_channel_allowlist=_normalize_teams_channel_allowlist(
-            teams_channel_allowlist or [], field_name="teams_channel_allowlist"
-        ),
-        teams_chat_allowlist=normalize_teams_chat_or_target_refs(teams_chat_allowlist),
-        teams_user_allowlist=_normalize_teams_user_allowlist(
-            teams_user_allowlist or [], field_name="teams_user_allowlist"
-        ),
-        email_folder_allowlist=resolved_email_folders,
-        email_mailbox_allowlist=resolved_email_mailboxes,
-        email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
-        email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
-        email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
-        email_send_enabled=policy.email_send_enabled,
-        communication_file_receive_enabled=(
-            policy.communication_file_receive_enabled
-            if communication_file_receive_enabled is None
-            else communication_file_receive_enabled
-        ),
-        communication_file_send_enabled=(
-            policy.communication_file_send_enabled
-            if communication_file_send_enabled is None
-            else communication_file_send_enabled
-        ),
-        communication_file_max_bytes=(
-            policy.communication_file_max_bytes
-            if communication_file_max_bytes is None
-            else communication_file_max_bytes
-        ),
-        communication_file_allowed_mime_types=policy.communication_file_allowed_mime_types,
-        communication_file_allowed_extensions=policy.communication_file_allowed_extensions,
-        communication_file_blocked_extensions=policy.communication_file_blocked_extensions,
-        communication_file_require_approval_for_send=(
-            policy.communication_file_require_approval_for_send
-            if communication_file_require_approval_for_send is None
-            else communication_file_require_approval_for_send
-        ),
-        web_search_enabled=web_search_enabled,
-        expires_at=_utc_now()
-        + _resolve_session_ttl(policy, ttl_hours, ttl_seconds=ttl_seconds),
-        metadata=metadata,
-    )
-
-
-def _matching_vm_session_ids(vm_name: str, sessions: dict[str, SessionManifest]) -> set[str]:
-    return {session_id for session_id, session in sessions.items() if session.vm_id == vm_name}
-
-
-def _normalize_session_labels(value: object) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    normalized: dict[str, str] = {}
-    for raw_key, raw_value in value.items():
-        key = str(raw_key).strip()
-        if not key or raw_value is None:
-            continue
-        mapped_value = str(raw_value).strip()
-        if mapped_value:
-            normalized[key] = mapped_value
-    return normalized
-
-
-def _append_unique_string_values(base: list[str], values: list[str]) -> list[str]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for value in [*base, *values]:
-        normalized = str(value or "").strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        merged.append(normalized)
-    return merged
-
-
-def _email_mailbox_id_from_auth_profile_ref(
-    auth_profile_ref: object, *, target_id: str
-) -> str:
-    normalized = str(auth_profile_ref or "").strip()
-    if normalized.startswith("email."):
-        normalized = normalized.removeprefix("email.")
-    if not normalized:
-        raise ValueError(
-            f"email communication target {target_id!r} requires policy.auth_profile_ref"
-        )
-    return normalized
-
-
-def _admin_agent_communication_allowlists(
-    payload: Mapping[str, Any],
-    *,
-    config: GatewayConfig,
-    directory_path: str,
-) -> dict[str, list[str] | None]:
-    discord_channels = _normalize_plain_string_list(
-        payload.get("discord_channels") if "discord_channels" in payload else None,
-        field_name="discord_channels",
-    )
-    teams_channel_allowlist = _normalize_plain_string_list(
-        payload.get("teams_channel_allowlist")
-        if "teams_channel_allowlist" in payload
-        else None,
-        field_name="teams_channel_allowlist",
-    )
-    teams_chat_allowlist = _normalize_plain_string_list(
-        payload.get("teams_chat_allowlist") if "teams_chat_allowlist" in payload else None,
-        field_name="teams_chat_allowlist",
-    )
-    teams_user_allowlist = _normalize_plain_string_list(
-        payload.get("teams_user_allowlist") if "teams_user_allowlist" in payload else None,
-        field_name="teams_user_allowlist",
-    )
-    email_mailboxes = _normalize_plain_string_list(
-        payload.get("email_mailboxes") if "email_mailboxes" in payload else None,
-        field_name="email_mailboxes",
-    )
-    email_folders = _normalize_plain_string_list(
-        payload.get("email_folders") if "email_folders" in payload else None,
-        field_name="email_folders",
-    )
-    communication_target_ids = [
-        target_id.lower()
-        for target_id in _normalize_plain_string_list(
-            payload.get("communication_target_ids")
-            if "communication_target_ids" in payload
-            else None,
-            field_name="communication_target_ids",
-        )
-    ]
-    if not communication_target_ids:
-        return {
-            "discord_channels": discord_channels or None,
-            "teams_channel_allowlist": teams_channel_allowlist or None,
-            "teams_chat_allowlist": teams_chat_allowlist or None,
-            "teams_user_allowlist": teams_user_allowlist or None,
-            "email_mailboxes": email_mailboxes or None,
-            "email_folders": email_folders or None,
-        }
-
-    targets_by_id = load_communication_targets_config(
-        runtime_dir=config.runtime_dir,
-        directory_store=DirectoryStore(config.directories_store_path),
-        directory_path=directory_path,
-    ).by_id()
-    selected_discord_channels: list[str] = []
-    selected_teams_channels: list[str] = []
-    selected_teams_chats: list[str] = []
-    selected_teams_users: list[str] = []
-    selected_email_mailboxes: list[str] = []
-    for target_id in communication_target_ids:
-        target = targets_by_id.get(target_id)
-        if target is None:
-            raise ValueError(
-                "communication_target_ids contains unknown target "
-                f"{target_id!r} for directory {directory_path!r}"
-            )
-        if target.provider == "discord":
-            selected_discord_channels.append(target.id)
-            continue
-        if target.provider == "teams":
-            teams_kind = parse_teams_target(target.address).kind
-            if teams_kind == "chat":
-                selected_teams_chats.append(target.id)
-            elif teams_kind == "user":
-                selected_teams_users.append(target.id)
-            else:
-                selected_teams_channels.append(target.id)
-            continue
-        if target.provider == "email":
-            missing_capabilities = sorted(
-                {"read", "write"} - set(target.policy.capabilities)
-            )
-            if missing_capabilities:
-                raise ValueError(
-                    "email communication target "
-                    f"{target.id!r} requires both read and write capabilities"
-                )
-            selected_email_mailboxes.append(
-                _email_mailbox_id_from_auth_profile_ref(
-                    target.policy.auth_profile_ref,
-                    target_id=target.id,
-                )
-            )
-            continue
-        raise ValueError(
-            "communication_target_ids only supports Teams, Discord, and email targets; "
-            f"target {target.id!r} uses provider {target.provider!r}"
-        )
-
-    return {
-        "discord_channels": _append_unique_string_values(
-            discord_channels, selected_discord_channels
-        )
-        or None,
-        "teams_channel_allowlist": _append_unique_string_values(
-            teams_channel_allowlist,
-            selected_teams_channels,
-        )
-        or None,
-        "teams_chat_allowlist": _append_unique_string_values(
-            teams_chat_allowlist,
-            selected_teams_chats,
-        )
-        or None,
-        "teams_user_allowlist": _append_unique_string_values(
-            teams_user_allowlist,
-            selected_teams_users,
-        )
-        or None,
-        "email_mailboxes": _append_unique_string_values(
-            email_mailboxes, selected_email_mailboxes
-        )
-        or None,
-        "email_folders": email_folders or None,
-    }
-
-
-def _normalize_allowed_tools(
-    value: list[str | ToolName], *, field_name: str = "allowed_tools"
-) -> list[McpToolName]:
-    normalized_tools: list[McpToolName] = []
-    seen: set[str] = set()
-    for tool in value:
-        normalized_tool = normalize_tool_name(tool, field_name=field_name)
-        tool_value = tool_name_value(normalized_tool)
-        if tool_value in seen:
-            continue
-        seen.add(tool_value)
-        normalized_tools.append(normalized_tool)
-    return normalized_tools
-
-
-def _session_tool_argument_policies_from_payload(
-    session: SessionManifest, value: object
-) -> dict[str, list[Any]]:
-    try:
-        validated = SessionManifest.model_validate(
-            {
-                "session_id": session.session_id,
-                "allowed_tools": list(session.allowed_tools),
-                "expires_at": session.expires_at,
-                "tool_argument_policies": value,
-            }
-        )
-    except ValidationError as exc:
-        raise ValueError(str(exc)) from exc
-    return validated.tool_argument_policies
-
-
-def _normalize_allowed_script_names(value: list[str]) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for script_name in value:
-        candidate = str(script_name).strip()
-        if not candidate or candidate in seen:
-            continue
-        seen.add(candidate)
-        normalized.append(candidate)
-    return normalized
-
-
-def _normalize_plain_string_list(value: object, *, field_name: str) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{field_name} must be a list of strings")
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        candidate = str(item).strip()
-        if not candidate or candidate in seen:
-            continue
-        seen.add(candidate)
-        normalized.append(candidate)
-    return normalized
-
-
-def _normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
-    return normalize_teams_channel_or_target_refs(
-        _normalize_plain_string_list(value, field_name=field_name)
-    )
-
-
-def _normalize_teams_user_allowlist(value: object, *, field_name: str) -> list[str]:
-    return normalize_teams_user_or_target_refs(
-        _normalize_plain_string_list(value, field_name=field_name)
-    )
-
-
-def _validate_allowed_contact_ids_for_directory(
-    runtime: Any,
-    *,
-    session_id: str,
-    directory_path: str,
-    allowed_contact_ids: object,
-) -> list[str] | None:
-    if allowed_contact_ids is None:
-        return None
-    provider_config = getattr(runtime, "provider_config", None)
-    resolve_contacts_for_directory = getattr(provider_config, "resolve_contacts_for_directory", None)
-    if not callable(resolve_contacts_for_directory):
-        raise RuntimeError("contacts config resolver is not available")
-    contacts_config = resolve_contacts_for_directory(directory_path)
-    return validate_allowed_contact_ids_for_directory(
-        contacts_config,
-        allowed_contact_ids,
-        session_id=session_id,
-        directory_path=directory_path,
-    )
-
-
-COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
-    "communication_file_receive_enabled",
-    "communication_file_send_enabled",
-    "communication_file_max_bytes",
-    "communication_file_allowed_mime_types",
-    "communication_file_allowed_extensions",
-    "communication_file_blocked_extensions",
-    "communication_file_require_approval_for_send",
+_normalize_allowed_tools = session_helpers.normalize_allowed_tools
+_session_tool_argument_policies_from_payload = (
+    session_helpers.session_tool_argument_policies_from_payload
+)
+_normalize_allowed_script_names = session_helpers.normalize_allowed_script_names
+_normalize_plain_string_list = session_helpers.normalize_plain_string_list
+_normalize_teams_channel_allowlist = session_helpers.normalize_teams_channel_allowlist
+_normalize_teams_user_allowlist = session_helpers.normalize_teams_user_allowlist
+_validate_allowed_contact_ids_for_directory = (
+    session_helpers.validate_allowed_contact_ids_for_runtime_directory
 )
 
-SESSION_BOOL_POLICY_FIELDS: tuple[str, ...] = ("web_search_enabled",)
+
+COMMUNICATION_FILE_SESSION_POLICY_FIELDS = session_helpers.COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+SESSION_BOOL_POLICY_FIELDS = session_helpers.SESSION_BOOL_POLICY_FIELDS
+_normalize_session_policy_bool = session_helpers.normalize_session_policy_bool
+_normalize_session_policy_non_negative_int_or_none = (
+    session_helpers.normalize_session_policy_non_negative_int_or_none
+)
+_communication_file_session_policy_update = session_helpers.communication_file_session_policy_update
+_session_policy_update_from_payload = session_helpers.session_policy_update_from_payload
 
 
-def _normalize_session_policy_bool(value: object, *, field_name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    raise ValueError(f"{field_name} must be a boolean")
+_resolve_session_approval_notification_target_ids = (
+    vm_agent_service._resolve_session_approval_notification_target_ids
+)
 
 
-def _normalize_session_policy_non_negative_int_or_none(
-    value: object, *, field_name: str
-) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field_name} must be a non-negative integer or null")
-    if value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer or null")
-    return value
+_sync_added_discord_session_cursors = session_helpers.sync_added_discord_session_cursors
+_wake_eligible_discord_channel_ids = session_helpers.wake_eligible_discord_channel_ids
 
 
-def _communication_file_session_policy_update(payload: Mapping[str, Any]) -> dict[str, Any]:
-    update: dict[str, Any] = {}
-    for field_name in (
-        "communication_file_receive_enabled",
-        "communication_file_send_enabled",
-        "communication_file_require_approval_for_send",
-    ):
-        if field_name in payload:
-            update[field_name] = _normalize_session_policy_bool(
-                payload.get(field_name), field_name=field_name
-            )
-    if "communication_file_max_bytes" in payload:
-        update["communication_file_max_bytes"] = _normalize_session_policy_non_negative_int_or_none(
-            payload.get("communication_file_max_bytes"),
-            field_name="communication_file_max_bytes",
-        )
-    for field_name in (
-        "communication_file_allowed_mime_types",
-        "communication_file_allowed_extensions",
-        "communication_file_blocked_extensions",
-    ):
-        if field_name in payload:
-            update[field_name] = _normalize_plain_string_list(
-                payload.get(field_name), field_name=field_name
-            )
-    return update
-
-
-def _session_policy_update_from_payload(
-    session: SessionManifest,
-    payload: Mapping[str, Any],
-    *,
-    contacts_config: Any | None = None,
-) -> dict[str, Any]:
-    allowed_fields = {
-        "approval_required_tools",
-        "approval_tool_settings",
-        "approval_notification_target_ids",
-        "tool_argument_policies",
-        "allowed_script_names",
-        "allowed_contact_ids",
-        "discord_channel_allowlist",
-        "discord_channels",
-        "teams_channel_allowlist",
-        "teams_channels",
-        "teams_chat_allowlist",
-        "teams_user_allowlist",
-        "metadata",
-        *SESSION_BOOL_POLICY_FIELDS,
-        *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
-    }
-    unsupported = sorted(set(payload) - allowed_fields)
-    if unsupported:
-        raise ValueError("Unsupported session policy fields: " + ", ".join(unsupported))
-
-    update: dict[str, Any] = {}
-    if "allowed_script_names" in payload:
-        update["allowed_script_names"] = _normalize_allowed_script_names(
-            _normalize_plain_string_list(
-                payload.get("allowed_script_names"), field_name="allowed_script_names"
-            )
-        )
-    if "allowed_contact_ids" in payload:
-        if contacts_config is None:
-            raise ValueError("allowed_contact_ids requires contacts_config")
-        update["allowed_contact_ids"] = validate_allowed_contact_ids_for_directory(
-            contacts_config,
-            payload.get("allowed_contact_ids"),
-            session_id=session.session_id,
-            directory_path=session.directory_path,
-        )
-    if "approval_required_tools" in payload:
-        update["approval_required_tools"] = _normalize_allowed_tools(
-            _normalize_plain_string_list(
-                payload.get("approval_required_tools"),
-                field_name="approval_required_tools",
-            ),
-            field_name="approval_required_tools",
-        )
-    if "approval_tool_settings" in payload:
-        normalized_settings = normalize_approval_tool_settings(
-            payload.get("approval_tool_settings"),
-            field_name="approval_tool_settings",
-        )
-        update["approval_tool_settings"] = {
-            tool_name: ApprovalGrantSettings.model_validate(settings)
-            for tool_name, settings in normalized_settings.items()
-        }
-    if "approval_notification_target_ids" in payload:
-        update["approval_notification_target_ids"] = normalize_approval_notification_target_ids(
-            payload.get("approval_notification_target_ids"),
-            field_name="approval_notification_target_ids",
-        )
-    if "tool_argument_policies" in payload:
-        update["tool_argument_policies"] = _session_tool_argument_policies_from_payload(
-            session,
-            payload.get("tool_argument_policies"),
-        )
-
-    discord_field = (
-        "discord_channel_allowlist"
-        if "discord_channel_allowlist" in payload
-        else "discord_channels"
-        if "discord_channels" in payload
-        else None
-    )
-    if discord_field is not None:
-        update["discord_channel_allowlist"] = _normalize_plain_string_list(
-            payload.get(discord_field),
-            field_name=discord_field,
-        )
-
-    teams_field = (
-        "teams_channel_allowlist"
-        if "teams_channel_allowlist" in payload
-        else "teams_channels"
-        if "teams_channels" in payload
-        else None
-    )
-    if teams_field is not None:
-        update["teams_channel_allowlist"] = _normalize_teams_channel_allowlist(
-            payload.get(teams_field),
-            field_name=teams_field,
-        )
-    if "teams_chat_allowlist" in payload:
-        update["teams_chat_allowlist"] = normalize_teams_chat_or_target_refs(
-            _normalize_plain_string_list(
-                payload.get("teams_chat_allowlist"), field_name="teams_chat_allowlist"
-            )
-        )
-    if "teams_user_allowlist" in payload:
-        update["teams_user_allowlist"] = _normalize_teams_user_allowlist(
-            payload.get("teams_user_allowlist"),
-            field_name="teams_user_allowlist",
-        )
-
-    update.update(_communication_file_session_policy_update(payload))
-
-    for field_name in SESSION_BOOL_POLICY_FIELDS:
-        if field_name in payload:
-            update[field_name] = _normalize_session_policy_bool(
-                payload.get(field_name), field_name=field_name
-            )
-
-    if "metadata" in payload:
-        metadata = payload.get("metadata")
-        if not isinstance(metadata, Mapping):
-            raise ValueError("metadata must be a JSON object")
-        update["metadata"] = dict(metadata)
-
-    return update
-
-
-def _resolve_session_approval_notification_target_ids(
-    runtime: RuntimeContext,
-    config: GatewayConfig,
-    session: SessionManifest,
-    target_ids: object,
-) -> list[str]:
-    return resolve_approval_notification_target_ids_for_directory(
-        runtime_dir=config.runtime_dir,
-        directory_store=runtime.directories,
-        directory_path=session.directory_path,
-        target_ids=target_ids,
-    )
-
-
-def _sync_added_discord_session_cursors(
-    runtime: Any,
-    *,
-    previous_session: SessionManifest | None,
-    updated_session: SessionManifest,
-) -> dict[str, str]:
-    previous_channels = (
-        _wake_eligible_discord_channel_ids(runtime, previous_session)
-        if previous_session is not None
-        else set()
-    )
-    updated_channels = _wake_eligible_discord_channel_ids(runtime, updated_session)
-    added_channels = sorted(updated_channels - previous_channels)
-    if not added_channels:
-        return {}
-
-    discord_inbox_service = getattr(runtime, "discord_inbox_service", None)
-    fast_forward = getattr(discord_inbox_service, "fast_forward_session_cursors_to_latest", None)
-    if not callable(fast_forward):
-        return {}
-    return dict(
-        fast_forward(
-            session_id=updated_session.session_id,
-            channel_ids=added_channels,
-        )
-    )
-
-
-def _wake_eligible_discord_channel_ids(
-    runtime: Any,
-    session: SessionManifest,
-) -> set[str]:
-    allowed_tools = {tool_name_value(tool) for tool in session.allowed_tools}
-    if tool_name_value(ToolName.DISCORD_GET_COMMANDS) not in allowed_tools:
-        return set()
-
-    policy_config = getattr(runtime, "policy_config", None)
-    resolve = getattr(policy_config, "resolved_discord_channel_ids_for_session", None)
-    if callable(resolve):
-        channel_ids = resolve(session, capability="read")
-    else:
-        channel_ids = session.discord_channel_allowlist
-    return {
-        str(channel_id or "").strip()
-        for channel_id in channel_ids
-        if str(channel_id or "").strip()
-    }
-
-
-def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
-    merged: dict[str, Any] = dict(base)
-    for key, value in update.items():
-        existing = merged.get(key)
-        if isinstance(existing, Mapping) and isinstance(value, Mapping):
-            merged[key] = _deep_merge_mapping(existing, value)
-            continue
-        merged[key] = value
-    return merged
-
-
-def _pkexec_env_command(
-    base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]
-) -> list[str]:
-    cmd = ["pkexec", "env"]
-    for key in allowed_keys:
-        value = env.get(key)
-        if value:
-            cmd.append(f"{key}={value}")
-    cmd.extend(base_cmd)
-    return cmd
-
-
-def _sudo_env_command(
-    base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]
-) -> list[str]:
-    preserved_keys = [key for key in allowed_keys if env.get(key)]
-    cmd = ["sudo", "-n"]
-    if preserved_keys:
-        cmd.append(f"--preserve-env={','.join(preserved_keys)}")
-    cmd.extend(base_cmd)
-    return cmd
-
-
-def _can_prompt_for_privileges() -> bool:
-    if sys.stdin is not None and sys.stdin.isatty():
-        return True
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+_deep_merge_mapping = session_helpers.deep_merge_mapping
+_pkexec_env_command = process_helpers.pkexec_env_command
+_sudo_env_command = process_helpers.sudo_env_command
+_can_prompt_for_privileges = process_helpers.can_prompt_for_privileges
 
 
 class PrivilegedHelperSession:
@@ -7599,30 +5832,6 @@ class PrivilegedHelperSession:
         return json.loads(line)
 
 
-def _admin_datetime_payload(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _admin_decimal_payload(value: object | None) -> str | None:
-    if value is None:
-        return None
-    return str(value)
-
-
-def _empty_model_pricing_catalog_payload() -> dict[str, Any]:
-    return {
-        "version": "",
-        "currency": "usd",
-        "description": None,
-        "sources": [],
-        "rules": [],
-    }
-
-
 class AdminService:
     """Legacy/stable integration facade for host admin surfaces.
 
@@ -7674,8 +5883,11 @@ class AdminService:
         self.skill_admin = components.skill_admin
         self.capacity_health_admin = components.capacity_health_admin
         self.model_usage_admin = components.model_usage_admin
+        self.operator_steering_admin = components.operator_steering_admin
         self.workflow_generation_admin = components.workflow_generation_admin
         self.workflow_reports_admin = components.workflow_reports_admin
+        self.approval_audit_admin = components.approval_audit_admin
+        self.artifact_admin = components.artifact_admin
         self.issue_git_support = components.issue_git_support
         self.vm_agent_support = components.vm_agent_support
         self.issue_git_admin = components.issue_git_admin
@@ -7690,14 +5902,34 @@ class AdminService:
         self._agent_create_operation_payloads_lock = components.agent_create_operation_payloads_lock
         self._agent_create_executor = components.agent_create_executor
         self._execution_backend_instance = components.execution_backend_instance
+        self.vm_agent_admin.configure_admin_collaborators(
+            operations_admin=self.operations_admin,
+            skill_admin=self.skill_admin,
+            workflow_config_admin=self.workflow_config_admin,
+            directory_admin=self.directory_admin,
+            skill_library=self.skill_library,
+            agent_create_operations=self.agent_create_operations,
+            agent_create_operation_owner_id=self._agent_create_operation_owner_id,
+            agent_create_operation_payloads=self._agent_create_operation_payloads,
+            agent_create_operation_payloads_lock=self._agent_create_operation_payloads_lock,
+            agent_create_executor=self._agent_create_executor,
+            project_dir_provider=lambda: self.project_dir,
+        )
+
+    @property
+    def tool_call_audit_index(self) -> Any | None:
+        return _admin_service_tool_call_audit_index(self)
+
+    @tool_call_audit_index.setter
+    def tool_call_audit_index(self, value: Any | None) -> None:
+        _set_admin_service_tool_call_audit_index(self, value)
 
     @property
     def directory_scoped_config_enabled(self) -> bool:
         return self.config.enable_directory_scoped_config
 
     def effective_execution_backend(self, directory_path: str | None = None) -> str:
-        resolved_config = self.runtime.provider_config.resolve_for_directory(directory_path)
-        return str(resolved_config.execution_backend or "libvirt_vm")
+        return self.vm_agent_admin.effective_execution_backend(directory_path)
 
     def read_capacity_health(self) -> CapacityHealthPayload:
         return self.capacity_health_admin.read_capacity_health()
@@ -7721,26 +5953,7 @@ class AdminService:
         occurred_before: datetime | None = None,
         limit: int | None = None,
     ) -> list[ModelInferenceUsageEvent]:
-        model_usage_admin = getattr(self, "model_usage_admin", None)
-        if model_usage_admin is not None:
-            return model_usage_admin.list_model_usage_events(
-                session_id=session_id,
-                workflow_run_id=workflow_run_id,
-                effect_id=effect_id,
-                dispatch_id=dispatch_id,
-                directory_path=directory_path,
-                include_directory_descendants=include_directory_descendants,
-                provider=provider,
-                model=model,
-                agent_harness=agent_harness,
-                execution_backend=execution_backend,
-                normalized_usage_status=normalized_usage_status,
-                request_status=request_status,
-                occurred_after=occurred_after,
-                occurred_before=occurred_before,
-                limit=limit,
-            )
-        return model_usage_store(self.config.runtime_dir).list_events(
+        return self.model_usage_admin.list_model_usage_events(
             session_id=session_id,
             workflow_run_id=workflow_run_id,
             effect_id=effect_id,
@@ -7805,168 +6018,40 @@ class AdminService:
         )
 
     def read_deployment_status(self) -> DeploymentStatusPayload:
-        payload_path = self.config.runtime_dir / "deployment-status.json"
-        raw = _read_json_object(payload_path)
-        if not raw:
-            return DeploymentStatusPayload()
-        try:
-            status = DeploymentStatusPayload.model_validate(raw)
-        except ValidationError:
-            return DeploymentStatusPayload()
-        if not status.active:
-            return status
-        started_at = _coerce_optional_datetime(status.started_at)
-        updated_at = _coerce_optional_datetime(status.updated_at)
-        status = status.model_copy(update={"started_at": started_at, "updated_at": updated_at})
-        checked_at = updated_at or started_at
-        is_stale = False
-        if checked_at is not None:
-            is_stale = (_utc_now() - checked_at).total_seconds() > status.ttl_seconds
-        if is_stale:
-            return status.model_copy(update={"active": False, "stale": True})
-        if not status.message:
-            return status.model_copy(update={"message": "Control plane update in progress."})
-        return status
+        return self.operations_admin.read_deployment_status()
 
     def read_release_info(self, *, news_index: int = 0) -> ReleaseInfoPayload:
-        release_metadata = read_release_metadata(self.project_dir, news_index=news_index)
-        return ReleaseInfoPayload(
-            version=release_metadata.version,
-            version_source=release_metadata.version_source,
-            build=release_metadata.build,
-            build_source=release_metadata.build_source,
-            changelog=(
-                None
-                if release_metadata.changelog is None
-                else ReleaseChangelogPayload(
-                    source=release_metadata.changelog.source,
-                    path=release_metadata.changelog.path,
-                    heading=release_metadata.changelog.heading,
-                    entries=[
-                        ReleaseChangelogEntryPayload(
-                            text=entry.text,
-                            kind=entry.kind,
-                        )
-                        for entry in release_metadata.changelog.entries
-                    ],
-                )
-            ),
-            news=(
-                None
-                if release_metadata.news is None
-                else ReleaseNewsPayload(
-                    source=release_metadata.news.source,
-                    path=release_metadata.news.path,
-                    index=release_metadata.news.index,
-                    heading=release_metadata.news.heading,
-                    blocks=[
-                        ReleaseNewsBlockPayload(
-                            kind=block.kind,
-                            text=block.text,
-                            level=block.level,
-                            items=list(block.items),
-                            src=block.src,
-                            dark_src=block.dark_src,
-                            alt=block.alt,
-                            title=block.title,
-                        )
-                        for block in release_metadata.news.blocks
-                    ],
-                    has_previous=release_metadata.news.has_previous,
-                    has_next=release_metadata.news.has_next,
-                    previous_index=release_metadata.news.previous_index,
-                    next_index=release_metadata.news.next_index,
-                )
-            ),
-            missing_reasons=release_metadata.missing_reasons,
-        )
+        return self.operations_admin.read_release_info(news_index=news_index)
 
     def release_changelog_file(self) -> Path:
-        changelog_path = self.project_dir / "CHANGELOG.md"
-        if not changelog_path.is_file():
-            raise FileNotFoundError(f"{changelog_path.name} is missing.")
-        return changelog_path
+        return self.operations_admin.release_changelog_file()
 
     def _execution_backend(self):
-        backend = getattr(self, "_execution_backend_instance", None)
-        if backend is None:
-            from agent_sandbox.execution import build_execution_backend
-            from agent_sandbox.execution.libvirt_backend import LibvirtVmExecutionBackend
-
-            if not hasattr(self, "config"):
-                backend = LibvirtVmExecutionBackend(vm_admin_service=self.vm_agent_admin)
-                self._execution_backend_instance = backend
-                return backend
-
-            backend = build_execution_backend(
-                self.config,
-                admin_service=self,
-                project_dir=getattr(self, "project_dir", None),
-            )
-            self._execution_backend_instance = backend
-        return backend
+        return self.vm_agent_admin.execution_backend()
 
     def _normalize_directory_reference(self, reference: str | None) -> str:
-        directory_service = DirectoryService(self.runtime.directories)
-        return directory_service.show(reference or "root").directory.path
+        return self.teams_admin.normalize_directory_reference(reference)
 
     def _teams_auth_provider_for_directory(
         self,
         directory_path: str | None,
-    ) -> tuple[str, GatewayConfig, str, TeamsDeviceCodeTokenProvider]:
-        normalized_directory = self._normalize_directory_reference(directory_path)
-        resolved_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
-        if resolved_config.teams_backend != "delegated_graph_api":
-            raise ValueError(
-                f"Directory '{normalized_directory}' is not configured for delegated Teams auth "
-                f"(teams_backend={resolved_config.teams_backend!r})."
-            )
-        identity_id = str(resolved_config.teams_delegated_identity_id or "").strip()
-        if not identity_id:
-            raise ValueError(
-                f"Directory '{normalized_directory}' is missing teams_delegated_identity_id."
-            )
-        client_id = str(resolved_config.teams_delegated_client_id or "").strip()
-        if not client_id:
-            raise ValueError(
-                f"Directory '{normalized_directory}' is missing teams_delegated_client_id."
-            )
-        provider = TeamsDeviceCodeTokenProvider(
-            MicrosoftDeviceCodeAuthConfig(
-                client_id=client_id,
-                tenant_id=resolved_config.teams_delegated_tenant_id,
-                scopes=resolved_config.teams_delegated_scopes,
-                authority_base_url=resolved_config.teams_delegated_authority_base_url,
-                timeout_seconds=resolved_config.teams_timeout_seconds,
-            ),
-            JsonTeamsIdentityCredentialStore(
-                resolved_config.teams_delegated_credential_store_path,
-                identity_id,
-            ),
-        )
-        return normalized_directory, resolved_config, identity_id, provider
+    ) -> tuple[str, Any, str, Any]:
+        return self.teams_admin._teams_auth_provider_for_directory(directory_path)
 
     def _teams_auth_payload(
         self,
         *,
         directory_path: str,
-        config: GatewayConfig,
+        config: Any,
         identity_id: str,
-        credentials: TeamsAuthCredentials | None,
+        credentials: Any | None,
     ) -> dict[str, object]:
-        return {
-            "directory_path": directory_path,
-            "identity_id": identity_id,
-            "backend": config.teams_backend,
-            "authenticated": credentials is not None,
-            "status": "authenticated" if credentials is not None else "reauth-required",
-            "account_identifier": identity_id,
-            "tenant_id": config.teams_delegated_tenant_id,
-            "scopes": list(config.teams_delegated_scopes),
-            "expires_at": credentials.expires_at if credentials is not None else None,
-            "issued_at": credentials.issued_at if credentials is not None else None,
-            "store_path": str(config.teams_delegated_credential_store_path),
-        }
+        return self.teams_admin._teams_auth_payload(
+            directory_path=directory_path,
+            config=config,
+            identity_id=identity_id,
+            credentials=credentials,
+        )
 
     # Deprecated compatibility wrappers: new internal callers should depend on
     # operations_admin for Teams auth and privileged-operation methods.
@@ -8012,31 +6097,12 @@ class AdminService:
 
     def _teams_graph_list_channels(
         self,
-        config: GatewayConfig,
-        provider: TeamsDeviceCodeTokenProvider,
+        config: Any,
+        provider: Any,
         *,
         team_id: str,
     ) -> list[dict[str, Any]]:
-        encoded_team_id = quote(team_id, safe="")
-        next_url = f"{config.teams_graph_api_base_url}/teams/{encoded_team_id}/channels"
-        channels: list[dict[str, Any]] = []
-        with httpx.Client(timeout=config.teams_timeout_seconds) as client:
-            while next_url:
-                response = client.get(
-                    next_url,
-                    headers={
-                        "Authorization": f"Bearer {provider.get_bearer_token()}",
-                        "Content-Type": "application/json",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                for item in payload.get("value", []):
-                    if isinstance(item, dict):
-                        channels.append(item)
-                raw_next = payload.get("@odata.nextLink")
-                next_url = str(raw_next).strip() if raw_next else ""
-        return channels
+        return self.teams_admin._teams_graph_list_channels(config, provider, team_id=team_id)
 
     def unlock_privileged_operations(self) -> str:
         return self.operations_admin.unlock_privileged_operations()
@@ -8051,449 +6117,36 @@ class AdminService:
         return self.operations_admin.privileged_helper_required()
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
-        mapping: dict[str, list[str]] = {}
-        for session_id, session in self.runtime.session_repository.read_all().items():
-            if session.vm_id:
-                mapping.setdefault(session.vm_id, []).append(session_id)
-        for session_ids in mapping.values():
-            session_ids.sort()
-        return mapping
+        return self.vm_agent_admin._session_ids_by_vm()
 
     def _directory_paths_by_vm(self) -> dict[str, list[str]]:
-        mapping: dict[str, set[str]] = {}
-        for session in self.runtime.session_repository.list_sessions():
-            if session.vm_id:
-                mapping.setdefault(session.vm_id, set()).add(session.directory_path)
-        return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
+        return self.vm_agent_admin._directory_paths_by_vm()
 
     def _labels_by_vm(self) -> dict[str, dict[str, str]]:
-        mapping: dict[str, dict[str, str] | None] = {}
-        sessions = self.runtime.session_repository.read_all()
-        for session_id in sorted(sessions):
-            session = sessions[session_id]
-            if not session.vm_id:
-                continue
-            labels = _normalize_session_labels(session.metadata.get("labels"))
-            current = mapping.get(session.vm_id)
-            if current is None:
-                mapping[session.vm_id] = dict(labels)
-                continue
-            mapping[session.vm_id] = {
-                key: value for key, value in current.items() if labels.get(key) == value
-            }
-        return {vm_id: labels for vm_id, labels in mapping.items() if labels}
+        return self.vm_agent_admin._labels_by_vm()
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
-        if not directory_path:
-            return "root"
-        result = self.directory_admin.get(directory_path)
-        if not result.ok or result.data is None:
-            return "root"
-        return result.data.details.directory.path
+        return self.vm_agent_admin._normalize_directory_path(directory_path)
 
     def _resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:
-        resolver = VmDefaultsConfigResolver(
-            self.config,
-            directory_store=self.runtime.directories,
-            session_store=self.runtime.session_repository,
-        )
-        return resolver.resolve_for_directory(directory_path)
+        return self.vm_agent_admin._resolve_vm_defaults(directory_path)
 
     def _resolve_issue_setup(
         self, directory_path: str, *, root_dir: Path
     ) -> EffectiveIssueSetupConfig:
-        return resolve_effective_issue_setup_config(
-            config=self.config,
-            runtime=self.runtime,
-            directory_path=directory_path,
-            root_dir=root_dir,
-        )
+        return self.vm_agent_admin._resolve_issue_setup(directory_path, root_dir=root_dir)
 
     def _resolve_agent_model_for_session(self, session_or_id: SessionManifest | str) -> str:
-        if isinstance(session_or_id, SessionManifest):
-            session = session_or_id
-            session_id = session.session_id
-        else:
-            session_id = str(session_or_id).strip()
-            if not session_id:
-                raise ValueError(
-                    "Cannot resolve AGENT_MODEL: missing session id. Provide a valid session id or SessionManifest."
-                )
-            session = self.runtime.session_repository.get_session(session_id)
-            if session is None:
-                raise ValueError(
-                    f"Cannot resolve AGENT_MODEL for session '{session_id}': session not found. "
-                    "Remediation: create the session first or pass a SessionManifest with session.model set."
-                )
-        issue_setup = self._resolve_issue_setup(session.directory_path, root_dir=self.project_dir)
-        return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
+        return self.vm_agent_admin._resolve_agent_model_for_session(session_or_id)
 
     def resolve_agent_model_for_target(self, target: str) -> str:
-        session = self.runtime.session_repository.resolve_session_target(target)
-        if session is None:
-            raise ValueError(f"Unknown session target: {target}")
-        return self._resolve_agent_model_for_session(session.session_id)
+        return self.vm_agent_admin.resolve_agent_model_for_target(target)
 
     def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
-        resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
-        path_result = _run_subprocess(
-            [str(resolve_script), "--path-only", repo_source], capture_output=True, text=True
-        )
-        if path_result.returncode != 0:
-            raise RuntimeError(
-                (path_result.stderr or path_result.stdout or "").strip()
-                or f"Failed to resolve repo source: {repo_source}"
-            )
-        name_result = _run_subprocess(
-            [str(resolve_script), "--name-only", repo_source], capture_output=True, text=True
-        )
-        if name_result.returncode != 0:
-            raise RuntimeError(
-                (name_result.stderr or name_result.stdout or "").strip()
-                or f"Failed to determine repo name: {repo_source}"
-            )
-        return (path_result.stdout or "").strip(), (name_result.stdout or "").strip()
-
-    def _sync_repo_into_bare_remote(
-        self,
-        repo_name: str,
-        resolved_repo_path: str,
-        *,
-        issue_setup: EffectiveIssueSetupConfig,
-        repo_source: str | None = None,
-    ) -> Path:
-        create_remote_script = self.project_dir / "scripts" / "create_git_remote.sh"
-        completed = _run_subprocess(
-            [str(create_remote_script), repo_name, "agents"],
-            capture_output=True,
-            text=True,
-            env=os.environ
-            | {
-                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
-                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
-                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
-                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
-            },
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(
-                (completed.stderr or completed.stdout or "").strip()
-                or f"Failed to create git remote for {repo_name}"
-            )
-        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
-        fetch_result = _run_subprocess(
-            [
-                "git",
-                f"--git-dir={bare_repo_path}",
-                "fetch",
-                "--prune",
-                resolved_repo_path,
-                "+refs/heads/*:refs/heads/*",
-                "+refs/tags/*:refs/tags/*",
-                *_PROTECTED_MIRROR_HEAD_REFSPECS,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if fetch_result.returncode != 0:
-            raise RuntimeError(
-                (fetch_result.stderr or fetch_result.stdout or "").strip()
-                or f"Failed to mirror repo into {bare_repo_path}"
-            )
-        trusted_repo_result = _run_subprocess(
-            [
-                "git",
-                f"--git-dir={bare_repo_path}",
-                "config",
-                "agent-sandbox.trustedRepoPath",
-                resolved_repo_path,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if trusted_repo_result.returncode != 0:
-            raise RuntimeError(
-                (trusted_repo_result.stderr or trusted_repo_result.stdout or "").strip()
-                or f"Failed to record trusted repo path for {bare_repo_path}"
-            )
-        mirror_source = (repo_source or resolved_repo_path).strip()
-        mirror_source_result = _run_subprocess(
-            [
-                "git",
-                f"--git-dir={bare_repo_path}",
-                "config",
-                "agent-sandbox.mirrorSource",
-                mirror_source,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if mirror_source_result.returncode != 0:
-            raise RuntimeError(
-                (mirror_source_result.stderr or mirror_source_result.stdout or "").strip()
-                or f"Failed to record mirror source for {bare_repo_path}"
-            )
-        mirror_remote_name = _mirror_remote_name_for_repo(resolved_repo_path)
-        mirror_remote_result = _run_subprocess(
-            [
-                "git",
-                f"--git-dir={bare_repo_path}",
-                "config",
-                "agent-sandbox.mirrorRemoteName",
-                mirror_remote_name,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if mirror_remote_result.returncode != 0:
-            raise RuntimeError(
-                (mirror_remote_result.stderr or mirror_remote_result.stdout or "").strip()
-                or f"Failed to record mirror remote name for {bare_repo_path}"
-            )
-        mirror_sync_result = _run_subprocess(
-            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.mirrorSyncRemote", "1"],
-            capture_output=True,
-            text=True,
-        )
-        if mirror_sync_result.returncode != 0:
-            raise RuntimeError(
-                (mirror_sync_result.stderr or mirror_sync_result.stdout or "").strip()
-                or f"Failed to record mirror sync policy for {bare_repo_path}"
-            )
-        mirror_force_local_result = _run_subprocess(
-            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.mirrorForceLocal", "0"],
-            capture_output=True,
-            text=True,
-        )
-        if mirror_force_local_result.returncode != 0:
-            raise RuntimeError(
-                (mirror_force_local_result.stderr or mirror_force_local_result.stdout or "").strip()
-                or f"Failed to record mirror force-local policy for {bare_repo_path}"
-            )
-        canonical_origin_url = _resolve_canonical_origin_url_for_repo(
-            resolved_repo_path, mirror_remote_name
-        )
-        if canonical_origin_url:
-            canonical_config_result = _run_subprocess(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "config",
-                    "agent-sandbox.canonicalOriginUrl",
-                    canonical_origin_url,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if canonical_config_result.returncode != 0:
-                raise RuntimeError(
-                    (canonical_config_result.stderr or canonical_config_result.stdout or "").strip()
-                    or f"Failed to record canonical origin URL for {bare_repo_path}"
-                )
-        default_base_branch = _default_base_branch_for_repo_remote(
-            resolved_repo_path, mirror_remote_name
-        )
-        if default_base_branch:
-            base_branch_config_result = _run_subprocess(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "config",
-                    "agent-sandbox.baseBranch",
-                    default_base_branch,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if base_branch_config_result.returncode != 0:
-                raise RuntimeError(
-                    (
-                        base_branch_config_result.stderr or base_branch_config_result.stdout or ""
-                    ).strip()
-                    or f"Failed to record base branch for {bare_repo_path}"
-                )
-            symbolic_ref_result = _run_subprocess(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "symbolic-ref",
-                    "HEAD",
-                    f"refs/heads/{default_base_branch}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if symbolic_ref_result.returncode != 0:
-                raise RuntimeError(
-                    (symbolic_ref_result.stderr or symbolic_ref_result.stdout or "").strip()
-                    or f"Failed to set HEAD for {bare_repo_path}"
-                )
-        return bare_repo_path
-
-    def _clone_repo_into_vm(
-        self,
-        *,
-        vm_name: str,
-        vm_user: str,
-        session_id: str,
-        repo_name: str,
-        issue_setup: EffectiveIssueSetupConfig,
-        repo_source: str | None = None,
-        clone_branch: str | None = None,
-        issue_number: str | None = None,
-        vm_ip: str | None = None,
-    ) -> str:
-        bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
-        completed = _run_subprocess(
-            [str(bootstrap_git_script), vm_name, vm_user],
-            capture_output=True,
-            text=True,
-            env=os.environ
-            | {
-                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
-                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
-                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
-                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
-            },
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(
-                (completed.stderr or completed.stdout or "").strip()
-                or f"Failed to bootstrap guest git for {vm_name}"
-            )
-
-        vm_ip = vm_ip or _resolve_vm_ip(vm_name)
-        ssh_private_key_path = _resolve_private_key_path()
-        if not vm_ip or ssh_private_key_path is None:
-            raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
-
-        remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
-        pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
-        canonical_remote_url = (
-            repo_source.strip() if repo_source and _is_remote_git_source(repo_source) else ""
-        )
-        guest_repo_root = f"/home/{vm_user}/{repo_name}"
-        agent_pr_note_helper_b64 = _guest_agent_pr_note_helper_b64(self.project_dir)
-        agent_push_helper_b64 = _guest_push_agent_helper_b64(self.project_dir)
-        sync_base_helper_b64 = _guest_sync_base_helper_b64(self.project_dir)
-        clone_branch_line = ""
-        clone_command = 'git clone "${REMOTE_URL}" "${TARGET_DIR}"'
-        if clone_branch:
-            clone_command = 'git clone --branch "${CLONE_BRANCH}" "${REMOTE_URL}" "${TARGET_DIR}"'
-            clone_branch_line = f'CLONE_BRANCH="{clone_branch}"\n'
-        issue_config_line = ""
-        if issue_number:
-            issue_config_line = (
-                f'git -C "${{TARGET_DIR}}" config agent-sandbox.issueNumber "{issue_number}"\n'
-                f'git -C "${{TARGET_DIR}}" config agent-sandbox.destinationBranch "feature/issue-{issue_number}"\n'
-            )
-        branch_suffix_line = (
-            'git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${VM_NAME}"\n'
-        )
-        remote_script = f"""
-set -euo pipefail
-. ~/.profile
-TARGET_DIR="{guest_repo_root}"
-REMOTE_URL="{remote_url}"
-CANONICAL_REMOTE_URL="{canonical_remote_url}"
-SESSION_ID="{session_id}"
-VM_NAME="{vm_name}"
-PR_NOTES_REF="{pr_notes_ref}"
-AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
-AGENT_PUSH_HELPER_B64="{agent_push_helper_b64}"
-SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
-WORK_BRANCH="work"
-{clone_branch_line}\
-if [[ -e "${{TARGET_DIR}}" ]]; then
-  echo "Guest repo path already exists: ${{TARGET_DIR}}" >&2
-  exit 1
-fi
-{clone_command}
-if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
-  git -C "${{TARGET_DIR}}" remote set-url origin "${{CANONICAL_REMOTE_URL}}"
-  git -C "${{TARGET_DIR}}" config "url.${{REMOTE_URL}}.insteadOf" "${{CANONICAL_REMOTE_URL}}"
-  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
-else
-  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
-fi
-git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
-git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
-BASE_BRANCH="${{CLONE_BRANCH:-}}"
-if [[ -z "${{BASE_BRANCH}}" ]]; then
-  BASE_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
-fi
-if [[ -n "${{BASE_BRANCH}}" ]]; then
-  git -C "${{TARGET_DIR}}" config agent-sandbox.baseBranch "${{BASE_BRANCH}}"
-fi
-git -C "${{TARGET_DIR}}" config agent-sandbox.workBranch "${{WORK_BRANCH}}"
-CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
-if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
-  if git -C "${{TARGET_DIR}}" show-ref --verify --quiet "refs/heads/${{WORK_BRANCH}}"; then
-    git -C "${{TARGET_DIR}}" switch "${{WORK_BRANCH}}"
-  else
-    git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"
-  fi
-fi
-git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
-git -C "${{TARGET_DIR}}" config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"
-{issue_config_line}{branch_suffix_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
-python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
-import base64
-import os
-import sys
-from pathlib import Path
-
-target_path = Path(sys.argv[1])
-target_path.write_bytes(base64.b64decode(sys.argv[2]))
-os.chmod(target_path, 0o755)
-PY
-python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/push-agent" "${{AGENT_PUSH_HELPER_B64}}" <<'PY'
-import base64
-import os
-import sys
-from pathlib import Path
-
-target_path = Path(sys.argv[1])
-target_path.write_bytes(base64.b64decode(sys.argv[2]))
-os.chmod(target_path, 0o755)
-PY
-python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/sync-base" "${{SYNC_BASE_HELPER_B64}}" <<'PY'
-import base64
-import os
-import sys
-from pathlib import Path
-
-target_path = Path(sys.argv[1])
-target_path.write_bytes(base64.b64decode(sys.argv[2]))
-os.chmod(target_path, 0o755)
-PY
-git -C "${{TARGET_DIR}}" config alias.agent-pr-note '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" "$@"; }}; f'
-git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/push-agent" "$@"; }}; f'
-git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/sync-base" "$@"; }}; f'
-"""
-        ssh_result = _run_subprocess(
-            [
-                "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                f"{vm_user}@{vm_ip}",
-                "bash",
-                "-s",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60.0,
-            input=remote_script,
-        )
-        if ssh_result.returncode != 0:
-            raise RuntimeError(
-                (ssh_result.stderr or ssh_result.stdout or "").strip()
-                or f"Failed to clone repo into {vm_name}"
-            )
-        return guest_repo_root
+        return self.vm_agent_admin._resolve_repo_source(repo_source)
 
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
-        snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
-        return {entity.entity_id for entity in snapshot.entities if entity.kind == kind}
+        return self.issue_git_support.direct_owned_entity_ids(directory_path, kind=kind)
 
     def list_sessions(
         self,
@@ -8503,13 +6156,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[SessionSummary]:
-        summaries = self.operations_admin.list_sessions(
+        return self.vm_agent_admin.list_sessions(
             include_expired=include_expired,
             expired_only=expired_only,
             directory_path=directory_path,
             direct_only=direct_only,
         )
-        return [self._session_summary_with_container_lifecycle(summary) for summary in summaries]
 
     def _interrupt_container_operator_steering_note(
         self,
@@ -8520,491 +6172,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         worker_execution_id: str | None,
         created_by: str | None,
     ) -> dict[str, Any]:
-        from agent_sandbox.effects.providers.agent_prompt import (
-            CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY,
-            AgentPromptEffectProvider,
-        )
-        from agent_sandbox.effects.providers.agent_session import (
-            container_prompt_command,
-            container_worker_guest_gateway_url,
-            container_worker_image_for_session,
-            default_agent_model_for_provider,
-            gateway_url_with_session_context,
-            safe_effect_execution_id,
-        )
-
-        session_id = session.session_id
-        dispatch_id = context.dispatch_id
-        directory_path = self._agent_record_directory_path(session.directory_path)
-        execution_store = self._operator_steering_execution_store()
-        record = self._find_operator_steering_container_waiting_record(
-            execution_store=execution_store,
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            worker_execution_id=worker_execution_id,
-        )
-        original_outputs = dict(record.outputs)
-        current_execution_id = str(original_outputs.get("execution_id") or "").strip()
-        if not current_execution_id:
-            raise ValueError(
-                "Active container prompt execution is missing its worker execution id."
-            )
-
-        now = datetime.now(UTC)
-        now_text = now.isoformat().replace("+00:00", "Z")
-        in_progress_outputs = dict(original_outputs)
-        in_progress_outputs[CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY] = True
-        in_progress_outputs["interrupt_started_at"] = now_text
-        in_progress_outputs["interrupting_execution_id"] = current_execution_id
-        in_progress_outputs["operator_steering_message_preview"] = sanitize_text(message[:180])
-        in_progress_record = record.model_copy(
-            update={"outputs": in_progress_outputs, "finished_at": now}
-        )
-        execution_store.put(in_progress_record)
-
-        execution_records = self._container_execution_records_for_session(session_id)
-        current_record = next(
-            (
-                candidate
-                for candidate in execution_records
-                if str(getattr(candidate, "execution_id", "") or "").strip() == current_execution_id
-            ),
-            None,
-        )
-        backend = self._container_worker_backend(
-            directory_path=directory_path,
-            worker_url=self._container_worker_url_for_target(
-                session=session,
-                record=current_record,
-                records=execution_records,
-            ),
-        )
-        current_logs = self._safe_container_log_snapshot(
-            backend,
-            current_execution_id,
-            lines=120,
-        )
-        resume_thread_id = (
-            AgentPromptEffectProvider._usable_resume_thread_id(original_outputs.get("thread_id"))
-            or AgentPromptEffectProvider._usable_resume_thread_id(
-                self._container_session_agent_thread_id(session)
-            )
-            or AgentPromptEffectProvider._thread_id_from_logs(current_logs)
-        )
-
-        try:
-            backend.stop(current_execution_id)
-        except Exception as exc:
-            detail = str(exc).strip() or type(exc).__name__
-            if self._container_execution_is_terminal(backend, current_execution_id):
-                failure_message = (
-                    "Operator steering stop failed after the container execution reached "
-                    "a terminal state "
-                    f"(session_id={session_id}, dispatch_id={dispatch_id}, "
-                    f"execution_id={current_execution_id}, message={detail})"
-                )
-                failed_outputs = dict(in_progress_outputs)
-                failed_outputs.pop(CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY, None)
-                failed_outputs.update(
-                    {
-                        "success": False,
-                        "execution_backend": "container_worker_vm",
-                        "execution_id": current_execution_id,
-                        "worker_execution_id": current_execution_id,
-                        "agent_state": "failed",
-                        "message": failure_message,
-                        "operator_steering_failed": True,
-                    }
-                )
-                execution_store.put(
-                    in_progress_record.model_copy(
-                        update={
-                            "status": "failed",
-                            "finished_at": datetime.now(UTC),
-                            "outputs": failed_outputs,
-                            "error": failure_message,
-                        }
-                    )
-                )
-            else:
-                restored_record = record.model_copy(update={"outputs": original_outputs})
-                execution_store.put(restored_record)
-            raise RuntimeError(
-                "Could not stop the active container execution for operator steering "
-                f"(execution_id={current_execution_id}, message={detail})"
-            ) from exc
-
-        cancelled_legacy_note_ids = self._cancel_pending_operator_steering_notes_for_dispatch(
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-        )
-        effective_config = backend.config
-        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
-            session,
-            config=effective_config,
-        )
-        resolved_model = (
-            str(context.model or "").strip()
-            or str(record.resolved_config.get("model") or "").strip()
-            or str(original_outputs.get("model") or "").strip()
-            or str(getattr(session, "model", None) or "").strip()
-            or default_agent_model_for_provider(agent_harness, effective_config)
-        )
-        approval_lease_id = (
-            str(record.resolved_config.get("mcp_tool_approval_lease_id") or "").strip()
-            or str(original_outputs.get("mcp_tool_approval_lease_id") or "").strip()
-            or None
-        )
-        mcp_gateway_url = (
-            gateway_url_with_session_context(
-                container_worker_guest_gateway_url(effective_config),
-                session_id=session_id,
-                workflow_run_id=context.workflow_run_id,
-                mcp_tool_approval_lease_id=approval_lease_id,
-            )
-            if approval_lease_id
-            else None
-        )
-        replacement_execution_id = safe_effect_execution_id("agent", session_id)
-        steering_prompt = self._operator_steering_interrupt_prompt(message)
-        command = container_prompt_command(
-            prompt=steering_prompt,
-            model=resolved_model,
-            resume_thread_id=resume_thread_id,
-            agent_provider=agent_harness,
-            mcp_gateway_url=mcp_gateway_url,
-            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
-        )
-        try:
-            handle = backend.start(
-                backend.prepare(
-                    ExecutionSpec(
-                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                        target_name=replacement_execution_id,
-                        session_id=session_id,
-                        directory_path=directory_path,
-                        image=container_worker_image_for_session(session, effective_config),
-                        command=command,
-                        metadata={
-                            "effect_type": str(record.effect_type or ""),
-                            "dispatch_id": dispatch_id,
-                            "resume_thread_id": resume_thread_id,
-                            "operator_steering": "interrupt_and_resume",
-                            "interrupted_execution_id": current_execution_id,
-                            "agent_provider": agent_harness,
-                            "model": resolved_model,
-                            "model_provider_mode": effective_config.model_provider_mode,
-                            **(
-                                {"created_by": str(created_by).strip()}
-                                if str(created_by or "").strip()
-                                else {}
-                            ),
-                        },
-                    )
-                )
-            )
-        except Exception as exc:
-            failure_message = (
-                "Operator steering stopped the active container execution but could not "
-                "start the replacement "
-                f"(session_id={session_id}, dispatch_id={dispatch_id}, "
-                f"interrupted_execution_id={current_execution_id}, message={exc})"
-            )
-            failed_outputs = dict(in_progress_outputs)
-            failed_outputs.pop(CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY, None)
-            failed_outputs.update(
-                {
-                    "success": False,
-                    "execution_backend": "container_worker_vm",
-                    "execution_id": current_execution_id,
-                    "worker_execution_id": current_execution_id,
-                    "worker_status": "interrupted",
-                    "agent_state": "failed",
-                    "message": failure_message,
-                    "operator_steering_failed": True,
-                }
-            )
-            execution_store.put(
-                in_progress_record.model_copy(
-                    update={
-                        "status": "failed",
-                        "finished_at": datetime.now(UTC),
-                        "outputs": failed_outputs,
-                        "error": failure_message,
-                    }
-                )
-            )
-            raise RuntimeError(failure_message) from exc
-
-        replacement_thread_id = resume_thread_id or str(original_outputs.get("thread_id") or "")
-        interrupted_execution_ids = self._append_unique_text_value(
-            original_outputs.get("interrupted_execution_ids"),
-            current_execution_id,
-        )
-        replacement_outputs = dict(original_outputs)
-        replacement_outputs.pop(CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY, None)
-        replacement_outputs.update(
-            {
-                "success": True,
-                "queued": False,
-                "output_mode": "on_completion",
-                "execution_backend": "container_worker_vm",
-                "execution_id": handle.execution_id,
-                "worker_execution_id": handle.execution_id,
-                "session_id": session_id,
-                "dispatch_id": dispatch_id,
-                "thread_id": replacement_thread_id or dispatch_id,
-                "operator_steering_status": "interrupted_and_resumed",
-                "operator_interrupt_count": self._safe_positive_int(
-                    original_outputs.get("operator_interrupt_count")
-                )
-                + 1,
-                "last_operator_interrupt_at": now_text,
-                "interrupted_execution_id": current_execution_id,
-                "interrupted_execution_ids": interrupted_execution_ids,
-                "message": (
-                    "Interrupted active container execution and started replacement "
-                    f"{handle.execution_id}"
-                ),
-                **(
-                    {"cancelled_legacy_operator_steering_note_ids": cancelled_legacy_note_ids}
-                    if cancelled_legacy_note_ids
-                    else {}
-                ),
-            }
-        )
-        replacement_record = in_progress_record.model_copy(
-            update={"outputs": replacement_outputs, "finished_at": datetime.now(UTC)}
-        )
-        execution_store.put(replacement_record)
-        self._annotate_interrupted_container_execution(
-            backend=backend,
-            execution_id=current_execution_id,
-            replacement_execution_id=handle.execution_id,
-            interrupted_at=now_text,
-            created_by=created_by,
-        )
-        register_model_usage_correlation_context(
-            runtime_dir=self.config.runtime_dir,
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            workflow_run_id=context.workflow_run_id,
-            effect_id=context.effect_id or record.effect_id,
-            node_id=context.node_id or record.effect_id,
-            execution_backend="container_worker_vm",
-            directory_path=directory_path,
-            model=resolved_model,
-            trace_id=context.trace_id or record.trace_id,
-            agent_harness=agent_harness,
-        )
-
-        note = operator_steering_note_store(self.config.runtime_dir).create_delivered_note(
-            session_id=session_id,
-            dispatch_id=dispatch_id,
-            worker_execution_id=handle.execution_id,
+        return self.operator_steering_admin.interrupt_container_operator_steering_note(
+            session=session,
+            context=context,
             message=message,
+            worker_execution_id=worker_execution_id,
             created_by=created_by,
-            provider="container_worker_vm",
-            provider_endpoint="interrupt-and-resume",
-            now=datetime.now(UTC),
         )
-        return {
-            "mode": "interrupt_and_resume",
-            "note": note,
-            "interrupt": {
-                "session_id": session_id,
-                "dispatch_id": dispatch_id,
-                "interrupted_execution_id": current_execution_id,
-                "replacement_execution_id": handle.execution_id,
-                "thread_id": replacement_thread_id or None,
-                "message": (
-                    "Interrupted the active container run and started a replacement "
-                    "with the steering note."
-                ),
-            },
-        }
-
-    def _cancel_pending_operator_steering_notes_for_dispatch(
-        self,
-        *,
-        session_id: str,
-        dispatch_id: str,
-    ) -> list[str]:
-        store = operator_steering_note_store(self.config.runtime_dir)
-        cancelled: list[str] = []
-        for note in store.list_notes(session_id=session_id, dispatch_id=dispatch_id, limit=200):
-            if note.status != "pending":
-                continue
-            try:
-                updated = store.cancel_note(note.note_id)
-            except Exception:
-                continue
-            if updated is not None and updated.status == "cancelled":
-                cancelled.append(updated.note_id)
-        return cancelled
 
     def _operator_steering_execution_store(self):
-        from agent_sandbox.daemons.effect_orchestrator import (
-            JsonExecutionStore,
-            SqliteExecutionStore,
-        )
-
-        stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
-            return SqliteExecutionStore(Path(stores["orchestration_store_path"]))
-        return JsonExecutionStore(Path(stores["effect_execution_store_path"]))
-
-    def _find_operator_steering_container_waiting_record(
-        self,
-        *,
-        execution_store: Any,
-        session_id: str,
-        dispatch_id: str,
-        worker_execution_id: str | None,
-    ) -> Any:
-        normalized_worker_execution_id = str(worker_execution_id or "").strip()
-        candidates: list[Any] = []
-        for record in execution_store.list_waiting_records():
-            effect_type = str(getattr(record, "effect_type", "") or "").strip()
-            if effect_type not in {"effect:agent:prompt", "effect:agent:enqueue-prompt"}:
-                continue
-            outputs = record.outputs if isinstance(record.outputs, Mapping) else {}
-            resolved_config = (
-                record.resolved_config if isinstance(record.resolved_config, Mapping) else {}
-            )
-            execution_backend = str(
-                outputs.get("execution_backend") or resolved_config.get("execution_backend") or ""
-            ).strip()
-            if execution_backend != "container_worker_vm":
-                continue
-            if str(outputs.get("session_id") or "").strip() != session_id:
-                continue
-            if str(outputs.get("dispatch_id") or "").strip() != dispatch_id:
-                continue
-            candidates.append(record)
-        if not candidates:
-            raise ValueError(
-                "No waiting container prompt execution found for this session and dispatch."
-            )
-        if normalized_worker_execution_id:
-            exact = [
-                record
-                for record in candidates
-                if str(record.outputs.get("execution_id") or "").strip()
-                == normalized_worker_execution_id
-            ]
-            if len(exact) == 1:
-                return exact[0]
-        if len(candidates) == 1:
-            return candidates[0]
-        candidates.sort(
-            key=lambda record: (
-                getattr(record, "finished_at", None)
-                or getattr(record, "started_at", None)
-                or datetime.min.replace(tzinfo=UTC),
-                str(getattr(record, "execution_id", "") or ""),
-            ),
-            reverse=True,
-        )
-        return candidates[0]
-
-    @staticmethod
-    def _safe_container_log_snapshot(backend: Any, execution_id: str, *, lines: int) -> str:
-        try:
-            return str(backend.get_log_snapshot(execution_id, lines=lines) or "")
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _container_execution_is_terminal(backend: Any, execution_id: str) -> bool:
-        inspect = getattr(backend, "inspect", None)
-        if not callable(inspect):
-            return False
-        try:
-            status = inspect(execution_id)
-        except Exception:
-            return False
-        value = getattr(status, "status", None)
-        normalized = str(getattr(value, "value", value) or "").strip()
-        return normalized in {
-            ExecutionStatusKind.STOPPED.value,
-            ExecutionStatusKind.FAILED.value,
-            ExecutionStatusKind.DESTROYED.value,
-        }
-
-    @staticmethod
-    def _container_session_agent_thread_id(session: SessionManifest) -> str | None:
-        metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
-        for key in ("agent_thread_id", "thread_id", "resume_thread_id"):
-            value = str(metadata.get(key) or "").strip()
-            if value:
-                return value
-        return None
-
-    @staticmethod
-    def _operator_steering_interrupt_prompt(message: str) -> str:
-        return (
-            "The operator interrupted the previous container run for this same task. "
-            "Continue from the current workspace state and prior thread context, and "
-            "apply this operator instruction now:\n\n"
-            f"{message}"
-        )
-
-    @staticmethod
-    def _append_unique_text_value(value: Any, new_value: str) -> list[str]:
-        result: list[str] = []
-        if isinstance(value, list):
-            for item in value:
-                text = str(item or "").strip()
-                if text and text not in result:
-                    result.append(text)
-        text = str(new_value or "").strip()
-        if text and text not in result:
-            result.append(text)
-        return result
-
-    @staticmethod
-    def _safe_positive_int(value: Any) -> int:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return 0
-        return parsed if parsed > 0 else 0
-
-    @staticmethod
-    def _annotate_interrupted_container_execution(
-        *,
-        backend: Any,
-        execution_id: str,
-        replacement_execution_id: str,
-        interrupted_at: str,
-        created_by: str | None,
-    ) -> None:
-        repository = getattr(backend, "repository", None)
-        get_record = getattr(repository, "get", None)
-        put_record = getattr(repository, "put", None)
-        if not callable(get_record) or not callable(put_record):
-            return
-        try:
-            record = get_record(execution_id)
-        except Exception:
-            return
-        if record is None:
-            return
-        metadata = dict(getattr(record, "metadata", {}) or {})
-        metadata.update(
-            {
-                "interrupted_by_operator": True,
-                "interrupted_at": interrupted_at,
-                "interrupt_replaced_by_execution_id": replacement_execution_id,
-            }
-        )
-        if str(created_by or "").strip():
-            metadata["interrupted_by"] = str(created_by).strip()
-        try:
-            put_record(record.model_copy(update={"metadata": metadata}))
-        except Exception:
-            return
+        return self.operator_steering_admin._operator_steering_execution_store()
 
     def list_operator_steering_notes(
         self,
@@ -9013,148 +6190,36 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         dispatch_id: str | None = None,
         limit: int = 50,
     ) -> list[OperatorSteeringNote]:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        return operator_steering_note_store(self.config.runtime_dir).list_notes(
-            session_id=normalized_session_id,
-            dispatch_id=str(dispatch_id or "").strip() or None,
+        return self.operator_steering_admin.list_operator_steering_notes(
+            session_id=session_id,
+            dispatch_id=dispatch_id,
             limit=limit,
         )
 
     def get_operator_steering_note(self, note_id: str) -> OperatorSteeringNote:
-        note = operator_steering_note_store(self.config.runtime_dir).get_note(note_id)
-        if note is None:
-            raise ValueError(f"Operator steering note not found: {note_id}")
-        return note
+        return self.operator_steering_admin.get_operator_steering_note(note_id)
 
     def cancel_operator_steering_note(self, note_id: str) -> OperatorSteeringNote:
-        note = operator_steering_note_store(self.config.runtime_dir).cancel_note(note_id)
-        if note is None:
-            raise ValueError(f"Operator steering note not found: {note_id}")
-        if note.status != "cancelled":
-            raise ValueError(
-                f"Operator steering note cannot be cancelled from status: {note.status}"
-            )
-        return note
+        return self.operator_steering_admin.cancel_operator_steering_note(note_id)
 
     def read_model_pricing_catalog_status(self) -> dict[str, Any]:
-        return self._read_model_pricing_catalog_status_unlocked()
+        return self.model_usage_admin.read_model_pricing_catalog_status()
 
     def _read_model_pricing_catalog_status_unlocked(self) -> dict[str, Any]:
-        configured_path = str(os.environ.get(MODEL_PRICING_PATH_ENV) or "").strip()
-        path = default_model_pricing_catalog_path()
-        path_source = "env" if configured_path else "default"
-        base_payload: dict[str, Any] = {
-            "status": "error",
-            "path": str(path) if path is not None else None,
-            "path_source": path_source,
-            "env_var": MODEL_PRICING_PATH_ENV,
-            "version": None,
-            "currency": None,
-            "description": None,
-            "sources": [],
-            "rule_count": 0,
-            "rules": [],
-            "revision": None,
-            "catalog": _empty_model_pricing_catalog_payload(),
-            "editable": path is not None,
-            "write_requires_privileged_unlock": True,
-            "error": None,
-            "error_class": None,
-        }
-        if path is None:
-            base_payload["error"] = "No model pricing catalog path is configured."
-            base_payload["error_class"] = "FileNotFoundError"
-            return base_payload
-
-        try:
-            raw_payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw_payload, dict):
-                raise ValueError("model pricing catalog must be a JSON object")
-            catalog = load_model_pricing_catalog_payload(raw_payload, source_path=path)
-            normalized_payload = normalize_model_pricing_catalog_payload(raw_payload)
-        except Exception as exc:
-            base_payload["error"] = str(exc)
-            base_payload["error_class"] = exc.__class__.__name__
-            base_payload["revision"] = self._model_pricing_error_revision(path)
-            return base_payload
-
-        return {
-            **base_payload,
-            "status": "ok",
-            "version": catalog.version,
-            "currency": catalog.currency,
-            "description": normalized_payload["description"],
-            "sources": normalized_payload["sources"],
-            "rule_count": len(catalog.rules),
-            "rules": [self._model_pricing_rule_summary(rule) for rule in catalog.rules],
-            "revision": self._stable_json_revision(normalized_payload),
-            "catalog": normalized_payload,
-            "error": None,
-            "error_class": None,
-        }
+        return self.model_usage_admin._read_model_pricing_catalog_status_unlocked()
 
     def write_model_pricing_catalog(
         self, payload: dict[str, Any], *, expected_revision: str
     ) -> dict[str, Any]:
-        path = default_model_pricing_catalog_path()
-        if path is None:
-            raise ValueError("No model pricing catalog path is configured.")
-        normalized_payload = normalize_model_pricing_catalog_payload(payload)
-        with self.admin_config_mutation_lock():
-            current = self._read_model_pricing_catalog_status_unlocked()
-            if current.get("revision") != expected_revision:
-                raise AdminRevisionConflict(
-                    "Model pricing catalog changed before save. Reload the catalog before saving again.",
-                    details={
-                        "current_revision": current.get("revision"),
-                        "current": current,
-                    },
-                )
-            path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_json_file_atomic(path, normalized_payload)
-            clear_model_pricing_catalog_cache()
-            return self._read_model_pricing_catalog_status_unlocked()
+        return self.model_usage_admin.write_model_pricing_catalog(
+            payload, expected_revision=expected_revision
+        )
 
     def _model_pricing_error_revision(self, path: Path) -> str:
-        try:
-            raw_value = path.read_text(encoding="utf-8")
-            revision_payload = {"path": str(path), "raw": raw_value}
-        except Exception as exc:
-            revision_payload = {
-                "path": str(path),
-                "missing_or_unreadable": True,
-                "error_class": exc.__class__.__name__,
-            }
-        return self._stable_json_revision(revision_payload)
+        return self.model_usage_admin._model_pricing_error_revision(path)
 
-    @staticmethod
-    def _model_pricing_rule_summary(rule: ModelPricingRule) -> dict[str, Any]:
-        long_context = None
-        if rule.long_context_input_tokens_over is not None:
-            long_context = {
-                "input_tokens_over": rule.long_context_input_tokens_over,
-                "input_multiplier": _admin_decimal_payload(rule.long_context_input_multiplier),
-                "output_multiplier": _admin_decimal_payload(rule.long_context_output_multiplier),
-            }
-        return {
-            "id": rule.id,
-            "provider": rule.provider,
-            "models": list(rule.models),
-            "model_patterns": list(rule.model_patterns),
-            "effective_from": _admin_datetime_payload(rule.effective_from),
-            "effective_to": _admin_datetime_payload(rule.effective_to),
-            "currency": rule.currency,
-            "rates_per_1m_tokens": {
-                "input": _admin_decimal_payload(rule.input_per_1m_tokens),
-                "cached_input": _admin_decimal_payload(rule.cached_input_per_1m_tokens),
-                "output": _admin_decimal_payload(rule.output_per_1m_tokens),
-            },
-            "batch_multiplier": _admin_decimal_payload(rule.batch_multiplier),
-            "service_tier": rule.service_tier,
-            "long_context": long_context,
-        }
+    def _model_pricing_rule_summary(self, rule: Any) -> dict[str, Any]:
+        return self.model_usage_admin._model_pricing_rule_summary(rule)
 
     # Deprecated compatibility wrappers: new internal callers should depend on
     # operations_admin for session, wake, directory, and worker operations.
@@ -9171,46 +6236,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     @staticmethod
     def _normalize_wake_ledger_statuses(statuses: list[str] | None) -> list[str] | None:
-        if statuses is None:
-            return None
-        allowed_statuses = {
-            "pending",
-            "due",
-            "dispatching",
-            "queued",
-            "dispatched",
-            "failed",
-            "missed_or_late",
-            "completed_or_acknowledged",
-            "cancelled",
-        }
-        normalized_statuses: list[str] = []
-        seen: set[str] = set()
-        for status in statuses:
-            normalized = str(status or "").strip().casefold()
-            if not normalized:
-                continue
-            if normalized not in allowed_statuses:
-                raise ValueError(f"Invalid wake ledger status: {status}")
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            normalized_statuses.append(normalized)
-        return normalized_statuses or None
+        return _admin_service_normalize_wake_ledger_statuses(statuses)
 
     def _wake_ledger_entry_for_request(self, request: WakeScheduledRequest) -> dict[str, Any]:
-        latest_dispatch = self.runtime.wake_store.latest_dispatch_by_request_id().get(
-            request.request_id
-        )
-        status = self.runtime.wake_store._ledger_status_for_request(
-            request,
-            latest_dispatch=latest_dispatch,
-        )
-        return self.runtime.wake_store._ledger_entry_for_request(
-            request,
-            latest_dispatch=latest_dispatch,
-            status=status,
-        )
+        return self.session_admin._wake_ledger_entry_for_request(request)
 
     def list_scheduled_wake_ledger(
         self,
@@ -9220,12 +6249,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         limit: int = 100,
         include_completed: bool = True,
     ) -> list[dict[str, Any]]:
-        normalized_statuses = self._normalize_wake_ledger_statuses(statuses)
-        return self.runtime.wake_store.list_ledger_entries(
+        return self.operations_admin.list_scheduled_wake_ledger(
+            statuses=statuses,
             session_id=session_id,
-            statuses=normalized_statuses,
-            include_completed=include_completed,
             limit=limit,
+            include_completed=include_completed,
         )
 
     def retry_scheduled_wake(
@@ -9235,86 +6263,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         resume_at: datetime | None = None,
         run_now: bool = True,
     ) -> dict[str, Any]:
-        normalized_request_id = str(request_id or "").strip()
-        if not normalized_request_id:
-            raise ValueError("request_id cannot be empty")
-
-        request = self.runtime.wake_store.get_request(normalized_request_id)
-        if request is None:
-            raise ValueError(f"Wake schedule not found: {normalized_request_id}")
-
-        current_entry = self._wake_ledger_entry_for_request(request)
-        current_status = str(current_entry.get("status") or "").strip().casefold()
-        if current_status not in {"failed", "missed_or_late", "due"}:
-            raise ValueError(
-                f"Wake schedule {normalized_request_id} is not retryable in status {current_status}."
-            )
-
-        if resume_at is not None and run_now:
-            raise ValueError("Provide either resume_at or run_now=true, not both.")
-        if resume_at is None and not run_now:
-            raise ValueError("Either resume_at or run_now=true is required.")
-
-        now = _utc_now()
-        validated_resume_at = None
-        updated_schedule = request.schedule
-        if resume_at is not None:
-            updated_schedule = WakeScheduleDefinition(resume_at=resume_at)
-            validated_resume_at = updated_schedule.resume_at
-            next_run_at = validated_resume_at or now
-        else:
-            next_run_at = now
-        self._enforce_wake_schedule_guardrails(
-            session_id=request.session_id,
-            schedule=updated_schedule,
-            enabled=True,
-            exclude_request_id=request.request_id,
+        return self.operations_admin.retry_scheduled_wake(
+            request_id,
+            resume_at=resume_at,
+            run_now=run_now,
         )
-
-        metadata = dict(request.resume_prompt.metadata or {})
-        existing_history = metadata.get("retry_history")
-        retry_history = list(existing_history) if isinstance(existing_history, list) else []
-        retry_history.append(
-            {
-                "retried_at": now,
-                "previous_status": current_entry.get("status"),
-                "previous_status_reason": current_entry.get("status_reason"),
-                "previous_failure_reason": current_entry.get("failure_reason"),
-                "previous_last_dispatch_id": current_entry.get("latest_dispatch_id"),
-                "previous_last_dispatch_status": current_entry.get("latest_dispatch_status"),
-                "previous_auto_dispatch_attempts": request.auto_dispatch_attempts,
-                "previous_auto_retry_started_at": request.auto_retry_started_at,
-                "previous_auto_retry_last_backoff_seconds": request.auto_retry_last_backoff_seconds,
-                "previous_auto_retry_exhausted_at": request.auto_retry_exhausted_at,
-                "requested_run_now": bool(run_now and resume_at is None),
-                "requested_resume_at": validated_resume_at,
-            }
-        )
-        metadata["retry_history"] = retry_history[-10:]
-        request.resume_prompt.metadata = metadata
-        request.schedule = updated_schedule
-        request.enabled = True
-        request.next_run_at = next_run_at
-        request.status = "due" if next_run_at <= now else "pending"
-        request.status_reason = None
-        request.status_updated_at = now
-        request.last_error = None
-        request.last_error_at = None
-        request.auto_dispatch_attempts = 0
-        request.auto_retry_started_at = None
-        request.auto_retry_last_backoff_seconds = None
-        request.auto_retry_exhausted_at = None
-        request.updated_at = now
-        self.runtime.wake_store.upsert_request(request)
-        return self._wake_ledger_entry_for_request(request)
 
     def _active_wake_requests(
         self, *, exclude_request_id: str | None = None
     ) -> list[WakeScheduledRequest]:
-        requests = self.runtime.wake_store.list_requests(include_disabled=False)
-        if not exclude_request_id:
-            return requests
-        return [request for request in requests if request.request_id != exclude_request_id]
+        return self.session_admin._active_wake_requests(exclude_request_id=exclude_request_id)
 
     def _enforce_wake_schedule_guardrails(
         self,
@@ -9324,33 +6282,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         enabled: bool,
         exclude_request_id: str | None = None,
     ) -> None:
-        if not enabled:
-            return
-        active_requests = self._active_wake_requests(exclude_request_id=exclude_request_id)
-        max_active_per_session = self.config.wake_schedule_max_active_per_session
-        if max_active_per_session is not None:
-            active_for_session = sum(
-                1 for request in active_requests if request.session_id == session_id
-            )
-            if active_for_session >= max_active_per_session:
-                raise ValueError(
-                    "Wake schedule limit reached for session "
-                    f"{session_id}: max_active_per_session={max_active_per_session}"
-                )
-        max_active_total = self.config.wake_schedule_max_active_total
-        if max_active_total is not None and len(active_requests) >= max_active_total:
-            raise ValueError(f"Wake schedule limit reached: max_active_total={max_active_total}")
-        min_interval_seconds = self.config.wake_schedule_min_interval_seconds
-        cron = str(schedule.cron or "").strip()
-        if min_interval_seconds is not None and cron:
-            actual_interval_seconds = _cron_min_interval_seconds(cron)
-            if actual_interval_seconds is None:
-                raise ValueError(f"Unable to determine cron interval for schedule: {cron}")
-            if actual_interval_seconds < min_interval_seconds:
-                raise ValueError(
-                    "Recurring wake schedule interval is too short: "
-                    f"minimum={min_interval_seconds:g}s actual={actual_interval_seconds:g}s"
-                )
+        self.session_admin._enforce_wake_schedule_guardrails(
+            session_id=session_id,
+            schedule=schedule,
+            enabled=enabled,
+            exclude_request_id=exclude_request_id,
+        )
 
     def create_wake_schedule(
         self,
@@ -9406,105 +6343,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return self.operations_admin.revoke_session(target)
 
     def delete_session(self, target: str) -> SessionActionResult:
-        sessions = {
-            session.session_id: session
-            for session in self.runtime.session_repository.list_sessions()
-        }
-        session_id, manifest = _resolve_session_target(target, sessions)
-        associated_agent = self._session_associated_agent_description(session_id, manifest)
-        if associated_agent:
-            raise ValueError(
-                f"Session {session_id!r} is associated with {associated_agent}. "
-                "Delete the agent instead so backend cleanup can run."
-            )
-
-        worker_session_deleted, removed_mappings = self._delete_detached_worker_session_state(
-            session_id
-        )
-        result = self.operations_admin.delete_session(session_id)
-        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
-        removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
-        cleanup_parts: list[str] = []
-        if worker_session_deleted:
-            cleanup_parts.append("worker_session_deleted=1")
-        if removed_mappings:
-            cleanup_parts.append(f"removed_mappings={removed_mappings}")
-        if removed_approvals:
-            cleanup_parts.append(f"removed_approvals={removed_approvals}")
-        if removed_assistant_mappings:
-            cleanup_parts.append(f"removed_assistant_mappings={removed_assistant_mappings}")
-        if cleanup_parts:
-            result.message = f"{result.message}; " + " ".join(cleanup_parts)
-        return result
+        return self.vm_agent_admin.delete_session(target)
 
     def cleanup_container_session(self, session_id: str) -> SessionActionResult:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        session = self.runtime.session_repository.get_session(normalized_session_id)
-        if session is None:
-            raise ValueError(f"Unknown session: {normalized_session_id}")
-        if not self._is_container_session(session):
-            raise ValueError(f"Session {normalized_session_id!r} is not a container worker session")
-
-        lifecycle = self._container_session_lifecycle(session)
-        if lifecycle is None or not lifecycle.actions.cleanup.supported:
-            reason = (
-                lifecycle.actions.cleanup.reason
-                if lifecycle is not None and lifecycle.actions.cleanup.reason
-                else "Cleanup is not currently supported for this session."
-            )
-            raise ValueError(reason)
-
-        execution_records = self._container_execution_records_for_session(normalized_session_id)
-        worker_backend = self._container_worker_backend(
-            directory_path=session.directory_path,
-            worker_url=self._container_worker_url_for_target(
-                session=session,
-                records=execution_records,
-            ),
-        )
-        attempted_at = _utc_now()
-        try:
-            worker_backend.delete_session(normalized_session_id)
-        except ContainerWorkerClientError as exc:
-            completed_at = _utc_now()
-            sanitized_error = sanitize_text(str(exc))
-            updated_session = self._container_session_lifecycle_tombstone(
-                session,
-                state=ContainerSessionLifecycleState.CLEANUP_FAILED,
-                cleanup_status="cleanup_failed",
-                attempted_at=attempted_at,
-                completed_at=completed_at,
-                cleanup_error=sanitized_error,
-            )
-            self.runtime.session_repository.upsert_session(updated_session)
-            return SessionActionResult(
-                success=False,
-                session_id=normalized_session_id,
-                action="cleanup_container_session",
-                message=(
-                    f"Cleanup failed for container worker session {normalized_session_id}: "
-                    f"{sanitized_error}"
-                ),
-            )
-
-        completed_at = _utc_now()
-        updated_session = self._container_session_lifecycle_tombstone(
-            session,
-            state=ContainerSessionLifecycleState.CLEANED_UP,
-            cleanup_status="cleanup_succeeded",
-            attempted_at=attempted_at,
-            completed_at=completed_at,
-            cleanup_error=None,
-        )
-        self.runtime.session_repository.upsert_session(updated_session)
-        return SessionActionResult(
-            success=True,
-            session_id=normalized_session_id,
-            action="cleanup_container_session",
-            message=f"Cleaned up container worker session {normalized_session_id}",
-        )
+        return self.vm_agent_admin.cleanup_container_session(session_id)
 
     def set_session_allowed_tools(
         self, target: str, allowed_tools: list[str | ToolName]
@@ -9539,340 +6381,101 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             direct_only=direct_only,
         )
 
-    def _container_worker_execution_repository(self):
-        from agent_sandbox.execution.container_worker_repository import (
-            ContainerWorkerExecutionRepository,
-        )
-
-        return ContainerWorkerExecutionRepository(
-            self.config.runtime_dir / "container-worker-executions.json"
-        )
-
-    def _container_worker_backend(
-        self,
-        *,
-        directory_path: str | None = None,
-        worker_url: str | None = None,
-    ):
-        from agent_sandbox.execution.container_worker_backend import (
-            ContainerWorkerVmExecutionBackend,
-        )
-
-        resolved_config = self.runtime.provider_config.resolve_for_directory(
-            self._normalize_directory_path(directory_path)
-        )
-        update: dict[str, Any] = {"execution_backend": "container_worker_vm"}
-        normalized_worker_url = str(worker_url or "").strip()
-        if normalized_worker_url:
-            update["container_worker_base_url"] = normalized_worker_url
-        config = resolved_config.model_copy(update=update)
-        return ContainerWorkerVmExecutionBackend(config=config)
-
-    @staticmethod
-    def _container_worker_backend_url(backend: Any) -> str | None:
-        client = getattr(backend, "client", None)
-        client_url = str(getattr(client, "base_url", "") or "").strip()
-        if client_url:
-            return client_url
-        config = getattr(backend, "config", None)
-        config_url = str(getattr(config, "container_worker_base_url", "") or "").strip()
-        return config_url or None
-
-    @staticmethod
-    def _container_worker_url_from_metadata(metadata: Any) -> str | None:
-        if not isinstance(metadata, Mapping):
-            return None
-        for key in ("worker_url", "container_worker_base_url"):
-            value = str(metadata.get(key) or "").strip()
-            if value:
-                return value
-        return None
-
-    def _container_worker_url_for_target(
-        self,
-        *,
-        session: SessionManifest | None = None,
-        record: Any | None = None,
-        records: list[Any] | None = None,
-    ) -> str | None:
-        candidates: list[Any] = []
-        if record is not None:
-            candidates.append(record)
-        if records:
-            candidates.extend(
-                sorted(
-                    records,
-                    key=self._container_execution_sort_key,
-                    reverse=True,
-                )
-            )
-        for candidate in candidates:
-            worker_url = str(getattr(candidate, "worker_url", "") or "").strip()
-            if worker_url:
-                return worker_url
-            metadata_url = self._container_worker_url_from_metadata(
-                getattr(candidate, "metadata", None)
-            )
-            if metadata_url:
-                return metadata_url
-        if session is not None:
-            return self._container_worker_url_from_metadata(session.metadata)
-        return None
-
     @staticmethod
     def _agent_record_directory_path(directory_path: str | None) -> str:
-        try:
-            return DirectoryPath(segments=str(directory_path or "root")).as_posix()
-        except ValueError:
-            return "root"
+        return VmAgentAdminService._agent_record_directory_path(directory_path)
 
     @classmethod
     def _agent_record_matches_directory(
-        cls,
-        record_directory_path: str | None,
-        selected_directory_path: str,
-        *,
-        direct_only: bool,
+        cls, record_directory_path: str | None, selected_directory_path: str, *, direct_only: bool
     ) -> bool:
-        record_path = cls._agent_record_directory_path(record_directory_path)
-        selected_path = cls._agent_record_directory_path(selected_directory_path)
-        if direct_only:
-            return record_path == selected_path
-        return record_path == selected_path or record_path.startswith(f"{selected_path}/")
+        return VmAgentAdminService._agent_record_matches_directory(
+            record_directory_path, selected_directory_path, direct_only=direct_only
+        )
 
     @staticmethod
     def _container_agent_status(last_status: str | None) -> str:
-        normalized = str(last_status or "").strip().casefold()
-        if normalized in {"created", "starting"}:
-            return "starting"
-        if normalized == "running":
-            return "running"
-        if normalized in {"stopped", "exited"}:
-            return "stopped"
-        if normalized == "failed":
-            return "failed"
-        if normalized == "removed":
-            return "destroyed"
-        return "unknown"
+        return VmAgentAdminService._container_agent_status(last_status)
 
     @staticmethod
     def _container_codex_outcome(record: Any) -> Mapping[str, Any] | None:
-        metadata = getattr(record, "metadata", None)
-        if not isinstance(metadata, Mapping):
-            return None
-        outcome = metadata.get("codex_outcome")
-        if not isinstance(outcome, Mapping):
-            return None
-        return outcome
+        return VmAgentAdminService._container_codex_outcome(record)
 
     @classmethod
     def _container_execution_status(cls, record: Any) -> str:
-        outcome = cls._container_codex_outcome(record)
-        if outcome is not None:
-            status = str(outcome.get("status") or "").strip().casefold()
-            if status == "failed":
-                return "failed"
-        return cls._container_agent_status(getattr(record, "last_status", None))
+        return VmAgentAdminService._container_execution_status(record)
 
     @staticmethod
     def _agent_status_is_active(status: str | None) -> bool:
-        return str(status or "").strip().casefold() in {
-            "preparing",
-            "starting",
-            "running",
-        }
+        return VmAgentAdminService._agent_status_is_active(status)
 
     @staticmethod
     def _container_execution_sort_key(record: Any) -> tuple[datetime, str]:
-        timestamp = (
-            getattr(record, "started_at", None)
-            or getattr(record, "created_at", None)
-            or getattr(record, "updated_at", None)
-            or datetime.min.replace(tzinfo=UTC)
-        )
-        return timestamp, str(getattr(record, "execution_id", "") or "")
+        return VmAgentAdminService._container_execution_sort_key(record)
 
     @classmethod
     def _container_session_status(cls, records: list[Any]) -> str:
-        if not records:
-            return "prepared"
-        statuses = [cls._container_execution_status(record) for record in records]
-        if "running" in statuses:
-            return "running"
-        if "starting" in statuses:
-            return "starting"
-        latest = max(records, key=cls._container_execution_sort_key)
-        latest_status = cls._container_execution_status(latest)
-        if latest_status == "failed":
-            return "failed"
-        return "idle"
+        return VmAgentAdminService._container_session_status(records)
 
     @staticmethod
     def _normalize_agent_backend(backend: str | None) -> str:
-        selected_backend = str(backend or "libvirt_vm").strip()
-        if selected_backend in {"libvirt", "libvirt_vm"}:
-            return "libvirt_vm"
-        if selected_backend == "container_worker_vm":
-            return selected_backend
-        raise ValueError(f"Unknown agent backend: {selected_backend}")
+        return VmAgentAdminService._normalize_agent_backend(backend)
 
     @classmethod
     def _normalize_agent_log_view(cls, view: str | None) -> str:
-        selected_view = str(view or "executions").strip()
-        if selected_view in {"", "executions"}:
-            return "executions"
-        if selected_view == "threads":
-            return "threads"
-        raise ValueError(f"Unknown agent log view: {selected_view}")
+        return VmAgentAdminService._normalize_agent_log_view(view)
 
     @staticmethod
     def _container_log_thread_id(text: str) -> str | None:
-        match = _CONTAINER_SESSION_ID_LOG_PATTERN.search(text)
-        if match is None:
-            return None
-        thread_id = str(match.group("thread_id") or "").strip()
-        return thread_id or None
+        return VmAgentAdminService._container_log_thread_id(text)
 
     @staticmethod
     def _container_log_without_session_id_lines(text: str) -> str:
-        lines = [
-            line
-            for line in str(text or "").splitlines()
-            if _CONTAINER_SESSION_ID_LOG_PATTERN.match(line) is None
-        ]
-        if not lines:
-            return ""
-        return "\n".join(lines) + "\n"
+        return VmAgentAdminService._container_log_without_session_id_lines(text)
 
     @staticmethod
     def _container_execution_stored_thread_id(execution: Any) -> str | None:
-        metadata = getattr(execution, "metadata", None)
-        if not isinstance(metadata, Mapping):
-            return None
-
-        candidates = [
-            metadata.get("thread_id"),
-            metadata.get("agent_thread_id"),
-            metadata.get("resume_thread_id"),
-        ]
-        for nested_key in ("outputs", "result", "container_worker"):
-            nested = metadata.get(nested_key)
-            if isinstance(nested, Mapping):
-                candidates.extend(
-                    [
-                        nested.get("thread_id"),
-                        nested.get("agent_thread_id"),
-                        nested.get("resume_thread_id"),
-                    ]
-                )
-
-        for candidate in candidates:
-            thread_id = str(candidate or "").strip()
-            if thread_id and not thread_id.startswith("dispatch-"):
-                return thread_id
-        return None
+        return VmAgentAdminService._container_execution_stored_thread_id(execution)
 
     @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
-        selected_backend = str(backend or "all").strip()
-        if selected_backend in {"", "all"}:
-            return "all"
-        return cls._normalize_agent_backend(selected_backend)
+        return VmAgentAdminService._normalize_agent_backend_filter(backend)
 
     @staticmethod
     def _agent_optional_string(payload: Mapping[str, Any], key: str) -> str | None:
-        value = payload.get(key)
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
+        return VmAgentAdminService._agent_optional_string(payload, key)
 
     @staticmethod
     def _agent_string_list(payload: Mapping[str, Any], key: str) -> list[str] | None:
-        if key not in payload or payload.get(key) is None:
-            return None
-        value = payload.get(key)
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"{key} must be a list of strings")
-        normalized = [str(item).strip() for item in value if str(item).strip()]
-        return normalized
+        return VmAgentAdminService._agent_string_list(payload, key)
 
     @staticmethod
     def _agent_int_or_none(payload: Mapping[str, Any], key: str) -> int | None:
-        if key not in payload:
-            return None
-        value = payload.get(key)
-        if value is None or value == "":
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{key} must be an integer") from exc
+        return VmAgentAdminService._agent_int_or_none(payload, key)
 
     @staticmethod
     def _container_session_target_name(session: SessionManifest) -> str:
-        metadata = session.metadata if isinstance(session.metadata, dict) else {}
-        return (
-            str(metadata.get("target_name") or session.vm_provider_id or session.session_id).strip()
-            or session.session_id
-        )
+        return VmAgentAdminService._container_session_target_name(session)
 
     @staticmethod
     def _is_container_session(session: SessionManifest) -> bool:
-        metadata = session.metadata if isinstance(session.metadata, dict) else {}
-        return (
-            str(session.vm_provider or "").strip() == "container_worker_vm"
-            or str(metadata.get("execution_backend") or "").strip() == "container_worker_vm"
-        )
+        return VmAgentAdminService._is_container_session(session)
 
     @staticmethod
     def _container_lifecycle_action(
-        *,
-        supported: bool,
-        kind: str | None,
-        label: str,
-        reason: str | None = None,
+        *, supported: bool, kind: str | None, label: str, reason: str | None = None
     ) -> ContainerSessionLifecycleAction:
-        return ContainerSessionLifecycleAction(
-            supported=supported,
-            kind=kind,
-            label=label,
-            reason=reason,
+        return VmAgentAdminService._container_lifecycle_action(
+            supported=supported, kind=kind, label=label, reason=reason
         )
 
     @staticmethod
     def _container_session_lifecycle_metadata(session: SessionManifest) -> dict[str, Any]:
-        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
-        lifecycle = metadata.get("container_lifecycle")
-        payload: dict[str, Any] = dict(lifecycle) if isinstance(lifecycle, dict) else {}
-        for key in (
-            "state",
-            "cleanup_status",
-            "cleanup_attempted_at",
-            "cleanup_completed_at",
-            "cleanup_error",
-        ):
-            if key in metadata and key not in payload:
-                payload[key] = metadata[key]
-        return payload
+        return VmAgentAdminService._container_session_lifecycle_metadata(session)
 
     @staticmethod
     def _container_record_lifecycle_metadata(record: Any) -> dict[str, Any]:
-        metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
-        lifecycle = metadata.get("container_lifecycle")
-        payload: dict[str, Any] = dict(lifecycle) if isinstance(lifecycle, dict) else {}
-        for key in (
-            "state",
-            "cleanup_status",
-            "cleanup_attempted_at",
-            "cleanup_completed_at",
-            "cleanup_error",
-        ):
-            if key in metadata and key not in payload:
-                payload[key] = metadata[key]
-        return payload
+        return VmAgentAdminService._container_record_lifecycle_metadata(record)
 
     @staticmethod
     def _container_session_lifecycle_tombstone(
@@ -9884,367 +6487,41 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         completed_at: datetime,
         cleanup_error: str | None,
     ) -> SessionManifest:
-        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
-        lifecycle = metadata.get("container_lifecycle")
-        payload: dict[str, Any] = dict(lifecycle) if isinstance(lifecycle, dict) else {}
-        payload.update(
-            {
-                "state": state.value,
-                "cleanup_status": cleanup_status,
-                "cleanup_attempted_at": attempted_at,
-                "cleanup_completed_at": completed_at,
-                "cleanup_error": cleanup_error,
-            }
-        )
-        metadata["container_lifecycle"] = payload
-        updated_expires_at = session.expires_at
-        if state == ContainerSessionLifecycleState.CLEANED_UP and session.expires_at > completed_at:
-            updated_expires_at = completed_at
-        return session.model_copy(
-            update={
-                "metadata": metadata,
-                "expires_at": updated_expires_at,
-            }
+        return VmAgentAdminService._container_session_lifecycle_tombstone(
+            session,
+            state=state,
+            cleanup_status=cleanup_status,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+            cleanup_error=cleanup_error,
         )
 
     @staticmethod
     def _container_execution_lifecycle_status(record: Any) -> str:
-        normalized = str(getattr(record, "last_status", "") or "").strip().casefold()
-        if normalized in {"created", "starting"}:
-            return "starting"
-        if normalized == "running":
-            return "running"
-        if normalized in {"stopped", "exited", "removed"}:
-            return "stopped"
-        if normalized in {"failed", "timeout", "timed_out"}:
-            return "failed"
-        return "unknown"
+        return VmAgentAdminService._container_execution_lifecycle_status(record)
 
     def _session_summary_with_container_lifecycle(self, summary: SessionSummary) -> SessionSummary:
-        if not self._is_container_session(summary):
-            return summary.model_copy(update={"container_lifecycle": None})
-        executions = self._container_execution_records_for_session(summary.session_id)
-        lifecycle = self._container_session_lifecycle(summary, executions=executions)
-        return summary.model_copy(update={"container_lifecycle": lifecycle})
+        return self.vm_agent_admin._session_summary_with_container_lifecycle(summary)
 
     def _container_session_lifecycle(
-        self,
-        session: SessionManifest,
-        *,
-        executions: list[Any] | None = None,
+        self, session: SessionManifest, *, executions: list[Any] | None = None
     ) -> ContainerSessionLifecycle | None:
-        if not self._is_container_session(session):
-            return None
-        execution_records = sorted(
-            list(executions or self._container_execution_records_for_session(session.session_id)),
-            key=self._container_execution_sort_key,
-            reverse=True,
-        )
-        session_lifecycle_payload = self._container_session_lifecycle_metadata(session)
-        record_lifecycle_payloads = [
-            self._container_record_lifecycle_metadata(record) for record in execution_records
-        ]
-        metadata_payloads = [session_lifecycle_payload, *record_lifecycle_payloads]
-
-        def _first_value(payloads: list[dict[str, Any]], *keys: str) -> Any:
-            for payload in payloads:
-                for key in keys:
-                    if key not in payload:
-                        continue
-                    value = payload.get(key)
-                    if value is None:
-                        continue
-                    if isinstance(value, str):
-                        text = value.strip()
-                        if not text:
-                            continue
-                        return text
-                    return value
-            return None
-
-        def _max_datetime(*keys: str) -> datetime | None:
-            candidates: list[datetime] = []
-            for payload in metadata_payloads:
-                for key in keys:
-                    parsed = _coerce_optional_datetime(payload.get(key))
-                    if parsed is not None:
-                        candidates.append(parsed)
-            if not candidates:
-                return None
-            return max(candidates)
-
-        session_cleanup_status = (
-            str(_first_value([session_lifecycle_payload], "cleanup_status", "state") or "")
-            .strip()
-            .casefold()
-        )
-        record_cleanup_status = (
-            str(_first_value(record_lifecycle_payloads, "cleanup_status", "state") or "")
-            .strip()
-            .casefold()
-        )
-        cleanup_attempted_at = _max_datetime("cleanup_attempted_at")
-        cleanup_completed_at = _max_datetime("cleanup_completed_at")
-        cleanup_error = _coerce_optional_string(_first_value(metadata_payloads, "cleanup_error"))
-
-        active_records = [
-            record
-            for record in execution_records
-            if self._container_execution_lifecycle_status(record) in {"starting", "running"}
-        ]
-        if active_records:
-            state = (
-                ContainerSessionLifecycleState.RUNNING
-                if any(
-                    self._container_execution_lifecycle_status(record) == "running"
-                    for record in active_records
-                )
-                else ContainerSessionLifecycleState.STARTING
-            )
-        elif session_cleanup_status in {
-            "cleaned_up",
-            "cleanup_succeeded",
-            "succeeded",
-            "success",
-        }:
-            state = ContainerSessionLifecycleState.CLEANED_UP
-        elif (
-            session_cleanup_status in {"cleanup_failed", "failed", "error"}
-            or record_cleanup_status in {"cleanup_failed", "failed", "error"}
-            or cleanup_error
-        ):
-            state = ContainerSessionLifecycleState.CLEANUP_FAILED
-        else:
-            if execution_records:
-                latest_record = execution_records[0]
-                latest_status = self._container_execution_lifecycle_status(latest_record)
-                if latest_status == "failed":
-                    state = ContainerSessionLifecycleState.FAILED
-                elif latest_status == "stopped":
-                    state = ContainerSessionLifecycleState.STOPPED
-                elif session.expires_at <= _utc_now():
-                    state = ContainerSessionLifecycleState.ABANDONED
-                else:
-                    state = ContainerSessionLifecycleState.PREPARED
-            elif session.expires_at <= _utc_now():
-                state = ContainerSessionLifecycleState.ABANDONED
-            else:
-                state = ContainerSessionLifecycleState.PREPARED
-
-        last_heartbeat_at = None
-        active_heartbeat_candidates: list[datetime] = []
-        for record in execution_records:
-            if self._container_execution_lifecycle_status(record) not in {"starting", "running"}:
-                continue
-            updated_at = getattr(record, "updated_at", None)
-            if isinstance(updated_at, datetime):
-                active_heartbeat_candidates.append(updated_at)
-        if active_heartbeat_candidates:
-            last_heartbeat_at = max(active_heartbeat_candidates)
-
-        completion_candidates: list[datetime] = []
-        for record in execution_records:
-            finished_at = getattr(record, "finished_at", None)
-            if isinstance(finished_at, datetime):
-                completion_candidates.append(finished_at)
-        last_completion_at = max(completion_candidates) if completion_candidates else None
-        last_signal_at = max(
-            [
-                timestamp
-                for timestamp in (last_heartbeat_at, last_completion_at)
-                if timestamp is not None
-            ],
-            default=None,
-        )
-
-        cleanup_supported = state in {
-            ContainerSessionLifecycleState.STOPPED,
-            ContainerSessionLifecycleState.FAILED,
-            ContainerSessionLifecycleState.ABANDONED,
-            ContainerSessionLifecycleState.CLEANUP_FAILED,
-        }
-        if cleanup_supported:
-            cleanup_reason = None
-        elif state == ContainerSessionLifecycleState.CLEANED_UP:
-            cleanup_reason = "Session has already been cleaned up."
-        elif state in {
-            ContainerSessionLifecycleState.RUNNING,
-            ContainerSessionLifecycleState.STARTING,
-        }:
-            cleanup_reason = "Session still has active executions."
-        else:
-            cleanup_reason = "Cleanup is not currently supported for this session."
-
-        recovery_supported = (
-            state
-            not in {
-                ContainerSessionLifecycleState.RUNNING,
-                ContainerSessionLifecycleState.STARTING,
-                ContainerSessionLifecycleState.CLEANED_UP,
-            }
-            and session.expires_at <= _utc_now()
-        )
-        if recovery_supported:
-            recovery_reason = None
-        elif state == ContainerSessionLifecycleState.CLEANED_UP:
-            recovery_reason = "Session has already been cleaned up."
-        elif state in {
-            ContainerSessionLifecycleState.RUNNING,
-            ContainerSessionLifecycleState.STARTING,
-        }:
-            recovery_reason = "Session still has active executions."
-        else:
-            recovery_reason = "Session is not expired."
-
-        return ContainerSessionLifecycle(
-            state=state,
-            last_heartbeat_at=last_heartbeat_at,
-            last_completion_at=last_completion_at,
-            last_signal_at=last_signal_at,
-            cleanup_attempted_at=cleanup_attempted_at,
-            cleanup_completed_at=cleanup_completed_at,
-            cleanup_error=cleanup_error,
-            actions=ContainerSessionLifecycleActions(
-                cleanup=self._container_lifecycle_action(
-                    supported=cleanup_supported,
-                    kind="cleanup_container_session",
-                    label="Cleanup session",
-                    reason=cleanup_reason,
-                ),
-                recovery=self._container_lifecycle_action(
-                    supported=recovery_supported,
-                    kind="renew_session",
-                    label="Renew session",
-                    reason=recovery_reason,
-                ),
-            ),
-        )
+        return self.vm_agent_admin._container_session_lifecycle(session, executions=executions)
 
     def _agent_session_policy_payload(
         self, session: SessionManifest | None
     ) -> dict[str, Any] | None:
-        if session is None:
-            return None
-        labels = _normalize_session_labels(session.metadata.get("labels"))
-        return {
-            "session_id": session.session_id,
-            "model": session.model,
-            "expires_at": session.expires_at,
-            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
-            "approval_required_tools": [
-                tool_name_value(tool) for tool in session.approval_required_tools
-            ],
-            "approval_tool_settings": {
-                tool_name: settings.model_dump(mode="json")
-                for tool_name, settings in session.approval_tool_settings.items()
-            },
-            "approval_notification_target_ids": list(session.approval_notification_target_ids),
-            "approval_notification_target_options": [
-                option.model_dump(mode="json")
-                for option in self._approval_notification_target_options(session)
-            ],
-            "tool_argument_policies": {
-                tool_name: [rule.model_dump(mode="json") for rule in rules]
-                for tool_name, rules in session.tool_argument_policies.items()
-            },
-            "allowed_script_names": list(session.allowed_script_names),
-            "allowed_contact_ids": (
-                None
-                if session.allowed_contact_ids is None
-                else list(session.allowed_contact_ids)
-            ),
-            "discord_channels": list(session.discord_channel_allowlist),
-            "discord_channel_allowlist": list(session.discord_channel_allowlist),
-            "teams_channel_allowlist": list(session.teams_channel_allowlist),
-            "teams_chat_allowlist": list(session.teams_chat_allowlist),
-            "teams_user_allowlist": list(session.teams_user_allowlist),
-            "email_mailboxes": list(session.email_mailbox_allowlist),
-            "email_folders": list(session.email_folder_allowlist),
-            "communication_file_receive_enabled": session.communication_file_receive_enabled,
-            "communication_file_send_enabled": session.communication_file_send_enabled,
-            "communication_file_max_bytes": session.communication_file_max_bytes,
-            "communication_file_allowed_mime_types": list(
-                session.communication_file_allowed_mime_types
-            ),
-            "communication_file_allowed_extensions": list(
-                session.communication_file_allowed_extensions
-            ),
-            "communication_file_blocked_extensions": list(
-                session.communication_file_blocked_extensions
-            ),
-            "communication_file_require_approval_for_send": (
-                session.communication_file_require_approval_for_send
-            ),
-            "web_search_enabled": session.web_search_enabled,
-            "metadata": dict(session.metadata),
-            "labels": labels,
-        }
+        return self.vm_agent_admin._agent_session_policy_payload(session)
 
     def _approval_notification_target_options(
         self, session: SessionManifest | None
     ) -> list[WorkflowEditorFieldOption]:
-        if session is None:
-            return []
-        try:
-            return self._communication_notification_target_options(session.directory_path)
-        except Exception:
-            return []
+        return self.vm_agent_admin._approval_notification_target_options(session)
 
     def effective_tool_policy_payload(
         self, session: SessionManifest | None
     ) -> dict[str, Any] | None:
-        if session is None:
-            return None
-        effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
-        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(
-            session,
-            effective_policy=effective_policy,
-        )
-        inherited_approval_required_tools: list[str] = []
-        approval_required_tools: list[str] = []
-        seen_tools: set[str] = set()
-        for tool in effective_policy.approval_required_tools:
-            value = tool_name_value(tool)
-            if value in seen_tools:
-                continue
-            seen_tools.add(value)
-            inherited_approval_required_tools.append(value)
-            approval_required_tools.append(value)
-        for tool in session.approval_required_tools:
-            value = tool_name_value(tool)
-            if value in seen_tools:
-                continue
-            seen_tools.add(value)
-            approval_required_tools.append(value)
-
-        tool_argument_policies: dict[str, list[dict[str, Any]]] = {}
-        for source in (effective_policy.tool_argument_policies, session.tool_argument_policies):
-            for tool_name, rules in source.items():
-                tool_rules = tool_argument_policies.setdefault(tool_name, [])
-                tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
-
-        approval_tool_settings = {
-            tool_name_value(tool): self.runtime.policy.approval_grant_settings_for_tool(
-                session,
-                tool,
-                effective_policy=effective_policy,
-            ).model_dump(mode="json")
-            for tool in self.runtime.policy._iter_known_tool_names()
-        }
-        mcp_tool_policies = {
-            tool_name: rule.model_dump(mode="json")
-            for tool_name, rule in effective_policy.mcp_tool_policies.items()
-        }
-
-        return {
-            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
-            "tool_summary": tool_summary,
-            "inherited_approval_required_tools": inherited_approval_required_tools,
-            "approval_required_tools": approval_required_tools,
-            "approval_tool_settings": approval_tool_settings,
-            "mcp_tool_policies": mcp_tool_policies,
-            "tool_argument_policies": tool_argument_policies,
-        }
+        return self.vm_agent_admin.effective_tool_policy_payload(session)
 
     def tool_visibility_payload(
         self,
@@ -10254,91 +6531,30 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
     ) -> ToolVisibilityPayload:
-        normalized_target = str(target or "").strip()
-        if not normalized_target:
-            raise ValueError("target is required")
-        session = self.runtime.session_repository.get_session(normalized_target)
-        if session is None:
-            raise ValueError(f"Unknown session: {normalized_target}")
-        return build_tool_visibility_payload(
-            self,
-            session,
+        return self.approval_audit_admin.tool_visibility_payload(
+            target=target,
             mcp_transport_session_id=mcp_transport_session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
         )
 
     def _read_agent_prompt_queue_records(self) -> tuple[dict[str, Any], str | None]:
-        queue_path = self.config.runtime_dir / "queued-agent-prompts.json"
-        if not queue_path.exists():
-            return {}, None
-        try:
-            from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-
-            return AgentPromptQueueStore(queue_path).read_all(), None
-        except Exception as exc:
-            return {}, str(exc)
+        return self.vm_agent_admin._read_agent_prompt_queue_records()
 
     @staticmethod
     def _agent_prompt_queue_candidates(agent: AgentRecord) -> set[str]:
-        candidates = {
-            str(value or "").strip()
-            for value in (agent.agent_id, agent.target_name, agent.session_id)
-        }
-        host = agent.host if isinstance(agent.host, Mapping) else {}
-        for key in ("vm_name", "target_name"):
-            value = host.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.add(value.strip())
-        session_ids = host.get("session_ids")
-        if isinstance(session_ids, list):
-            for session_id in session_ids:
-                normalized = str(session_id or "").strip()
-                if normalized:
-                    candidates.add(normalized)
-        return {candidate for candidate in candidates if candidate}
+        return VmAgentAdminService._agent_prompt_queue_candidates(agent)
 
     @staticmethod
     def _agent_prompt_queue_record_matches(record: Any, *, candidates: set[str]) -> bool:
-        record_values = {
-            str(value or "").strip()
-            for value in (
-                getattr(record, "queue_key", None),
-                getattr(record, "target", None),
-                getattr(record, "vm_name", None),
-                getattr(record, "session_id", None),
-            )
-        }
-        return bool(candidates.intersection(record_values))
+        return VmAgentAdminService._agent_prompt_queue_record_matches(record, candidates=candidates)
 
     @staticmethod
     def _agent_prompt_queue_preview(prompt: str) -> tuple[str | None, int]:
-        prompt_length = len(prompt)
-        normalized = re.sub(r"\s+", " ", prompt).strip()
-        if not normalized:
-            return None, prompt_length
-        if len(normalized) > 240:
-            normalized = f"{normalized[:237]}..."
-        return normalized, prompt_length
+        return VmAgentAdminService._agent_prompt_queue_preview(prompt)
 
     def _agent_prompt_queue_record_payload(self, record: Any) -> AgentPromptQueueRecord:
-        prompt = str(getattr(record, "prompt", "") or "")
-        prompt_preview, prompt_length = self._agent_prompt_queue_preview(prompt)
-        return AgentPromptQueueRecord(
-            queue_key=str(getattr(record, "queue_key", "") or ""),
-            effect_id=str(getattr(record, "effect_id", "") or ""),
-            target=str(getattr(record, "target", "") or ""),
-            vm_name=str(getattr(record, "vm_name", "") or ""),
-            session_id=getattr(record, "session_id", None),
-            created_at=getattr(record, "created_at"),
-            updated_at=getattr(record, "updated_at"),
-            coalesced_count=int(getattr(record, "coalesced_count", 1) or 1),
-            retry_count=int(getattr(record, "retry_count", 1) or 1),
-            max_retries=getattr(record, "max_retries", None),
-            prompt_preview=prompt_preview,
-            prompt_length=prompt_length,
-            metadata=dict(getattr(record, "metadata", {}) or {}),
-        )
+        return self.vm_agent_admin._agent_prompt_queue_record_payload(record)
 
     def _agent_prompt_queue_summary(
         self,
@@ -10348,498 +6564,21 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         read_error: str | None,
         record_limit: int = 20,
     ) -> AgentPromptQueueSummary:
-        candidates = self._agent_prompt_queue_candidates(agent)
-        matches = [
-            record
-            for record in queued_records.values()
-            if self._agent_prompt_queue_record_matches(record, candidates=candidates)
-        ]
-        if not matches:
-            return AgentPromptQueueSummary(read_error=read_error)
-        matches.sort(
-            key=lambda record: getattr(record, "updated_at", getattr(record, "created_at", None)),
-            reverse=True,
-        )
-        return AgentPromptQueueSummary(
-            record_count=len(matches),
-            coalesced_count=sum(
-                max(1, int(getattr(record, "coalesced_count", 1) or 1)) for record in matches
-            ),
-            oldest_created_at=min(getattr(record, "created_at") for record in matches),
-            newest_updated_at=max(getattr(record, "updated_at") for record in matches),
-            records=[
-                self._agent_prompt_queue_record_payload(record) for record in matches[:record_limit]
-            ],
-            truncated_count=max(0, len(matches) - record_limit),
-            read_error=read_error,
+        return self.vm_agent_admin._agent_prompt_queue_summary(
+            agent, queued_records, read_error=read_error, record_limit=record_limit
         )
 
     def _agent_records_with_prompt_queue(self, records: list[AgentRecord]) -> list[AgentRecord]:
-        if not records:
-            return records
-        queued_records, read_error = self._read_agent_prompt_queue_records()
-        if not queued_records and read_error is None:
-            return records
-        return [
-            record.model_copy(
-                update={
-                    "prompt_queue": self._agent_prompt_queue_summary(
-                        record, queued_records, read_error=read_error
-                    )
-                }
-            )
-            for record in records
-        ]
-
-    def _agent_record_from_vm(
-        self,
-        summary: VmSummary,
-        *,
-        include_effective_tool_policy: bool = True,
-    ) -> AgentRecord:
-        power_state = str(summary.power_state or summary.libvirt_state or "unknown").strip()
-        status = "running" if power_state == "running" else "stopped"
-        directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
-        session_policy = None
-        effective_tool_policy = None
-        runtime_image: dict[str, Any] | None = None
-        if len(summary.session_ids) == 1:
-            session = self.runtime.session_repository.get_session(summary.session_ids[0])
-            if session is not None:
-                session_policy = self._agent_session_policy_payload(session)
-                if include_effective_tool_policy:
-                    effective_tool_policy = self.effective_tool_policy_payload(session)
-                runtime_image = self.session_runtime_image_payload(session)
-        host: dict[str, Any] = {
-            "kind": "vm",
-            "vm_name": summary.vm_name,
-            "provider": summary.provider,
-            "issue_number": summary.issue_number,
-            "session_ids": list(summary.session_ids),
-            "labels": dict(summary.labels),
-            "directory_paths": list(summary.directory_paths),
-            "power_state": summary.power_state,
-            "libvirt_state": summary.libvirt_state,
-            "provider_state": summary.provider_state,
-            "provider_details": dict(summary.provider_details),
-            "ip_address": summary.ip_address,
-            "agent": {
-                "state": summary.agent_state,
-                "pid": summary.agent_pid,
-                "dispatch_id": summary.dispatch_id,
-                "repo_names": list(summary.agent_repo_names),
-                "preferred_repo_name": summary.agent_repo_names[0]
-                if len(summary.agent_repo_names) == 1
-                else None,
-            },
-            "session_policy": session_policy,
-        }
-        if runtime_image is not None:
-            host["runtime_image"] = runtime_image
-        return AgentRecord(
-            agent_id=summary.vm_name,
-            backend="libvirt_vm",
-            target_name=summary.vm_name,
-            session_id=summary.session_ids[0] if len(summary.session_ids) == 1 else None,
-            directory_path=directory_path,
-            status=status,
-            updated_at=summary.last_state_update_at,
-            effective_tool_policy=effective_tool_policy,
-            host=host,
-            capabilities={
-                "start": True,
-                "shutdown": True,
-                "resume": True,
-                "enable_disable": True,
-                "kill": True,
-                "logs": True,
-                "stop": False,
-                "destroy": True,
-            },
-        )
-
-    def _agent_record_from_stale_vm_session(
-        self,
-        session: SessionManifest,
-        *,
-        inventory_error: str | None = None,
-        include_effective_tool_policy: bool = True,
-    ) -> AgentRecord:
-        vm_name = str(session.vm_id or session.vm_provider_id or session.session_id).strip()
-        directory_path = self._agent_record_directory_path(session.directory_path)
-        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
-        labels = _normalize_session_labels(metadata.get("labels"))
-        host: dict[str, Any] = {
-            "kind": "vm_session",
-            "vm_name": vm_name,
-            "provider": str(session.vm_provider or "libvirt").strip() or "libvirt",
-            "session_ids": [session.session_id],
-            "labels": labels,
-            "directory_paths": [directory_path],
-            "inventory_status": "missing",
-            "session_policy": self._agent_session_policy_payload(session),
-        }
-        if inventory_error:
-            host["inventory_error"] = inventory_error
-        host["runtime_image"] = self.session_runtime_image_payload(session)
-        return AgentRecord(
-            agent_id=vm_name,
-            backend="libvirt_vm",
-            target_name=vm_name,
-            session_id=session.session_id,
-            directory_path=directory_path,
-            status="stale",
-            updated_at=session.created_at,
-            effective_tool_policy=(
-                self.effective_tool_policy_payload(session)
-                if include_effective_tool_policy
-                else None
-            ),
-            host=host,
-            capabilities={
-                "start": False,
-                "shutdown": False,
-                "resume": False,
-                "enable_disable": False,
-                "kill": False,
-                "logs": False,
-                "stop": False,
-                "destroy": True,
-            },
-        )
-
-    def _reconcile_container_execution_records(self, records: list[Any]) -> list[Any]:
-        reconciled: list[Any] = []
-        for record in records:
-            status = self._container_agent_status(record.last_status)
-            if status not in {"starting", "running", "unknown"}:
-                reconciled.append(record)
-                continue
-            try:
-                self._container_worker_backend(
-                    directory_path=record.directory_path,
-                    worker_url=self._container_worker_url_for_target(record=record),
-                ).inspect(record.execution_id)
-                record = (
-                    self._container_worker_execution_repository().get(record.execution_id) or record
-                )
-            except Exception:
-                pass
-            reconciled.append(record)
-        return reconciled
-
-    def _container_execution_payload(self, record: Any) -> dict[str, Any]:
-        status = self._container_execution_status(record)
-        metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
-        image = metadata.get("image")
-        return {
-            "execution_id": record.execution_id,
-            "session_id": record.session_id,
-            "worker_job_id": record.worker_job_id,
-            "worker_url": record.worker_url,
-            "target_name": record.target_name,
-            "status": status,
-            "last_status": record.last_status,
-            "created_at": record.created_at,
-            "started_at": record.started_at,
-            "finished_at": record.finished_at,
-            "updated_at": record.updated_at,
-            "image": image if isinstance(image, str) and image.strip() else None,
-            "metadata": metadata,
-        }
-
-    def _container_worker_image_details(
-        self,
-        metadata: Mapping[str, Any] | None,
-        *,
-        fallback_metadata: Mapping[str, Any] | None = None,
-    ) -> dict[str, str | None]:
-        container_worker = (
-            metadata.get("container_worker") if isinstance(metadata, Mapping) else None
-        )
-        image: str | None = None
-        image_alias: str | None = None
-        if isinstance(container_worker, Mapping):
-            raw_image = container_worker.get("image")
-            if isinstance(raw_image, str):
-                image = raw_image.strip() or None
-            raw_alias = container_worker.get("image_alias")
-            if isinstance(raw_alias, str):
-                image_alias = raw_alias.strip() or None
-        if image is None and isinstance(fallback_metadata, Mapping):
-            raw_fallback_image = fallback_metadata.get("image")
-            if isinstance(raw_fallback_image, str):
-                image = raw_fallback_image.strip() or None
-        return {"image": image, "image_alias": image_alias}
+        return self.vm_agent_admin._agent_records_with_prompt_queue(records)
 
     @staticmethod
     def _runtime_image_ref_display_details(image_ref: str) -> tuple[str, bool]:
-        display_ref = image_ref.strip()
-        if not display_ref:
-            return "", False
-
-        sanitized = False
-        candidate = display_ref
-
-        if candidate.startswith("file://"):
-            candidate = candidate.removeprefix("file://")
-            sanitized = True
-        if candidate.startswith("~/"):
-            candidate = candidate[2:]
-            sanitized = True
-        elif candidate.startswith("~\\"):
-            candidate = candidate[2:]
-            sanitized = True
-        if re.match(r"^[A-Za-z]:[\\/]", candidate):
-            candidate = candidate[2:]
-            sanitized = True
-        if "/" in candidate or "\\" in candidate:
-            candidate = candidate.replace("\\", "/").rstrip("/")
-            candidate = candidate.split("/")[-1]
-            sanitized = True
-        return candidate or display_ref, sanitized
+        return VmAgentAdminService._runtime_image_ref_display_details(image_ref)
 
     def session_runtime_image_payload(
         self, session: SessionManifest | SessionSummary
     ) -> dict[str, Any]:
-        if self._is_container_session(session):
-            image_details = self._container_worker_image_details(
-                dict(session.metadata) if isinstance(session.metadata, dict) else {}
-            )
-            payload: dict[str, Any] = {
-                "backend": "container_worker_vm",
-                "kind": "container_worker_image",
-                "label": "Container worker image",
-                "image_alias": image_details["image_alias"],
-                "image_ref": image_details["image"],
-                "missing_reason": None,
-            }
-            if image_details["image"] is None:
-                payload["missing_reason"] = "container_worker_image_missing"
-            return payload
-
-        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
-        template = metadata.get("libvirt_vm_template")
-        if not isinstance(template, Mapping):
-            return {
-                "backend": "libvirt_vm",
-                "kind": "libvirt_vm_template",
-                "label": "Legacy session: VM template metadata unavailable",
-                "template_alias": None,
-                "image_ref": None,
-                "image_ref_sanitized": False,
-                "missing_reason": "legacy_missing_libvirt_vm_template",
-            }
-
-        raw_image_ref = template.get("image_ref")
-        if not isinstance(raw_image_ref, str):
-            return {
-                "backend": "libvirt_vm",
-                "kind": "libvirt_vm_template",
-                "label": "Legacy session: VM template metadata unavailable",
-                "template_alias": None,
-                "image_ref": None,
-                "image_ref_sanitized": False,
-                "missing_reason": "legacy_missing_libvirt_vm_template",
-            }
-
-        image_ref = raw_image_ref.strip()
-        if not image_ref:
-            return {
-                "backend": "libvirt_vm",
-                "kind": "libvirt_vm_template",
-                "label": "Legacy session: VM template metadata unavailable",
-                "template_alias": None,
-                "image_ref": None,
-                "image_ref_sanitized": False,
-                "missing_reason": "legacy_missing_libvirt_vm_template",
-            }
-
-        display_image_ref, image_ref_sanitized = self._runtime_image_ref_display_details(image_ref)
-        raw_template_alias = template.get("template_alias")
-        template_alias = (
-            _coerce_optional_string(raw_template_alias)
-            if isinstance(raw_template_alias, str)
-            else None
-        )
-        return {
-            "backend": "libvirt_vm",
-            "kind": "libvirt_vm_template",
-            "label": "Libvirt VM template",
-            "template_alias": template_alias,
-            "image_ref": display_image_ref,
-            "image_ref_sanitized": image_ref_sanitized,
-            "missing_reason": None,
-        }
-
-    def _agent_record_from_container_execution(
-        self,
-        record: Any,
-        *,
-        reconcile: bool,
-        include_effective_tool_policy: bool = True,
-    ) -> AgentRecord:
-        status = self._container_execution_status(record)
-        message: str | None = None
-        session = self.runtime.session_repository.get_session(record.session_id)
-        if reconcile:
-            try:
-                self._container_worker_backend(
-                    directory_path=record.directory_path,
-                    worker_url=self._container_worker_url_for_target(record=record),
-                ).inspect(record.execution_id)
-            except Exception as exc:
-                message = str(exc)
-            else:
-                record = self._container_worker_execution_repository().resolve(record.execution_id)
-                status = self._container_execution_status(record)
-        host = {
-            "kind": "container_worker",
-            "worker_job_id": record.worker_job_id,
-            "worker_url": record.worker_url,
-            "last_status": record.last_status,
-            "metadata": dict(record.metadata),
-            "session_policy": self._agent_session_policy_payload(session),
-        }
-        if message:
-            host["reconcile_error"] = message
-        image_details = self._container_worker_image_details(
-            dict(session.metadata) if isinstance(session.metadata, dict) else {},
-            fallback_metadata=record.metadata if isinstance(record.metadata, Mapping) else None,
-        )
-        if image_details["image"] is not None:
-            host["image"] = image_details["image"]
-        if image_details["image_alias"] is not None:
-            host["image_alias"] = image_details["image_alias"]
-        return AgentRecord(
-            agent_id=record.execution_id,
-            backend="container_worker_vm",
-            target_name=record.target_name,
-            session_id=record.session_id,
-            directory_path=self._agent_record_directory_path(record.directory_path),
-            status=status,
-            started_at=record.started_at,
-            finished_at=record.finished_at,
-            updated_at=record.updated_at,
-            effective_tool_policy=(
-                self.effective_tool_policy_payload(session)
-                if include_effective_tool_policy
-                else None
-            ),
-            host=host,
-            capabilities={
-                "start": False,
-                "shutdown": False,
-                "resume": False,
-                "enable_disable": False,
-                "kill": False,
-                "logs": True,
-                "stop": True,
-                "destroy": True,
-            },
-        )
-
-    def _agent_record_from_container_session(
-        self,
-        session: SessionManifest,
-        *,
-        executions: list[Any] | None = None,
-        reconcile: bool = False,
-        include_effective_tool_policy: bool = True,
-    ) -> AgentRecord:
-        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
-        target_name = self._container_session_target_name(session)
-        labels = _normalize_session_labels(metadata.get("labels"))
-        execution_records = sorted(
-            list(executions or []),
-            key=self._container_execution_sort_key,
-            reverse=True,
-        )
-        if reconcile and execution_records:
-            execution_records = sorted(
-                self._reconcile_container_execution_records(execution_records),
-                key=self._container_execution_sort_key,
-                reverse=True,
-            )
-        latest_execution = execution_records[0] if execution_records else None
-        execution_payloads = [
-            self._container_execution_payload(record) for record in execution_records
-        ]
-        lifecycle = self._container_session_lifecycle(session, executions=execution_records)
-        status = self._container_session_status(execution_records)
-        if lifecycle is not None and lifecycle.state in {
-            ContainerSessionLifecycleState.ABANDONED,
-            ContainerSessionLifecycleState.CLEANUP_FAILED,
-            ContainerSessionLifecycleState.CLEANED_UP,
-        }:
-            status = lifecycle.state.value
-        active_count = sum(
-            1
-            for record in execution_records
-            if self._agent_status_is_active(self._container_agent_status(record.last_status))
-        )
-        host: dict[str, Any] = {
-            "kind": "container_worker_session",
-            "metadata": metadata,
-            "session_policy": self._agent_session_policy_payload(session),
-            "executions": execution_payloads,
-            "execution_count": len(execution_records),
-            "active_execution_count": active_count,
-        }
-        latest_metadata: dict[str, Any] = {}
-        if latest_execution is not None:
-            latest_metadata = (
-                dict(latest_execution.metadata)
-                if isinstance(latest_execution.metadata, dict)
-                else {}
-            )
-            host.update(
-                {
-                    "latest_execution_id": latest_execution.execution_id,
-                    "worker_job_id": latest_execution.worker_job_id,
-                    "worker_url": latest_execution.worker_url,
-                    "last_status": latest_execution.last_status,
-                }
-            )
-        image_details = self._container_worker_image_details(
-            metadata,
-            fallback_metadata=latest_metadata,
-        )
-        if image_details["image"] is not None:
-            host["image"] = image_details["image"]
-        if image_details["image_alias"] is not None:
-            host["image_alias"] = image_details["image_alias"]
-        if labels:
-            host["labels"] = labels
-        return AgentRecord(
-            agent_id=session.session_id,
-            backend="container_worker_vm",
-            target_name=target_name,
-            session_id=session.session_id,
-            directory_path=self._agent_record_directory_path(session.directory_path),
-            status=status,
-            started_at=None,
-            finished_at=None,
-            updated_at=(
-                latest_execution.updated_at if latest_execution is not None else session.created_at
-            ),
-            effective_tool_policy=(
-                self.effective_tool_policy_payload(session)
-                if include_effective_tool_policy
-                else None
-            ),
-            host=host,
-            capabilities={
-                "start": False,
-                "shutdown": False,
-                "resume": False,
-                "enable_disable": False,
-                "kill": False,
-                "logs": bool(execution_records),
-                "stop": active_count > 0,
-                "destroy": True,
-            },
-        )
+        return self.vm_agent_admin.session_runtime_image_payload(session)
 
     def list_agents(
         self,
@@ -10854,935 +6593,117 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         all_directories: bool = False,
         include_prompt_queue: bool = False,
     ) -> list[AgentRecord]:
-        normalized_directory = self._normalize_directory_path(directory_path)
-        selected_backend = self._normalize_agent_backend_filter(backend)
-        include_effective_tool_policy = not summary_only
-        records: list[AgentRecord] = []
-        vm_inventory_error: str | None = None
-        inventoried_vm_names: set[str] = set()
-        inventoried_session_ids: set[str] = set()
-        if selected_backend in {"all", "libvirt_vm"}:
-            try:
-                vm_summaries = self.list_vms(
-                    include_inactive=include_inactive,
-                    omit_state=omit_vm_state,
-                    directory_path=None if all_directories else normalized_directory,
-                    direct_only=False if all_directories else direct_only,
-                )
-            except Exception as exc:
-                vm_inventory_error = str(exc)
-                vm_summaries = []
-            for summary in vm_summaries:
-                inventoried_vm_names.add(str(summary.vm_name or "").strip())
-                inventoried_session_ids.update(
-                    str(session_id or "").strip() for session_id in summary.session_ids
-                )
-                record = self._agent_record_from_vm(
-                    summary,
-                    include_effective_tool_policy=include_effective_tool_policy,
-                )
-                if include_inactive or self._agent_status_is_active(record.status):
-                    records.append(record)
-            for session in sorted(
-                self.runtime.session_repository.list_sessions(),
-                key=lambda item: (item.created_at, item.session_id),
-                reverse=True,
-            ):
-                vm_name = str(session.vm_id or "").strip()
-                if not vm_name or self._is_container_session(session):
-                    continue
-                if vm_name in inventoried_vm_names or session.session_id in inventoried_session_ids:
-                    continue
-                if not all_directories and not self._agent_record_matches_directory(
-                    session.directory_path,
-                    normalized_directory,
-                    direct_only=direct_only,
-                ):
-                    continue
-                record = self._agent_record_from_stale_vm_session(
-                    session,
-                    inventory_error=vm_inventory_error,
-                    include_effective_tool_policy=include_effective_tool_policy,
-                )
-                if include_inactive or self._agent_status_is_active(record.status):
-                    records.append(record)
-            if selected_backend == "libvirt_vm" and vm_inventory_error and not records:
-                raise RuntimeError(vm_inventory_error)
-
-        if selected_backend == "libvirt_vm":
-            return (
-                self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
-            )
-
-        container_repository = self._container_worker_execution_repository()
-        list_all_ordered = getattr(container_repository, "list_all_ordered", None)
-        list_by_directory = getattr(container_repository, "list_by_directory", None)
-        if all_directories:
-            if callable(list_all_ordered):
-                container_records = list_all_ordered()
-            else:
-                container_records = list(container_repository.read_all().values())
-        elif direct_only and callable(list_by_directory):
-            container_records = list_by_directory(normalized_directory)
-        elif callable(list_all_ordered):
-            container_records = list_all_ordered()
-        else:
-            container_records = list(container_repository.read_all().values())
-
-        container_records_by_session: dict[str, list[Any]] = {}
-        for container_record in container_records:
-            session_id = str(container_record.session_id or "").strip()
-            if not session_id:
-                continue
-            if not all_directories and not self._agent_record_matches_directory(
-                container_record.directory_path,
-                normalized_directory,
-                direct_only=direct_only,
-            ):
-                continue
-            container_records_by_session.setdefault(session_id, []).append(container_record)
-        for session in sorted(
-            self.runtime.session_repository.list_sessions(),
-            key=lambda item: (item.created_at, item.session_id),
-            reverse=True,
-        ):
-            if not self._is_container_session(session):
-                continue
-            if not all_directories and not self._agent_record_matches_directory(
-                session.directory_path,
-                normalized_directory,
-                direct_only=direct_only,
-            ):
-                continue
-            record = self._agent_record_from_container_session(
-                session,
-                executions=container_records_by_session.get(session.session_id, []),
-                reconcile=reconcile_containers,
-                include_effective_tool_policy=include_effective_tool_policy,
-            )
-            if include_inactive or self._agent_status_is_active(record.status):
-                records.append(record)
-        return self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
+        return self.vm_agent_admin.list_agents(
+            directory_path=directory_path,
+            direct_only=direct_only,
+            include_inactive=include_inactive,
+            reconcile_containers=reconcile_containers,
+            omit_vm_state=omit_vm_state,
+            summary_only=summary_only,
+            backend=backend,
+            all_directories=all_directories,
+            include_prompt_queue=include_prompt_queue,
+        )
 
     def _agent_create_operation_details(
         self, payload: Mapping[str, Any]
     ) -> tuple[str, str, str | None, str]:
-        selected_backend = self._normalize_agent_backend(
-            self._agent_optional_string(payload, "backend")
-            or self._agent_optional_string(payload, "execution_backend")
-        )
-        directory_path = self._normalize_directory_path(
-            self._agent_optional_string(payload, "directory_path")
-        )
-        if selected_backend == "libvirt_vm":
-            vm_name = self._agent_optional_string(payload, "vm_name")
-            if not vm_name:
-                raise ValueError("vm_name is required for libvirt_vm agents")
-            return (
-                selected_backend,
-                vm_name,
-                self._agent_optional_string(payload, "session_id"),
-                directory_path,
-            )
-
-        session_id = self._agent_optional_string(payload, "session_id")
-        if not session_id:
-            raise ValueError("session_id is required for container_worker_vm agents")
-        target_name = self._agent_optional_string(payload, "target_name") or session_id
-        return selected_backend, target_name, session_id, directory_path
+        return self.vm_agent_admin._agent_create_operation_details(payload)
 
     @staticmethod
     def _agent_create_operation_worker_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-        return json.loads(json.dumps(dict(payload), default=str))
+        return VmAgentAdminService._agent_create_operation_worker_payload(payload)
 
     def submit_admin_agent_create(self, payload: Mapping[str, Any]) -> AgentCreateOperation:
-        if not isinstance(payload, Mapping):
-            raise ValueError("Request body must be a JSON object")
-        worker_payload = self._agent_create_operation_worker_payload(payload)
-        backend, target_name, session_id, directory_path = self._agent_create_operation_details(
-            worker_payload
-        )
-        now = _utc_now()
-        operation = AgentCreateOperation(
-            operation_id=f"agent-create-{uuid4().hex}",
-            status="queued",
-            backend=backend,
-            target_name=target_name,
-            session_id=session_id,
-            directory_path=directory_path,
-            owner_id=self._agent_create_operation_owner_id,
-            owner_pid=os.getpid(),
-            created_at=now,
-            updated_at=now,
-        )
-        with self._agent_create_operation_payloads_lock:
-            self._agent_create_operation_payloads[operation.operation_id] = worker_payload
-        try:
-            self.agent_create_operations.put(operation.operation_id, operation)
-            self._agent_create_executor.submit(
-                self._run_agent_create_operation,
-                operation.operation_id,
-            )
-        except Exception:
-            with self._agent_create_operation_payloads_lock:
-                self._agent_create_operation_payloads.pop(operation.operation_id, None)
-            raise
-        return self.get_admin_agent_create_operation(operation.operation_id)
+        return self.vm_agent_admin.submit_admin_agent_create(payload)
 
     def list_admin_agent_create_operations(
-        self,
-        *,
-        limit: int = 50,
-        directory_path: str | None = None,
+        self, *, limit: int = 50, directory_path: str | None = None
     ) -> list[AgentCreateOperation]:
-        normalized_directory = (
-            self._normalize_directory_path(directory_path) if directory_path else None
+        return self.vm_agent_admin.list_admin_agent_create_operations(
+            limit=limit, directory_path=directory_path
         )
-        operations = list(self.agent_create_operations.read_all().values())
-        if normalized_directory is not None:
-            operations = [
-                operation
-                for operation in operations
-                if operation.directory_path == normalized_directory
-            ]
-        operations.sort(
-            key=lambda operation: (
-                operation.updated_at,
-                operation.created_at,
-                operation.operation_id,
-            ),
-            reverse=True,
-        )
-        bounded_limit = max(1, min(int(limit), 200))
-        return operations[:bounded_limit]
 
     def get_admin_agent_create_operation(self, operation_id: str) -> AgentCreateOperation:
-        normalized_operation_id = str(operation_id or "").strip()
-        operation = self.agent_create_operations.get(normalized_operation_id)
-        if operation is None:
-            raise LookupError(f"Agent create operation not found: {normalized_operation_id}")
-        return operation
+        return self.vm_agent_admin.get_admin_agent_create_operation(operation_id)
 
     def _update_agent_create_operation(
-        self,
-        operation_id: str,
-        updater: Any,
+        self, operation_id: str, updater: Any
     ) -> AgentCreateOperation | None:
-        def _update(items: dict[str, AgentCreateOperation]) -> AgentCreateOperation | None:
-            current = items.get(operation_id)
-            if current is None:
-                return None
-            updated = updater(current)
-            items[operation_id] = updated
-            return updated
-
-        return self.agent_create_operations.update_all(_update)
+        return self.vm_agent_admin._update_agent_create_operation(operation_id, updater)
 
     def _run_agent_create_operation(self, operation_id: str) -> None:
-        started_at = _utc_now()
-        operation = self._update_agent_create_operation(
-            operation_id,
-            lambda current: (
-                current.model_copy(
-                    update={
-                        "status": "running",
-                        "started_at": current.started_at or started_at,
-                        "updated_at": started_at,
-                        "error": None,
-                    }
-                )
-                if current.status in {"queued", "running"}
-                else current
-            ),
-        )
-        if operation is None or operation.status != "running":
-            return
-        try:
-            with self._agent_create_operation_payloads_lock:
-                worker_payload = self._agent_create_operation_payloads.get(operation_id)
-            if worker_payload is None:
-                raise RuntimeError("Agent create request payload is no longer available.")
-            result = self.create_admin_agent(worker_payload)
-            finished_at = _utc_now()
-            if bool(result.get("success")):
-                self._update_agent_create_operation(
-                    operation_id,
-                    lambda current: current.model_copy(
-                        update={
-                            "status": "succeeded",
-                            "result": result,
-                            "error": None,
-                            "finished_at": finished_at,
-                            "updated_at": finished_at,
-                        }
-                    ),
-                )
-                return
-            self._update_agent_create_operation(
-                operation_id,
-                lambda current: current.model_copy(
-                    update={
-                        "status": "failed",
-                        "result": result,
-                        "error": str(result.get("message") or "Agent create failed."),
-                        "finished_at": finished_at,
-                        "updated_at": finished_at,
-                    }
-                ),
-            )
-        except Exception as exc:
-            finished_at = _utc_now()
-            error_message = str(exc) or exc.__class__.__name__
-            self._update_agent_create_operation(
-                operation_id,
-                lambda current: current.model_copy(
-                    update={
-                        "status": "failed",
-                        "error": error_message,
-                        "finished_at": finished_at,
-                        "updated_at": finished_at,
-                    }
-                ),
-            )
-        finally:
-            with self._agent_create_operation_payloads_lock:
-                self._agent_create_operation_payloads.pop(operation_id, None)
+        return self.vm_agent_admin._run_agent_create_operation(operation_id)
 
     @staticmethod
     def _agent_create_operation_owner_is_alive(owner_pid: int | None) -> bool:
-        if owner_pid is None or owner_pid <= 0:
-            return False
-        if owner_pid == os.getpid():
-            return True
-        try:
-            os.kill(owner_pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
+        return VmAgentAdminService._agent_create_operation_owner_is_alive(owner_pid)
 
     def mark_abandoned_agent_create_operations_failed(self) -> None:
-        now = _utc_now()
-
-        def _mark(items: dict[str, AgentCreateOperation]) -> None:
-            for operation_id, operation in list(items.items()):
-                if operation.status not in {"queued", "running"}:
-                    continue
-                if operation.owner_pid is None:
-                    continue
-                if self._agent_create_operation_owner_is_alive(operation.owner_pid):
-                    continue
-                items[operation_id] = operation.model_copy(
-                    update={
-                        "status": "failed",
-                        "error": "Admin Web process exited before this create operation finished.",
-                        "finished_at": now,
-                        "updated_at": now,
-                    }
-                )
-
-        self.agent_create_operations.update_all(_mark)
+        return self.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def sync_added_discord_session_cursors(
-        self,
-        *,
-        previous_session: SessionManifest | None,
-        updated_session: SessionManifest,
+        self, *, previous_session: SessionManifest | None, updated_session: SessionManifest
     ) -> dict[str, str]:
-        return _sync_added_discord_session_cursors(
-            self.runtime,
-            previous_session=previous_session,
-            updated_session=updated_session,
+        return self.vm_agent_admin.sync_added_discord_session_cursors(
+            previous_session=previous_session, updated_session=updated_session
         )
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        selected_backend = self._normalize_agent_backend(
-            self._agent_optional_string(payload, "backend")
-            or self._agent_optional_string(payload, "execution_backend")
-        )
-        if selected_backend == "libvirt_vm":
-            vm_name = self._agent_optional_string(payload, "vm_name")
-            if not vm_name:
-                raise ValueError("vm_name is required for libvirt_vm agents")
-            codex_skills = self.validate_managed_codex_skills(
-                self._agent_string_list(payload, "codex_skills")
-            )
-            agent_provider = self._agent_optional_string(payload, "agent_provider")
-            directory_path = self._agent_optional_string(payload, "directory_path") or "root"
-            vm_image_selector = self._agent_optional_string(payload, "vm_image")
-            vm_defaults = self.resolve_vm_defaults(directory_path)
-            vm_image_selection = resolve_libvirt_vm_template_selector(
-                vm_image_selector,
-                default_template=vm_defaults.libvirt_vm_default_template,
-                templates=vm_defaults.libvirt_vm_templates,
-            )
-            create_metadata: dict[str, Any] = {
-                "libvirt_vm_template": {
-                    "image_ref": vm_image_selection["image_ref"],
-                    "template_alias": vm_image_selection["template_alias"],
-                }
-            }
-            if agent_provider:
-                create_metadata["agent_provider"] = agent_provider
-            model_provider_mode = normalize_model_provider_mode_override(
-                payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
-            )
-            if model_provider_mode:
-                create_metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
-            resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
-                self.runtime,
-                session_id=self._agent_optional_string(payload, "session_id") or vm_name,
-                directory_path=directory_path,
-                allowed_contact_ids=payload.get("allowed_contact_ids"),
-            )
-            communication_allowlists = _admin_agent_communication_allowlists(
-                payload,
-                config=self.config,
-                directory_path=directory_path,
-            )
-            result = self.create_vm(
-                provider=self._agent_optional_string(payload, "provider"),
-                vm_name=vm_name,
-                session_id=self._agent_optional_string(payload, "session_id"),
-                labels=_normalize_session_labels(payload.get("labels")),
-                model=self._agent_optional_string(payload, "model"),
-                vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
-                ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
-                ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
-                allowed_tools=self._agent_string_list(payload, "allowed_tools"),
-                **(
-                    {"tool_argument_policies": payload["tool_argument_policies"]}
-                    if "tool_argument_policies" in payload
-                    else {}
-                ),
-                allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
-                allowed_contact_ids=resolved_allowed_contact_ids,
-                discord_channels=communication_allowlists["discord_channels"],
-                teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
-                teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
-                teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
-                email_mailboxes=communication_allowlists["email_mailboxes"],
-                email_folders=communication_allowlists["email_folders"],
-                communication_file_receive_enabled=(
-                    _normalize_session_policy_bool(
-                        payload.get("communication_file_receive_enabled"),
-                        field_name="communication_file_receive_enabled",
-                    )
-                    if "communication_file_receive_enabled" in payload
-                    else None
-                ),
-                communication_file_send_enabled=(
-                    _normalize_session_policy_bool(
-                        payload.get("communication_file_send_enabled"),
-                        field_name="communication_file_send_enabled",
-                    )
-                    if "communication_file_send_enabled" in payload
-                    else None
-                ),
-                communication_file_max_bytes=(
-                    _normalize_session_policy_non_negative_int_or_none(
-                        payload.get("communication_file_max_bytes"),
-                        field_name="communication_file_max_bytes",
-                    )
-                    if "communication_file_max_bytes" in payload
-                    else None
-                ),
-                communication_file_require_approval_for_send=(
-                    _normalize_session_policy_bool(
-                        payload.get("communication_file_require_approval_for_send"),
-                        field_name="communication_file_require_approval_for_send",
-                    )
-                    if "communication_file_require_approval_for_send" in payload
-                    else None
-                ),
-                web_search_enabled=(
-                    _normalize_session_policy_bool(
-                        payload.get("web_search_enabled"),
-                        field_name="web_search_enabled",
-                    )
-                    if "web_search_enabled" in payload
-                    else False
-                ),
-                dotnet=bool(payload.get("dotnet", False)),
-                nuget=bool(payload.get("nuget", False)),
-                mssql=bool(payload.get("mssql", False)),
-                mssql_init_root=self._agent_optional_string(payload, "mssql_init_root"),
-                playwright=bool(payload.get("playwright", False)),
-                codex_skills=codex_skills,
-                directory_path=directory_path,
-                metadata=create_metadata,
-            )
-            session_id = self._agent_optional_string(payload, "session_id")
-            session = (
-                self.runtime.session_repository.get_session(session_id) if session_id else None
-            )
-            return {
-                "success": result.success,
-                "agent_id": result.vm_name or vm_name,
-                "backend": "libvirt_vm",
-                "target_name": result.vm_name or vm_name,
-                "action": result.action,
-                "message": result.message,
-                "status": "created" if result.success else "failed",
-                "session_id": session_id,
-                "provider": result.provider,
-                "provider_operation_id": result.provider_operation_id,
-                "effective_tool_policy": self.effective_tool_policy_payload(session),
-                "vm_image": vm_image_selection["image_ref"],
-                "vm_image_alias": vm_image_selection["template_alias"],
-            }
-
-        session_id = self._agent_optional_string(payload, "session_id")
-        if not session_id:
-            raise ValueError("session_id is required for container_worker_vm agents")
-        if bool(payload.get("mssql", False)) or self._agent_optional_string(
-            payload, "mssql_init_root"
-        ):
-            raise ValueError(
-                "create_admin_agent with container_worker_vm does not support MSSQL yet"
-            )
-        codex_skill_files = self.resolve_container_codex_skill_files(
-            self._agent_string_list(payload, "codex_skills")
-        )
-        target_name = self._agent_optional_string(payload, "target_name") or session_id
-        directory_path = self._normalize_directory_path(
-            self._agent_optional_string(payload, "directory_path")
-        )
-        session_repository = self.runtime.session_repository
-        if session_repository.get_session(session_id) is not None:
-            raise ValueError(f"Session already exists: {session_id}")
-
-        policy = self.runtime.policy_config.resolve_for_directory(directory_path)
-        labels = _normalize_session_labels(payload.get("labels"))
-        model = self._agent_optional_string(payload, "model")
-        backend = self._container_worker_backend(directory_path=directory_path)
-        from agent_sandbox.effects.providers.agent_session import default_agent_provider_for_config
-
-        requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
-        agent_provider = requested_agent_provider or default_agent_provider_for_config(
-            backend.config
-        )
-        container_image_selection = resolve_container_worker_image_selector(
-            self._agent_optional_string(payload, "container_image"),
-            default_image=backend.config.container_worker_default_image,
-            images=backend.config.container_worker_images,
-        )
-        metadata: dict[str, Any] = {
-            "execution_backend": "container_worker_vm",
-            "target_name": target_name,
-        }
-        if requested_agent_provider or agent_provider == "claude":
-            metadata["agent_provider"] = agent_provider
-        model_provider_mode = normalize_model_provider_mode_override(
-            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
-        )
-        if model_provider_mode:
-            metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
-        if labels:
-            metadata["labels"] = labels
-        worker_url = self._container_worker_backend_url(backend)
-        if worker_url:
-            metadata["worker_url"] = worker_url
-        metadata["container_worker"] = container_image_selection
-        resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
-            self.runtime,
-            session_id=session_id,
-            directory_path=directory_path,
-            allowed_contact_ids=payload.get("allowed_contact_ids"),
-        )
-        communication_allowlists = _admin_agent_communication_allowlists(
-            payload,
-            config=self.config,
-            directory_path=directory_path,
-        )
-        manifest = _build_issue_session_manifest(
-            policy=policy,
-            session_id=session_id,
-            vm_id=target_name,
-            issue_number=None,
-            directory_path=directory_path,
-            ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
-            ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
-            extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
-            **(
-                {"tool_argument_policies": payload["tool_argument_policies"]}
-                if "tool_argument_policies" in payload
-                else {}
-            ),
-            allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
-            allowed_contact_ids=resolved_allowed_contact_ids,
-            discord_channels=communication_allowlists["discord_channels"] or [],
-            teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"] or [],
-            teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"] or [],
-            teams_user_allowlist=communication_allowlists["teams_user_allowlist"] or [],
-            email_mailboxes=communication_allowlists["email_mailboxes"] or [],
-            email_folders=communication_allowlists["email_folders"] or [],
-            communication_file_receive_enabled=(
-                _normalize_session_policy_bool(
-                    payload.get("communication_file_receive_enabled"),
-                    field_name="communication_file_receive_enabled",
-                )
-                if "communication_file_receive_enabled" in payload
-                else None
-            ),
-            communication_file_send_enabled=(
-                _normalize_session_policy_bool(
-                    payload.get("communication_file_send_enabled"),
-                    field_name="communication_file_send_enabled",
-                )
-                if "communication_file_send_enabled" in payload
-                else None
-            ),
-            communication_file_max_bytes=(
-                _normalize_session_policy_non_negative_int_or_none(
-                    payload.get("communication_file_max_bytes"),
-                    field_name="communication_file_max_bytes",
-                )
-                if "communication_file_max_bytes" in payload
-                else None
-            ),
-            communication_file_require_approval_for_send=(
-                _normalize_session_policy_bool(
-                    payload.get("communication_file_require_approval_for_send"),
-                    field_name="communication_file_require_approval_for_send",
-                )
-                if "communication_file_require_approval_for_send" in payload
-                else None
-            ),
-            web_search_enabled=(
-                _normalize_session_policy_bool(
-                    payload.get("web_search_enabled"),
-                    field_name="web_search_enabled",
-                )
-                if "web_search_enabled" in payload
-                else False
-            ),
-        ).model_copy(
-            update={
-                "vm_id": None,
-                "vm_provider": "container_worker_vm",
-                "vm_provider_id": target_name,
-                "model": model,
-                "metadata": metadata,
-            }
-        )
-        session_record = backend.prepare_session(
-            session_id=session_id,
-            metadata={
-                "execution_backend": "container_worker_vm",
-                "directory_path": directory_path,
-                "target_name": target_name,
-                "labels": labels,
-                "container_worker": container_image_selection,
-                **({"worker_url": worker_url} if worker_url else {}),
-            },
-        )
-        from agent_sandbox.effects.providers.agent_session import (
-            build_container_session_files,
-        )
-
-        backend.write_files(
-            session_id=session_id,
-            files=[
-                *build_container_session_files(
-                    config=backend.config,
-                    session_id=session_id,
-                    model=model,
-                    agent_provider=agent_provider,
-                    web_search_enabled=(
-                        _normalize_session_policy_bool(
-                            payload.get("web_search_enabled"),
-                            field_name="web_search_enabled",
-                        )
-                        if "web_search_enabled" in payload
-                        else False
-                    ),
-                    dotnet=bool(payload.get("dotnet", False)),
-                    nuget=bool(payload.get("nuget", False)),
-                    playwright=bool(payload.get("playwright", False)),
-                ),
-                *codex_skill_files,
-            ],
-        )
-        session_repository.upsert_session(manifest)
-        _sync_added_discord_session_cursors(
-            self.runtime,
-            previous_session=None,
-            updated_session=manifest,
-        )
-        session = session_repository.get_session(session_id)
-        return {
-            "success": True,
-            "agent_id": session_id,
-            "backend": "container_worker_vm",
-            "target_name": target_name,
-            "action": "create",
-            "message": f"Prepared container worker session {session_id}",
-            "status": "prepared",
-            "session_id": session_id,
-            "agent_home": session_record.agent_home_container_path,
-            "repo_root": session_record.repo_root_container_path,
-            "container_image": container_image_selection["image"],
-            "container_image_alias": container_image_selection["image_alias"],
-            "effective_tool_policy": self.effective_tool_policy_payload(session),
-        }
+        return self.vm_agent_admin.create_admin_agent(payload)
 
     def _resolve_container_agent_session(
-        self,
-        agent_id: str,
-        *,
-        require_session: bool,
+        self, agent_id: str, *, require_session: bool
     ) -> tuple[SessionManifest | None, Any | None]:
-        direct_session = self.runtime.session_repository.get_session(agent_id)
-        if direct_session is not None and self._is_container_session(direct_session):
-            return direct_session, None
-
-        repository = self._container_worker_execution_repository()
-        try:
-            record = repository.resolve(agent_id)
-        except ValueError as exc:
-            if str(exc).startswith("Ambiguous container worker session target"):
-                raise
-            record = None
-        if record is not None:
-            session = self.runtime.session_repository.get_session(record.session_id)
-            if session is None and require_session:
-                raise ValueError(f"Unknown session: {record.session_id}")
-            return session, record
-
-        matches = [
-            session
-            for session in self.runtime.session_repository.list_sessions()
-            if self._is_container_session(session)
-            and self._container_session_target_name(session) == agent_id
-        ]
-        if len(matches) == 1:
-            return matches[0], None
-        if len(matches) > 1:
-            session_ids = ", ".join(sorted(session.session_id for session in matches))
-            raise ValueError(
-                f"Container worker target {agent_id!r} is associated with multiple sessions: {session_ids}"
-            )
-        if require_session:
-            raise ValueError(f"Unknown container worker agent target: {agent_id}")
-        return None, None
+        return self.vm_agent_admin._resolve_container_agent_session(
+            agent_id, require_session=require_session
+        )
 
     def _container_execution_records_for_session(self, session_id: str) -> list[Any]:
-        repository = self._container_worker_execution_repository()
-        list_by_session = getattr(repository, "list_by_session", None)
-        if callable(list_by_session):
-            records = list_by_session(session_id)
-        else:
-            records = [
-                record
-                for record in repository.read_all().values()
-                if record.session_id == session_id
-            ]
-        return sorted(records, key=self._container_execution_sort_key)
+        return self.vm_agent_admin._container_execution_records_for_session(session_id)
 
     def _session_associated_agent_description(
-        self,
-        session_id: str,
-        session: SessionManifest,
+        self, session_id: str, session: SessionManifest
     ) -> str | None:
-        if self._is_container_session(session):
-            target_name = self._container_session_target_name(session)
-            return f"container worker agent {target_name!r}"
-        vm_name = str(session.vm_id or "").strip()
-        if vm_name:
-            return f"VM agent {vm_name!r}"
-        return None
+        return self.vm_agent_admin._session_associated_agent_description(session_id, session)
 
     def _delete_chat_assistant_session_mappings(self, session_ids: set[str]) -> int:
-        repository = JsonChatAssistantSessionRepository(
-            self.config.runtime_dir / "chat-assistant-session-mappings.json"
-        )
-        return repository.delete_mappings_for_sessions(session_ids)
+        return self.vm_agent_admin._delete_chat_assistant_session_mappings(session_ids)
 
     def _delete_detached_worker_session_state(self, session_id: str) -> tuple[bool, int]:
-        execution_records = self._container_execution_records_for_session(session_id)
-        if not execution_records:
-            return False, 0
-        latest_record = sorted(
-            execution_records,
-            key=self._container_execution_sort_key,
-            reverse=True,
-        )[0]
-        worker_backend = self._container_worker_backend(
-            directory_path=getattr(latest_record, "directory_path", None),
-            worker_url=self._container_worker_url_for_target(
-                record=latest_record,
-                records=execution_records,
-            ),
-        )
-        worker_session_deleted = self._worker_delete_session_removed(
-            worker_backend.delete_session(session_id)
-        )
-        container_repository = self._container_worker_execution_repository()
-        removed_mappings = 0
-        list_by_session = getattr(container_repository, "list_by_session", None)
-        if callable(list_by_session):
-            records = list_by_session(session_id)
-        else:
-            records = [
-                candidate
-                for candidate in container_repository.read_all().values()
-                if candidate.session_id == session_id
-            ]
-        for candidate in records:
-            container_repository.delete(candidate.execution_id)
-            removed_mappings += 1
-        return worker_session_deleted, removed_mappings
+        return self.vm_agent_admin._delete_detached_worker_session_state(session_id)
 
     @staticmethod
     def _worker_delete_session_removed(result: Any) -> bool:
-        if isinstance(result, Mapping) and "deleted" in result:
-            return bool(result["deleted"])
-        return bool(result)
+        return VmAgentAdminService._worker_delete_session_removed(result)
 
     def _resolve_vm_agent_session(self, agent_id: str) -> SessionManifest:
-        direct_session = self.runtime.session_repository.get_session(agent_id)
-        if direct_session is not None:
-            return direct_session
-        matches = self.runtime.session_repository.list_sessions_for_vm(agent_id)
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            session_ids = ", ".join(sorted(session.session_id for session in matches))
-            raise ValueError(f"VM {agent_id!r} is associated with multiple sessions: {session_ids}")
-        raise ValueError(f"No session is linked to VM agent target: {agent_id}")
+        return self.vm_agent_admin._resolve_vm_agent_session(agent_id)
 
     def _record_installed_codex_skills(self, session_id: str, skill_names: list[str]) -> None:
-        session = self.runtime.session_repository.get_session(session_id)
-        if session is None:
-            return
-        metadata = dict(session.metadata)
-        existing = metadata.get("codex_skills")
-        merged: list[str] = []
-        if isinstance(existing, list):
-            for item in existing:
-                if isinstance(item, str) and item.strip():
-                    merged.append(item)
-        merged.extend(skill_names)
-        metadata["codex_skills"] = normalize_skill_names(merged)
-        metadata["codex_skills_updated_at"] = datetime.now(UTC).isoformat()
-        self.runtime.session_repository.upsert_session(
-            session.model_copy(update={"metadata": metadata})
-        )
+        return self.vm_agent_admin._record_installed_codex_skills(session_id, skill_names)
 
     @staticmethod
     def _skill_install_files_for_codex_home(
         entries: list[SkillLibraryEntry], *, codex_home: str
     ) -> list[dict[str, Any]]:
-        normalized_home = str(codex_home or "").strip().rstrip("/")
-        if (
-            not normalized_home
-            or not normalized_home.startswith("/")
-            or "\n" in normalized_home
-            or "\x00" in normalized_home
-        ):
-            raise RuntimeError(f"Guest CODEX_HOME resolved to an invalid path: {codex_home!r}")
-        return [
-            {
-                "destination_path": f"{normalized_home}/skills/{entry.name}/SKILL.md",
-                "mode": "0644",
-                "content": entry.content,
-                "overwrite": True,
-            }
-            for entry in entries
-        ]
+        return VmAgentAdminService._skill_install_files_for_codex_home(
+            entries, codex_home=codex_home
+        )
 
     def _install_codex_skills_into_vm_agent(
-        self,
-        agent_id: str,
-        *,
-        skill_names: list[str],
-        vm_user: str,
+        self, agent_id: str, *, skill_names: list[str], vm_user: str
     ) -> dict[str, Any]:
-        session = self._resolve_vm_agent_session(agent_id)
-        target = session.session_id
-        target_name = str(session.vm_id or agent_id).strip()
-        if not target_name:
-            raise ValueError(f"Session {session.session_id!r} is not linked to a VM")
-        entries = [self.skill_library.get_skill(name) for name in skill_names]
-        codex_home_result = self.vm_exec(
-            target,
-            command='printf "%s" "${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
-            vm_user=vm_user,
-            timeout_seconds=30,
-            check=True,
+        return self.vm_agent_admin._install_codex_skills_into_vm_agent(
+            agent_id, skill_names=skill_names, vm_user=vm_user
         )
-        if not bool(codex_home_result.get("success")):
-            message = str(codex_home_result.get("message") or "Failed to resolve guest CODEX_HOME")
-            raise RuntimeError(message)
-        codex_home = str(codex_home_result.get("stdout") or "").strip()
-        files = self._skill_install_files_for_codex_home(entries, codex_home=codex_home)
-        result = self.vm_copy_files(target, files=files, vm_user=vm_user)
-        if not bool(result.get("success")):
-            message = str(result.get("message") or "Failed to copy Codex skills")
-            raise RuntimeError(message)
-        copied_paths = list(result.get("copied_paths") or [])
-        self._record_installed_codex_skills(session.session_id, skill_names)
-        return {
-            "success": True,
-            "agent_id": agent_id,
-            "backend": "libvirt_vm",
-            "target_name": target_name,
-            "action": "install-skills",
-            "message": (
-                f"Installed {len(skill_names)} Codex skill"
-                f"{'' if len(skill_names) == 1 else 's'} into session "
-                f"{session.session_id}: "
-                f"{', '.join(skill_names)}"
-            ),
-            "status": "updated",
-            "session_id": session.session_id,
-            "copied_count": len(copied_paths),
-            "copied_paths": copied_paths,
-            "codex_skills": list(skill_names),
-        }
 
     def _install_codex_skills_into_container_agent(
-        self,
-        agent_id: str,
-        *,
-        skill_names: list[str],
+        self, agent_id: str, *, skill_names: list[str]
     ) -> dict[str, Any]:
-        session, record = self._resolve_container_agent_session(agent_id, require_session=True)
-        if session is None:
-            raise ValueError(f"Unknown container worker agent target: {agent_id}")
-        execution_records = self._container_execution_records_for_session(session.session_id)
-        worker_backend = self._container_worker_backend(
-            directory_path=session.directory_path,
-            worker_url=self._container_worker_url_for_target(
-                session=session,
-                record=record,
-                records=execution_records,
-            ),
+        return self.vm_agent_admin._install_codex_skills_into_container_agent(
+            agent_id, skill_names=skill_names
         )
-        files = self.resolve_container_codex_skill_files(skill_names)
-        result = worker_backend.write_files(session_id=session.session_id, files=files)
-        copied_paths = list(getattr(result, "copied_paths", []) or [])
-        self._record_installed_codex_skills(session.session_id, skill_names)
-        return {
-            "success": True,
-            "agent_id": agent_id,
-            "backend": "container_worker_vm",
-            "target_name": self._container_session_target_name(session),
-            "action": "install-skills",
-            "message": (
-                f"Installed {len(skill_names)} Codex skill"
-                f"{'' if len(skill_names) == 1 else 's'} into session "
-                f"{session.session_id}: "
-                f"{', '.join(skill_names)}"
-            ),
-            "status": "updated",
-            "session_id": session.session_id,
-            "copied_count": int(getattr(result, "copied_count", len(copied_paths)) or 0),
-            "copied_paths": copied_paths,
-            "codex_skills": list(skill_names),
-        }
 
     def install_admin_agent_skills(
         self,
@@ -11792,276 +6713,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         skill_names: list[str] | tuple[str, ...] | None = None,
         vm_user: str = "agent",
     ) -> dict[str, Any]:
-        names = self.validate_managed_codex_skills(skill_names)
-        if not names:
-            raise ValueError("codex_skills must contain at least one skill")
-        selected_backend = self._normalize_agent_backend(backend)
-        if selected_backend == "libvirt_vm":
-            return self._install_codex_skills_into_vm_agent(
-                agent_id,
-                skill_names=names,
-                vm_user=vm_user,
-            )
-        return self._install_codex_skills_into_container_agent(agent_id, skill_names=names)
+        return self.vm_agent_admin.install_admin_agent_skills(
+            agent_id, backend=backend, skill_names=skill_names, vm_user=vm_user
+        )
 
     def update_admin_agent(
-        self,
-        agent_id: str,
-        *,
-        backend: str | None = None,
-        payload: Mapping[str, Any] | None = None,
+        self, agent_id: str, *, backend: str | None = None, payload: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
-        selected_backend = self._normalize_agent_backend(backend)
-        body = dict(payload or {})
-        allowed_fields = {
-            "model",
-            "ttl_hours",
-            "allowed_tools",
-            "approval_required_tools",
-            "approval_tool_settings",
-            "approval_notification_target_ids",
-            "tool_argument_policies",
-            "allowed_script_names",
-            "allowed_contact_ids",
-            "discord_channels",
-            "discord_channel_allowlist",
-            "teams_channels",
-            "teams_channel_allowlist",
-            "teams_chat_allowlist",
-            "teams_user_allowlist",
-            "metadata",
-            "web_search_enabled",
-            "email_mailboxes",
-            "email_folders",
-            "labels",
-            *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
-        }
-        unsupported = sorted(set(body) - allowed_fields)
-        if unsupported:
-            raise ValueError("Unsupported agent policy fields: " + ", ".join(unsupported))
-        session: SessionManifest | None
-        if selected_backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(agent_id, require_session=True)
-            del record
-            target_name = self._container_session_target_name(session)
-        else:
-            session = self._resolve_vm_agent_session(agent_id)
-            target_name = str(session.vm_id or agent_id)
+        return self.vm_agent_admin.update_admin_agent(agent_id, backend=backend, payload=payload)
 
-        update: dict[str, Any] = {}
-        if "model" in body:
-            update["model"] = self._agent_optional_string(body, "model")
-        if "ttl_hours" in body:
-            ttl_hours = self._agent_int_or_none(body, "ttl_hours")
-            if ttl_hours is None:
-                raise ValueError("ttl_hours must be an integer when supplied")
-            update["expires_at"] = _utc_now() + timedelta(hours=ttl_hours)
-        if "allowed_tools" in body:
-            update["allowed_tools"] = _normalize_allowed_tools(
-                self._agent_string_list(body, "allowed_tools") or []
-            )
-        session_policy_fields = {
-            key: body[key]
-            for key in (
-                "approval_required_tools",
-                "approval_tool_settings",
-                "approval_notification_target_ids",
-                "tool_argument_policies",
-                "allowed_script_names",
-                "allowed_contact_ids",
-                "discord_channels",
-                "discord_channel_allowlist",
-                "teams_channels",
-                "teams_channel_allowlist",
-                "teams_chat_allowlist",
-                "teams_user_allowlist",
-                "metadata",
-                "web_search_enabled",
-                *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
-            )
-            if key in body
-        }
-        if session_policy_fields:
-            contacts_config = None
-            if "allowed_contact_ids" in session_policy_fields:
-                contacts_config = self.runtime.provider_config.resolve_contacts_for_session_id(
-                    session.session_id
-                )
-            update.update(
-                _session_policy_update_from_payload(
-                    session,
-                    session_policy_fields,
-                    contacts_config=contacts_config,
-                )
-            )
-        if "approval_notification_target_ids" in update:
-            update["approval_notification_target_ids"] = (
-                _resolve_session_approval_notification_target_ids(
-                    self.runtime,
-                    self.config,
-                    session,
-                    update["approval_notification_target_ids"],
-                )
-            )
-        if "email_mailboxes" in body:
-            update["email_mailbox_allowlist"] = (
-                self._agent_string_list(body, "email_mailboxes") or []
-            )
-        if "email_folders" in body:
-            update["email_folder_allowlist"] = self._agent_string_list(body, "email_folders") or []
-        if "labels" in body:
-            metadata = dict(update["metadata"] if "metadata" in update else session.metadata)
-            labels = _normalize_session_labels(body.get("labels"))
-            if labels:
-                metadata["labels"] = labels
-            else:
-                metadata.pop("labels", None)
-            update["metadata"] = metadata
-
-        updated = session.model_copy(update=update)
-        self.runtime.session_repository.upsert_session(updated)
-        _sync_added_discord_session_cursors(
-            self.runtime,
-            previous_session=session,
-            updated_session=updated,
-        )
-        return {
-            "success": True,
-            "agent_id": agent_id,
-            "backend": selected_backend,
-            "target_name": target_name,
-            "action": "edit",
-            "message": f"Updated policy for session {updated.session_id}",
-            "status": "updated",
-            "session_id": updated.session_id,
-            "effective_tool_policy": self.effective_tool_policy_payload(updated),
-        }
-
-    def delete_admin_agent(
-        self,
-        agent_id: str,
-        *,
-        backend: str | None = None,
-    ) -> dict[str, Any]:
-        selected_backend = self._normalize_agent_backend(backend)
-        if selected_backend == "libvirt_vm":
-            direct_session = self.runtime.session_repository.get_session(agent_id)
-            if direct_session is not None:
-                vm_name = str(direct_session.vm_id or "").strip()
-                if not vm_name:
-                    raise ValueError(f"Session {agent_id!r} is not linked to a VM")
-            else:
-                vm_name = agent_id
-                matches = self.runtime.session_repository.list_sessions_for_vm(vm_name)
-                if len(matches) > 1:
-                    session_ids = ", ".join(sorted(session.session_id for session in matches))
-                    raise ValueError(
-                        f"Refusing to delete VM {vm_name!r}: multiple linked sessions "
-                        f"({session_ids}). Delete is only allowed when the VM-to-session link is unambiguous."
-                    )
-            matches = self.runtime.session_repository.list_sessions_for_vm(vm_name)
-            if len(matches) > 1:
-                session_ids = ", ".join(sorted(session.session_id for session in matches))
-                raise ValueError(
-                    f"Refusing to delete VM {vm_name!r}: multiple linked sessions "
-                    f"({session_ids}). Delete is only allowed when the VM-to-session link is unambiguous."
-                )
-            session_ids_to_delete = {session.session_id for session in matches}
-            result = self.destroy_vm(vm_name)
-            removed_assistant_mappings = (
-                self._delete_chat_assistant_session_mappings(session_ids_to_delete)
-                if result.success
-                else 0
-            )
-            message = result.message
-            if removed_assistant_mappings:
-                message = f"{message} removed_assistant_mappings={removed_assistant_mappings}"
-            return {
-                "success": result.success,
-                "agent_id": vm_name,
-                "backend": "libvirt_vm",
-                "target_name": vm_name,
-                "action": "delete",
-                "message": message,
-                "status": "deleted" if result.success else "failed",
-                "session_id": matches[0].session_id if len(matches) == 1 else None,
-            }
-
-        session, record = self._resolve_container_agent_session(agent_id, require_session=False)
-        session_id = (
-            str(getattr(session, "session_id", "") or "").strip()
-            if session is not None
-            else str(getattr(record, "session_id", "") or "").strip()
-        )
-        if not session_id:
-            raise ValueError(f"Unknown container worker agent target: {agent_id}")
-        target_name = (
-            self._container_session_target_name(session)
-            if session is not None
-            else str(getattr(record, "target_name", "") or agent_id)
-        )
-        execution_records = self._container_execution_records_for_session(session_id)
-        worker_backend = self._container_worker_backend(
-            directory_path=(
-                session.directory_path
-                if session is not None
-                else getattr(record, "directory_path", None)
-            ),
-            worker_url=self._container_worker_url_for_target(
-                session=session,
-                record=record,
-                records=execution_records,
-            ),
-        )
-        if record is not None:
-            worker_backend.destroy(record.execution_id)
-        worker_session_deleted = worker_backend.delete_session(session_id)
-        worker_session_removed = self._worker_delete_session_removed(worker_session_deleted)
-        container_repository = self._container_worker_execution_repository()
-        removed_mappings = 0
-        list_by_session = getattr(container_repository, "list_by_session", None)
-        if callable(list_by_session):
-            records = list_by_session(session_id)
-        else:
-            records = [
-                candidate
-                for candidate in container_repository.read_all().values()
-                if candidate.session_id == session_id
-            ]
-        for candidate in records:
-            container_repository.delete(candidate.execution_id)
-            removed_mappings += 1
-        removed_session = self.runtime.session_repository.delete_session(session_id)
-        removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
-        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
-        removed_pr_map_entries, removed_streams = _prune_pr_map(
-            self.config.pr_map_path,
-            session_ids={session_id},
-        )
-        removed_cursors, removed_feedback = _prune_pr_feedback_store(
-            self.config.runtime_dir / "pr-feedback-store.json",
-            streams=removed_streams,
-        )
-        return {
-            "success": True,
-            "agent_id": agent_id,
-            "backend": "container_worker_vm",
-            "target_name": target_name,
-            "action": "delete",
-            "message": (
-                f"Deleted container worker session {session_id}; "
-                f"removed_mappings={removed_mappings} "
-                f"removed_session={int(removed_session)} "
-                f"removed_assistant_mappings={removed_assistant_mappings} "
-                f"removed_approvals={removed_approvals} "
-                f"removed_pr_map_entries={removed_pr_map_entries} "
-                f"removed_feedback_cursors={removed_cursors} "
-                f"removed_feedback_items={removed_feedback} "
-                f"worker_session_deleted={int(worker_session_removed)}"
-            ),
-            "status": "deleted",
-            "session_id": session_id,
-        }
+    def delete_admin_agent(self, agent_id: str, *, backend: str | None = None) -> dict[str, Any]:
+        return self.vm_agent_admin.delete_admin_agent(agent_id, backend=backend)
 
     def get_admin_agent_log_snapshot(
         self,
@@ -12073,358 +6735,56 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> str:
-        _ = self._normalize_agent_log_view(view)
-        selected_backend = str(backend or "libvirt_vm").strip()
-        if selected_backend in {"libvirt", "libvirt_vm"}:
-            return self.get_agent_log_snapshot(
-                agent_id,
-                lines=lines,
-                repo_name=repo_name,
-                vm_user=vm_user,
-            )
-        if selected_backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(agent_id, require_session=False)
-            session_id = (
-                str(session.session_id).strip()
-                if session is not None
-                else str(getattr(record, "session_id", "") or "").strip()
-            )
-            execution_records = (
-                self._container_execution_records_for_session(session_id) if session_id else []
-            )
-            worker_backend = self._container_worker_backend(
-                directory_path=(
-                    session.directory_path
-                    if session is not None
-                    else getattr(record, "directory_path", None)
-                ),
-                worker_url=self._container_worker_url_for_target(
-                    session=session,
-                    record=record,
-                    records=execution_records,
-                ),
-            )
-            if session is None or record is not None:
-                try:
-                    worker_backend.inspect(agent_id)
-                except Exception:
-                    pass
-                return worker_backend.get_log_snapshot(agent_id, lines=lines, mode="execution")
-            if not execution_records:
-                return f"No container executions have run for session {session_id}.\n"
-            if self._normalize_agent_log_view(view) == "threads":
-                return self._join_container_log_chunks(
-                    self._container_thread_log_chunks(
-                        worker_backend,
-                        execution_records,
-                        lines=lines,
-                    )
-                )
-            per_execution_lines = lines
-            if lines > 0:
-                per_execution_lines = max(1, lines // max(1, len(execution_records)))
-            chunks: list[str] = []
-            for execution in execution_records:
-                header_parts = [
-                    f"execution={execution.execution_id}",
-                    f"status={self._container_execution_status(execution)}",
-                    f"worker_job={execution.worker_job_id}",
-                    "log=execution",
-                ]
-                if execution.started_at is not None:
-                    header_parts.append(f"started={execution.started_at.isoformat()}")
-                if execution.finished_at is not None:
-                    header_parts.append(f"finished={execution.finished_at.isoformat()}")
-                try:
-                    text = worker_backend.get_log_snapshot(
-                        execution.execution_id,
-                        lines=per_execution_lines,
-                        mode="execution",
-                    ).rstrip()
-                except Exception as exc:
-                    text = f"[log unavailable: {exc}]"
-                chunks.append("=== " + " ".join(header_parts) + " ===\n" + text)
-            return "\n\n".join(chunks).rstrip() + "\n"
-        raise ValueError(f"Unknown agent backend: {selected_backend}")
+        return self.vm_agent_admin.get_admin_agent_log_snapshot(
+            agent_id, backend=backend, view=view, lines=lines, repo_name=repo_name, vm_user=vm_user
+        )
 
     def _container_execution_log_chunk(
-        self,
-        worker_backend: Any,
-        execution: Any,
-        *,
-        lines: int,
-        mode: str,
+        self, worker_backend: Any, execution: Any, *, lines: int, mode: str
     ) -> str:
-        header_parts = [
-            f"execution={execution.execution_id}",
-            f"status={self._container_execution_status(execution)}",
-            f"worker_job={execution.worker_job_id}",
-            f"log={mode}",
-        ]
-        if execution.started_at is not None:
-            header_parts.append(f"started={execution.started_at.isoformat()}")
-        if execution.finished_at is not None:
-            header_parts.append(f"finished={execution.finished_at.isoformat()}")
-        try:
-            text = worker_backend.get_log_snapshot(
-                execution.execution_id,
-                lines=lines,
-                mode=mode,
-            ).rstrip()
-        except Exception as exc:
-            text = f"[log unavailable: {exc}]"
-        header = "=== " + " ".join(header_parts) + " ==="
-        return header if not text else header + "\n" + text
+        return self.vm_agent_admin._container_execution_log_chunk(
+            worker_backend, execution, lines=lines, mode=mode
+        )
 
     @staticmethod
     def _join_container_log_chunks(chunks: list[str]) -> str:
-        return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
+        return VmAgentAdminService._join_container_log_chunks(chunks)
 
     def _container_thread_execution_fallback_log(
-        self,
-        worker_backend: Any,
-        records: list[Any],
-        *,
-        lines: int,
+        self, worker_backend: Any, records: list[Any], *, lines: int
     ) -> str:
-        ordered_records = sorted(records, key=self._container_execution_sort_key)
-        per_execution_lines = lines
-        if lines > 0 and len(ordered_records) > 1:
-            per_execution_lines = max(1, lines // len(ordered_records))
-        chunks: list[str] = []
-        for execution in ordered_records:
-            try:
-                text = worker_backend.get_log_snapshot(
-                    execution.execution_id,
-                    lines=per_execution_lines,
-                    mode="execution",
-                )
-            except Exception as exc:
-                text = f"[log unavailable: {exc}]"
-            body = self._container_log_without_session_id_lines(text).rstrip()
-            if body:
-                chunks.append(body)
-        return self._join_container_log_chunks(chunks).rstrip()
+        return self.vm_agent_admin._container_thread_execution_fallback_log(
+            worker_backend, records, lines=lines
+        )
 
     def _container_thread_transcript(
-        self,
-        worker_backend: Any,
-        records: list[Any],
-        *,
-        lines: int,
+        self, worker_backend: Any, records: list[Any], *, lines: int
     ) -> str:
-        first_execution = records[0]
-        session_error: Exception | None = None
-        try:
-            transcript = worker_backend.get_log_snapshot(
-                first_execution.execution_id,
-                lines=lines,
-                mode="session",
-            ).rstrip()
-        except Exception as exc:
-            session_error = exc
-            transcript = ""
-        if transcript:
-            return transcript
-        fallback = self._container_thread_execution_fallback_log(
-            worker_backend,
-            records,
-            lines=lines,
-        ).rstrip()
-        if fallback:
-            return fallback
-        if session_error is not None:
-            return f"[log unavailable: {session_error}]"
-        return ""
+        return self.vm_agent_admin._container_thread_transcript(
+            worker_backend, records, lines=lines
+        )
 
     def _container_execution_thread_probe_text(self, worker_backend: Any, execution: Any) -> str:
-        page_reader = getattr(worker_backend, "get_log_page", None)
-        if callable(page_reader):
-            try:
-                page = page_reader(
-                    execution.execution_id,
-                    limit=1,
-                    offset=0,
-                    query="session id:",
-                    mode="raw",
-                )
-                text = str(page.get("text") or "")
-                if text:
-                    return text
-            except Exception:
-                pass
-        try:
-            return str(
-                worker_backend.get_log_snapshot(
-                    execution.execution_id,
-                    lines=0,
-                    mode="raw",
-                )
-            )
-        except Exception as exc:
-            return f"[log unavailable: {exc}]"
+        return self.vm_agent_admin._container_execution_thread_probe_text(worker_backend, execution)
 
     def _container_thread_log_chunks(
-        self,
-        worker_backend: Any,
-        execution_records: list[Any],
-        *,
-        lines: int,
+        self, worker_backend: Any, execution_records: list[Any], *, lines: int
     ) -> list[str]:
-        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        grouped_records: dict[str, list[Any]] = {}
-        unthreaded_chunks: list[tuple[tuple[datetime, str], str]] = []
-        for execution in sorted_records:
-            raw_text = ""
-            thread_id = self._container_execution_stored_thread_id(execution)
-            if thread_id is None:
-                try:
-                    raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
-                except Exception as exc:
-                    raw_text = f"[log unavailable: {exc}]"
-                thread_id = self._container_log_thread_id(raw_text)
-            if thread_id is None:
-                header_parts = [
-                    "thread=unthreaded",
-                    f"first_execution={execution.execution_id}",
-                    "executions=1",
-                ]
-                if execution.started_at is not None:
-                    header_parts.append(f"started={execution.started_at.isoformat()}")
-                header = "=== " + " ".join(header_parts) + " ==="
-                body = raw_text.rstrip()
-                unthreaded_chunks.append(
-                    (
-                        self._container_execution_sort_key(execution),
-                        header if not body else header + "\n" + body,
-                    )
-                )
-                continue
-            grouped_records.setdefault(thread_id, []).append(execution)
-
-        threaded_chunks: list[tuple[tuple[datetime, str], str]] = []
-        for thread_id, records in grouped_records.items():
-            ordered_records = sorted(records, key=self._container_execution_sort_key)
-            first_execution = ordered_records[0]
-            header_parts = [
-                f"thread={thread_id}",
-                f"first_execution={first_execution.execution_id}",
-                f"executions={len(ordered_records)}",
-            ]
-            if first_execution.started_at is not None:
-                header_parts.append(f"started={first_execution.started_at.isoformat()}")
-            header = "=== " + " ".join(header_parts) + " ==="
-            transcript = self._container_thread_transcript(
-                worker_backend,
-                ordered_records,
-                lines=lines,
-            )
-            threaded_chunks.append(
-                (
-                    self._container_execution_sort_key(first_execution),
-                    header if not transcript else header + "\n" + transcript,
-                )
-            )
-
-        return [
-            chunk
-            for _, chunk in sorted(
-                [*threaded_chunks, *unthreaded_chunks],
-                key=lambda item: item[0],
-            )
-        ]
+        return self.vm_agent_admin._container_thread_log_chunks(
+            worker_backend, execution_records, lines=lines
+        )
 
     def _container_thread_groups(
-        self,
-        worker_backend: Any,
-        execution_records: list[Any],
+        self, worker_backend: Any, execution_records: list[Any]
     ) -> list[tuple[tuple[datetime, str], str | None, list[Any], str | None]]:
-        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        grouped_records: dict[str, list[Any]] = {}
-        unthreaded_groups: list[tuple[tuple[datetime, str], str | None, list[Any], str | None]] = []
-        for execution in sorted_records:
-            raw_text = None
-            thread_id = self._container_execution_stored_thread_id(execution)
-            if thread_id is None:
-                raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
-                thread_id = self._container_log_thread_id(raw_text)
-            if thread_id is None:
-                unthreaded_groups.append(
-                    (
-                        self._container_execution_sort_key(execution),
-                        None,
-                        [execution],
-                        raw_text,
-                    )
-                )
-                continue
-            grouped_records.setdefault(thread_id, []).append(execution)
-
-        threaded_groups: list[tuple[tuple[datetime, str], str | None, list[Any], str | None]] = []
-        for thread_id, records in grouped_records.items():
-            ordered_records = sorted(records, key=self._container_execution_sort_key)
-            threaded_groups.append(
-                (
-                    self._container_execution_sort_key(ordered_records[0]),
-                    thread_id,
-                    ordered_records,
-                    None,
-                )
-            )
-        return sorted([*threaded_groups, *unthreaded_groups], key=lambda item: item[0])
+        return self.vm_agent_admin._container_thread_groups(worker_backend, execution_records)
 
     def _container_thread_window_chunks(
-        self,
-        worker_backend: Any,
-        execution_records: list[Any],
-        *,
-        target_lines: int,
+        self, worker_backend: Any, execution_records: list[Any], *, target_lines: int
     ) -> tuple[list[str], bool]:
-        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        chunks: list[str] = []
-        grouped_records: dict[str, list[Any]] = {}
-        thread_chunk_indexes: dict[str, int] = {}
-        dirty_thread_ids: set[str] = set()
-        line_count = 0
-        truncated_after = False
-        for index, execution in enumerate(sorted_records):
-            raw_text = None
-            thread_id = self._container_execution_stored_thread_id(execution)
-            if thread_id is None:
-                raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
-                thread_id = self._container_log_thread_id(raw_text)
-            if thread_id is not None:
-                records = grouped_records.setdefault(thread_id, [])
-                records.append(execution)
-                chunk_index = thread_chunk_indexes.get(thread_id)
-                if chunk_index is not None:
-                    dirty_thread_ids.add(thread_id)
-                    continue
-                thread_chunk_indexes[thread_id] = len(chunks)
-            else:
-                records = [execution]
-            chunk = self._container_thread_group_chunk(
-                worker_backend,
-                thread_id=thread_id,
-                records=records,
-                raw_text=raw_text,
-            )
-            chunks.append(chunk)
-            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-            if line_count >= target_lines:
-                truncated_after = index < len(sorted_records) - 1
-                break
-        for thread_id in dirty_thread_ids:
-            chunk_index = thread_chunk_indexes.get(thread_id)
-            if chunk_index is None:
-                continue
-            chunks[chunk_index] = self._container_thread_group_chunk(
-                worker_backend,
-                thread_id=thread_id,
-                records=grouped_records[thread_id],
-                raw_text=None,
-            )
-        return chunks, truncated_after
+        return self.vm_agent_admin._container_thread_window_chunks(
+            worker_backend, execution_records, target_lines=target_lines
+        )
 
     def _container_thread_group_chunk(
         self,
@@ -12434,24 +6794,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         records: list[Any],
         raw_text: str | None,
     ) -> str:
-        first_execution = records[0]
-        header_parts = [
-            f"thread={thread_id or 'unthreaded'}",
-            f"first_execution={first_execution.execution_id}",
-            f"executions={len(records)}",
-        ]
-        if first_execution.started_at is not None:
-            header_parts.append(f"started={first_execution.started_at.isoformat()}")
-        header = "=== " + " ".join(header_parts) + " ==="
-        if thread_id is None:
-            body = str(raw_text or "").rstrip()
-            return header if not body else header + "\n" + body
-        transcript = self._container_thread_transcript(
-            worker_backend,
-            records,
-            lines=0,
+        return self.vm_agent_admin._container_thread_group_chunk(
+            worker_backend, thread_id=thread_id, records=records, raw_text=raw_text
         )
-        return header if not transcript else header + "\n" + transcript
 
     def _container_thread_log_page(
         self,
@@ -12463,53 +6808,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         offset: int,
         query: str | None,
     ) -> dict[str, object]:
-        if not execution_records:
-            return _log_page_from_start(
-                f"No container executions have run for session {session_id}.\n",
-                limit=limit,
-                offset=offset,
-                query=query,
-            )
-        normalized_query = str(query or "").strip()
-        chunks: list[str] = []
-        target_lines = max(1, int(limit)) + max(0, int(offset)) + 1
-        line_count = 0
-        truncated_after = False
-        if (
-            not normalized_query
-            and len(execution_records) > _CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT
-        ):
-            chunks, truncated_after = self._container_thread_window_chunks(
-                worker_backend,
-                execution_records,
-                target_lines=target_lines,
-            )
-        else:
-            groups = self._container_thread_groups(worker_backend, execution_records)
-            for index, (_sort_key, thread_id, records, raw_text) in enumerate(groups):
-                chunk = self._container_thread_group_chunk(
-                    worker_backend,
-                    thread_id=thread_id,
-                    records=records,
-                    raw_text=raw_text,
-                )
-                chunks.append(chunk)
-                if not normalized_query:
-                    line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-                    if line_count >= target_lines:
-                        truncated_after = index < len(groups) - 1
-                        break
-        page = _log_page_from_start(
-            self._join_container_log_chunks(chunks),
+        return self.vm_agent_admin._container_thread_log_page(
+            session_id=session_id,
+            execution_records=execution_records,
+            worker_backend=worker_backend,
             limit=limit,
             offset=offset,
-            query=normalized_query or None,
+            query=query,
         )
-        if truncated_after:
-            page["has_more_before"] = True
-            page["total_lines"] = None
-            page["end_line"] = None
-        return page
 
     def _container_execution_log_page(
         self,
@@ -12521,71 +6827,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         offset: int,
         query: str | None,
     ) -> dict[str, object]:
-        if not execution_records:
-            return _log_page_from_end(
-                f"No container executions have run for session {session_id}.\n",
-                limit=limit,
-                offset=offset,
-                query=query,
-            )
-
-        normalized_query = str(query or "").strip()
-        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
-        if not normalized_query and offset == 0:
-            page = _log_page_from_end(
-                self._container_execution_log_chunk(
-                    worker_backend,
-                    sorted_records[-1],
-                    lines=0,
-                    mode="execution",
-                ),
-                limit=limit,
-                offset=0,
-            )
-            if len(sorted_records) > 1:
-                page["has_more_before"] = True
-                page["total_lines"] = None
-                page["start_line"] = None
-                page["end_line"] = None
-            return page
-
-        chunks: list[str] = []
-        truncated_before = False
-        target_lines = max(1, limit) + max(0, offset) + 1
-        line_count = 0
-        records_to_read = (
-            list(enumerate(sorted_records))
-            if normalized_query
-            else list(reversed(list(enumerate(sorted_records))))
-        )
-        for _original_index, execution in records_to_read:
-            chunk = self._container_execution_log_chunk(
-                worker_backend,
-                execution,
-                lines=0,
-                mode="execution",
-            )
-            if normalized_query:
-                chunks.append(chunk)
-                continue
-            chunks.insert(0, chunk)
-            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-            if line_count >= target_lines:
-                truncated_before = _original_index > 0
-                break
-
-        page = _log_page_from_end(
-            self._join_container_log_chunks(chunks),
+        return self.vm_agent_admin._container_execution_log_page(
+            session_id=session_id,
+            execution_records=execution_records,
+            worker_backend=worker_backend,
             limit=limit,
             offset=offset,
-            query=normalized_query or None,
+            query=query,
         )
-        if truncated_before:
-            page["has_more_before"] = True
-            page["total_lines"] = None
-            page["start_line"] = None
-            page["end_line"] = None
-        return page
 
     def get_admin_agent_log_page(
         self,
@@ -12599,101 +6848,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> dict[str, object]:
-        normalized_limit = max(1, min(int(limit), 5000))
-        normalized_offset = max(0, int(offset))
-        normalized_query = str(query or "").strip()
-        normalized_view = self._normalize_agent_log_view(view)
-        selected_backend = str(backend or "libvirt_vm").strip()
-        if selected_backend in {"libvirt", "libvirt_vm"}:
-            window_lines = normalized_limit + normalized_offset
-            if normalized_query:
-                window_lines = max(window_lines, 5000)
-            text = self.get_agent_log_snapshot(
-                agent_id,
-                lines=window_lines,
-                repo_name=repo_name,
-                vm_user=vm_user,
-            )
-            page = _log_page_from_end(
-                text,
-                limit=normalized_limit,
-                offset=normalized_offset,
-                query=normalized_query or None,
-            )
-            if not normalized_query and page["returned_lines"] >= normalized_limit:
-                page["has_more_before"] = True
-                page["total_lines"] = None
-                page["start_line"] = None
-                page["end_line"] = None
-            page["view"] = normalized_view
-            return page
-        if selected_backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(agent_id, require_session=False)
-            session_id = (
-                str(session.session_id).strip()
-                if session is not None
-                else str(getattr(record, "session_id", "") or "").strip()
-            )
-            execution_records = (
-                self._container_execution_records_for_session(session_id) if session_id else []
-            )
-            worker_backend = self._container_worker_backend(
-                directory_path=(
-                    session.directory_path
-                    if session is not None
-                    else getattr(record, "directory_path", None)
-                ),
-                worker_url=self._container_worker_url_for_target(
-                    session=session,
-                    record=record,
-                    records=execution_records,
-                ),
-            )
-            target = agent_id
-            if session is not None and record is None:
-                if normalized_view == "threads":
-                    page = self._container_thread_log_page(
-                        session_id=session_id,
-                        execution_records=execution_records,
-                        worker_backend=worker_backend,
-                        limit=normalized_limit,
-                        offset=normalized_offset,
-                        query=normalized_query or None,
-                    )
-                else:
-                    page = self._container_execution_log_page(
-                        session_id=session_id,
-                        execution_records=execution_records,
-                        worker_backend=worker_backend,
-                        limit=normalized_limit,
-                        offset=normalized_offset,
-                        query=normalized_query or None,
-                    )
-                page["view"] = normalized_view
-                return page
-            page_reader = getattr(worker_backend, "get_log_page", None)
-            if callable(page_reader):
-                page = page_reader(
-                    target,
-                    limit=normalized_limit,
-                    offset=normalized_offset,
-                    query=normalized_query or None,
-                    mode="execution",
-                )
-                page["view"] = normalized_view
-                return page
-            text = worker_backend.get_log_snapshot(
-                target, lines=normalized_limit + normalized_offset, mode="execution"
-            )
-            page = _log_page_from_end(
-                text,
-                limit=normalized_limit,
-                offset=normalized_offset,
-                query=normalized_query or None,
-            )
-            page["view"] = normalized_view
-            return page
-        raise ValueError(f"Unknown agent backend: {selected_backend}")
+        return self.vm_agent_admin.get_admin_agent_log_page(
+            agent_id,
+            backend=backend,
+            view=view,
+            limit=limit,
+            offset=offset,
+            query=query,
+            repo_name=repo_name,
+            vm_user=vm_user,
+        )
 
     def run_admin_agent_action(
         self,
@@ -12703,272 +6867,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         backend: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        selected_backend = self._normalize_agent_backend(backend)
-        body = payload or {}
-        if selected_backend == "libvirt_vm":
-            if action == "start":
-                result = self.start_vm(agent_id)
-            elif action == "shutdown":
-                result = self.shutdown_vm(agent_id)
-            elif action == "enable-agent":
-                result = self.enable_agent(agent_id)
-            elif action == "disable-agent":
-                result = self.disable_agent(agent_id)
-            elif action == "kill-agent":
-                pid = body.get("pid")
-                if pid in {None, ""}:
-                    raise ValueError("kill-agent requires a running agent pid")
-                result = self.kill_agent(agent_id, int(pid))
-            elif action == "prompt-agent":
-                return self._prompt_admin_agent(agent_id, backend=selected_backend, payload=body)
-            elif action == "resume-agent":
-                prompt = str(body.get("prompt") or "").strip()
-                if not prompt:
-                    raise ValueError("resume-agent requires a non-empty prompt")
-                result = self.resume_agent(
-                    agent_id,
-                    prompt,
-                    model=str(body.get("model") or "").strip() or None,
-                    resume_mode=str(body.get("resume_mode") or "same_context").strip()
-                    or "same_context",
-                )
-            elif action == "install-skills":
-                return self.install_admin_agent_skills(
-                    agent_id,
-                    backend="libvirt_vm",
-                    skill_names=self._agent_string_list(body, "codex_skills"),
-                    vm_user=self._agent_optional_string(body, "vm_user") or "agent",
-                )
-            elif action == "destroy":
-                result = self.destroy_vm(agent_id)
-            else:
-                raise LookupError(f"Unknown VM agent action: {action}")
-            return {
-                "success": result.success,
-                "agent_id": result.vm_name,
-                "backend": "libvirt_vm",
-                "target_name": result.vm_name,
-                "action": result.action,
-                "message": result.message,
-                "provider": result.provider,
-                "provider_operation_id": result.provider_operation_id,
-                "thread_id": result.thread_id,
-                "target_dir": result.target_dir,
-                "guest_repo_name": result.guest_repo_name,
-                "remote_url": result.remote_url,
-            }
-        if selected_backend == "container_worker_vm":
-            if action == "install-skills":
-                return self.install_admin_agent_skills(
-                    agent_id,
-                    backend="container_worker_vm",
-                    skill_names=self._agent_string_list(body, "codex_skills"),
-                    vm_user=self._agent_optional_string(body, "vm_user") or "agent",
-                )
-            if action == "prompt-agent":
-                return self._prompt_admin_agent(
-                    agent_id,
-                    backend=selected_backend,
-                    payload=body,
-                )
-            session, record = self._resolve_container_agent_session(agent_id, require_session=False)
-            is_session_target = session is not None and record is None
-            session_id = (
-                str(session.session_id).strip()
-                if session is not None
-                else str(getattr(record, "session_id", "") or "").strip()
-            )
-            execution_records = (
-                self._container_execution_records_for_session(session_id) if session_id else []
-            )
-            worker_backend = self._container_worker_backend(
-                directory_path=(
-                    session.directory_path
-                    if session is not None
-                    else getattr(record, "directory_path", None)
-                ),
-                worker_url=self._container_worker_url_for_target(
-                    session=session,
-                    record=record,
-                    records=execution_records,
-                ),
-            )
-            if action == "stop":
-                if session is not None and record is None:
-                    active_records = [
-                        candidate
-                        for candidate in execution_records
-                        if self._agent_status_is_active(
-                            self._container_agent_status(candidate.last_status)
-                        )
-                    ]
-                    if not active_records:
-                        raise ValueError(
-                            f"No active container executions for session {session.session_id}"
-                        )
-                    statuses = [
-                        worker_backend.stop(candidate.execution_id) for candidate in active_records
-                    ]
-                    status = statuses[-1]
-                    message = (
-                        f"Stopped {len(statuses)} active container execution"
-                        f"{'' if len(statuses) == 1 else 's'} for session {session.session_id}"
-                    )
-                else:
-                    status = worker_backend.stop(agent_id)
-                    message = status.message or "stop completed"
-            elif action == "destroy":
-                if session is not None and record is None:
-                    if not execution_records:
-                        raise ValueError(
-                            f"No container executions for session {session.session_id}"
-                        )
-                    statuses = [
-                        worker_backend.destroy(candidate.execution_id)
-                        for candidate in execution_records
-                    ]
-                    status = statuses[-1]
-                    message = (
-                        f"Destroyed {len(statuses)} container execution"
-                        f"{'' if len(statuses) == 1 else 's'} for session {session.session_id}"
-                    )
-                else:
-                    status = worker_backend.destroy(agent_id)
-                    message = status.message or "destroy completed"
-            else:
-                raise LookupError(f"Unknown container worker agent action: {action}")
-            return {
-                "success": True,
-                "agent_id": session.session_id if is_session_target else status.execution_id,
-                "backend": "container_worker_vm",
-                "target_name": (
-                    self._container_session_target_name(session)
-                    if is_session_target
-                    else status.target_name
-                ),
-                "action": action,
-                "message": message,
-                "status": status.status.value,
-                "session_id": session.session_id if session is not None else status.session_id,
-            }
-        raise ValueError(f"Unknown agent backend: {selected_backend}")
-
-    def _prompt_admin_agent(
-        self,
-        agent_id: str,
-        *,
-        backend: str,
-        payload: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        prompt = self._agent_optional_string(payload, "prompt")
-        if not prompt:
-            raise ValueError("prompt-agent requires a non-empty prompt")
-        model = self._agent_optional_string(payload, "model")
-        dispatch_id = self._agent_optional_string(payload, "dispatch_id")
-        resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
-        resume_mode = self._agent_optional_string(payload, "resume_mode")
-        vm_user = self._agent_optional_string(payload, "vm_user") or "agent"
-
-        if backend == "libvirt_vm":
-            session = self._resolve_optional_vm_agent_session(agent_id)
-            session_id = session.session_id if session is not None else None
-            target_name = (
-                str((session.vm_id if session is not None else None) or agent_id).strip()
-                or agent_id
-            )
-            directory_path = (
-                str((session.directory_path if session is not None else None) or "root").strip()
-                or "root"
-            )
-            agent_response_id = target_name
-        elif backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(agent_id, require_session=True)
-            if session is None:
-                raise ValueError(f"Unknown container worker agent target: {agent_id}")
-            del record
-            session_id = session.session_id
-            target_name = self._container_session_target_name(session)
-            directory_path = (
-                str(getattr(session, "directory_path", None) or "root").strip() or "root"
-            )
-            agent_response_id = session_id
-        else:
-            raise ValueError(f"Unknown agent backend: {backend}")
-
-        target = session_id or target_name
-        effect_id = f"admin-agent-prompt:{backend}:{target}"
-        effect = AgentEnqueuePromptEffectDefinition(
-            id=effect_id,
-            display_name="Admin prompt agent",
-            type="effect:agent:enqueue-prompt",
-            target=target,
-            session_id=session_id,
-            vm_name=target_name,
-            prompt=prompt,
-            model=model,
-            resume_thread_id=resume_thread_id,
-            resume_mode=resume_mode,
-            dispatch_id=dispatch_id,
-            vm_user=vm_user,
-            queue_key=effect_id,
+        return self.vm_agent_admin.run_admin_agent_action(
+            agent_id, action, backend=backend, payload=payload
         )
-        provider = EffectProviderFactory(
-            provider_config_resolver=self.runtime.provider_config,
-            admin_service=self,
-        ).build(effect, directory_path=directory_path)
-        dispatch_started_at = datetime.now(UTC)
-        try:
-            result = provider.execute()
-        except RuntimeError as exc:
-            queued_result = self._queued_admin_prompt_result_after_dispatch_error(
-                queue_key=effect_id,
-                target_name=target_name,
-                session_id=session_id,
-                backend=backend,
-                attempted_at=dispatch_started_at,
-                error=exc,
-            )
-            if queued_result is None:
-                raise
-            result = queued_result
-        if (
-            backend == "container_worker_vm"
-            and not bool(result.get("queued"))
-            and str(result.get("output_mode") or "").strip() == "on_completion"
-        ):
-            self._record_direct_container_admin_prompt_execution(
-                effect_id=effect_id,
-                target=target,
-                target_name=target_name,
-                session_id=session_id,
-                prompt=prompt,
-                resume_thread_id=resume_thread_id,
-                vm_user=vm_user,
-                directory_path=directory_path,
-                result=result,
-            )
-        queued = bool(result.get("queued"))
-        message = str(result.get("message") or "").strip()
-        if not message:
-            message = (
-                f"Queued prompt for {target_name}"
-                if queued
-                else f"Dispatched prompt to {target_name}"
-            )
-        response = dict(result)
-        response.update(
-            {
-                "success": bool(result.get("success", True)),
-                "agent_id": agent_response_id,
-                "backend": backend,
-                "target_name": target_name,
-                "action": "prompt-agent",
-                "message": message,
-                "status": "queued" if queued else "dispatched",
-                "session_id": session_id,
-            }
-        )
-        return response
 
     def _queued_admin_prompt_result_after_dispatch_error(
         self,
@@ -12980,31 +6881,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         attempted_at: datetime,
         error: RuntimeError,
     ) -> dict[str, Any] | None:
-        from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-
-        queued = AgentPromptQueueStore(self.config.runtime_dir / "queued-agent-prompts.json").get(
-            queue_key
+        return self.vm_agent_admin._queued_admin_prompt_result_after_dispatch_error(
+            queue_key=queue_key,
+            target_name=target_name,
+            session_id=session_id,
+            backend=backend,
+            attempted_at=attempted_at,
+            error=error,
         )
-        if queued is None:
-            return None
-        queued_updated_at = queued.updated_at
-        if queued_updated_at.tzinfo is None:
-            queued_updated_at = queued_updated_at.replace(tzinfo=UTC)
-        if queued_updated_at < attempted_at - timedelta(seconds=1):
-            return None
-        queued_session_id = str(queued.session_id or "").strip() or session_id
-        queued_target_name = str(queued.vm_name or "").strip() or target_name
-        return {
-            "success": True,
-            "queued": True,
-            "queue_key": queued.queue_key,
-            "vm_name": queued_target_name,
-            "session_id": queued_session_id,
-            "coalesced_count": queued.coalesced_count,
-            "execution_backend": backend,
-            "message": f"Queued prompt for {queued_target_name}",
-            "dispatch_error": str(error),
-        }
 
     def _record_direct_container_admin_prompt_execution(
         self,
@@ -13019,100 +6903,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path: str,
         result: Mapping[str, Any],
     ) -> None:
-        dispatch_id = str(result.get("dispatch_id") or "").strip()
-        worker_execution_id = str(result.get("execution_id") or "").strip()
-        if not dispatch_id or not worker_execution_id or not session_id:
-            raise RuntimeError(
-                "prompt-agent container dispatch did not include execution tracking identifiers"
-            )
-
-        from agent_sandbox.daemons.effect_orchestrator import (
-            EffectExecutionRecord,
-            JsonExecutionStore,
-            SqliteExecutionStore,
-        )
-
-        event_id = f"admin-agent-prompt:{session_id}:{dispatch_id}"
-        idempotency_key = f"{event_id}::{effect_id}"
-        stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
-            execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
-        else:
-            execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
-        if execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
-            return
-
-        resolved_config = {
-            "target": target,
-            "vm_name": target_name,
-            "session_id": session_id,
-            "prompt": prompt,
-            "model": result.get("model"),
-            "vm_user": vm_user,
-            "resume_thread_id": resume_thread_id,
-            "directory_path": directory_path,
-            "execution_backend": "container_worker_vm",
-            "queue_key": effect_id,
-        }
-        input_payload = {
-            "target": target,
-            "vm_name": target_name,
-            "session_id": session_id,
-            "prompt": prompt,
-            "model": result.get("model"),
-            "vm_user": vm_user,
-            "resume_thread_id": resume_thread_id,
-            "queue_key": effect_id,
-        }
-        outputs = dict(result)
-        outputs.update(
-            {
-                "dispatch_id": dispatch_id,
-                "thread_id": str(result.get("thread_id") or resume_thread_id or dispatch_id),
-                "success": True,
-                "queued": False,
-                "output_mode": "on_completion",
-                "vm_name": target_name,
-                "session_id": session_id,
-                "execution_backend": "container_worker_vm",
-                "execution_id": worker_execution_id,
-                "queue_key": effect_id,
-            }
-        )
-        now = datetime.now(UTC)
-        execution_store.record_execution(
-            EffectExecutionRecord(
-                execution_id=(
-                    f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
-                ),
-                idempotency_key=idempotency_key,
-                event_id=event_id,
-                trace_id=f"admin-agent-prompt:{session_id}",
-                source_node_id=effect_id,
-                source_trigger_type="admin:agent:prompt",
-                effect_id=effect_id,
-                effect_type="effect:agent:enqueue-prompt",
-                status="waiting",
-                started_at=now,
-                finished_at=now,
-                resolved_config_hash=self._stable_json_revision(resolved_config),
-                resolved_config=resolved_config,
-                input_payload=input_payload,
-                outputs=outputs,
-            )
+        return self.vm_agent_admin._record_direct_container_admin_prompt_execution(
+            effect_id=effect_id,
+            target=target,
+            target_name=target_name,
+            session_id=session_id,
+            prompt=prompt,
+            resume_thread_id=resume_thread_id,
+            vm_user=vm_user,
+            directory_path=directory_path,
+            result=result,
         )
 
     def _resolve_optional_vm_agent_session(self, agent_id: str) -> SessionManifest | None:
-        direct_session = self.runtime.session_repository.get_session(agent_id)
-        if direct_session is not None:
-            return direct_session
-        matches = self.runtime.session_repository.list_sessions_for_vm(agent_id)
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            session_ids = ", ".join(sorted(session.session_id for session in matches))
-            raise ValueError(f"VM {agent_id!r} is associated with multiple sessions: {session_ids}")
-        return None
+        return self.vm_agent_admin._resolve_optional_vm_agent_session(agent_id)
 
     # Deprecated compatibility wrappers: new internal callers should depend on
     # operations_admin for background-worker operations.
@@ -13129,50 +6933,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return self.operations_admin.stop_background_worker(worker_id)
 
     def get_agent_log_snapshot(
-        self,
-        target: str,
-        *,
-        lines: int = 50,
-        repo_name: str | None = None,
-        vm_user: str = "agent",
+        self, target: str, *, lines: int = 50, repo_name: str | None = None, vm_user: str = "agent"
     ) -> str:
-        return self._execution_backend().get_log_snapshot(
-            target,
-            lines=lines,
-            repo_name=repo_name,
-            vm_user=vm_user,
+        return self.vm_agent_admin.get_agent_log_snapshot(
+            target, lines=lines, repo_name=repo_name, vm_user=vm_user
         )
 
     def start_vm(self, target: str) -> VmActionResult:
-        return self._execution_backend().start(target)
+        return self.vm_agent_admin.start_vm(target)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> VmActionResult:
-        return self._execution_backend().stop(target, timeout_seconds=timeout_seconds)
+        return self.vm_agent_admin.shutdown_vm(target, timeout_seconds=timeout_seconds)
 
     def _run_script(
         self, script_name: str, args: list[str], *, env: dict[str, str] | None = None
     ) -> VmActionResult:
-        script_path = Path(__file__).resolve().parents[3] / "scripts" / script_name
-        completed = _run_subprocess(
-            [str(script_path), *args], capture_output=True, text=True, env=env
-        )
-        vm_name = ""
-        if "--vm-name" in args:
-            try:
-                vm_name = args[args.index("--vm-name") + 1]
-            except IndexError:
-                vm_name = ""
-        elif len(args) > 1:
-            issue_target = args[1]
-            issue_number = _extract_issue_number(issue_target) or issue_target
-            vm_name = _resolve_vm_name(issue_number) if issue_number else ""
-        message = (completed.stdout or completed.stderr or "").strip()
-        return VmActionResult(
-            success=completed.returncode == 0,
-            vm_name=vm_name,
-            action=script_name.removesuffix(".sh"),
-            message=message or f"{script_name} exited with code {completed.returncode}",
-        )
+        return self.vm_agent_admin._run_script(script_name, args, env=env)
 
     # Deprecated compatibility wrappers: new internal callers should depend on
     # vm_agent_admin for VM and agent-control operations.
@@ -13198,43 +6974,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
-        container_session = None
-        runtime = getattr(self, "runtime", None)
-        if getattr(runtime, "session_repository", None) is not None:
-            try:
-                container_session, _container_record = self._resolve_container_agent_session(
-                    target,
-                    require_session=False,
-                )
-            except ValueError as exc:
-                if not str(exc).startswith("Ambiguous container worker session target"):
-                    container_session = None
-                else:
-                    raise
-        if container_session is not None and self._is_container_session(container_session):
-            response = self._prompt_admin_agent(
-                container_session.session_id,
-                backend="container_worker_vm",
-                payload={
-                    "prompt": prompt,
-                    "model": model,
-                    "vm_user": vm_user,
-                    "dispatch_id": dispatch_id,
-                    "resume_thread_id": resume_thread_id,
-                    "resume_mode": resume_mode,
-                },
-            )
-            return VmActionResult(
-                success=bool(response.get("success", True)),
-                vm_name=str(
-                    response.get("target_name")
-                    or self._container_session_target_name(container_session)
-                ),
-                action=str(response.get("action") or "resume_issue_agent"),
-                message=str(response.get("message") or ""),
-                provider="container_worker_vm",
-                thread_id=str(response.get("thread_id") or "") or None,
-            )
         return self.vm_agent_admin.resume_agent(
             target,
             prompt,
@@ -13256,79 +6995,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         session_id: str | None,
         directory_path: str | None,
     ) -> None:
-        watcher_cmd = [
-            sys.executable,
-            "-m",
-            "agent_sandbox.daemons.agent_completion_watcher",
-            "--runtime-dir",
-            str(self.config.runtime_dir),
-            "--vm-name",
-            vm_name,
-            "--dispatch-id",
-            dispatch_id,
-            "--vm-user",
-            vm_user,
-            "--poll-interval-seconds",
-            "1.0",
-            "--timeout-seconds",
-            "172800",
-        ]
-        trigger_worker_config = self._read_worker_global_config("trigger-orchestrator").config
-        workflow_runtime_dir = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=trigger_worker_config.get("runtime_dir"),
-            fallback=self.config.runtime_dir,
-        )
-        event_queue_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=trigger_worker_config.get("event_queue_store_path"),
-            fallback=workflow_runtime_dir / "trigger-orchestrator-events.json",
-        )
-        workflow_event_journal = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=trigger_worker_config.get("workflow_event_journal_path"),
-            fallback=workflow_event_journal_path(workflow_runtime_dir),
-        )
-        effect_lock_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=trigger_worker_config.get("effect_lock_path"),
-            fallback=workflow_runtime_dir / "effect-orchestrator.lock",
-        )
-        orchestration_backend = (
-            str(trigger_worker_config.get("orchestration_store_backend") or "sqlite")
-            .strip()
-            .lower()
-        )
-        if orchestration_backend not in {"sqlite", "json"}:
-            orchestration_backend = "sqlite"
-        orchestration_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=trigger_worker_config.get("orchestration_store_path"),
-            fallback=workflow_runtime_dir / "orchestration.db",
-        )
-        orchestration_retention_days = trigger_worker_config.get("orchestration_retention_days")
-        watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
-        watcher_cmd.extend(["--workflow-event-journal-path", str(workflow_event_journal)])
-        watcher_cmd.extend(["--effect-lock-path", str(effect_lock_path)])
-        watcher_cmd.extend(["--orchestration-store-backend", orchestration_backend])
-        watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
-        if orchestration_retention_days is not None:
-            watcher_cmd.extend(
-                ["--orchestration-retention-days", str(orchestration_retention_days)]
-            )
-        if session_id:
-            watcher_cmd.extend(["--session-id", session_id])
-        if directory_path:
-            watcher_cmd.extend(["--directory-path", directory_path])
-        subprocess.Popen(
-            watcher_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=str(self.project_dir),
-            env=os.environ.copy(),
-            text=True,
+        return self.vm_agent_admin._spawn_agent_completion_watcher(
+            vm_name=vm_name,
+            dispatch_id=dispatch_id,
+            vm_user=vm_user,
+            session_id=session_id,
+            directory_path=directory_path,
         )
 
     def vm_exec(
@@ -13355,11 +7027,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def vm_copy_files(
-        self,
-        target: str,
-        *,
-        files: list[dict[str, Any]],
-        vm_user: str = "agent",
+        self, target: str, *, files: list[dict[str, Any]], vm_user: str = "agent"
     ) -> dict[str, Any]:
         return self.vm_agent_admin.vm_copy_files(target, files=files, vm_user=vm_user)
 
@@ -13373,11 +7041,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         missing_ok: bool = True,
     ) -> dict[str, Any]:
         return self.vm_agent_admin.vm_delete_files(
-            target,
-            paths=paths,
-            vm_user=vm_user,
-            recursive=recursive,
-            missing_ok=missing_ok,
+            target, paths=paths, vm_user=vm_user, recursive=recursive, missing_ok=missing_ok
         )
 
     # Deprecated compatibility wrappers: new internal callers should depend on
@@ -13495,78 +7159,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         bare_repo_name: str | None = None,
         directory_path: str = "root",
     ) -> dict[str, Any]:
-        normalized_source = str(repo_source or "").strip()
-        if not normalized_source:
-            raise ValueError("repo_source is required")
-        normalized_directory = self.vm_agent_support.normalize_directory_path(directory_path)
-        issue_setup = self.vm_agent_support.resolve_issue_setup(
-            normalized_directory,
-            root_dir=self.project_dir,
+        return self.issue_git_admin.import_git_repo(
+            repo_source=repo_source,
+            bare_repo_name=bare_repo_name,
+            directory_path=directory_path,
         )
-        resolved_repo_path, resolved_repo_name = self.vm_agent_support.resolve_repo_source(
-            normalized_source
-        )
-        import_repo_name = _normalize_import_bare_repo_name(
-            bare_repo_name or resolved_repo_name
-        )
-        bare_repo_path = Path(issue_setup.git_root) / f"{import_repo_name}.git"
-        agent_refs = _bare_repo_agent_refs(bare_repo_path)
-        if agent_refs:
-            sample = agent_refs[0]
-            extra = len(agent_refs) - 1
-            suffix = f" and {extra} more" if extra else ""
-            raise GitImportConflictError(
-                f"Cannot import into existing mirror {bare_repo_path}: "
-                f"it already has agent branches ({sample}{suffix}). "
-                "Create a new bare repo name or use a dedicated source-ref refresh."
-            )
-        bare_repo_path = self.vm_agent_support.sync_repo_into_bare_remote(
-            import_repo_name,
-            resolved_repo_path,
-            issue_setup=issue_setup,
-            repo_source=normalized_source,
-        )
-        bare_repo_name_with_suffix = f"{import_repo_name}.git"
-        canonical_origin_url = _git_config_value(
-            bare_repo_path,
-            "agent-sandbox.canonicalOriginUrl",
-        )
-        base_branch = _git_config_value(bare_repo_path, "agent-sandbox.baseBranch")
-        provider = _infer_git_provider_from_url(canonical_origin_url)
-        git_config: dict[str, Any] = {
-            "host_repo_path": resolved_repo_path,
-            "bare_repo_name": bare_repo_name_with_suffix,
-        }
-        if base_branch:
-            git_config["base_branch"] = base_branch
-        if canonical_origin_url:
-            git_config["canonical_origin_url"] = canonical_origin_url
-        if provider:
-            git_config["provider"] = provider
-        return {
-            "success": True,
-            "repo_source": normalized_source,
-            "host_repo_path": resolved_repo_path,
-            "repo_name": import_repo_name,
-            "bare_repo_name": bare_repo_name_with_suffix,
-            "bare_repo_path": str(bare_repo_path),
-            "git_root": issue_setup.git_root,
-            "git_ssh_alias": issue_setup.git_ssh_alias,
-            "remote_url": f"ssh://{issue_setup.git_ssh_alias}{bare_repo_path}",
-            "base_branch": base_branch,
-            "canonical_origin_url": canonical_origin_url,
-            "provider": provider,
-            "directory_path": normalized_directory,
-            "git": git_config,
-            "message": f"Imported {resolved_repo_path} into {bare_repo_path}",
-        }
 
     @staticmethod
     def _derive_review_branch(agent_branch: str) -> str:
-        normalized = str(agent_branch).strip()
-        if normalized.startswith("agents/") and normalized.count("/") >= 2:
-            return f"review/{normalized.removeprefix('agents/')}"
-        return f"review/{normalized.removeprefix('refs/heads/')}"
+        return _admin_service_derive_review_branch(agent_branch)
 
     def git_pr_note_query(
         self,
@@ -13598,67 +7199,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         path: str,
         vm_user: str = "agent",
     ) -> dict[str, Any]:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        relative_path = normalize_artifact_relative_path(path)
-        session = self.runtime.session_repository.get_session(normalized_session_id)
-        if session is None:
-            raise ValueError(f"Unknown session: {normalized_session_id}")
-
-        metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
-        provider = str(
-            metadata.get("execution_backend")
-            or session.vm_provider
-            or metadata.get("vm_provider")
-            or ""
-        ).strip()
-        is_container_session = provider == "container_worker_vm"
-        if is_container_session:
-            worker_url = self._container_worker_url_for_target(session=session)
-            backend = self._container_worker_backend(
-                directory_path=session.directory_path,
-                worker_url=worker_url,
-            )
-            content = backend.read_session_artifact_text(
-                session_id=normalized_session_id,
-                relative_path=relative_path,
-            )
-            return {
-                "session_id": normalized_session_id,
-                "path": relative_path,
-                "content": content,
-                "byte_count": len(content.encode("utf-8")),
-                "artifacts_root": DEFAULT_AGENT_ARTIFACTS_DIR,
-                "execution_backend": "container_worker_vm",
-            }
-
-        result = self.vm_exec(
-            normalized_session_id,
-            command=_VM_ARTIFACT_TEXT_READ_COMMAND,
-            vm_user=(str(vm_user or "").strip() or "agent"),
-            environment={"AGENT_SANDBOX_ARTIFACT_RELATIVE_PATH": relative_path},
-            timeout_seconds=30.0,
-            check=True,
+        return self.vm_agent_admin.read_session_artifact_text(
+            session_id=session_id,
+            path=path,
+            vm_user=vm_user,
         )
-        if not bool(result.get("success")):
-            raise RuntimeError(
-                str(
-                    result.get("stderr") or result.get("stdout") or result.get("message") or ""
-                ).strip()
-                or "VM artifact read failed"
-            )
-        content = str(result.get("stdout") or "")
-        return {
-            "session_id": normalized_session_id,
-            "path": relative_path,
-            "content": content,
-            "byte_count": len(content.encode("utf-8")),
-            "artifacts_root": DEFAULT_AGENT_ARTIFACTS_DIR,
-            "execution_backend": "libvirt_vm",
-            "vm_name": result.get("vm_name") or session.vm_id,
-            "vm_provider": session.vm_provider,
-        }
 
     def list_published_artifacts(
         self,
@@ -13669,32 +7214,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         limit: int = 50,
         cursor: str | None = None,
     ) -> PublishedArtifactListPayload:
-        normalized_limit = max(1, min(int(limit or 50), 200))
-        try:
-            offset = int(str(cursor or "0").strip() or "0")
-        except ValueError as exc:
-            raise ValueError("cursor must be a non-negative integer offset") from exc
-        if offset < 0:
-            raise ValueError("cursor must be a non-negative integer offset")
-        records = self._published_artifact_store().list_metadata(
+        return self.artifact_admin.list_published_artifacts(
             key=key,
             published_after=published_after,
             published_before=published_before,
-        )
-        page = records[offset : offset + normalized_limit]
-        next_offset = offset + normalized_limit
-        return PublishedArtifactListPayload(
-            items=page,
-            limit=normalized_limit,
-            total=len(records),
-            next_cursor=str(next_offset) if next_offset < len(records) else None,
+            limit=limit,
+            cursor=cursor,
         )
 
     def get_published_artifact(self, key: str) -> PublishedArtifactMetadata:
-        return self._published_artifact_store().get(validate_artifact_key(key)).metadata
+        return self.artifact_admin.get_published_artifact(key)
 
     def published_artifact_file(self, key: str) -> PublishedArtifact:
-        return self._published_artifact_store().get(validate_artifact_key(key))
+        return self.artifact_admin.published_artifact_file(key)
 
     def upload_published_artifact(
         self,
@@ -13705,9 +7237,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         artifact_path: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> PublishedArtifactMetadata:
-        return self._published_artifact_store().publish_single_file(
-            key=validate_artifact_key(key),
-            session_id="manual-upload",
+        return self.artifact_admin.upload_published_artifact(
+            key=key,
             filename=filename,
             content=content,
             artifact_path=artifact_path,
@@ -13722,38 +7253,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         subject: str | None = None,
         include_versions: bool = False,
     ) -> dict[str, Any]:
-        from agent_sandbox.artifact_spaces import ArtifactSpaceStore, normalize_space_path
-
-        state = ArtifactSpaceStore(self.config.runtime_dir).read()
-        root_path = normalize_space_path(path or "/")
-        spaces: list[dict[str, Any]] = []
-        for space in state.spaces.values():
-            matches = space.path == root_path or (
-                recursive and space.path.startswith(root_path.rstrip("/") + "/")
-            )
-            if not matches:
-                continue
-            if not space.grants.allows(subject, "read"):
-                continue
-            spaces.append(space.model_dump(mode="json"))
-        spaces.sort(key=lambda item: item["path"])
-        readable_paths = {space["path"] for space in spaces}
-        versions = (
-            [
-                version.model_dump(mode="json")
-                for version in state.versions.values()
-                if version.space_path in readable_paths
-            ]
-            if include_versions
-            else []
+        return self.artifact_admin.list_artifact_spaces(
+            path=path,
+            recursive=recursive,
+            subject=subject,
+            include_versions=include_versions,
         )
-        return {
-            "success": True,
-            "revision": state.revision,
-            "spaces": spaces,
-            "versions": versions,
-            "count": len(spaces),
-        }
 
     def create_artifact_space(
         self,
@@ -13765,9 +7270,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         subject: str | None = None,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        from agent_sandbox.artifact_spaces import ArtifactSpaceStore, normalize_space_path
-
-        state = ArtifactSpaceStore(self.config.runtime_dir).ensure_space(
+        return self.artifact_admin.create_artifact_space(
             path=path,
             display_name=display_name,
             metadata=metadata,
@@ -13775,11 +7278,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             subject=subject,
             expected_revision=expected_revision,
         )
-        return {
-            "success": True,
-            "revision": state.revision,
-            "space": state.spaces[normalize_space_path(path)].model_dump(mode="json"),
-        }
 
     def publish_artifact_space_version(
         self,
@@ -13792,24 +7290,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         expected_revision: int | None = None,
         require_existing_artifact: bool = True,
     ) -> dict[str, Any]:
-        from agent_sandbox.artifact_spaces import ArtifactSpaceStore
-
-        if require_existing_artifact and not self._published_artifact_store().exists(artifact_key):
-            raise FileNotFoundError(f"published artifact key does not exist: {artifact_key}")
-        state = ArtifactSpaceStore(self.config.runtime_dir).publish_version(
+        return self.artifact_admin.publish_artifact_space_version(
             space_path=space_path,
             artifact_id=artifact_id,
             artifact_key=artifact_key,
-            created_by_subject=subject,
+            subject=subject,
             metadata=metadata,
             expected_revision=expected_revision,
+            require_existing_artifact=require_existing_artifact,
         )
-        versions = state.versions_for_space(space_path, artifact_id=artifact_id)
-        return {
-            "success": True,
-            "revision": state.revision,
-            "version": versions[-1].model_dump(mode="json"),
-        }
 
     def latest_artifact_space_versions(
         self,
@@ -13818,41 +7307,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         artifact_id: str | None = None,
         subject: str | None = None,
     ) -> dict[str, Any]:
-        from agent_sandbox.artifact_spaces import (
-            ArtifactSpacePermissionError,
-            ArtifactSpaceStore,
-            normalize_space_path,
+        return self.artifact_admin.latest_artifact_space_versions(
+            space_path=space_path,
+            artifact_id=artifact_id,
+            subject=subject,
         )
-
-        state = ArtifactSpaceStore(self.config.runtime_dir).read()
-        normalized_space_path = normalize_space_path(space_path)
-        space = state.spaces.get(normalized_space_path)
-        if space is None:
-            raise FileNotFoundError(f"artifact space does not exist: {normalized_space_path}")
-        if not space.grants.allows(subject, "read"):
-            raise ArtifactSpacePermissionError(
-                f"subject {subject or '<anonymous>'} cannot read artifact space {normalized_space_path}"
-            )
-        versions = [
-            version.model_dump(mode="json")
-            for version in state.latest_versions_for_space(
-                normalized_space_path,
-                artifact_id=artifact_id,
-            )
-        ]
-        return {
-            "success": True,
-            "revision": state.revision,
-            "versions": versions,
-            "count": len(versions),
-        }
 
     @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
-
-        from agent_sandbox.admin.services.issue_git_service import IssueGitAdminService
-
-        return IssueGitAdminService._derive_local_pr_notes_ref(remote_url)
+        return _admin_service_derive_local_pr_notes_ref(remote_url)
 
     def list_local_issues(
         self,
@@ -13870,22 +7333,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def _extract_local_issue_id_candidate(self, value: str) -> str | None:
-        normalized = value.strip()
-        if not normalized:
-            return None
-        if normalized.isdigit():
-            return normalized
-        if normalized.startswith("vm-") and normalized[3:].isdigit():
-            return normalized[3:]
-        prefixed_match = re.match(
-            r"^(?:local|issue)[:/\-]([0-9]+)$", normalized, flags=re.IGNORECASE
-        )
-        if prefixed_match:
-            return prefixed_match.group(1)
-        session_match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
-        if session_match:
-            return session_match.group(1)
-        return None
+        return self.issue_git_support.extract_local_issue_id_candidate(value)
 
     def _find_local_issue_by_remote_identifier(
         self, issue_identifier: str
@@ -13911,26 +7359,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
-        session = self.runtime.session_repository.get_session(request.session_id)
-        mutated = False
-        if not request.directory_path and session is not None:
-            request.directory_path = session.directory_path
-            mutated = True
-        if request.vm_id is None and session is not None and session.vm_id:
-            request.vm_id = session.vm_id
-            mutated = True
-        if not request.tool_name:
-            request.tool_name = request.action_type
-            mutated = True
-        if (
-            request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
-            and request.expires_at <= _utc_now()
-        ):
-            request.status = ApprovalStatus.EXPIRED
-            mutated = True
-        if mutated:
-            self.runtime.approvals.put(request.request_id, request)
-        return request
+        return self.approval_audit_admin._refresh_approval_request(request)
 
     def _approval_matches_filters(
         self,
@@ -13944,31 +7373,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         tool_name: str | None = None,
         min_age_seconds: int | None = None,
     ) -> bool:
-        if statuses is not None and request.status not in statuses:
-            return False
-        if directory_path is not None:
-            normalized_directory_path = self._normalize_directory_path(directory_path)
-            request_directory_path = self._normalize_directory_path(request.directory_path)
-            if not _directory_path_matches_scope(
-                request_directory_path,
-                normalized_directory_path,
-                direct_only=direct_only,
-            ):
-                return False
-        if session_id is not None and request.session_id != session_id.strip():
-            return False
-        if vm_id is not None and (request.vm_id or "") != vm_id.strip():
-            return False
-        if (
-            tool_name is not None
-            and (request.tool_name or request.action_type) != tool_name.strip()
-        ):
-            return False
-        if min_age_seconds is not None:
-            age_seconds = int((_utc_now() - request.created_at).total_seconds())
-            if age_seconds < min_age_seconds:
-                return False
-        return True
+        return self.approval_audit_admin._approval_matches_filters(
+            request,
+            statuses=statuses,
+            directory_path=directory_path,
+            direct_only=direct_only,
+            session_id=session_id,
+            vm_id=vm_id,
+            tool_name=tool_name,
+            min_age_seconds=min_age_seconds,
+        )
 
     def list_approval_requests(
         self,
@@ -13981,7 +7395,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         tool_name: str | None = None,
         min_age_seconds: int | None = None,
     ) -> list[ApprovalRequest]:
-        return self.issue_git_admin.list_approval_requests(
+        return self.approval_audit_admin.list_approval_requests(
             statuses=statuses,
             directory_path=directory_path,
             direct_only=direct_only,
@@ -14002,7 +7416,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         tool_name: str | None = None,
         min_age_seconds: int | None = None,
     ) -> ApprovalQueueHealth:
-        return self.issue_git_admin.approval_queue_health(
+        return self.approval_audit_admin.approval_queue_health(
             statuses=statuses,
             directory_path=directory_path,
             direct_only=direct_only,
@@ -14013,31 +7427,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def get_approval_request(self, request_id: str) -> ApprovalRequest:
-        return self.issue_git_admin.get_approval_request(request_id)
+        return self.approval_audit_admin.get_approval_request(request_id)
 
     def _approval_audit_context(
         self, request: ApprovalRequest, *, limit: int = 8
     ) -> list[dict[str, Any]]:
-        if not self.config.audit_log_path.exists():
-            return []
-        try:
-            lines = self.config.audit_log_path.read_text(encoding="utf-8").splitlines()
-        except Exception:
-            return []
-        matches: list[dict[str, Any]] = []
-        for raw_line in reversed(lines):
-            try:
-                payload = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and _approval_audit_payload_matches_request(
-                payload, request
-            ):
-                matches.append(payload)
-            if len(matches) >= limit:
-                break
-        matches.reverse()
-        return matches
+        return self.approval_audit_admin._approval_audit_context(request, limit=limit)
 
     def list_tool_call_audit_entries(
         self,
@@ -14053,278 +7448,29 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         limit: int | None = None,
         recent_only: bool = False,
     ) -> ToolCallAuditListPayload:
-        normalized_limit = 100 if limit is None else max(1, min(int(limit), 500))
-        normalized_status = _tool_call_normalize_status(status)
-        normalized_directory_path = (
-            self._agent_record_directory_path(directory_path)
-            if directory_path is not None
-            else None
-        )
-        indexed_page = self._list_tool_call_audit_entries_from_index(
+        return self.approval_audit_admin.list_tool_call_audit_entries(
             session_id=session_id,
             tool_name=tool_name,
-            status=normalized_status,
-            directory_path=normalized_directory_path,
+            status=status,
+            directory_path=directory_path,
             direct_only=direct_only,
             created_after=created_after,
             created_before=created_before,
             q=q,
-            limit=normalized_limit,
+            limit=limit,
             recent_only=recent_only,
         )
-        if indexed_page is not None:
-            return indexed_page
-        if recent_only and _tool_call_audit_tail_scan_supported(
-            session_id=session_id,
-            tool_name=tool_name,
-            status=normalized_status,
-            created_after=created_after,
-            created_before=created_before,
-            q=q,
-        ):
-            return self._list_recent_tool_call_audit_entries_from_tail(
-                session_id=session_id,
-                tool_name=tool_name,
-                status=normalized_status,
-                directory_path=normalized_directory_path,
-                direct_only=direct_only,
-                created_after=created_after,
-                created_before=created_before,
-                q=q,
-                limit=normalized_limit,
-                max_lines=_tool_call_recent_scan_max_lines(normalized_limit),
-            )
-        entries: deque[ToolCallAuditEntryPayload] = deque(maxlen=normalized_limit)
-        counts = ToolCallAuditCountsPayload()
-        if not self.config.audit_log_path.exists():
-            return ToolCallAuditListPayload(limit=normalized_limit)
-        try:
-            with self.config.audit_log_path.open(encoding="utf-8") as handle:
-                for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    counts.scanned += 1
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        counts.skipped_malformed += 1
-                        continue
-                    if not isinstance(payload, dict):
-                        counts.skipped_malformed += 1
-                        continue
-                    event_type = str(payload.get("event_type") or "").strip().casefold()
-                    if event_type != "tool_call":
-                        counts.skipped_non_tool_call += 1
-                        continue
-                    entry = _tool_call_audit_entry_from_payload(payload)
-                    if entry is None:
-                        counts.skipped_malformed += 1
-                        continue
-                    if not _tool_call_audit_entry_matches_filters(
-                        entry,
-                        session_id=session_id,
-                        tool_name=tool_name,
-                        status=normalized_status,
-                        directory_path=normalized_directory_path,
-                        direct_only=direct_only,
-                        created_after=created_after,
-                        created_before=created_before,
-                        q=q,
-                    ):
-                        continue
-                    counts.matched += 1
-                    counts.status_counts[entry.status or "success"] = (
-                        counts.status_counts.get(entry.status or "success", 0) + 1
-                    )
-                    entries.append(entry)
-        except Exception:
-            return ToolCallAuditListPayload(limit=normalized_limit)
-        items = list(entries)
-        items.reverse()
-        counts.returned = len(items)
-        return ToolCallAuditListPayload(
-            items=items,
-            counts=ToolCallAuditCountsPayload(
-                scanned=counts.scanned,
-                matched=counts.matched,
-                returned=counts.returned,
-                skipped_malformed=counts.skipped_malformed,
-                skipped_non_tool_call=counts.skipped_non_tool_call,
-                status_counts=dict(sorted(counts.status_counts.items())),
-            ),
-            limit=normalized_limit,
-            has_more=counts.matched > len(items),
-        )
 
-    def _list_tool_call_audit_entries_from_index(
-        self,
-        *,
-        session_id: str | None,
-        tool_name: str | None,
-        status: str | None,
-        directory_path: str | None,
-        direct_only: bool,
-        created_after: datetime | None,
-        created_before: datetime | None,
-        q: str | None,
-        limit: int,
-        recent_only: bool,
-    ) -> ToolCallAuditListPayload | None:
-        index = self.tool_call_audit_index
-        if index is None:
-            return None
-        recent_tail_partial = False
-        try:
-            full_import_complete = index.import_is_complete(self.config.audit_log_path)
-            use_index = full_import_complete
+    def _list_tool_call_audit_entries_from_index(self, *args: Any, **kwargs: Any):
+        return self.approval_audit_admin._list_tool_call_audit_entries_from_index(*args, **kwargs)
 
-            if created_after is not None:
-                import_result = index.import_from_jsonl_tail(
-                    self.config.audit_log_path,
-                    created_after=created_after,
-                    max_lines=DEFAULT_TAIL_IMPORT_MAX_LINES,
-                )
-                use_index = (
-                    full_import_complete
-                    or import_result.complete
-                    or import_result.reached_time_boundary
-                )
-            elif recent_only or not any(
-                str(value or "").strip()
-                for value in (session_id, tool_name, status, directory_path, created_before, q)
-            ):
-                import_result = index.import_from_jsonl_tail(
-                    self.config.audit_log_path,
-                    max_lines=_tool_call_recent_scan_max_lines(limit),
-                )
-                recent_tail_partial = recent_only and not (
-                    full_import_complete or import_result.complete
-                )
-                use_index = full_import_complete or import_result.complete or recent_only
-            elif not full_import_complete:
-                index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
-                use_index = index.import_is_complete(self.config.audit_log_path)
-
-            if not use_index:
-                return None
-
-            page = index.query_tool_calls(
-                session_id=session_id,
-                tool_name=tool_name,
-                status=status,
-                directory_path=directory_path,
-                direct_only=direct_only,
-                created_after=created_after,
-                created_before=created_before,
-                q=q,
-                limit=limit,
-            )
-        except Exception:
-            return None
-
-        items: list[ToolCallAuditEntryPayload] = []
-        for payload in page.payloads:
-            entry = _tool_call_audit_entry_from_payload(payload)
-            if entry is not None:
-                items.append(entry)
-        return ToolCallAuditListPayload(
-            items=items,
-            counts=ToolCallAuditCountsPayload(
-                scanned=page.matched,
-                matched=page.matched,
-                returned=len(items),
-                status_counts=page.status_counts,
-            ),
-            limit=limit,
-            has_more=page.has_more or recent_tail_partial,
-        )
-
-    def _list_recent_tool_call_audit_entries_from_tail(
-        self,
-        *,
-        session_id: str | None,
-        tool_name: str | None,
-        status: str | None,
-        directory_path: str | None,
-        direct_only: bool,
-        created_after: datetime | None,
-        created_before: datetime | None,
-        q: str | None,
-        limit: int,
-        max_lines: int,
-    ) -> ToolCallAuditListPayload:
-        if not self.config.audit_log_path.exists():
-            return ToolCallAuditListPayload(limit=limit)
-
-        counts = ToolCallAuditCountsPayload()
-        items: list[ToolCallAuditEntryPayload] = []
-        has_more = False
-        try:
-            for line in _iter_file_lines_reverse(self.config.audit_log_path):
-                if counts.scanned >= max_lines:
-                    has_more = True
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                counts.scanned += 1
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    counts.skipped_malformed += 1
-                    continue
-                if not isinstance(payload, dict):
-                    counts.skipped_malformed += 1
-                    continue
-                event_type = str(payload.get("event_type") or "").strip().casefold()
-                if event_type != "tool_call":
-                    counts.skipped_non_tool_call += 1
-                    continue
-                entry = _tool_call_audit_entry_from_payload(payload)
-                if entry is None:
-                    counts.skipped_malformed += 1
-                    continue
-                if not _tool_call_audit_entry_matches_filters(
-                    entry,
-                    session_id=session_id,
-                    tool_name=tool_name,
-                    status=status,
-                    directory_path=directory_path,
-                    direct_only=direct_only,
-                    created_after=created_after,
-                    created_before=created_before,
-                    q=q,
-                ):
-                    continue
-                counts.matched += 1
-                if len(items) >= limit:
-                    has_more = True
-                    break
-                counts.status_counts[entry.status or "success"] = (
-                    counts.status_counts.get(entry.status or "success", 0) + 1
-                )
-                items.append(entry)
-        except Exception:
-            return ToolCallAuditListPayload(limit=limit)
-
-        counts.returned = len(items)
-        return ToolCallAuditListPayload(
-            items=items,
-            counts=ToolCallAuditCountsPayload(
-                scanned=counts.scanned,
-                matched=counts.matched,
-                returned=counts.returned,
-                skipped_malformed=counts.skipped_malformed,
-                skipped_non_tool_call=counts.skipped_non_tool_call,
-                status_counts=dict(sorted(counts.status_counts.items())),
-            ),
-            limit=limit,
-            has_more=has_more,
+    def _list_recent_tool_call_audit_entries_from_tail(self, *args: Any, **kwargs: Any):
+        return self.approval_audit_admin._list_recent_tool_call_audit_entries_from_tail(
+            *args, **kwargs
         )
 
     def get_approval_review(self, request_id: str) -> dict[str, Any]:
-        return self.issue_git_admin.get_approval_review(request_id)
+        return self.approval_audit_admin.get_approval_review(request_id)
 
     def decide_approval_request(
         self,
@@ -14334,7 +7480,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         approve: bool,
         reason: str,
     ) -> ApprovalRequest:
-        return self.issue_git_admin.decide_approval_request(
+        return self.approval_audit_admin.decide_approval_request(
             request_id,
             approver=approver,
             approve=approve,
@@ -14348,7 +7494,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         approver: str,
         reason: str,
     ) -> ApprovalRequest:
-        return self.issue_git_admin.revoke_approval_request(
+        return self.approval_audit_admin.revoke_approval_request(
             request_id,
             approver=approver,
             reason=reason,
@@ -14411,9 +7557,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def read_workflow_editor_document(
         self, workflow_pack: str | None = None
     ) -> WorkflowEditorDocumentPayload:
-        return self.workflow_config_admin.read_workflow_editor_document(
-            workflow_pack=workflow_pack
-        )
+        return self.workflow_config_admin.read_workflow_editor_document(workflow_pack=workflow_pack)
 
     def read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         return self.workflow_config_admin.read_composed_workflow_editor_document()
@@ -14662,175 +7806,62 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
         return self.workflow_config_admin.delete_effect_config(effect_id)
 
-    @contextmanager
     def admin_config_mutation_lock(self):
-        path = self.admin_config_mutation_lock_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with _ADMIN_CONFIG_MUTATION_THREAD_LOCK:
-            with path.open("a+", encoding="utf-8") as handle:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return self.operations_admin.admin_config_mutation_lock()
 
-    def _worker_global_config_path(self, worker_id: str) -> Path | None:
-        relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
-        if relative is None:
-            return None
-        return self.project_dir / relative
+    def _worker_global_config_path(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._worker_global_config_path(*args, **kwargs)
 
     def _stable_json_revision(self, payload: object) -> str:
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        return self.workflow_config_admin._stable_json_revision(payload)
 
-    def _worker_global_config_revision(self, config: dict[str, object]) -> str:
-        return self._stable_json_revision(config)
+    def _worker_global_config_revision(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._worker_global_config_revision(*args, **kwargs)
 
-    def _read_worker_global_config_unlocked(self, worker_id: str) -> WorkerGlobalConfigPayload:
-        path = self._worker_global_config_path(worker_id)
-        if path is None:
-            raise ValueError(f"Unknown worker: {worker_id}")
-        exists = path.exists()
-        if exists:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError(f"worker config file {path} must contain a JSON object")
-        else:
-            model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(
-                mode="json", exclude_none=True
-            )
-        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        config = self._validate_worker_global_config_payload(worker_id, raw)
-        return WorkerGlobalConfigPayload(
-            worker_id=worker_id,
-            path=str(path),
-            exists=exists,
-            config=config,
-            revision=self._worker_global_config_revision(config),
-        )
+    def _read_worker_global_config_unlocked(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_worker_global_config_unlocked(*args, **kwargs)
 
-    def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
-        return self._read_worker_global_config_unlocked(worker_id)
+    def _read_worker_global_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_worker_global_config(*args, **kwargs)
 
-    def _read_worker_provider_loader_config(self, worker_id: str) -> dict[str, object]:
-        path = self._worker_global_config_path(worker_id)
-        if path is None:
-            raise ValueError(f"Unknown worker: {worker_id}")
-        if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError(f"worker config file {path} must contain a JSON object")
-        else:
-            raw = self.config.model_dump(mode="json", exclude_none=True)
-        return {
-            key: raw[key]
-            for key in ("provider_loader", "addon_loader")
-            if key in raw
-        }
+    def _read_worker_provider_loader_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_worker_provider_loader_config(*args, **kwargs)
 
-    def _write_worker_global_config_unlocked(
-        self, worker_id: str, payload: dict[str, object]
-    ) -> WorkerGlobalConfigWritePayload:
-        path = self._worker_global_config_path(worker_id)
-        if path is None:
-            raise ValueError(f"Unknown worker: {worker_id}")
-        config = self._validate_worker_global_config_payload(worker_id, payload)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
-        return WorkerGlobalConfigWritePayload(
-            worker_id=worker_id,
-            path=str(path),
-            config=config,
-            revision=self._worker_global_config_revision(config),
-        )
+    def _write_worker_global_config_unlocked(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._write_worker_global_config_unlocked(*args, **kwargs)
 
-    def _write_worker_global_config(
-        self,
-        worker_id: str,
-        payload: dict[str, object],
-        *,
-        expected_revision: str | None = None,
-    ) -> WorkerGlobalConfigWritePayload:
-        with self.admin_config_mutation_lock():
-            if expected_revision is not None:
-                current = self._read_worker_global_config_unlocked(worker_id)
-                if current.revision != expected_revision:
-                    raise AdminRevisionConflict(
-                        "Worker configuration changed before save. Reload the worker settings before saving again.",
-                        details={
-                            "current_revision": current.revision,
-                            "current": current.model_dump(mode="json"),
-                        },
-                    )
-            return self._write_worker_global_config_unlocked(worker_id, payload)
+    def _write_worker_global_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._write_worker_global_config(*args, **kwargs)
 
-    def _read_trigger_document(self) -> TriggerConfigDocument:
-        payload = self._read_worker_global_config("trigger-orchestrator")
-        return TriggerConfigDocument(path=payload.path, config=payload.config)
+    def _read_trigger_document(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_trigger_document(*args, **kwargs)
 
-    def _write_trigger_document(self, config: dict[str, object]) -> TriggerConfigDocument:
-        payload = self._write_worker_global_config("trigger-orchestrator", config)
-        return TriggerConfigDocument(path=payload.path, config=payload.config)
+    def _write_trigger_document(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._write_trigger_document(*args, **kwargs)
 
-    def _write_trigger_document_unlocked(self, config: dict[str, object]) -> TriggerConfigDocument:
-        payload = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
-        return TriggerConfigDocument(path=payload.path, config=payload.config)
+    def _write_trigger_document_unlocked(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._write_trigger_document_unlocked(*args, **kwargs)
 
-    def _validate_worker_global_config_payload(
-        self, worker_id: str, payload: dict[str, object]
-    ) -> dict[str, object]:
-        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        try:
-            normalized = model.model_validate(payload).model_dump(mode="json", exclude_none=True)
-            return _strip_default_edge_fields(normalized)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
+    def _validate_worker_global_config_payload(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._validate_worker_global_config_payload(*args, **kwargs)
 
-    def _load_workflow_provider_catalog(self, payload: dict[str, object]):
-        from agent_sandbox.provider_profiles import resolve_provider_module_names
-        from agent_sandbox.workflow.plugins import load_provider_plugins
+    def _load_workflow_provider_catalog(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._load_workflow_provider_catalog(*args, **kwargs)
 
-        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
-        return load_provider_plugins(
-            module_names=resolve_provider_module_names(
-                profile_name=worker_config.provider_profile,
-                extra_modules=worker_config.provider_loader.provider_modules,
-            ),
-            include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
-            include_builtin=worker_config.provider_include_builtin,
-            addon_loader=worker_config.addon_loader,
-        )
-
-    def _load_workflow_provider_output_schemas(self, payload: dict[str, object]) -> None:
-        self._load_workflow_provider_catalog(payload)
+    def _load_workflow_provider_output_schemas(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._load_workflow_provider_output_schemas(*args, **kwargs)
 
     def assistant_settings_path(self) -> Path:
-        return self.config.runtime_dir / "assistant-settings.json"
+        return self.operations_admin.assistant_settings_path()
 
     def read_assistant_settings(self) -> dict[str, object]:
-        path = self.assistant_settings_path()
-        if not path.exists():
-            return self.config.assistant_settings.model_dump(mode="json", exclude_none=True)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError(f"assistant settings file {path} must contain a JSON object")
-        return AssistantSettingsConfig.model_validate(payload).model_dump(
-            mode="json", exclude_none=True
-        )
+        return self.operations_admin.read_assistant_settings()
 
     def write_assistant_settings(self, payload: dict[str, object]) -> dict[str, object]:
-        config = AssistantSettingsConfig.model_validate(payload).model_dump(
-            mode="json", exclude_none=True
-        )
-        path = self.assistant_settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
-        return config
+        return self.operations_admin.write_assistant_settings(payload)
 
     def ensure_chat_assistant_workflow(self) -> TriggerConfigDocument:
-        return self.trigger_repository.read_document()
+        return self.operations_admin.ensure_chat_assistant_workflow()
 
     def publish_chat_assistant_message(
         self,
@@ -14842,42 +7873,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         backend: str | None = None,
         assistant_capability_mode: str | None = None,
     ) -> dict[str, object]:
-        document = self.ensure_chat_assistant_workflow()
-        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
-        if worker_config.orchestration_store_backend == "sqlite":
-            queue = SqliteTriggerEventQueue(
-                worker_config.orchestration_store_path,
-                retention_days=worker_config.orchestration_retention_days,
-            )
-        else:
-            queue = TriggerEventQueue(
-                worker_config.event_queue_store_path,
-                journal_path=worker_config.workflow_event_journal_path,
-            )
-        normalized_backend = str(backend or self.config.execution_backend).strip() or "libvirt_vm"
-        normalized_capability_mode = str(assistant_capability_mode or "").strip() or "read-only"
-        if normalized_capability_mode != "full-access":
-            normalized_capability_mode = "read-only"
-        event_id = f"chat:{user_message_id}"
-        event = TriggerEvent(
-            event_id=event_id,
-            trigger_id=_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
-            trigger_type="trigger:system:chat-assistant",
-            occurred_at=_utc_now(),
-            payload={
-                "user_id": user_id,
-                "thread_id": thread_id,
-                "user_message_id": user_message_id,
-                "content": content,
-                "backend": normalized_backend,
-                "assistant_capability_mode": normalized_capability_mode,
-            },
+        return self.operations_admin.publish_chat_assistant_message(
+            user_id=user_id,
+            thread_id=thread_id,
+            user_message_id=user_message_id,
+            content=content,
+            backend=backend,
+            assistant_capability_mode=assistant_capability_mode,
         )
-        already_queued = queue.contains(event_id)
-        record = queue.publish(event, idempotency_key=event_id)
-        if not already_queued and record.event_id == event_id:
-            notify_wake_socket_for_lock(worker_config.effect_lock_path)
-        return record.model_dump(mode="json")
 
     def publish_external_workflow_event(
         self,
@@ -14888,680 +7891,96 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         idempotency_key: str | None = None,
         source: InternalEventSource | dict[str, Any] | None = None,
     ) -> dict[str, object]:
-        event_name = str(event_type or "").strip()
-        if not event_name:
-            raise ValueError("event_type is required")
-        if event_name.startswith(EXTERNAL_WORKFLOW_EVENT_PREFIX):
-            raise ValueError(
-                f"event_type must not include the reserved {EXTERNAL_WORKFLOW_EVENT_PREFIX!r} prefix"
-            )
-        validate_internal_event_type(event_name)
-        if not isinstance(payload, dict):
-            raise ValueError("payload must be a JSON object")
-
-        worker_config_payload = self._read_worker_global_config("trigger-orchestrator")
-        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-            worker_config_payload.config
-        )
-        bus = InternalEventBus(
-            worker_config.internal_event_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        event = bus.publish(
-            event_type=f"{EXTERNAL_WORKFLOW_EVENT_PREFIX}{event_name}",
+        return self.operations_admin.publish_external_workflow_event(
+            event_type=event_type,
             payload=payload,
             correlation_key=correlation_key,
-            source=source,
             idempotency_key=idempotency_key,
-        )
-        notify_wake_socket_for_lock(worker_config.lock_path)
-        return event.model_dump(mode="json")
-
-    def _workflow_editor_default_layout_path(self) -> Path:
-        return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
-
-    def _workflow_editor_pack_layout_path(self, pack_reference: object) -> Path:
-        return self._workflow_editor_pack_path(pack_reference).with_suffix(".layout.json")
-
-    def _workflow_editor_pack_reference(self, pack_reference: object) -> str:
-        text = str(pack_reference).strip()
-        if not text:
-            raise ValueError("workflow pack reference must be a non-empty string")
-        normalized = text if text.endswith(".json") else f"{text}.json"
-        relative = Path(normalized)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError("workflow pack reference must stay under config/workflow-packs")
-        return normalized
-
-    def _workflow_editor_layout_path(self, raw_config: dict[str, object]) -> Path:
-        workflow_packs = raw_config.get("workflow_packs")
-        inline_ir = raw_config.get("workflow_ir")
-        if (
-            isinstance(workflow_packs, list)
-            and len(workflow_packs) == 1
-            and not isinstance(inline_ir, dict)
-        ):
-            return self._workflow_editor_pack_layout_path(workflow_packs[0])
-        return self._workflow_editor_default_layout_path()
-
-    def _workflow_editor_revision(
-        self,
-        *,
-        config: dict[str, object],
-        layout: dict[str, object],
-        graphs: list[WorkflowEditorGraphMetadata],
-    ) -> str:
-        revision_config = dict(config)
-        if graphs:
-            revision_config.pop("workflow_graphs", None)
-        return self._stable_json_revision(
-            {
-                "config": revision_config,
-                "layout": layout,
-                "graphs": [graph.model_dump(mode="json") for graph in graphs],
-            }
+            source=source,
         )
 
-    def _workflow_editor_pack_path(self, pack_reference: object) -> Path:
-        normalized = self._workflow_editor_pack_reference(pack_reference)
-        relative = Path(normalized)
-        return self.project_dir / "config" / "workflow-packs" / relative
+    def _workflow_editor_default_layout_path(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_default_layout_path(*args, **kwargs)
 
-    def _workflow_editor_configured_pack_references(
-        self, raw_config: dict[str, object]
-    ) -> list[str]:
-        workflow_packs = raw_config.get("workflow_packs")
-        if not isinstance(workflow_packs, list):
-            return []
-        return [self._workflow_editor_pack_reference(pack) for pack in workflow_packs]
+    def _workflow_editor_pack_layout_path(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_layout_path(*args, **kwargs)
 
-    def _workflow_editor_selected_pack_reference(
-        self,
-        raw_config: dict[str, object],
-        workflow_pack: str | None,
-    ) -> str | None:
-        pack_references = self._workflow_editor_configured_pack_references(raw_config)
-        if not pack_references:
-            if workflow_pack:
-                raise ValueError("Workflow pack selection requires workflow_packs in the worker config.")
-            return None
-        if workflow_pack is None or not str(workflow_pack).strip():
-            return None
-        selected = self._workflow_editor_pack_reference(workflow_pack)
-        if selected not in pack_references:
-            raise ValueError(f"Workflow pack is not configured: {selected}")
-        return selected
+    def _workflow_editor_pack_reference(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_reference(*args, **kwargs)
 
-    def _workflow_editor_pack_descriptors(
-        self,
-        raw_config: dict[str, object],
-        *,
-        selected_reference: str | None = None,
-    ) -> list[WorkflowEditorWorkflowPackDescriptor]:
-        descriptors: list[WorkflowEditorWorkflowPackDescriptor] = []
-        for reference in self._workflow_editor_configured_pack_references(raw_config):
-            pack_path = self._workflow_editor_pack_path(reference)
-            layout_path = self._workflow_editor_pack_layout_path(reference)
-            exists = pack_path.exists()
-            pack_id: str | None = None
-            pack_version: str | None = None
-            description: str | None = None
-            graph_count = 0
-            node_count = 0
-            display_name = reference
-            if exists:
-                pack = load_workflow_pack(self.project_dir, reference)
-                pack_id = pack.pack_id
-                pack_version = pack.pack_version
-                description = pack.description
-                graph_count = len(pack.graphs)
-                node_count = len(pack.ir.nodes)
-                display_name = pack.pack_id or reference
-                if pack.pack_version:
-                    display_name = f"{display_name} {pack.pack_version}"
-            descriptors.append(
-                WorkflowEditorWorkflowPackDescriptor(
-                    reference=reference,
-                    path=str(pack_path),
-                    layout_path=str(layout_path),
-                    exists=exists,
-                    editable=exists,
-                    display_name=display_name,
-                    id=pack_id,
-                    version=pack_version,
-                    description=description,
-                    graph_count=graph_count,
-                    node_count=node_count,
-                    selected=reference == selected_reference,
-                )
-            )
-        return descriptors
+    def _workflow_editor_layout_path(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_layout_path(*args, **kwargs)
 
-    def _workflow_editor_config_for_pack_composition(
-        self,
-        *,
-        raw_config: dict[str, object],
-        composition: object,
-    ) -> dict[str, object]:
-        graph_keys = {
-            "triggers",
-            "gates",
-            "effects",
-            "queries",
-            "edges",
-            "workflow_ir",
-            "workflow_graphs",
-        }
-        config = {key: value for key, value in raw_config.items() if key not in graph_keys}
-        for collection_name in ("triggers", "gates", "effects", "queries"):
-            config[collection_name] = list(getattr(composition, collection_name))
-        config["edges"] = list(getattr(composition, "edges"))
-        return config
+    def _workflow_editor_revision(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_revision(*args, **kwargs)
 
-    def _workflow_editor_pack_graphs(
-        self,
-        *,
-        raw_config: dict[str, object],
-        pack_reference: str,
-    ) -> tuple[dict[str, object], list[dict[str, object]]]:
-        composition = compose_workflow_ir(
-            project_dir=self.project_dir,
-            workflow_packs=[pack_reference],
-        )
-        config = self._workflow_editor_config_for_pack_composition(
-            raw_config=raw_config,
-            composition=composition,
-        )
-        graphs = [graph.model_dump(mode="json") for graph in composition.graphs]
-        return config, graphs
+    def _workflow_editor_pack_path(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_path(*args, **kwargs)
 
-    def _workflow_editor_stored_graphs(
-        self, raw_config: dict[str, object]
-    ) -> list[dict[str, object]]:
-        graphs: list[dict[str, object]] = []
-        workflow_packs = raw_config.get("workflow_packs")
-        if isinstance(workflow_packs, list):
-            for pack_reference in workflow_packs:
-                pack_path = self._workflow_editor_pack_path(pack_reference)
-                if not pack_path.exists():
-                    continue
-                pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
-                if not isinstance(pack_payload, dict):
-                    continue
-                pack_graphs = pack_payload.get("graphs")
-                if isinstance(pack_graphs, list):
-                    graphs.extend(item for item in pack_graphs if isinstance(item, dict))
-        inline_graphs = raw_config.get("workflow_graphs")
-        if isinstance(inline_graphs, list):
-            graphs.extend(item for item in inline_graphs if isinstance(item, dict))
-        return graphs
-
-    def _workflow_editor_nodes_by_id(
-        self, config: dict[str, object]
-    ) -> dict[str, dict[str, object]]:
-        nodes_by_id: dict[str, dict[str, object]] = {}
-        for collection_name in ("triggers", "gates", "effects", "queries"):
-            entries = config.get(collection_name)
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                node_id = str(entry.get("id") or "").strip()
-                if node_id:
-                    nodes_by_id[node_id] = entry
-        return nodes_by_id
-
-    def _workflow_editor_connected_graph_node_ids(
-        self, config: dict[str, object]
-    ) -> list[list[str]]:
-        nodes_by_id = self._workflow_editor_nodes_by_id(config)
-        ordered_node_ids = list(nodes_by_id)
-        node_ids = set(ordered_node_ids)
-        neighbors: dict[str, set[str]] = {node_id: set() for node_id in ordered_node_ids}
-        edges = config.get("edges")
-        if isinstance(edges, list):
-            for edge in edges:
-                if not isinstance(edge, dict):
-                    continue
-                source_id = str(edge.get("source_id") or "").strip()
-                target_id = str(edge.get("target_id") or "").strip()
-                if source_id not in node_ids or target_id not in node_ids:
-                    continue
-                neighbors[source_id].add(target_id)
-                neighbors[target_id].add(source_id)
-
-        components: list[list[str]] = []
-        visited: set[str] = set()
-        order = {node_id: index for index, node_id in enumerate(ordered_node_ids)}
-        for node_id in ordered_node_ids:
-            if node_id in visited:
-                continue
-            stack = [node_id]
-            component: set[str] = set()
-            while stack:
-                current = stack.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
-                component.add(current)
-                stack.extend(sorted(neighbors[current] - visited, key=order.get, reverse=True))
-            components.append(sorted(component, key=order.get))
-        return components
-
-    def _workflow_editor_default_graph_name(
-        self,
-        *,
-        component: list[str],
-        nodes_by_id: dict[str, dict[str, object]],
-        index: int,
-    ) -> str:
-        trigger_node = next(
-            (
-                nodes_by_id[node_id]
-                for node_id in component
-                if str(nodes_by_id[node_id].get("type") or "").startswith("trigger:")
-            ),
-            None,
-        )
-        fallback_node = nodes_by_id.get(component[0]) if component else None
-        source_node = trigger_node or fallback_node
-        display_name = str(source_node.get("display_name") or "").strip() if source_node else ""
-        return display_name or f"Graph {index + 1}"
-
-    def _workflow_editor_graph_id_base(
-        self,
-        *,
-        component: list[str],
-        nodes_by_id: dict[str, dict[str, object]],
-        index: int,
-    ) -> str:
-        trigger_id = next(
-            (
-                node_id
-                for node_id in component
-                if str(nodes_by_id[node_id].get("type") or "").startswith("trigger:")
-            ),
-            "",
-        )
-        source = trigger_id or (component[0] if component else f"graph-{index + 1}")
-        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", source).strip("-").lower()
-        return f"graph-{slug or index + 1}"
-
-    def _coerce_workflow_editor_graphs(
-        self,
-        graphs: object,
-        *,
-        strict: bool,
-    ) -> list[WorkflowEditorGraphMetadata]:
-        if graphs is None:
-            return []
-        if not isinstance(graphs, list):
-            if strict:
-                raise ValueError("Workflow graphs must be a JSON array.")
-            return []
-        normalized: list[WorkflowEditorGraphMetadata] = []
-        for entry in graphs:
-            if not isinstance(entry, dict):
-                if strict:
-                    raise ValueError("Workflow graph entries must be JSON objects.")
-                continue
-            try:
-                graph = WorkflowEditorGraphMetadata.model_validate(entry)
-            except ValidationError as exc:
-                if strict:
-                    raise _safe_validation_error(exc, context="Invalid workflow graph") from exc
-                continue
-            graph_id = graph.id.strip()
-            graph_name = graph.name.strip()
-            node_ids: list[str] = []
-            seen_node_ids: set[str] = set()
-            for raw_node_id in graph.node_ids:
-                node_id = str(raw_node_id or "").strip()
-                if not node_id or node_id in seen_node_ids:
-                    continue
-                seen_node_ids.add(node_id)
-                node_ids.append(node_id)
-            if not graph_id or not graph_name:
-                if strict:
-                    raise ValueError("Workflow graph id and name are required.")
-                continue
-            description = graph.description.strip() if graph.description else None
-            user_ids: list[str] = []
-            seen_user_ids: set[str] = set()
-            for raw_user_id in graph.user_ids:
-                user_id = str(raw_user_id or "").strip()
-                if not user_id or user_id in seen_user_ids:
-                    continue
-                seen_user_ids.add(user_id)
-                user_ids.append(user_id)
-            normalized.append(
-                WorkflowEditorGraphMetadata(
-                    id=graph_id,
-                    name=graph_name,
-                    description=description or None,
-                    directory_path=graph.directory_path,
-                    user_ids=user_ids,
-                    node_ids=node_ids,
-                )
-            )
-        return normalized
-
-    def _workflow_editor_graphs_for_config(
-        self,
-        *,
-        config: dict[str, object],
-        graphs: object,
-        strict: bool = False,
-    ) -> list[WorkflowEditorGraphMetadata]:
-        components = self._workflow_editor_connected_graph_node_ids(config)
-        component_keys = {frozenset(component) for component in components}
-        node_ids = set(self._workflow_editor_nodes_by_id(config))
-        stored_graphs = self._coerce_workflow_editor_graphs(graphs, strict=strict)
-        seen_graph_ids: set[str] = set()
-        seen_graph_keys: set[frozenset[str]] = set()
-        valid_stored_graphs: list[WorkflowEditorGraphMetadata] = []
-        for graph in stored_graphs:
-            graph_key = frozenset(graph.node_ids)
-            if graph.id in seen_graph_ids:
-                if strict:
-                    raise ValueError(f"Duplicate workflow graph id: {graph.id}")
-                continue
-            seen_graph_ids.add(graph.id)
-            unknown_node_ids = sorted(
-                node_id for node_id in graph.node_ids if node_id not in node_ids
-            )
-            if unknown_node_ids:
-                if strict:
-                    unknown_list = ", ".join(unknown_node_ids)
-                    raise ValueError(
-                        f"Workflow graph {graph.id} references unknown node IDs: {unknown_list}"
-                    )
-                continue
-            if graph_key in seen_graph_keys:
-                if strict:
-                    raise ValueError(
-                        f"Multiple workflow graphs describe the same connected graph: {graph.id}"
-                    )
-                continue
-            seen_graph_keys.add(graph_key)
-            if strict and graph_key not in component_keys:
-                raise ValueError(
-                    f"Workflow graph {graph.id} node_ids must match one connected graph."
-                )
-            valid_stored_graphs.append(graph)
-        stored_graphs = valid_stored_graphs
-
-        by_exact_key = {frozenset(graph.node_ids): graph for graph in stored_graphs}
-        unmatched_graphs = [
-            graph for graph in stored_graphs if frozenset(graph.node_ids) not in component_keys
-        ]
-        used_graph_ids: set[str] = set()
-        used_result_ids: set[str] = set()
-        result: list[WorkflowEditorGraphMetadata] = []
-        nodes_by_id = self._workflow_editor_nodes_by_id(config)
-        for index, component in enumerate(components):
-            component_key = frozenset(component)
-            matched = by_exact_key.get(component_key)
-            if matched is None:
-                matched = max(
-                    (
-                        graph
-                        for graph in unmatched_graphs
-                        if graph.id not in used_graph_ids
-                        and component_key.intersection(graph.node_ids)
-                    ),
-                    key=lambda graph: len(component_key.intersection(graph.node_ids)),
-                    default=None,
-                )
-            if matched is not None:
-                used_graph_ids.add(matched.id)
-                graph_id = matched.id
-                graph_name = matched.name
-                graph_description = matched.description
-                graph_directory_path = matched.directory_path
-                graph_user_ids = matched.user_ids
-            else:
-                graph_id = self._workflow_editor_graph_id_base(
-                    component=component, nodes_by_id=nodes_by_id, index=index
-                )
-                graph_name = self._workflow_editor_default_graph_name(
-                    component=component, nodes_by_id=nodes_by_id, index=index
-                )
-                graph_description = None
-                graph_directory_path = "root"
-                graph_user_ids = []
-            unique_id = graph_id
-            suffix = 2
-            while unique_id in used_result_ids:
-                unique_id = f"{graph_id}-{suffix}"
-                suffix += 1
-            used_result_ids.add(unique_id)
-            result.append(
-                WorkflowEditorGraphMetadata(
-                    id=unique_id,
-                    name=graph_name,
-                    description=graph_description,
-                    directory_path=graph_directory_path,
-                    user_ids=graph_user_ids,
-                    node_ids=component,
-                )
-            )
-        return result
-
-    def _workflow_editor_graph_payloads_to_persist(
-        self,
-        *,
-        raw_graphs: list[dict[str, object]],
-        normalized_graphs: list[WorkflowEditorGraphMetadata],
-    ) -> list[dict[str, object]]:
-        raw_graphs_by_id: dict[str, dict[str, object]] = {}
-        normalized_raw_graphs_by_id: dict[str, dict[str, object]] = {}
-        for raw_graph in raw_graphs:
-            graph_id = str(raw_graph.get("id") or "").strip()
-            if not graph_id or graph_id in raw_graphs_by_id:
-                continue
-            raw_graphs_by_id[graph_id] = raw_graph
-            normalized_raw_graph = self._coerce_workflow_editor_graphs(
-                [raw_graph],
-                strict=False,
-            )
-            if normalized_raw_graph:
-                normalized_raw_graphs_by_id[graph_id] = normalized_raw_graph[0].model_dump(
-                    mode="json"
-                )
-
-        graph_payloads: list[dict[str, object]] = []
-        for graph in normalized_graphs:
-            graph_payload = graph.model_dump(mode="json")
-            raw_graph = raw_graphs_by_id.get(graph.id)
-            normalized_raw_graph = normalized_raw_graphs_by_id.get(graph.id)
-            if raw_graph is not None and graph_payload == normalized_raw_graph:
-                graph_payloads.append(json.loads(json.dumps(raw_graph)))
-            else:
-                graph_payloads.append(graph_payload)
-        return graph_payloads
-
-    def _compose_workflow_editor_config(self, payload: dict[str, object]) -> dict[str, object]:
-        candidate = json.loads(json.dumps(payload))
-        if not isinstance(candidate, dict):
-            return payload
-        return _compose_configured_workflow_ir(project_dir=self.project_dir, payload=candidate)
-
-    def _workflow_editor_pack_backed_save_paths(
-        self,
-        raw_config: dict[str, object],
-        workflow_pack: str | None = None,
-    ) -> tuple[Path, list[object]] | None:
-        workflow_packs = raw_config.get("workflow_packs")
-        inline_ir = raw_config.get("workflow_ir")
-        if not isinstance(workflow_packs, list) or not workflow_packs:
-            return None
-        if isinstance(inline_ir, dict):
-            raise ValueError(
-                "Workflow editor cannot save configs that combine workflow_packs with inline workflow_ir; "
-                "edit the pack files directly."
-            )
-        if workflow_pack is None or not str(workflow_pack).strip():
-            if len(workflow_packs) != 1:
-                raise ValueError(
-                    "Workflow editor save requires workflow_pack when multiple workflow packs are configured."
-                )
-            selected_reference = self._workflow_editor_pack_reference(workflow_packs[0])
-        else:
-            selected_reference = self._workflow_editor_selected_pack_reference(
-                raw_config,
-                workflow_pack,
-            )
-        if selected_reference is None:
-            return None
-        return self._workflow_editor_pack_path(selected_reference), workflow_packs
-
-    def _workflow_editor_pack_payload_to_persist(
-        self,
-        *,
-        pack_path: Path,
-        validated_config: dict[str, object],
-        graph_payloads: list[dict[str, object]] | None,
-    ) -> dict[str, object]:
-        if pack_path.exists():
-            pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
-            if not isinstance(pack_payload, dict):
-                raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
-        else:
-            raise ValueError(f"workflow pack file {pack_path} does not exist")
-
-        existing_ir = pack_payload.get("ir")
-        ir_version = "v1"
-        if isinstance(existing_ir, dict):
-            ir_version = str(existing_ir.get("version") or "v1")
-        nodes: list[object] = []
-        for key in ("triggers", "gates", "effects", "queries"):
-            values = validated_config.get(key, [])
-            if isinstance(values, list):
-                nodes.extend(values)
-        pack_payload["ir"] = {
-            "version": ir_version,
-            "nodes": nodes,
-            "edges": validated_config.get("edges", []),
-        }
-        if graph_payloads is not None:
-            pack_payload["graphs"] = graph_payloads
-        return pack_payload
-
-    def _write_workflow_editor_pack_config(
-        self,
-        *,
-        config_path: Path,
-        pack_path: Path,
-        workflow_packs: list[object],
-        validated_config: dict[str, object],
-        graph_payloads: list[dict[str, object]] | None,
-    ) -> None:
-        pack_payload = self._workflow_editor_pack_payload_to_persist(
-            pack_path=pack_path,
-            validated_config=validated_config,
-            graph_payloads=graph_payloads,
+    def _workflow_editor_configured_pack_references(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_configured_pack_references(
+            *args, **kwargs
         )
 
-        graph_keys = {"triggers", "gates", "effects", "queries", "edges"}
-        wrapper_config = {
-            key: value for key, value in validated_config.items() if key not in graph_keys
-        }
-        wrapper_config["workflow_packs"] = workflow_packs
-        wrapper_config.pop("workflow_ir", None)
-        wrapper_config.pop("workflow_graphs", None)
+    def _workflow_editor_selected_pack_reference(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_selected_pack_reference(*args, **kwargs)
 
-        self._write_json_file_atomic(config_path, wrapper_config)
-        self._write_json_file_atomic(pack_path, pack_payload)
+    def _workflow_editor_pack_descriptors(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_descriptors(*args, **kwargs)
 
-    def _validate_selected_workflow_pack_runtime_config(
-        self,
-        *,
-        raw_config: dict[str, object],
-        workflow_packs: list[object],
-        selected_reference: str,
-        selected_validation: WorkflowEditorValidationPayload,
-    ) -> None:
-        graph_keys = {
-            "triggers",
-            "gates",
-            "effects",
-            "queries",
-            "edges",
-            "workflow_ir",
-            "workflow_graphs",
-        }
-        full_config = {
-            key: value
-            for key, value in raw_config.items()
-            if key not in graph_keys
-        }
-        full_config["workflow_packs"] = workflow_packs
-        combined_graphs: list[dict[str, object]] = []
-        for collection_name in ("triggers", "gates", "effects", "queries"):
-            full_config[collection_name] = []
-        full_config["edges"] = []
-
-        for pack_reference in workflow_packs:
-            normalized_reference = self._workflow_editor_pack_reference(pack_reference)
-            if normalized_reference == selected_reference:
-                pack_config = selected_validation.config
-                for collection_name in ("triggers", "gates", "effects", "queries"):
-                    entries = pack_config.get(collection_name, [])
-                    if isinstance(entries, list):
-                        full_config[collection_name].extend(
-                            entry for entry in entries if isinstance(entry, dict)
-                        )
-                edges = pack_config.get("edges", [])
-                if isinstance(edges, list):
-                    full_config["edges"].extend(edge for edge in edges if isinstance(edge, dict))
-                combined_graphs.extend(
-                    graph.model_dump(mode="json") for graph in selected_validation.graphs
-                )
-                continue
-
-            composition = compose_workflow_ir(
-                project_dir=self.project_dir,
-                workflow_packs=[normalized_reference],
-            )
-            for collection_name in ("triggers", "gates", "effects", "queries"):
-                full_config[collection_name].extend(
-                    dict(entry) for entry in getattr(composition, collection_name)
-                )
-            full_config["edges"].extend(dict(edge) for edge in composition.edges)
-            combined_graphs.extend(graph.model_dump(mode="json") for graph in composition.graphs)
-
-        self._validate_workflow_editor_document(
-            config=full_config,
-            layout={},
-            graphs=combined_graphs,
-            base_config={},
+    def _workflow_editor_config_for_pack_composition(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_config_for_pack_composition(
+            *args, **kwargs
         )
 
-    def _write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:
-        encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=path.parent,
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            temp_file.write(encoded)
-            temp_file.flush()
-            os.fsync(temp_file.fileno())
-        try:
-            os.replace(temp_path, path)
-            dir_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
+    def _workflow_editor_pack_graphs(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_graphs(*args, **kwargs)
+
+    def _workflow_editor_stored_graphs(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_stored_graphs(*args, **kwargs)
+
+    def _workflow_editor_nodes_by_id(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_nodes_by_id(*args, **kwargs)
+
+    def _workflow_editor_connected_graph_node_ids(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_connected_graph_node_ids(*args, **kwargs)
+
+    def _workflow_editor_default_graph_name(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_default_graph_name(*args, **kwargs)
+
+    def _workflow_editor_graph_id_base(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_graph_id_base(*args, **kwargs)
+
+    def _coerce_workflow_editor_graphs(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._coerce_workflow_editor_graphs(*args, **kwargs)
+
+    def _workflow_editor_graphs_for_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_graphs_for_config(*args, **kwargs)
+
+    def _workflow_editor_graph_payloads_to_persist(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_graph_payloads_to_persist(
+            *args, **kwargs
+        )
+
+    def _compose_workflow_editor_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._compose_workflow_editor_config(*args, **kwargs)
+
+    def _workflow_editor_pack_backed_save_paths(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_backed_save_paths(*args, **kwargs)
+
+    def _workflow_editor_pack_payload_to_persist(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_editor_pack_payload_to_persist(*args, **kwargs)
+
+    def _write_workflow_editor_pack_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._write_workflow_editor_pack_config(*args, **kwargs)
+
+    def _validate_selected_workflow_pack_runtime_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._validate_selected_workflow_pack_runtime_config(
+            *args, **kwargs
+        )
+
+    def _write_json_file_atomic(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._write_json_file_atomic(*args, **kwargs)
 
     def _workflow_generation_request_payload(
         self,
@@ -15572,275 +7991,32 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         include_current_packs: bool,
         model: str,
     ) -> dict[str, object]:
-        context = {
-            "directory_path": directory_path,
-            "node_catalog": self._workflow_generation_catalog_context(catalog),
-            "examples": self._workflow_generation_examples() if include_current_packs else [],
-            "rules": [
-                "Return one connected workflow graph unless the user explicitly asks for multiple.",
-                "Every node id must be stable, lowercase, unique, and easy to read.",
-                "Use only node types listed in node_catalog.",
-                "Trigger nodes must not have inbound edges.",
-                "Avoid cycles unless a listed output port explicitly models a loop body.",
-                "Use binding expressions like ${{node_id.output.path}} only for upstream nodes.",
-                "Do not invent secrets, tokens, passwords, phone numbers, or private endpoints.",
-                "Prefer placeholders for operator-specific values that the user can edit later.",
-            ],
-        }
-        user_payload = {
-            "workflow_description": description,
-            "generation_context": context,
-        }
-        return {
-            "model": model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "You generate safe draft workflow graphs for the Agent Sandbox "
-                                "Admin Web workflow editor. The draft is preview-only and will be "
-                                "validated before it can be saved. Return only data that conforms "
-                                "to the supplied schema."
-                            ),
-                        }
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": json.dumps(user_payload, sort_keys=True),
-                        }
-                    ],
-                },
-            ],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "workflow_graph_draft",
-                    "strict": True,
-                    "schema": self._workflow_generation_response_schema(catalog),
-                }
-            },
-            "temperature": 0.2,
-            "max_output_tokens": 12000,
-        }
+        return self.workflow_generation_admin._workflow_generation_request_payload(
+            description=description,
+            directory_path=directory_path,
+            catalog=catalog,
+            include_current_packs=include_current_packs,
+            model=model,
+        )
 
     def _workflow_generation_response_schema(
         self, catalog: WorkflowEditorCatalogPayload
     ) -> dict[str, object]:
-        node_types = sorted({entry.type for entry in catalog.nodes})
-        node_type_schema: dict[str, object] = {"type": "string"}
-        if node_types:
-            node_type_schema["enum"] = node_types
-        return {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["graph", "nodes", "edges", "warnings"],
-            "properties": {
-                "graph": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": [
-                        "id",
-                        "name",
-                        "description",
-                        "directory_path",
-                        "directory_paths",
-                        "user_ids",
-                    ],
-                    "properties": {
-                        "id": {"type": "string"},
-                        "name": {"type": "string"},
-                        "description": {"type": ["string", "null"]},
-                        "directory_path": {"type": "string"},
-                        "directory_paths": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Legacy compatibility field; one directory only.",
-                        },
-                        "user_ids": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-                "nodes": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": [
-                            "id",
-                            "kind",
-                            "type",
-                            "display_name",
-                            "config_json",
-                        ],
-                        "properties": {
-                            "id": {"type": "string"},
-                            "kind": {
-                                "type": "string",
-                                "enum": ["trigger", "gate", "effect", "query"],
-                            },
-                            "type": node_type_schema,
-                            "display_name": {"type": "string"},
-                            "config_json": {
-                                "type": "string",
-                                "description": (
-                                    "JSON object string containing node fields other than "
-                                    "id, display_name, and type."
-                                ),
-                            },
-                        },
-                    },
-                },
-                "edges": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": [
-                            "source_id",
-                            "source_port",
-                            "target_id",
-                            "allow_cycle",
-                        ],
-                        "properties": {
-                            "source_id": {"type": "string"},
-                            "source_port": {"type": ["string", "null"]},
-                            "target_id": {"type": "string"},
-                            "allow_cycle": {"type": "boolean"},
-                        },
-                    },
-                },
-                "warnings": {"type": "array", "items": {"type": "string"}},
-            },
-        }
+        return self.workflow_generation_admin._workflow_generation_response_schema(catalog)
 
     def _workflow_generation_catalog_context(
         self, catalog: WorkflowEditorCatalogPayload
     ) -> list[dict[str, object]]:
-        result: list[dict[str, object]] = []
-        for entry in catalog.nodes:
-            fields: list[dict[str, object]] = []
-            for field in entry.fields:
-                field_payload: dict[str, object] = {
-                    "key": field.key,
-                    "kind": field.kind,
-                    "required": field.required,
-                    "bindable": field.bindable,
-                    "read_only": field.read_only,
-                }
-                if field.default_value is not None:
-                    field_payload["default_value"] = field.default_value
-                if field.options:
-                    field_payload["options"] = [option.value for option in field.options[:50]]
-                fields.append(field_payload)
-            result.append(
-                {
-                    "kind": entry.kind,
-                    "type": entry.type,
-                    "label": entry.label,
-                    "description": entry.description,
-                    "fields": fields,
-                    "input_ports": [port.key for port in entry.input_ports],
-                    "output_ports": [port.key for port in entry.output_ports],
-                }
-            )
-        return result
+        return self.workflow_generation_admin._workflow_generation_catalog_context(catalog)
 
     def _workflow_generation_examples(self) -> list[dict[str, object]]:
-        try:
-            document = self._read_composed_workflow_editor_document()
-        except ValueError:
-            return []
-        nodes_by_id = self._workflow_editor_nodes_by_id(document.config)
-        examples: list[dict[str, object]] = []
-        for graph in document.graphs[:6]:
-            node_ids = set(graph.node_ids)
-            nodes = [
-                self._sanitize_workflow_generation_value(nodes_by_id[node_id])
-                for node_id in graph.node_ids
-                if node_id in nodes_by_id
-            ]
-            edges = [
-                self._sanitize_workflow_generation_value(edge)
-                for edge in document.config.get("edges", [])
-                if isinstance(edge, dict)
-                and edge.get("source_id") in node_ids
-                and edge.get("target_id") in node_ids
-            ]
-            examples.append(
-                {
-                    "graph": self._sanitize_workflow_generation_value(
-                        graph.model_dump(mode="json")
-                    ),
-                    "nodes": nodes,
-                    "edges": edges,
-                }
-            )
-        encoded = json.dumps(examples, sort_keys=True)
-        if len(encoded) <= 24000:
-            return examples
-        trimmed: list[dict[str, object]] = []
-        total = 0
-        for example in examples:
-            candidate_size = len(json.dumps(example, sort_keys=True))
-            if trimmed and total + candidate_size > 24000:
-                break
-            trimmed.append(example)
-            total += candidate_size
-        return trimmed
+        return self.workflow_generation_admin._workflow_generation_examples()
 
     def _sanitize_workflow_generation_value(self, value: object) -> object:
-        if isinstance(value, dict):
-            result: dict[str, object] = {}
-            for key, entry in value.items():
-                key_text = str(key)
-                if any(marker in key_text.lower() for marker in _SENSITIVE_PAYLOAD_MARKERS):
-                    result[key_text] = "[redacted]"
-                else:
-                    result[key_text] = self._sanitize_workflow_generation_value(entry)
-            return result
-        if isinstance(value, list):
-            return [self._sanitize_workflow_generation_value(entry) for entry in value]
-        if isinstance(value, str) and len(value) > 1000:
-            return f"{value[:1000]}..."
-        return value
+        return self.workflow_generation_admin._sanitize_workflow_generation_value(value)
 
     def _workflow_generation_response_text(self, payload: object) -> str:
-        if not isinstance(payload, dict):
-            raise ValueError("OpenAI workflow generation response must be a JSON object.")
-        output_text = payload.get("output_text")
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text
-        output = payload.get("output")
-        if isinstance(output, list):
-            parts: list[str] = []
-            for item in output:
-                if not isinstance(item, dict):
-                    continue
-                content = item.get("content")
-                if not isinstance(content, list):
-                    continue
-                for content_item in content:
-                    if not isinstance(content_item, dict):
-                        continue
-                    content_type = str(content_item.get("type") or "")
-                    if content_type == "refusal":
-                        refusal = str(content_item.get("refusal") or "").strip()
-                        raise ValueError(
-                            f"OpenAI workflow generation was refused{': ' + refusal if refusal else ''}."
-                        )
-                    text = content_item.get("text")
-                    if content_type in {"output_text", "text"} and isinstance(text, str):
-                        parts.append(text)
-            joined = "".join(parts).strip()
-            if joined:
-                return joined
-        raise ValueError("OpenAI workflow generation response did not include output text.")
+        return self.workflow_generation_admin._workflow_generation_response_text(payload)
 
     def _workflow_generation_materialize_payload(
         self,
@@ -15854,1776 +8030,133 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         list[WorkflowEditorGraphMetadata],
         list[str],
     ]:
-        catalog_by_type = {entry.type: entry for entry in catalog.nodes}
-        nodes_payload = payload.get("nodes")
-        if not isinstance(nodes_payload, list) or not nodes_payload:
-            raise ValueError("Generated workflow must include at least one node.")
-        config: dict[str, object] = {
-            "triggers": [],
-            "gates": [],
-            "effects": [],
-            "queries": [],
-            "edges": [],
-        }
-        seen_node_ids: set[str] = set()
-        ordered_generated_node_ids: list[str] = []
-        for raw_node in nodes_payload:
-            if not isinstance(raw_node, dict):
-                raise ValueError("Generated workflow nodes must be JSON objects.")
-            node_id = str(raw_node.get("id") or "").strip()
-            display_name = str(raw_node.get("display_name") or "").strip()
-            node_type = str(raw_node.get("type") or "").strip()
-            if not node_id or not display_name or not node_type:
-                raise ValueError("Generated workflow nodes require id, display_name, and type.")
-            if node_id in seen_node_ids:
-                raise ValueError(f"Generated workflow contains duplicate node id: {node_id}")
-            seen_node_ids.add(node_id)
-            ordered_generated_node_ids.append(node_id)
-            catalog_entry = catalog_by_type.get(node_type)
-            if catalog_entry is None:
-                raise ValueError(f"Generated workflow used unknown node type: {node_type}")
-            config_json = raw_node.get("config_json")
-            if not isinstance(config_json, str):
-                raise ValueError(f"Generated workflow node {node_id} must include config_json.")
-            try:
-                node_config = json.loads(config_json or "{}")
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Generated workflow node {node_id} has invalid config_json: {exc.msg}"
-                ) from exc
-            if not isinstance(node_config, dict):
-                raise ValueError(
-                    f"Generated workflow node {node_id} config_json must decode to an object."
-                )
-            for envelope_key in ("id", "display_name", "type"):
-                node_config.pop(envelope_key, None)
-            materialized_node = {
-                "id": node_id,
-                "display_name": display_name,
-                "type": node_type,
-                **node_config,
-            }
-            collection = {
-                "trigger": "triggers",
-                "gate": "gates",
-                "effect": "effects",
-                "query": "queries",
-            }[catalog_entry.kind]
-            config[collection].append(materialized_node)  # type: ignore[index]
-
-        edges_payload = payload.get("edges")
-        if not isinstance(edges_payload, list):
-            raise ValueError("Generated workflow edges must be a JSON array.")
-        seen_edges: set[tuple[str, str | None, str]] = set()
-        for raw_edge in edges_payload:
-            if not isinstance(raw_edge, dict):
-                raise ValueError("Generated workflow edges must be JSON objects.")
-            source_id = str(raw_edge.get("source_id") or "").strip()
-            target_id = str(raw_edge.get("target_id") or "").strip()
-            source_port_raw = raw_edge.get("source_port")
-            source_port = (
-                str(source_port_raw).strip()
-                if isinstance(source_port_raw, str) and source_port_raw.strip()
-                else None
-            )
-            if not source_id or not target_id:
-                raise ValueError("Generated workflow edges require source_id and target_id.")
-            if source_id not in seen_node_ids or target_id not in seen_node_ids:
-                raise ValueError(
-                    f"Generated workflow edge references unknown node: {source_id} -> {target_id}"
-                )
-            edge_key = (source_id, source_port, target_id)
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            edge: dict[str, object] = {
-                "source_id": source_id,
-                "target_id": target_id,
-            }
-            if source_port is not None:
-                edge["source_port"] = source_port
-            if bool(raw_edge.get("allow_cycle")):
-                edge["allow_cycle"] = True
-            config["edges"].append(edge)  # type: ignore[index]
-
-        graph_payload = payload.get("graph")
-        if not isinstance(graph_payload, dict):
-            raise ValueError("Generated workflow graph metadata is required.")
-        graph_id = str(graph_payload.get("id") or "").strip() or "generated-workflow"
-        graph_name = str(graph_payload.get("name") or "").strip() or "Generated workflow"
-        graph_input = dict(graph_payload)
-        if "directory_path" not in graph_input and "directory_paths" not in graph_input:
-            graph_input["directory_path"] = directory_path
-        graph_input["node_ids"] = ordered_generated_node_ids
-        graph = WorkflowEditorGraphMetadata.model_validate(
-            {
-                "id": graph_id,
-                "name": graph_name,
-                "description": str(graph_payload.get("description") or "").strip() or None,
-                **graph_input,
-            }
+        return self.workflow_generation_admin._workflow_generation_materialize_payload(
+            payload,
+            directory_path=directory_path,
+            catalog=catalog,
         )
-        warnings_payload = payload.get("warnings")
-        warnings = (
-            [str(warning).strip() for warning in warnings_payload if str(warning).strip()]
-            if isinstance(warnings_payload, list)
-            else []
-        )
-        layout = self._workflow_generation_layout(config)
-        return config, layout, [graph], warnings
 
     def _workflow_generation_layout(self, config: dict[str, object]) -> dict[str, object]:
-        nodes_by_id = self._workflow_editor_nodes_by_id(config)
-        ordered_node_ids = list(nodes_by_id)
-        inbound_count = {node_id: 0 for node_id in ordered_node_ids}
-        outbound: dict[str, list[str]] = {node_id: [] for node_id in ordered_node_ids}
-        edges = config.get("edges")
-        if isinstance(edges, list):
-            for edge in edges:
-                if not isinstance(edge, dict):
-                    continue
-                source_id = str(edge.get("source_id") or "").strip()
-                target_id = str(edge.get("target_id") or "").strip()
-                if source_id not in nodes_by_id or target_id not in nodes_by_id:
-                    continue
-                outbound[source_id].append(target_id)
-                inbound_count[target_id] += 1
-        initial_queue = [
-            node_id for node_id in ordered_node_ids if inbound_count[node_id] == 0
-        ] or ordered_node_ids[:1]
-        queue = deque(initial_queue)
-        queued_node_ids = set(initial_queue)
-        processed_node_ids: set[str] = set()
-        levels: dict[str, int] = {}
-        while len(processed_node_ids) < len(ordered_node_ids):
-            if not queue:
-                next_node_id = next(
-                    (node_id for node_id in ordered_node_ids if node_id not in processed_node_ids),
-                    None,
-                )
-                if next_node_id is None:
-                    break
-                queue.append(next_node_id)
-                queued_node_ids.add(next_node_id)
-            node_id = queue.popleft()
-            queued_node_ids.discard(node_id)
-            if node_id in processed_node_ids:
-                continue
-            processed_node_ids.add(node_id)
-            level = levels.get(node_id, 0)
-            for target_id in outbound.get(node_id, []):
-                if target_id in processed_node_ids:
-                    continue
-                levels[target_id] = max(levels.get(target_id, 0), level + 1)
-                inbound_count[target_id] -= 1
-                if inbound_count[target_id] <= 0 and target_id not in queued_node_ids:
-                    queue.append(target_id)
-                    queued_node_ids.add(target_id)
-        for node_id in ordered_node_ids:
-            levels.setdefault(node_id, 0)
-        rows_by_level: dict[int, int] = {}
-        layout_nodes: dict[str, dict[str, float]] = {}
-        for node_id in ordered_node_ids:
-            level = levels[node_id]
-            row = rows_by_level.get(level, 0)
-            rows_by_level[level] = row + 1
-            layout_nodes[node_id] = {
-                "x": float(120 + level * 300),
-                "y": float(100 + row * 180),
-            }
-        return {"nodes": layout_nodes}
+        return self.workflow_generation_admin._workflow_generation_layout(config)
 
-    def _read_composed_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        config_path = self._worker_global_config_path("trigger-orchestrator")
-        if config_path is None:
-            raise ValueError("Unknown worker: trigger-orchestrator")
-        config_exists = config_path.exists()
-        if config_exists:
-            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
-            if not isinstance(raw_config, dict):
-                raise ValueError(f"worker config file {config_path} must contain a JSON object")
-        else:
-            model = _WORKER_GLOBAL_CONFIG_MODELS["trigger-orchestrator"]
-            raw_config = model.model_validate(self.config.model_dump(mode="json")).model_dump(
-                mode="json", exclude_none=True
-            )
-        composed_config = self._compose_workflow_editor_config(raw_config)
-        composed_config = self._strip_system_managed_workflows(composed_config)
-        normalized_candidate = self._normalize_workflow_editor_config(composed_config)
-        normalized_config = self._validate_worker_global_config_payload(
-            "trigger-orchestrator", normalized_candidate
-        )
-        layout_path = self._workflow_editor_layout_path(raw_config)
-        layout_exists = layout_path.exists()
-        raw_layout: dict[str, object]
-        if layout_exists:
-            loaded_layout = json.loads(layout_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded_layout, dict):
-                raise ValueError(f"workflow layout file {layout_path} must contain a JSON object")
-            raw_layout = loaded_layout
-        else:
-            raw_layout = {}
-        layout = self._validate_workflow_editor_layout(
-            raw_layout,
-            node_ids=self._collect_workflow_node_ids(normalized_config),
-            allow_unknown_nodes=True,
-        )
-        graphs = self._workflow_editor_graphs_for_config(
-            config=normalized_config,
-            graphs=self._workflow_editor_stored_graphs(raw_config),
-        )
-        self._load_workflow_provider_output_schemas(normalized_config)
-        output_schemas = derive_workflow_output_schemas(normalized_config)
-        saved_at = (
-            datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC) if config_exists else None
-        )
-        revision = self._workflow_editor_revision(
-            config=normalized_config,
-            layout=layout,
-            graphs=graphs,
-        )
-        workflow_packs = self._workflow_editor_pack_descriptors(raw_config)
-        document_scope = "composed" if workflow_packs else "inline"
-        return WorkflowEditorDocumentPayload(
-            config_path=str(config_path),
-            layout_path=str(layout_path),
-            config_exists=config_exists,
-            layout_exists=layout_exists,
-            document_scope=document_scope,
-            workflow_packs=workflow_packs,
-            selected_workflow_pack=None,
-            config=normalized_config,
-            layout=layout,
-            graphs=graphs,
-            output_schemas=output_schemas,
-            saved_at=saved_at,
-            revision=revision,
+    def _read_composed_workflow_editor_document(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_composed_workflow_editor_document(*args, **kwargs)
+
+    def _read_workflow_editor_document(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_workflow_editor_document(*args, **kwargs)
+
+    def _communication_target_options(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._communication_target_options(*args, **kwargs)
+
+    def _communication_send_target_options(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._communication_send_target_options(*args, **kwargs)
+
+    def _communication_notification_target_options(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._communication_notification_target_options(
+            *args, **kwargs
         )
 
-    def _read_workflow_editor_document(
-        self,
-        workflow_pack: str | None = None,
-    ) -> WorkflowEditorDocumentPayload:
-        config_path = self._worker_global_config_path("trigger-orchestrator")
-        if config_path is None:
-            raise ValueError("Unknown worker: trigger-orchestrator")
-        config_exists = config_path.exists()
-        if config_exists:
-            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
-            if not isinstance(raw_config, dict):
-                raise ValueError(f"worker config file {config_path} must contain a JSON object")
-        else:
-            model = _WORKER_GLOBAL_CONFIG_MODELS["trigger-orchestrator"]
-            raw_config = model.model_validate(self.config.model_dump(mode="json")).model_dump(
-                mode="json", exclude_none=True
-            )
+    def _communication_read_target_options(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._communication_read_target_options(*args, **kwargs)
 
-        selected_reference = self._workflow_editor_selected_pack_reference(
-            raw_config,
-            workflow_pack,
-        )
-        if selected_reference is None:
-            return self._read_composed_workflow_editor_document()
-        if isinstance(raw_config.get("workflow_ir"), dict):
-            raise ValueError(
-                "Workflow editor cannot edit configs that combine workflow_packs with inline workflow_ir; "
-                "edit the pack files directly."
-            )
+    def _agent_communication_target_options(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._agent_communication_target_options(*args, **kwargs)
 
-        workflow_packs = self._workflow_editor_pack_descriptors(
-            raw_config,
-            selected_reference=selected_reference,
-        )
-        selected_pack = next(
-            (
-                descriptor
-                for descriptor in workflow_packs
-                if descriptor.reference == selected_reference
-            ),
-            None,
-        )
-        if selected_pack is None:
-            raise ValueError(f"Workflow pack is not configured: {selected_reference}")
-        if not selected_pack.exists:
-            raise ValueError(
-                f"workflow pack {selected_reference!r} does not exist at {selected_pack.path}"
-            )
+    def _read_workflow_editor_catalog(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._read_workflow_editor_catalog(*args, **kwargs)
 
-        pack_config, pack_graphs = self._workflow_editor_pack_graphs(
-            raw_config=raw_config,
-            pack_reference=selected_reference,
-        )
-        normalized_candidate = self._normalize_workflow_editor_config(pack_config)
-        normalized_config = self._validate_worker_global_config_payload(
-            "trigger-orchestrator", normalized_candidate
-        )
-        layout_path = Path(selected_pack.layout_path)
-        layout_exists = layout_path.exists()
-        raw_layout: dict[str, object]
-        if layout_exists:
-            loaded_layout = json.loads(layout_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded_layout, dict):
-                raise ValueError(f"workflow layout file {layout_path} must contain a JSON object")
-            raw_layout = loaded_layout
-        else:
-            raw_layout = {}
-        layout = self._validate_workflow_editor_layout(
-            raw_layout,
-            node_ids=self._collect_workflow_node_ids(normalized_config),
-            allow_unknown_nodes=True,
-        )
-        graphs = self._workflow_editor_graphs_for_config(
-            config=normalized_config,
-            graphs=pack_graphs,
-        )
-        self._load_workflow_provider_output_schemas(normalized_config)
-        output_schemas = derive_workflow_output_schemas(normalized_config)
-        pack_path = Path(selected_pack.path)
-        saved_at = (
-            datetime.fromtimestamp(pack_path.stat().st_mtime, tz=UTC)
-            if pack_path.exists()
-            else None
-        )
-        revision = self._workflow_editor_revision(
-            config=normalized_config,
-            layout=layout,
-            graphs=graphs,
-        )
-        return WorkflowEditorDocumentPayload(
-            config_path=str(config_path),
-            layout_path=str(layout_path),
-            config_exists=config_exists,
-            layout_exists=layout_exists,
-            document_scope="pack",
-            workflow_packs=workflow_packs,
-            selected_workflow_pack=selected_pack,
-            config=normalized_config,
-            layout=layout,
-            graphs=graphs,
-            output_schemas=output_schemas,
-            saved_at=saved_at,
-            revision=revision,
-        )
+    def _validate_workflow_editor_document(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._validate_workflow_editor_document(*args, **kwargs)
 
-    def _communication_target_options(
-        self, directory_path: str | None, *, purpose: str
-    ) -> list[WorkflowEditorFieldOption]:
-        normalized_directory = self._normalize_directory_reference(directory_path)
-        result = self.directory_admin.compute_effective_config(
-            normalized_directory,
-            domain=COMMUNICATION_TARGETS_DOMAIN,
-        )
-        if not result.ok or result.data is None:
-            messages = [error.message for error in result.errors]
-            raise ValueError(
-                "; ".join(messages)
-                or f"Communication targets could not be resolved for {normalized_directory!r}."
-            )
-        targets = result.data.resolution.effective_config.get("targets")
-        if not isinstance(targets, list):
-            return []
+    def _save_workflow_editor_document_unlocked(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._save_workflow_editor_document_unlocked(*args, **kwargs)
 
-        options: list[WorkflowEditorFieldOption] = []
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            provider = str(target.get("provider") or "").strip()
-            capabilities = set(_communication_target_capabilities(target))
-            if purpose == "send-message":
-                if provider == "teams" and not capabilities.intersection({"write", "reply"}):
-                    continue
-                if provider == "discord" and "write" not in capabilities:
-                    continue
-                if provider == "email" and "write" not in capabilities:
-                    continue
-                if provider not in {"teams", "discord", "email"}:
-                    continue
-            elif purpose == "notification":
-                if provider not in {"teams", "discord", "email"}:
-                    continue
-                if "notify" not in capabilities:
-                    continue
-            elif purpose == "read-message":
-                if provider not in {"teams", "discord", "email"}:
-                    continue
-                if "read" not in capabilities:
-                    continue
-                if _communication_target_shape(target) == "teams_user":
-                    continue
-            elif purpose == "agent-session":
-                if provider not in {"teams", "discord", "email"}:
-                    continue
-                policy = target.get("policy")
-                if (
-                    provider == "email"
-                    and not str(
-                        policy.get("auth_profile_ref") if isinstance(policy, dict) else ""
-                    ).strip()
-                ):
-                    continue
-                if provider == "email":
-                    if not {"read", "write"}.issubset(capabilities):
-                        continue
-                elif not capabilities.intersection({"read", "write", "reply"}):
-                    continue
-                if (
-                    _communication_target_shape(target) == "teams_user"
-                    and "write" not in capabilities
-                ):
-                    continue
-            else:
-                continue
-            option = _communication_target_option(target, purpose=purpose)
-            if option is not None:
-                options.append(option)
-        return options
+    def _save_workflow_editor_document(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._save_workflow_editor_document(*args, **kwargs)
 
-    def _communication_send_target_options(
-        self, directory_path: str | None
-    ) -> list[WorkflowEditorFieldOption]:
-        return self._communication_target_options(directory_path, purpose="send-message")
+    def _seed_new_ticket_created_trigger_cursors(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._seed_new_ticket_created_trigger_cursors(*args, **kwargs)
 
-    def _communication_notification_target_options(
-        self, directory_path: str | None
-    ) -> list[WorkflowEditorFieldOption]:
-        return self._communication_target_options(directory_path, purpose="notification")
+    def _clear_workflow_run(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._clear_workflow_run(*args, **kwargs)
 
-    def _communication_read_target_options(
-        self, directory_path: str | None
-    ) -> list[WorkflowEditorFieldOption]:
-        return self._communication_target_options(directory_path, purpose="read-message")
+    def _dismiss_workflow_node_failures(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._dismiss_workflow_node_failures(*args, **kwargs)
 
-    def _agent_communication_target_options(
-        self, directory_path: str | None
-    ) -> list[WorkflowEditorFieldOption]:
-        return self._communication_target_options(directory_path, purpose="agent-session")
+    def _resume_workflow_run(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._resume_workflow_run(*args, **kwargs)
 
-    def _read_workflow_editor_catalog(
-        self, directory_path: str | None = None
-    ) -> WorkflowEditorCatalogPayload:
-        skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
-        tool_options = _tool_field_options()
-        communication_send_target_options = self._communication_send_target_options(directory_path)
-        communication_notification_target_options = self._communication_notification_target_options(
-            directory_path
-        )
-        communication_read_target_options = self._communication_read_target_options(directory_path)
-        agent_communication_target_options = self._agent_communication_target_options(
-            directory_path
-        )
-        nodes: list[WorkflowEditorNodeCatalogEntry] = []
-        seen_node_types: set[str] = set()
-        for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
-            node = entry.model_copy(
-                deep=True,
-                update={
-                    "description": (
-                        entry.description or _WORKFLOW_EDITOR_NODE_DESCRIPTIONS.get(entry.type)
-                    )
-                },
-            )
-            if node.type in {"effect:vm:create", "effect:agent:create"}:
-                node.fields = [
-                    field.model_copy(update={"options": skill_options})
-                    if field.key == "codex_skills"
-                    else field.model_copy(update={"options": tool_options})
-                    if field.key == "allowed_tools"
-                    else field.model_copy(update={"options": agent_communication_target_options})
-                    if node.type == "effect:agent:create"
-                    and field.key == "communication_target_ids"
-                    else field
-                    for field in node.fields
-                ]
-            if node.type == "effect:communication:send-message":
-                node.fields = [
-                    field.model_copy(update={"options": communication_send_target_options})
-                    if field.key == "communication_target_id"
-                    else field
-                    for field in node.fields
-                ]
-            if node.type == "effect:notification:send":
-                node.fields = [
-                    field.model_copy(update={"options": communication_notification_target_options})
-                    if field.key == "communication_target_id"
-                    else field
-                    for field in node.fields
-                ]
-            if node.type == "effect:session:approve-mcp-tools-for-run":
-                node.fields = [
-                    field.model_copy(update={"options": communication_notification_target_options})
-                    if field.key == "approval_notification_target_ids"
-                    else field
-                    for field in node.fields
-                ]
-            if node.type == "query:communication:messages":
-                node.fields = [
-                    field.model_copy(update={"options": communication_read_target_options})
-                    if field.key == "communication_target_id"
-                    else field
-                    for field in node.fields
-                ]
-            if node.type == "trigger:communication:new-message":
-                node.fields = [
-                    field.model_copy(update={"options": communication_read_target_options})
-                    if field.key == "communication_target_ids"
-                    else field
-                    for field in node.fields
-                ]
-            if node.type in seen_node_types:
-                raise ValueError(f"Duplicate workflow editor catalog entry: {node.type}")
-            seen_node_types.add(node.type)
-            nodes.append(node)
-        provider_catalog = self._load_workflow_provider_catalog(
-            self._read_worker_provider_loader_config("trigger-orchestrator")
-        )
-        for entry in provider_catalog.workflow_editor_catalog_entries:
-            node = entry.model_copy(deep=True)
-            if node.type in seen_node_types:
-                raise ValueError(
-                    f"Provider workflow editor catalog entry duplicates core node type: {node.type}"
-                )
-            seen_node_types.add(node.type)
-            nodes.append(node)
-        return WorkflowEditorCatalogPayload(nodes=nodes)
+    def _workflow_run_store_paths(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_run_store_paths(*args, **kwargs)
 
-    def _validate_workflow_editor_document(
-        self,
-        *,
-        config: dict[str, object],
-        layout: dict[str, object] | None = None,
-        graphs: list[dict[str, object]] | None = None,
-        base_config: dict[str, object] | None = None,
-        workflow_pack: str | None = None,
-    ) -> WorkflowEditorValidationPayload:
-        merged_config = self._merge_system_managed_workflows(
-            editable_config=config,
-            base_config=base_config,
-        )
-        runtime_validation_config = _append_builtin_hidden_workflows(
-            project_dir=self.project_dir,
-            payload=merged_config,
-        )
-        normalized_candidate = self._normalize_workflow_editor_config(runtime_validation_config)
-        normalized_config = self._validate_worker_global_config_payload(
-            "trigger-orchestrator", normalized_candidate
-        )
-        compiled_config, diagnostics = compile_worker_global_config_with_diagnostics(
-            TriggerOrchestratorWorkerGlobalConfig.model_validate(normalized_config)
-        )
-        normalized_config = _strip_default_edge_fields(
-            compiled_config.model_dump(mode="json", exclude_none=True)
-        )
-        editable_normalized_config = self._strip_system_managed_workflows(normalized_config)
-        normalized_layout = self._validate_workflow_editor_layout(
-            layout or {},
-            node_ids=self._collect_workflow_node_ids(editable_normalized_config),
-        )
-        graph_source: object = graphs
-        if graph_source is None and isinstance(base_config, dict):
-            graph_source = self._workflow_editor_stored_graphs(base_config)
-        normalized_graphs = self._workflow_editor_graphs_for_config(
-            config=editable_normalized_config,
-            graphs=graph_source,
-            strict=graphs is not None,
-        )
-        self._load_workflow_provider_output_schemas(editable_normalized_config)
-        output_schemas = derive_workflow_output_schemas(editable_normalized_config)
-        binding_diagnostics = _workflow_binding_diagnostics_for_graphs(
-            editable_normalized_config,
-            normalized_graphs,
-        )
-        agent_create_diagnostics = _workflow_agent_create_diagnostics(
-            editable_normalized_config,
-        )
-        validation = WorkflowEditorValidationPayload(
-            config=editable_normalized_config,
-            layout=normalized_layout,
-            graphs=normalized_graphs,
-            output_schemas=output_schemas,
-            validation_diagnostics=[
-                diagnostic.model_dump(mode="json", exclude_none=True) for diagnostic in diagnostics
-            ]
-            + [
-                diagnostic.model_dump(mode="json", exclude_none=True)
-                for diagnostic in binding_diagnostics
-            ]
-            + [
-                diagnostic.model_dump(mode="json", exclude_none=True)
-                for diagnostic in agent_create_diagnostics
-            ],
-        )
-        if workflow_pack is not None and str(workflow_pack).strip():
-            config_path = self._worker_global_config_path("trigger-orchestrator")
-            if config_path is None:
-                raise ValueError("Unknown worker: trigger-orchestrator")
-            raw_config: dict[str, object] = {}
-            if config_path.exists():
-                loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
-                if not isinstance(loaded_config, dict):
-                    raise ValueError(
-                        f"worker config file {config_path} must contain a JSON object"
-                    )
-                raw_config = loaded_config
-            selected_reference = self._workflow_editor_selected_pack_reference(
-                raw_config,
-                workflow_pack,
-            )
-            workflow_packs = raw_config.get("workflow_packs")
-            if selected_reference is not None and isinstance(workflow_packs, list):
-                self._validate_selected_workflow_pack_runtime_config(
-                    raw_config=raw_config,
-                    workflow_packs=workflow_packs,
-                    selected_reference=selected_reference,
-                    selected_validation=validation,
-                )
-        return validation
+    def _workflow_uses_sqlite_store(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_uses_sqlite_store(*args, **kwargs)
 
-    def _save_workflow_editor_document_unlocked(
-        self,
-        *,
-        config: dict[str, object],
-        layout: dict[str, object] | None = None,
-        graphs: list[dict[str, object]] | None = None,
-        workflow_pack: str | None = None,
-    ) -> WorkflowEditorSavePayload:
-        config_path = self._worker_global_config_path("trigger-orchestrator")
-        if config_path is None:
-            raise ValueError("Unknown worker: trigger-orchestrator")
-        raw_config: dict[str, object] = {}
-        if config_path.exists():
-            loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded_config, dict):
-                raise ValueError(f"worker config file {config_path} must contain a JSON object")
-            raw_config = loaded_config
+    def _workflow_sqlite_store_bundle(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_sqlite_store_bundle(*args, **kwargs)
 
-        selected_reference = self._workflow_editor_selected_pack_reference(
-            raw_config,
-            workflow_pack,
-        )
-        pack_save = self._workflow_editor_pack_backed_save_paths(raw_config, workflow_pack)
-        if selected_reference is None and pack_save is not None:
-            _, configured_workflow_packs = pack_save
-            if configured_workflow_packs:
-                selected_reference = self._workflow_editor_pack_reference(
-                    configured_workflow_packs[0]
-                )
-        workflow_packs = self._workflow_editor_pack_descriptors(
-            raw_config,
-            selected_reference=selected_reference,
-        )
-        selected_pack = (
-            next(
-                (
-                    descriptor
-                    for descriptor in workflow_packs
-                    if descriptor.reference == selected_reference
-                ),
-                None,
-            )
-            if selected_reference is not None
-            else None
-        )
-        validation = self._validate_workflow_editor_document(
-            config=config,
-            layout=layout,
-            graphs=graphs,
-            base_config=None if selected_reference is not None else raw_config,
-        )
-        merged_config = self._merge_system_managed_workflows(
-            editable_config=validation.config,
-            base_config=raw_config,
-        )
-        if selected_reference is not None:
-            existing_editable_config = self._read_workflow_editor_document(
-                workflow_pack=selected_reference,
-            ).config
-        else:
-            existing_editable_config = self._strip_system_managed_workflows(
-                self._compose_workflow_editor_config(raw_config)
-            )
-        self._seed_new_ticket_created_trigger_cursors(
-            previous_config=existing_editable_config,
-            next_config=validation.config,
-        )
-        layout_path = (
-            self._workflow_editor_pack_layout_path(selected_reference)
-            if selected_reference is not None
-            else self._workflow_editor_layout_path(raw_config)
-        )
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        layout_path.parent.mkdir(parents=True, exist_ok=True)
-        if selected_reference is not None:
-            _, stored_graphs = self._workflow_editor_pack_graphs(
-                raw_config=raw_config,
-                pack_reference=selected_reference,
-            )
-        else:
-            stored_graphs = self._workflow_editor_stored_graphs(raw_config)
-        graphs_to_persist = validation.graphs if graphs is not None or stored_graphs else None
-        graph_payloads_to_persist = (
-            self._workflow_editor_graph_payloads_to_persist(
-                raw_graphs=stored_graphs,
-                normalized_graphs=graphs_to_persist,
-            )
-            if graphs_to_persist is not None
-            else None
-        )
-        if pack_save is None:
-            if graph_payloads_to_persist is not None:
-                merged_config["workflow_graphs"] = graph_payloads_to_persist
-            else:
-                merged_config.pop("workflow_graphs", None)
-            self._write_json_file_atomic(config_path, merged_config)
-        else:
-            pack_path, workflow_packs = pack_save
-            pack_path.parent.mkdir(parents=True, exist_ok=True)
-            if selected_reference is None:
-                selected_reference = self._workflow_editor_pack_reference(workflow_packs[0])
-            self._validate_selected_workflow_pack_runtime_config(
-                raw_config=raw_config,
-                workflow_packs=workflow_packs,
-                selected_reference=selected_reference,
-                selected_validation=validation,
-            )
-            pack_payload = self._workflow_editor_pack_payload_to_persist(
-                pack_path=pack_path,
-                validated_config=merged_config,
-                graph_payloads=graph_payloads_to_persist,
-            )
-            self._write_json_file_atomic(pack_path, pack_payload)
-        self._write_json_file_atomic(layout_path, validation.layout)
-        saved_path = pack_path if pack_save is not None else config_path
-        saved_at = datetime.fromtimestamp(saved_path.stat().st_mtime, tz=UTC)
-        revision = self._workflow_editor_revision(
-            config=validation.config,
-            layout=validation.layout,
-            graphs=validation.graphs,
-        )
-        if selected_reference is not None:
-            workflow_packs = self._workflow_editor_pack_descriptors(
-                raw_config,
-                selected_reference=selected_reference,
-            )
-            selected_pack = next(
-                (
-                    descriptor
-                    for descriptor in workflow_packs
-                    if descriptor.reference == selected_reference
-                ),
-                selected_pack,
-            )
-        return WorkflowEditorSavePayload(
-            config_path=str(config_path),
-            layout_path=str(layout_path),
-            document_scope="pack" if selected_reference is not None else "inline",
-            workflow_packs=workflow_packs if selected_reference is not None else [],
-            selected_workflow_pack=selected_pack,
-            config=validation.config,
-            layout=validation.layout,
-            graphs=validation.graphs,
-            output_schemas=validation.output_schemas,
-            validation_diagnostics=validation.validation_diagnostics,
-            saved_at=saved_at,
-            revision=revision,
-        )
+    def _latest_resumable_failed_workflow_record(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._latest_resumable_failed_workflow_record(*args, **kwargs)
 
-    def _save_workflow_editor_document(
-        self,
-        *,
-        config: dict[str, object],
-        layout: dict[str, object] | None = None,
-        graphs: list[dict[str, object]] | None = None,
-        expected_revision: str | None = None,
-        workflow_pack: str | None = None,
-    ) -> WorkflowEditorSavePayload:
-        with self.admin_config_mutation_lock():
-            if expected_revision is not None:
-                current = self._read_workflow_editor_document(workflow_pack=workflow_pack)
-                if current.revision != expected_revision:
-                    raise AdminRevisionConflict(
-                        "Workflow editor document changed before save. Reload the workflow before saving again.",
-                        details={
-                            "current_revision": current.revision,
-                            "current": current.model_dump(mode="json"),
-                        },
-                    )
-            return self._save_workflow_editor_document_unlocked(
-                config=config,
-                layout=layout,
-                graphs=graphs,
-                workflow_pack=workflow_pack,
-            )
+    def _workflow_run_store_bundle(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_run_store_bundle(*args, **kwargs)
 
-    def _seed_new_ticket_created_trigger_cursors(
-        self, *, previous_config: dict[str, object], next_config: dict[str, object]
-    ) -> None:
-        runtime_dir = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=next_config.get("runtime_dir"),
-            fallback=self.config.runtime_dir,
-        )
-        seed_new_ticket_created_trigger_cursors(
-            runtime_dir=runtime_dir,
-            previous_config=previous_config,
-            next_config=next_config,
-        )
+    def _workflow_run_event_records(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_run_event_records(*args, **kwargs)
 
-
-
-    def _clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
-        normalized_event_id = str(event_id or "").strip()
-        if not normalized_event_id:
-            raise ValueError("Workflow run event_id is required.")
-
-        stores = self._workflow_run_store_paths()
-        event_queue_store_path = stores["event_queue_store_path"]
-        effect_execution_store_path = stores["effect_execution_store_path"]
-        gate_execution_store_path = stores["gate_execution_store_path"]
-        await_agent_store_path = stores["await_agent_store_path"]
-        legacy_await_agent_store_path = stores["legacy_await_agent_store_path"]
-
-        cleared_at = _utc_now()
-        clear_reason = "manual_clear_stale_workflow_runs"
-        clear_error = "Manually cleared stale workflow run from editor state."
-
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-            queue_records_updated = queue_store.mark_event_cleared(
-                normalized_event_id,
-                cleared_at=cleared_at,
-                clear_reason=clear_reason,
-                error=clear_error,
-            )
-            effect_records_updated = effect_store.clear_event_records(
-                normalized_event_id,
-                cleared_at=cleared_at,
-                clear_reason=clear_reason,
-                clear_error=clear_error,
-            )
-            gate_records_updated = gate_store.clear_event_records(
-                normalized_event_id,
-                cleared_at=cleared_at,
-                clear_reason=clear_reason,
-                clear_error=clear_error,
-            )
-        else:
-
-            def _clear_queue_records(records: dict[str, TriggerQueueRecord]) -> int:
-                updated = 0
-                for record_key, record in records.items():
-                    record_event_id = str(record.event_id or record_key).strip()
-                    if record_event_id != normalized_event_id:
-                        continue
-                    if record.delivery_state == "delivered":
-                        continue
-                    record.delivery_state = "delivered"
-                    record.delivered_at = cleared_at
-                    record.clear_reason = clear_reason
-                    record.error = clear_error
-                    records[record_key] = record
-                    updated += 1
-                return updated
-
-            from agent_sandbox.daemons.effect_orchestrator import (
-                JsonExecutionStore,
-                JsonGateExecutionStore,
-            )
-
-            queue_records_updated = JsonStore(
-                event_queue_store_path, TriggerQueueRecord
-            ).update_all(_clear_queue_records)
-
-            def _clear_execution_records(records: dict[str, Any]) -> int:
-                updated = 0
-                for execution_id, record in records.items():
-                    record_event_id = str(getattr(record, "event_id", execution_id) or "").strip()
-                    if record_event_id != normalized_event_id:
-                        continue
-                    status = str(getattr(record, "status", "") or "").strip()
-                    if status == "failed":
-                        record.dismissed_at = cleared_at
-                        record.dismiss_reason = "manual_dismiss_errored_workflow_run"
-                        records[execution_id] = record
-                        updated += 1
-                        continue
-                    if status not in {"running", "waiting", "completion_pending"}:
-                        continue
-                    record.status = "failed"
-                    record.finished_at = cleared_at
-                    record.cleared_at = cleared_at
-                    record.clear_reason = clear_reason
-                    record.error = clear_error
-                    record.dismissed_at = cleared_at
-                    record.dismiss_reason = "manual_clear_stale_workflow_runs"
-                    records[execution_id] = record
-                    updated += 1
-                return updated
-
-            effect_records_updated = JsonExecutionStore(effect_execution_store_path).update_all(
-                _clear_execution_records
-            )
-            gate_records_updated = JsonGateExecutionStore(gate_execution_store_path).update_all(
-                _clear_execution_records
-            )
-
-        await_agent_records_removed = 0
-        await_agent_payload = _read_json_object(await_agent_store_path)
-        matching_await_keys = [
-            record_key
-            for record_key, raw_record in await_agent_payload.items()
-            if isinstance(raw_record, dict)
-            and (
-                (_coerce_optional_string(raw_record.get("prompt_event_id")) or record_key)
-                == normalized_event_id
-            )
-        ]
-        for record_key in matching_await_keys:
-            del await_agent_payload[record_key]
-            await_agent_records_removed += 1
-
-        legacy_await_agent_payload = _read_json_object(legacy_await_agent_store_path)
-        legacy_matching_await_keys = [
-            record_key
-            for record_key, raw_record in legacy_await_agent_payload.items()
-            if isinstance(raw_record, dict)
-            and (
-                (_coerce_optional_string(raw_record.get("prompt_event_id")) or record_key)
-                == normalized_event_id
-            )
-        ]
-        for record_key in legacy_matching_await_keys:
-            del legacy_await_agent_payload[record_key]
-            await_agent_records_removed += 1
-
-        if (
-            queue_records_updated == 0
-            and effect_records_updated == 0
-            and gate_records_updated == 0
-            and await_agent_records_removed == 0
-        ):
-            raise ValueError(f"Workflow run not found or already inactive: {normalized_event_id}")
-
-        await_agent_store_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json_file_atomic(await_agent_store_path, await_agent_payload)
-        if legacy_await_agent_store_path.exists() or legacy_await_agent_payload:
-            legacy_await_agent_store_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_json_file_atomic(legacy_await_agent_store_path, legacy_await_agent_payload)
-        self._workflow_event_journal().append(
-            "workflow.run.cleared",
-            source="workflow_editor",
-            subject_id=normalized_event_id,
-            payload={
-                "queue_records_updated": queue_records_updated,
-                "effect_records_updated": effect_records_updated,
-                "gate_records_updated": gate_records_updated,
-                "await_agent_records_removed": await_agent_records_removed,
-            },
-        )
-        return WorkflowRunClearPayload(
-            event_id=normalized_event_id,
-            cleared_at=cleared_at,
-            queue_records_updated=queue_records_updated,
-            effect_records_updated=effect_records_updated,
-            gate_records_updated=gate_records_updated,
-            await_agent_records_removed=await_agent_records_removed,
-        )
-
-    def _dismiss_workflow_node_failures(self, node_id: str) -> WorkflowNodeFailuresDismissPayload:
-        normalized_node_id = str(node_id or "").strip()
-        if not normalized_node_id:
-            raise ValueError("Workflow node_id is required.")
-
-        stores = self._workflow_run_store_paths()
-        dismissed_at = _utc_now()
-        dismiss_reason = "manual_dismiss_node_failures"
-
-        def _dismiss_failed_records(records: dict[str, Any], *, node_id_field: str) -> int:
-            updated = 0
-            for execution_id, record in records.items():
-                record_node_id = str(getattr(record, node_id_field, "") or "").strip()
-                if record_node_id != normalized_node_id:
-                    continue
-                status = str(getattr(record, "status", "") or "").strip()
-                if status != "failed" or getattr(record, "dismissed_at", None):
-                    continue
-                setattr(record, "dismissed_at", dismissed_at)
-                setattr(record, "dismiss_reason", dismiss_reason)
-                records[execution_id] = record
-                updated += 1
-            return updated
-
-        def _dismiss_store(store: Any, *, node_id_field: str) -> int:
-            dismiss_failed_records_for_node = getattr(
-                store, "dismiss_failed_records_for_node", None
-            )
-            if callable(dismiss_failed_records_for_node):
-                return dismiss_failed_records_for_node(
-                    normalized_node_id,
-                    dismissed_at=dismissed_at,
-                    dismiss_reason=dismiss_reason,
-                )
-            return store.update_all(
-                lambda records: _dismiss_failed_records(records, node_id_field=node_id_field)
-            )
-
-        if self._workflow_uses_sqlite_store(stores):
-            _, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-        else:
-            from agent_sandbox.daemons.effect_orchestrator import (
-                JsonExecutionStore,
-                JsonGateExecutionStore,
-            )
-
-            effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
-            gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
-
-        effect_records_updated = _dismiss_store(effect_store, node_id_field="effect_id")
-        gate_records_updated = _dismiss_store(gate_store, node_id_field="gate_id")
-
-        if effect_records_updated or gate_records_updated:
-            self._workflow_event_journal().append(
-                "workflow.node_failures.dismissed",
-                source="workflow_editor",
-                subject_id=normalized_node_id,
-                payload={
-                    "effect_records_updated": effect_records_updated,
-                    "gate_records_updated": gate_records_updated,
-                },
-            )
-
-        return WorkflowNodeFailuresDismissPayload(
-            node_id=normalized_node_id,
-            dismissed_at=dismissed_at,
-            effect_records_updated=effect_records_updated,
-            gate_records_updated=gate_records_updated,
-        )
-
-    def _resume_workflow_run(self, event_id: str) -> WorkflowRunResumePayload:
-        normalized_event_id = str(event_id or "").strip()
-        if not normalized_event_id:
-            raise ValueError("Workflow run event_id is required.")
-
-        stores = self._workflow_run_store_paths()
-        event_queue_store_path = stores["event_queue_store_path"]
-        effect_execution_store_path = stores["effect_execution_store_path"]
-        gate_execution_store_path = stores["gate_execution_store_path"]
-
-        queue_store = None
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-            failed_record = self._latest_resumable_failed_workflow_record(
-                event_id=normalized_event_id,
-                effect_payload={
-                    record.execution_id: record.model_dump(mode="json")
-                    for record in effect_store.list_records_for_event(
-                        normalized_event_id, statuses={"failed"}
-                    )
-                },
-                gate_payload={
-                    record.execution_id: record.model_dump(mode="json")
-                    for record in gate_store.list_records_for_event(
-                        normalized_event_id, statuses={"failed"}
-                    )
-                },
-            )
-        else:
-            failed_record = self._latest_resumable_failed_workflow_record(
-                event_id=normalized_event_id,
-                effect_payload=_read_json_object(effect_execution_store_path),
-                gate_payload=_read_json_object(gate_execution_store_path),
-            )
-        if failed_record is None:
-            raise ValueError(f"Workflow run is not resumable: {normalized_event_id}")
-
-        resumed_at = _utc_now()
-        source_node_id = str(failed_record["source_node_id"])
-        source_trigger_type = str(failed_record["source_trigger_type"])
-        target_node_id = str(failed_record["node_id"])
-        input_payload = dict(failed_record["input_payload"])
-        input_payload["__resume_target_node_id"] = target_node_id
-        input_payload["__resume_source_event_id"] = normalized_event_id
-        resume_event_id = f"{normalized_event_id}:resume:{uuid4().hex[:12]}"
-
-        resume_event = TriggerEvent(
-            event_id=resume_event_id,
-            trigger_id=source_node_id,
-            trigger_type=source_trigger_type,
-            trace_id=str(failed_record["trace_id"]),
-            occurred_at=resumed_at,
-            payload=input_payload,
-        )
-        if queue_store is not None:
-            queue_store.publish(resume_event)
-        else:
-            TriggerEventQueue(event_queue_store_path).publish(resume_event)
-        notify_wake_socket_for_lock(stores["effect_lock_path"])
-        self._workflow_event_journal().append(
-            "workflow.run.resumed",
-            source="workflow_editor",
-            subject_id=normalized_event_id,
-            payload={
-                "resume_event_id": resume_event_id,
-                "source_node_id": source_node_id,
-                "target_node_id": target_node_id,
-            },
-        )
-        return WorkflowRunResumePayload(
-            event_id=normalized_event_id,
-            resumed_at=resumed_at,
-            resume_event_id=resume_event_id,
-            source_node_id=source_node_id,
-            target_node_id=target_node_id,
-        )
-
-    def _workflow_run_store_paths(self) -> dict[str, Any]:
-        worker_payload = self._read_worker_global_config("trigger-orchestrator")
-        worker_config = worker_payload.config
-        runtime_dir = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("runtime_dir"),
-            fallback=self.config.runtime_dir,
-        )
-        backend = str(worker_config.get("orchestration_store_backend") or "sqlite").strip().lower()
-        if backend not in {"sqlite", "json"}:
-            backend = "sqlite"
-        backend_explicit = False
-        try:
-            worker_config_path = Path(worker_payload.path)
-            if worker_config_path.exists():
-                raw_worker_config = json.loads(worker_config_path.read_text(encoding="utf-8"))
-                backend_explicit = (
-                    isinstance(raw_worker_config, dict)
-                    and "orchestration_store_backend" in raw_worker_config
-                )
-        except (OSError, json.JSONDecodeError):
-            backend_explicit = False
-        orchestration_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("orchestration_store_path"),
-            fallback=runtime_dir / "orchestration.db",
-        )
-        event_queue_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("event_queue_store_path"),
-            fallback=runtime_dir / "trigger-orchestrator-events.json",
-        )
-        effect_execution_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("effect_execution_store_path"),
-            fallback=runtime_dir / "effect-orchestrator-executions.json",
-        )
-        gate_execution_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("gate_execution_store_path"),
-            fallback=runtime_dir / "gate-orchestrator-executions.json",
-        )
-        workflow_config_snapshot_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("workflow_config_snapshot_store_path"),
-            fallback=runtime_dir / "workflow-config-snapshots.json",
-        )
-        effect_lock_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("effect_lock_path"),
-            fallback=runtime_dir / "effect-orchestrator.lock",
-        )
-        if (
-            backend == "sqlite"
-            and not backend_explicit
-            and not orchestration_store_path.exists()
-            and (
-                event_queue_store_path.exists()
-                or effect_execution_store_path.exists()
-                or gate_execution_store_path.exists()
-            )
-        ):
-            backend = "json"
-        return {
-            "runtime_dir": runtime_dir,
-            "orchestration_store_backend": backend,
-            "orchestration_store_path": orchestration_store_path,
-            "orchestration_retention_days": int(
-                worker_config.get("orchestration_retention_days")
-                if worker_config.get("orchestration_retention_days") is not None
-                else 30
-            ),
-            "event_queue_store_path": event_queue_store_path,
-            "effect_execution_store_path": effect_execution_store_path,
-            "gate_execution_store_path": gate_execution_store_path,
-            "effect_lock_path": effect_lock_path,
-            "workflow_config_snapshot_store_path": workflow_config_snapshot_store_path,
-            "await_agent_store_path": runtime_dir
-            / "providers"
-            / "gates"
-            / "await-agent"
-            / "pending.json",
-            "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
-        }
-
-    def _workflow_uses_sqlite_store(self, stores: Mapping[str, Any]) -> bool:
-        return str(stores.get("orchestration_store_backend") or "").lower() == "sqlite"
-
-    def _workflow_sqlite_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
-        from agent_sandbox.daemons.effect_orchestrator import (
-            SqliteExecutionStore,
-            SqliteGateExecutionStore,
-        )
-
-        db_path = Path(stores["orchestration_store_path"])
-        raw_retention_days = stores.get("orchestration_retention_days")
-        retention_days = int(raw_retention_days if raw_retention_days is not None else 30)
-        journal = SqliteWorkflowEventJournal(db_path, retention_days=retention_days)
-        return (
-            SqliteTriggerEventQueue(db_path, journal=journal, retention_days=retention_days),
-            SqliteExecutionStore(db_path, journal=journal, retention_days=retention_days),
-            SqliteGateExecutionStore(db_path, journal=journal, retention_days=retention_days),
-        )
-
-
-
-
-
-
-    def _latest_resumable_failed_workflow_record(
-        self,
-        *,
-        event_id: str,
-        effect_payload: dict[str, object],
-        gate_payload: dict[str, object],
-    ) -> dict[str, object] | None:
-        candidates: list[dict[str, object]] = []
-
-        def collect(records: dict[str, object], *, node_id_field: str) -> None:
-            for record_key, raw_record in records.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                if raw_record.get("dismissed_at"):
-                    continue
-                if str(raw_record.get("event_id") or record_key).strip() != event_id:
-                    continue
-                if str(raw_record.get("status") or "").strip() != "failed":
-                    continue
-                source_node_id = _coerce_optional_string(raw_record.get("source_node_id"))
-                source_trigger_type = _coerce_optional_string(raw_record.get("source_trigger_type"))
-                node_id = _coerce_optional_string(raw_record.get(node_id_field))
-                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-                input_payload = raw_record.get("input_payload")
-                if (
-                    source_node_id is None
-                    or source_trigger_type is None
-                    or node_id is None
-                    or trace_id is None
-                    or not isinstance(input_payload, dict)
-                ):
-                    continue
-                finished_at = _coerce_optional_datetime(raw_record.get("finished_at"))
-                started_at = _coerce_optional_datetime(raw_record.get("started_at"))
-                candidates.append(
-                    {
-                        "node_id": node_id,
-                        "source_node_id": source_node_id,
-                        "source_trigger_type": source_trigger_type,
-                        "trace_id": trace_id,
-                        "input_payload": dict(input_payload),
-                        "finished_at": finished_at,
-                        "started_at": started_at,
-                    }
-                )
-
-        collect(effect_payload, node_id_field="effect_id")
-        collect(gate_payload, node_id_field="gate_id")
-        if not candidates:
-            return None
-        candidates.sort(
-            key=lambda item: (
-                item.get("finished_at")
-                or item.get("started_at")
-                or datetime.min.replace(tzinfo=UTC),
-                str(item.get("node_id") or ""),
-            ),
-            reverse=True,
-        )
-        return candidates[0]
-
-    def _workflow_run_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
-        if self._workflow_uses_sqlite_store(stores):
-            return self._workflow_sqlite_store_bundle(stores)
-        from agent_sandbox.daemons.effect_orchestrator import (
-            JsonExecutionStore,
-            JsonGateExecutionStore,
-        )
-
-        return (
-            TriggerEventQueue(Path(stores["event_queue_store_path"])),
-            JsonExecutionStore(Path(stores["effect_execution_store_path"])),
-            JsonGateExecutionStore(Path(stores["gate_execution_store_path"])),
-        )
-
-    def _workflow_run_event_records(self, stores: Mapping[str, Any]) -> dict[str, Any]:
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, _, _ = self._workflow_sqlite_store_bundle(stores)
-            return {
-                record.event_id: record.model_dump(mode="json")
-                for record in queue_store.read_all().values()
-            }
-        return JsonTriggerEventRepository().read_events(stores["event_queue_store_path"])
-
-
-
-
-    def _workflow_config_snapshot_repository(
-        self, stores: Mapping[str, Any]
-    ) -> JsonWorkflowConfigSnapshotRepository | SqliteWorkflowConfigSnapshotRepository:
-        if self._workflow_uses_sqlite_store(stores):
-            return SqliteWorkflowConfigSnapshotRepository(Path(stores["orchestration_store_path"]))
-        return JsonWorkflowConfigSnapshotRepository(
-            Path(stores["workflow_config_snapshot_store_path"])
-        )
+    def _workflow_config_snapshot_repository(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_config_snapshot_repository(*args, **kwargs)
 
     def _communication_artifact_store(self) -> CommunicationArtifactStore:
         return CommunicationArtifactStore(self.config.runtime_dir)
 
     def _published_artifact_store(self) -> PublishedArtifactStore:
-        return PublishedArtifactStore(self.config.runtime_dir)
+        return self.artifact_admin.published_artifact_store()
 
+    def _workflow_event_journal(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._workflow_event_journal(*args, **kwargs)
 
-    def _workflow_event_journal(self) -> WorkflowEventJournal | SqliteWorkflowEventJournal:
-        stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
-            raw_retention_days = stores.get("orchestration_retention_days")
-            return SqliteWorkflowEventJournal(
-                stores["orchestration_store_path"],
-                retention_days=int(raw_retention_days if raw_retention_days is not None else 30),
-            )
-        worker_config = self._read_worker_global_config("trigger-orchestrator").config
-        runtime_dir = stores["runtime_dir"]
-        journal_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("workflow_event_journal_path"),
-            fallback=workflow_event_journal_path(runtime_dir),
-        )
-        return WorkflowEventJournal(journal_path)
+    def _collect_workflow_node_ids(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._collect_workflow_node_ids(*args, **kwargs)
 
-    def _collect_workflow_node_ids(self, config: dict[str, object]) -> set[str]:
-        node_ids: set[str] = set()
-        for collection_name, adapter in (
-            ("triggers", _TRIGGER_DEFINITION_ADAPTER),
-            ("gates", _GATE_DEFINITION_ADAPTER),
-            ("effects", _EFFECT_DEFINITION_ADAPTER),
-            ("queries", _QUERY_DEFINITION_ADAPTER),
-        ):
-            entries = config.get(collection_name, [])
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                node = adapter.validate_python(entry)
-                node_ids.add(node.id)
-        return node_ids
+    def _normalize_workflow_editor_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._normalize_workflow_editor_config(*args, **kwargs)
 
-    def _normalize_workflow_editor_config(self, payload: dict[str, object]) -> dict[str, object]:
-        candidate = json.loads(json.dumps(payload))
-        if not isinstance(candidate, dict):
-            return payload
-        candidate = migrate_agent_prompt_lifecycle_ports(candidate)
+    def _nest_runtime_outputs_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._nest_runtime_outputs_config(*args, **kwargs)
 
-        triggers = candidate.get("triggers")
-        gates = candidate.get("gates")
-        effects = candidate.get("effects")
-        queries = candidate.get("queries")
-        edges = candidate.get("edges")
-        if triggers is None:
-            triggers = []
-            candidate["triggers"] = triggers
-        if gates is None:
-            gates = []
-            candidate["gates"] = gates
-        if effects is None:
-            effects = []
-            candidate["effects"] = effects
-        if queries is None:
-            queries = []
-            candidate["queries"] = queries
-        if edges is None:
-            edges = []
-            candidate["edges"] = edges
-        if (
-            not isinstance(triggers, list)
-            or not isinstance(gates, list)
-            or not isinstance(effects, list)
-            or not isinstance(queries, list)
-        ):
-            return candidate
-        if not isinstance(edges, list):
-            return candidate
+    def _validate_workflow_editor_layout(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._validate_workflow_editor_layout(*args, **kwargs)
 
-        self._nest_runtime_outputs_config(candidate)
-        self._load_workflow_provider_output_schemas(candidate)
-        output_schemas = derive_workflow_output_schemas(candidate)
-        for gate in gates:
-            if not isinstance(gate, dict):
-                continue
-            gate_type = str(gate.get("type") or "").strip()
-            gate_id = str(gate.get("id") or "").strip()
-            if gate_type == "gate:await-agent":
-                gate.pop("completion_trigger_id", None)
-            if gate_type in {
-                "gate:filter",
-                "gate:debounce",
-                "gate:buffer",
-                "gate:deserialize",
-                "gate:serialize",
-                "gate:map",
-                "gate:aggregate",
-                "gate:dedupe",
-                "gate:switch",
-                "gate:await-agent",
-                "gate:for",
-                "gate:while",
-                "gate:merge",
-            }:
-                gate["outputs"] = output_schemas.get(gate_id, {})
+    def _strip_system_managed_workflows(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._strip_system_managed_workflows(*args, **kwargs)
 
-        return candidate
+    def _merge_system_managed_workflows(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._merge_system_managed_workflows(*args, **kwargs)
 
-    def _nest_runtime_outputs_config(self, config: dict[str, object]) -> None:
-        for collection_name in ("triggers", "effects", "queries"):
-            entries = config.get(collection_name)
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict) or "outputs" not in entry:
-                    continue
-                outputs = entry.get("outputs")
-                if _looks_like_declared_output_schema(outputs):
-                    continue
-                nested_config = entry.get("config")
-                if not isinstance(nested_config, dict):
-                    nested_config = {}
-                    entry["config"] = nested_config
-                nested_config.setdefault("outputs", outputs)
-                entry.pop("outputs", None)
+    def _upsert_trigger_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._upsert_trigger_config(*args, **kwargs)
 
-    def _validate_workflow_editor_layout(
-        self,
-        payload: dict[str, object],
-        *,
-        node_ids: set[str],
-        allow_unknown_nodes: bool = False,
-    ) -> dict[str, object]:
-        candidate = dict(payload)
-        if "nodes" not in candidate:
-            candidate = {"nodes": candidate.get("nodes", {}) if payload else {}}
-        try:
-            document = WorkflowEditorLayoutDocument.model_validate(candidate)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context="Invalid workflow editor layout") from exc
-        normalized_nodes: dict[str, dict[str, float]] = {}
-        unknown_node_ids: list[str] = []
-        for node_id, position in document.nodes.items():
-            if node_id not in node_ids:
-                if allow_unknown_nodes:
-                    continue
-                unknown_node_ids.append(node_id)
-                continue
-            normalized_nodes[node_id] = {"x": position.x, "y": position.y}
-        if unknown_node_ids:
-            unknown_list = ", ".join(sorted(unknown_node_ids))
-            raise ValueError(f"Workflow layout references unknown node IDs: {unknown_list}")
-        return {"nodes": normalized_nodes}
+    def _delete_trigger_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._delete_trigger_config(*args, **kwargs)
 
-    def _strip_system_managed_workflows(self, config: dict[str, object]) -> dict[str, object]:
-        candidate = json.loads(json.dumps(config))
-        if not isinstance(candidate, dict):
-            return config
-        system_ids: set[str] = set()
-        for collection_name in ("triggers", "gates", "effects", "queries"):
-            entries = candidate.get(collection_name)
-            if not isinstance(entries, list):
-                continue
-            candidate[collection_name] = [
-                entry
-                for entry in entries
-                if not (
-                    isinstance(entry, dict)
-                    and _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
-                )
-            ]
-            system_ids.update(
-                str(entry.get("id") or "").strip()
-                for entry in entries
-                if isinstance(entry, dict)
-                and _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
-            )
-        if isinstance(candidate.get("edges"), list) and system_ids:
-            candidate["edges"] = [
-                edge
-                for edge in candidate["edges"]
-                if not (
-                    isinstance(edge, dict)
-                    and (
-                        str(edge.get("source_id") or "").strip() in system_ids
-                        or str(edge.get("target_id") or "").strip() in system_ids
-                    )
-                )
-            ]
-        return candidate
+    def _upsert_effect_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._upsert_effect_config(*args, **kwargs)
 
-    def _merge_system_managed_workflows(
-        self, *, editable_config: dict[str, object], base_config: dict[str, object] | None
-    ) -> dict[str, object]:
-        del base_config
-        return self._strip_system_managed_workflows(editable_config)
-
-    def _upsert_trigger_config(
-        self, trigger_id: str, payload: dict[str, object]
-    ) -> TriggerConfigMutationPayload:
-        normalized_trigger_id = str(trigger_id).strip()
-        if not normalized_trigger_id:
-            raise ValueError("trigger_id is required")
-        if _is_system_managed_workflow_node_id(normalized_trigger_id):
-            raise ValueError(
-                f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
-            )
-        normalized_payload = dict(payload)
-        payload_trigger_id = str(normalized_payload.get("id", "")).strip()
-        if payload_trigger_id and payload_trigger_id != normalized_trigger_id:
-            raise ValueError("trigger_id must match payload.id when payload.id is provided")
-        normalized_payload["id"] = normalized_trigger_id
-        try:
-            validated_trigger = _TRIGGER_DEFINITION_ADAPTER.validate_python(normalized_payload)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context="Invalid trigger config") from exc
-        normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
-
-        with self.admin_config_mutation_lock():
-            current = self.trigger_repository.read_document()
-            config = dict(current.config)
-            existing_triggers_raw = config.get("triggers", [])
-            if not isinstance(existing_triggers_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: triggers must be a JSON array."
-                )
-            existing_triggers = [
-                entry for entry in existing_triggers_raw if isinstance(entry, dict)
-            ]
-            replacing = False
-            for index, existing in enumerate(existing_triggers):
-                existing_id = str(existing.get("id", "")).strip()
-                if existing_id == normalized_trigger_id:
-                    existing_triggers[index] = normalized_payload
-                    replacing = True
-                    break
-            if not replacing:
-                next_config = dict(config)
-                next_config["triggers"] = existing_triggers + [normalized_payload]
-                self._seed_new_ticket_created_trigger_cursors(
-                    previous_config=config,
-                    next_config=next_config,
-                )
-                existing_triggers.append(normalized_payload)
-            config["triggers"] = existing_triggers
-            write_result = self._write_trigger_document_unlocked(config)
-        return TriggerConfigMutationPayload(
-            trigger_id=normalized_trigger_id,
-            operation="updated" if replacing else "added",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
-
-    def _delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
-        normalized_trigger_id = str(trigger_id).strip()
-        if not normalized_trigger_id:
-            raise ValueError("trigger_id is required")
-        if _is_system_managed_workflow_node_id(normalized_trigger_id):
-            raise ValueError(
-                f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
-            )
-        with self.admin_config_mutation_lock():
-            current = self.trigger_repository.read_document()
-            config = dict(current.config)
-            triggers_raw = config.get("triggers", [])
-            if not isinstance(triggers_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: triggers must be a JSON array."
-                )
-            filtered = []
-            removed = False
-            for entry in triggers_raw:
-                if not isinstance(entry, dict):
-                    continue
-                entry_id = str(entry.get("id", "")).strip()
-                if entry_id == normalized_trigger_id:
-                    removed = True
-                    continue
-                filtered.append(entry)
-            if not removed:
-                raise ValueError(f"Trigger not found: {normalized_trigger_id}")
-            config["triggers"] = filtered
-            write_result = self._write_trigger_document_unlocked(config)
-        return TriggerConfigMutationPayload(
-            trigger_id=normalized_trigger_id,
-            operation="deleted",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
-
-    def _upsert_effect_config(
-        self, effect_id: str, payload: dict[str, object]
-    ) -> EffectConfigMutationPayload:
-        normalized_effect_id = str(effect_id).strip()
-        if not normalized_effect_id:
-            raise ValueError("effect_id is required")
-        if _is_system_managed_workflow_node_id(normalized_effect_id):
-            raise ValueError(
-                f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
-            )
-        normalized_payload = dict(payload)
-        normalized_source_id = str(normalized_payload.pop("source_id", "")).strip()
-        payload_effect_id = str(normalized_payload.get("id", "")).strip()
-        if payload_effect_id and payload_effect_id != normalized_effect_id:
-            raise ValueError("effect_id must match payload.id when payload.id is provided")
-        normalized_payload["id"] = normalized_effect_id
-        try:
-            validated_effect = _EFFECT_DEFINITION_ADAPTER.validate_python(normalized_payload)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context="Invalid effect config") from exc
-        normalized_payload = validated_effect.model_dump(mode="json", exclude_none=True)
-
-        with self.admin_config_mutation_lock():
-            current = self._read_worker_global_config_unlocked("trigger-orchestrator")
-            config = dict(current.config)
-            existing_effects_raw = config.get("effects", [])
-            if not isinstance(existing_effects_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: effects must be a JSON array."
-                )
-            existing_effects = [entry for entry in existing_effects_raw if isinstance(entry, dict)]
-            existing_edges_raw = config.get("edges", [])
-            if not isinstance(existing_edges_raw, list):
-                existing_edges_raw = []
-            existing_edges = [entry for entry in existing_edges_raw if isinstance(entry, dict)]
-            replacing = False
-            for index, existing in enumerate(existing_effects):
-                existing_id = str(existing.get("id", "")).strip()
-                if existing_id == normalized_effect_id:
-                    existing_effects[index] = normalized_payload
-                    replacing = True
-                    break
-            if not replacing:
-                existing_effects.append(normalized_payload)
-
-            filtered_edges: list[dict[str, object]] = []
-            for edge in existing_edges:
-                target_id = str(edge.get("target_id", "")).strip()
-                if target_id == normalized_effect_id:
-                    continue
-                filtered_edges.append(edge)
-            if normalized_source_id:
-                filtered_edges.append(
-                    {"source_id": normalized_source_id, "target_id": normalized_effect_id}
-                )
-            config["effects"] = existing_effects
-            config["edges"] = filtered_edges
-            write_result = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
-        return EffectConfigMutationPayload(
-            effect_id=normalized_effect_id,
-            operation="updated" if replacing else "added",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
-
-    def _delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
-        normalized_effect_id = str(effect_id).strip()
-        if not normalized_effect_id:
-            raise ValueError("effect_id is required")
-        if _is_system_managed_workflow_node_id(normalized_effect_id):
-            raise ValueError(
-                f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
-            )
-        with self.admin_config_mutation_lock():
-            current = self._read_worker_global_config_unlocked("trigger-orchestrator")
-            config = dict(current.config)
-            effects_raw = config.get("effects", [])
-            if not isinstance(effects_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: effects must be a JSON array."
-                )
-            filtered = []
-            removed = False
-            for entry in effects_raw:
-                if not isinstance(entry, dict):
-                    continue
-                entry_id = str(entry.get("id", "")).strip()
-                if entry_id == normalized_effect_id:
-                    removed = True
-                    continue
-                filtered.append(entry)
-            if not removed:
-                raise ValueError(f"Effect not found: {normalized_effect_id}")
-            edges_raw = config.get("edges", [])
-            filtered_edges = []
-            if isinstance(edges_raw, list):
-                for entry in edges_raw:
-                    if not isinstance(entry, dict):
-                        continue
-                    source_id = str(entry.get("source_id", "")).strip()
-                    target_id = str(entry.get("target_id", "")).strip()
-                    if source_id == normalized_effect_id or target_id == normalized_effect_id:
-                        continue
-                    filtered_edges.append(entry)
-            config["effects"] = filtered
-            config["edges"] = filtered_edges
-            write_result = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
-        return EffectConfigMutationPayload(
-            effect_id=normalized_effect_id,
-            operation="deleted",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
+    def _delete_effect_config(self, *args: Any, **kwargs: Any):
+        return self.workflow_config_admin._delete_effect_config(*args, **kwargs)
 
     def _next_local_issue_number(self) -> str:
-        current = 0
-        if self.local_issue_counter_path.exists():
-            try:
-                current = int(
-                    self.local_issue_counter_path.read_text(encoding="utf-8").strip() or "0"
-                )
-            except ValueError:
-                current = 0
-        current += 1
-        self.local_issue_counter_path.parent.mkdir(parents=True, exist_ok=True)
-        self.local_issue_counter_path.write_text(f"{current}\n", encoding="utf-8")
-        return str(current)
+        return self.issue_git_support.next_local_issue_number()
 
-    @contextmanager
     def _local_issue_creation_lock(self):
-        self.local_issue_create_lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.local_issue_create_lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+        return self.issue_git_support.local_issue_creation_lock()
 
     def _canonical_local_issue_id(self, issue_number: str, directory_path: str) -> str:
-        return _scoped_issue_id(issue_number, directory_path=directory_path, provider="local")
+        return self.issue_git_support.canonical_local_issue_id(issue_number, directory_path)
 
     def _canonical_issue_id(self, record: LocalIssueRecord) -> str:
-        remote = record.remote_reference
-        if remote is not None and remote.provider == "azure_devops" and remote.work_item_id:
-            return _scoped_issue_id(
-                remote.work_item_id,
-                directory_path=record.directory_path,
-                provider="azure_devops",
-                organization=remote.organization,
-                project=remote.project,
-            )
-        return self._canonical_local_issue_id(record.issue_number, record.directory_path)
+        return self.issue_git_support.canonical_issue_id(record)
 
     def create_local_issue(
         self,
@@ -17664,43 +8197,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _write_local_issue_yaml(
         self, issue: LocalIssueRecord, *, updated_at: datetime | None = None
     ) -> None:
-        yaml_path = Path(issue.yaml_path)
-        payload: dict[str, object] = {}
-        if yaml_path.exists():
-            try:
-                loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-            except Exception:
-                loaded = {}
-            if isinstance(loaded, dict):
-                payload = dict(loaded)
-        payload["issue_number"] = issue.issue_number
-        payload["title"] = issue.title
-        payload["body"] = issue.body
-        payload["state"] = issue.state
-        payload["source"] = issue.source or "local_gui"
-        fields = _local_issue_fields(issue)
-        if fields:
-            payload["fields"] = fields
-        else:
-            payload.pop("fields", None)
-        metadata_steps = issue.metadata.get("steps") if isinstance(issue.metadata, dict) else None
-        if isinstance(metadata_steps, list) and all(
-            isinstance(step, str) for step in metadata_steps
-        ):
-            payload["steps"] = list(metadata_steps)
-        else:
-            payload.pop("steps", None)
-        metadata_plan_summary = (
-            issue.metadata.get("plan_summary") if isinstance(issue.metadata, dict) else None
-        )
-        if isinstance(metadata_plan_summary, str) and metadata_plan_summary.strip():
-            payload["plan_summary"] = metadata_plan_summary
-        else:
-            payload.pop("plan_summary", None)
-        if updated_at is not None:
-            payload["updated_at"] = updated_at.isoformat()
-        yaml_path.parent.mkdir(parents=True, exist_ok=True)
-        yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        self.issue_git_support.write_local_issue_yaml(issue, updated_at=updated_at)
 
     def create_issue(
         self,
@@ -17726,42 +8223,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         issue: LocalIssueRecord,
         remote_payload: dict[str, object],
     ) -> LocalIssueRecord:
-        issue.metadata = dict(issue.metadata)
-        remote_comments = [
-            dict(comment)
-            for comment in list(remote_payload.get("comments") or [])
-            if isinstance(comment, dict)
-        ]
-        issue.metadata["proxy_cache"] = {
-            "title": str(remote_payload.get("title") or issue.title),
-            "description": str(remote_payload.get("description") or issue.body),
-            "state": str(remote_payload.get("state") or ""),
-            "url": str(remote_payload.get("url") or ""),
-            "updated_at": str(remote_payload.get("updated_at") or ""),
-            "comments": remote_comments,
-        }
-        issue.title = str(remote_payload.get("title") or issue.title).strip() or issue.title
-        issue.body = str(remote_payload.get("description") or issue.body).strip() or issue.body
-        issue.state = str(remote_payload.get("state") or issue.state or "").strip() or None
-        issue.url = str(remote_payload.get("url") or issue.url or "").strip() or None
-        issue.comments = remote_comments
-        if issue.remote_reference is not None:
-            issue.remote_reference.last_synced_at = _utc_now()
-            issue.remote_reference.last_known_remote_state = issue.state
-            issue.remote_reference.work_item_url = issue.url or issue.remote_reference.work_item_url
-        issue.updated_at = _utc_now()
-        self.local_issue_store.put(issue.issue_id, issue)
-        return issue
+        return self.issue_git_support.refresh_proxy_cache_from_remote(issue, remote_payload)
 
     def _proxy_target_for_issue(self, issue: LocalIssueRecord) -> tuple[str, str] | None:
-        remote = issue.remote_reference
-        if remote is not None and remote.provider and remote.work_item_id:
-            return remote.provider, remote.work_item_id
-        return self.issue_service.resolve_proxy_target(
-            issue_number=issue.issue_number,
-            issue_source=issue.source,
-            metadata=issue.metadata,
-        )
+        return self.issue_git_support.proxy_target_for_issue(issue)
 
     def get_issue(
         self,
@@ -18026,58 +8491,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:
-        return self._resolve_vm_defaults(directory_path)
+        return self.vm_agent_admin.resolve_vm_defaults(directory_path)
 
     def agent_create_options(self, directory_path: str | None = None) -> dict[str, Any]:
-        normalized_directory = self._normalize_directory_path(directory_path)
-        vm_defaults = self.resolve_vm_defaults(normalized_directory)
-        provider_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
-        libvirt_templates = [
-            {"alias": alias, "image_ref": image_ref}
-            for alias, image_ref in sorted(vm_defaults.libvirt_vm_templates.items())
-        ]
-        container_images = [
-            {"alias": alias, "image_ref": image_ref}
-            for alias, image_ref in sorted(provider_config.container_worker_images.items())
-        ]
-        return {
-            "directory_path": normalized_directory,
-            "backends": ["libvirt_vm", "container_worker_vm"],
-            "agent_providers": [
-                {
-                    "value": "codex",
-                    "label": "Codex",
-                    "execution_backends": ["libvirt_vm", "container_worker_vm"],
-                },
-                {
-                    "value": "claude",
-                    "label": "Claude",
-                    "execution_backends": ["libvirt_vm", "container_worker_vm"],
-                },
-                {
-                    "value": "copilot",
-                    "label": "Copilot",
-                    "execution_backends": ["libvirt_vm"],
-                },
-            ],
-            "model_provider_modes": [
-                {"value": "openai_public", "label": "Public OpenAI"},
-                {"value": "local_openai", "label": "Local OpenAI"},
-                {"value": "azure_openai", "label": "Azure OpenAI"},
-            ],
-            "communication_targets": [
-                option.model_dump(mode="json")
-                for option in self._agent_communication_target_options(normalized_directory)
-            ],
-            "libvirt": {
-                "default_template": vm_defaults.libvirt_vm_default_template,
-                "templates": libvirt_templates,
-            },
-            "container_worker": {
-                "default_image": provider_config.container_worker_default_image,
-                "images": container_images,
-            },
-        }
+        return self.vm_agent_admin.agent_create_options(directory_path)
 
     def clone_repo_into_vm(
         self,
@@ -18141,7 +8558,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def destroy_vm(self, target: str) -> VmActionResult:
-        return self._execution_backend().destroy(target)
+        return self.vm_agent_admin.destroy_vm(target)
 
     def destroy_issue_vm(self, target: str) -> VmActionResult:
         return self.vm_agent_admin.destroy_issue_vm(target)
@@ -18150,85 +8567,52 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return self.issue_git_admin.delete_local_issue(issue_identifier)
 
 
-def _log_page_from_end(
-    text: str,
-    *,
-    limit: int,
-    offset: int,
-    query: str | None = None,
-) -> dict[str, object]:
-    lines = text.splitlines()
-    normalized_query = str(query or "").strip()
-    if normalized_query:
-        needle = normalized_query.casefold()
-        lines = [line for line in lines if needle in line.casefold()]
-    total_lines = len(lines)
-    normalized_limit = max(1, int(limit))
-    normalized_offset = max(0, int(offset))
-    end_index = max(0, total_lines - normalized_offset)
-    start_index = max(0, end_index - normalized_limit)
-    page_lines = lines[start_index:end_index]
-    return {
-        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
-        "limit": normalized_limit,
-        "offset": normalized_offset,
-        "returned_lines": len(page_lines),
-        "total_lines": total_lines,
-        "start_line": start_index + 1 if page_lines else 0,
-        "end_line": end_index if page_lines else 0,
-        "has_more_before": start_index > 0,
-        "query": normalized_query or None,
-    }
+def _admin_service_tool_call_audit_index(service: AdminService) -> Any | None:
+    approval_audit_admin = getattr(service, "approval_audit_admin", None)
+    if approval_audit_admin is not None:
+        return approval_audit_admin.tool_call_audit_index
+    return getattr(service, "_tool_call_audit_index", None)
 
 
-def _log_page_from_start(
-    text: str,
-    *,
-    limit: int,
-    offset: int,
-    query: str | None = None,
-) -> dict[str, object]:
-    lines = text.splitlines()
-    normalized_query = str(query or "").strip()
-    if normalized_query:
-        needle = normalized_query.casefold()
-        lines = [line for line in lines if needle in line.casefold()]
-    total_lines = len(lines)
-    normalized_limit = max(1, int(limit))
-    normalized_offset = max(0, int(offset))
-    start_index = min(total_lines, normalized_offset)
-    end_index = min(total_lines, start_index + normalized_limit)
-    page_lines = lines[start_index:end_index]
-    return {
-        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
-        "limit": normalized_limit,
-        "offset": normalized_offset,
-        "returned_lines": len(page_lines),
-        "total_lines": total_lines,
-        "start_line": start_index + 1 if page_lines else 0,
-        "end_line": end_index if page_lines else 0,
-        "has_more_before": end_index < total_lines,
-        "query": normalized_query or None,
-    }
+def _set_admin_service_tool_call_audit_index(
+    service: AdminService, value: Any | None
+) -> None:
+    service._tool_call_audit_index = value
+    approval_audit_admin = getattr(service, "approval_audit_admin", None)
+    if approval_audit_admin is not None:
+        approval_audit_admin.tool_call_audit_index = value
+
+
+def _admin_service_normalize_wake_ledger_statuses(
+    statuses: list[str] | None,
+) -> list[str] | None:
+    from agent_sandbox.admin.facades import SessionAdminFacade
+
+    return SessionAdminFacade._normalize_wake_ledger_statuses(statuses)
+
+
+def _admin_service_derive_review_branch(agent_branch: str) -> str:
+    from agent_sandbox.admin.services.issue_git_service import IssueGitAdminService
+
+    return IssueGitAdminService._derive_review_branch(agent_branch)
+
+
+def _admin_service_derive_local_pr_notes_ref(remote_url: str) -> str:
+    from agent_sandbox.admin.services.issue_git_service import IssueGitAdminService
+
+    return IssueGitAdminService._derive_local_pr_notes_ref(remote_url)
+
+
+_log_page_from_end = vm_agent_service._log_page_from_end
+
+
+_log_page_from_start = vm_agent_service._log_page_from_start
 
 
 def _parse_tool_call_datetime(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    text = str(value).strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed
+    from agent_sandbox.admin.services.approval_audit_service import parse_tool_call_datetime
+
+    return parse_tool_call_datetime(value)
 
 
 def _tool_call_directory_matches(
@@ -18237,401 +8621,91 @@ def _tool_call_directory_matches(
     *,
     direct_only: bool,
 ) -> bool:
-    if selected_directory_path is None:
-        return True
-    record_path = AdminService._agent_record_directory_path(record_directory_path)
-    selected_path = AdminService._agent_record_directory_path(selected_directory_path)
-    if direct_only:
-        return record_path == selected_path
-    return record_path == selected_path or record_path.startswith(f"{selected_path}/")
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_directory_matches
+
+    return tool_call_directory_matches(
+        record_directory_path, selected_directory_path, direct_only=direct_only
+    )
 
 
 def _tool_call_normalize_status(status: Any) -> str | None:
-    normalized = str(status or "").strip().casefold()
-    if not normalized:
-        return None
-    if normalized in {"allowed", "approved", "success", "ok"}:
-        return "success"
-    if normalized in {"pending_approval"}:
-        return "pending_approval"
-    if normalized in {"denied", "blocked", "rejected"}:
-        return "denied"
-    if normalized in {"error", "failed", "failure"}:
-        return "error"
-    raise ValueError("status must be one of: success, pending_approval, denied, or error")
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_normalize_status
+
+    return tool_call_normalize_status(status)
 
 
 def _tool_call_failure_status(event: dict[str, Any]) -> str:
-    decision = str(event.get("decision") or event.get("status") or "").strip().casefold()
-    result = event.get("result") if isinstance(event.get("result"), dict) else {}
-    result_status = str(result.get("status") or "").strip().casefold()
-    if decision == "pending_approval":
-        return "pending_approval"
-    if decision in {"denied", "blocked", "rejected"}:
-        return "denied"
-    if decision in {"error", "failed", "failure"}:
-        return "error"
-    if decision in {"allowed", "approved", "success", "ok"}:
-        return "success"
-    if result_status == "pending_approval":
-        return "pending_approval"
-    if result_status in {"denied", "blocked", "rejected"}:
-        return "denied"
-    if result_status in {"error", "failed", "failure"}:
-        return "error"
-    if result_status in {"allowed", "approved", "success", "ok"}:
-        return "success"
-    if isinstance(result, dict) and any(
-        key in result for key in ("error", "error_class", "exception", "traceback")
-    ):
-        return "error"
-    return "success"
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_failure_status
+
+    return tool_call_failure_status(event)
 
 
 def _approval_audit_payload_matches_request(
     payload: dict[str, Any], request: ApprovalRequest
 ) -> bool:
-    args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-    result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    for candidate in (
-        payload.get("approval_request_id"),
-        args_payload.get("approval_request_id"),
-        result_payload.get("approval_request_id"),
-        args_payload.get("request_id"),
-        result_payload.get("request_id"),
-        payload.get("payload_digest"),
-        args_payload.get("payload_digest"),
-        result_payload.get("payload_digest"),
-    ):
-        text = str(candidate or "").strip()
-        if not text:
-            continue
-        if text == request.request_id or text == request.payload_digest:
-            return True
-    return payload.get("session_id") == request.session_id
+    from agent_sandbox.admin.services.approval_audit_service import (
+        approval_audit_payload_matches_request,
+    )
+
+    return approval_audit_payload_matches_request(payload, request)
 
 
 def _compact_payload_summary(value: Any, *, max_length: int = 180) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        text = value.strip()
-    elif isinstance(value, (dict, list)):
-        if not value:
-            return None
-        text = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    else:
-        text = str(value).strip()
-    if not text:
-        return None
-    if len(text) <= max_length:
-        return text
-    return f"{text[: max_length - 1].rstrip()}..."
+    from agent_sandbox.admin.services.approval_audit_service import compact_payload_summary
+
+    return compact_payload_summary(value, max_length=max_length)
 
 
 def _approval_review_blocked_tool_call_diagnostics(
     audit_context: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    diagnostics: list[dict[str, Any]] = []
-    for entry in reversed(audit_context):
-        if not isinstance(entry, dict):
-            continue
-        if _tool_call_failure_status(entry) != "denied":
-            continue
-        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
-        diagnostic = result.get("approval_diagnostic")
-        if isinstance(diagnostic, dict):
-            diagnostics.append(diagnostic)
-    return diagnostics
+    from agent_sandbox.admin.services.approval_audit_service import (
+        approval_review_blocked_tool_call_diagnostics,
+    )
+
+    return approval_review_blocked_tool_call_diagnostics(audit_context)
 
 
 def build_approval_review_payload(
     request: ApprovalRequest, audit_context: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    now = _utc_now()
-    age_seconds = int((now - request.created_at).total_seconds())
-    expires_in_seconds = int((request.expires_at - now).total_seconds())
-    redacted_payload = _redact_sensitive_payload(request.payload)
-    redacted_audit_context = [
-        _redact_sensitive_payload(entry) if isinstance(entry, dict) else entry
-        for entry in audit_context
-    ]
-    request_payload = request.model_dump(mode="json")
-    request_payload["payload"] = redacted_payload
-    blocked_tool_call_diagnostics = _approval_review_blocked_tool_call_diagnostics(
-        redacted_audit_context
+    from agent_sandbox.admin.services.approval_audit_service import (
+        build_approval_review_payload as _build_approval_review_payload,
     )
-    approval_diagnostics = {
-        "request_id": request.request_id,
-        "status": request.status.value,
-        "action_type": request.action_type,
-        "tool_name": request.tool_name or request.action_type,
-        "payload_digest": request.payload_digest,
-        "approver": request.approver,
-        "decision_at": request_payload.get("decision_at"),
-        "decision_reason": request.decision_reason,
-        "created_at": request_payload.get("created_at"),
-        "expires_at": request_payload.get("expires_at"),
-        "age_seconds": age_seconds,
-        "expires_in_seconds": expires_in_seconds,
-        "payload_summary": _compact_payload_summary(redacted_payload),
-        "approved_payload": redacted_payload,
-        "requested_payload": redacted_payload,
-        "blocked_tool_call_diagnostics": blocked_tool_call_diagnostics,
-    }
-    return {
-        "request": request_payload,
-        "redacted_payload": redacted_payload,
-        "payload_summary": _compact_payload_summary(redacted_payload),
-        "approval_diagnostics": approval_diagnostics,
-        "audit_context": redacted_audit_context,
-        "age_seconds": age_seconds,
-        "expires_in_seconds": expires_in_seconds,
-    }
+
+    return _build_approval_review_payload(request, audit_context)
 
 
 def _tool_call_error_summary(
     entry: dict[str, Any], status: str, result: dict[str, Any]
 ) -> str | None:
-    for candidate in (
-        entry.get("reason"),
-        result.get("error"),
-        result.get("message"),
-        result.get("details"),
-        result.get("summary"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            return text
-    if status == "denied":
-        return "Denied"
-    if status == "error":
-        return "Tool call failed."
-    if status == "pending_approval":
-        return "Approval required."
-    return None
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_error_summary
+
+    return tool_call_error_summary(entry, status, result)
 
 
 def _tool_call_safe_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return str(value)
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_safe_text
+
+    return tool_call_safe_text(value)
 
 
 def _tool_call_related_links(
     entry: ToolCallAuditEntryPayload,
 ) -> list[ToolCallAuditRelatedLinkPayload]:
-    links: list[ToolCallAuditRelatedLinkPayload] = []
-    if entry.session_id:
-        links.append(
-            ToolCallAuditRelatedLinkPayload(
-                kind="session",
-                label="Session",
-                value=entry.session_id,
-                href=f"/api/admin/sessions/{quote(entry.session_id, safe='')}",
-            )
-        )
-    if entry.vm_id:
-        links.append(
-            ToolCallAuditRelatedLinkPayload(
-                kind="vm",
-                label="VM",
-                value=entry.vm_id,
-                href=f"/api/admin/vms/{quote(entry.vm_id, safe='')}",
-            )
-        )
-    if entry.approval_request_id:
-        links.append(
-            ToolCallAuditRelatedLinkPayload(
-                kind="approval_request",
-                label="Approval request",
-                value=entry.approval_request_id,
-                href=f"/api/admin/approvals/{quote(entry.approval_request_id, safe='')}",
-            )
-        )
-    if entry.workflow_run_id:
-        links.append(
-            ToolCallAuditRelatedLinkPayload(
-                kind="workflow_run",
-                label="Workflow run",
-                value=entry.workflow_run_id,
-                href=(
-                    "/api/workflow-editor/run-detail?run_id="
-                    f"{quote(entry.workflow_run_id, safe='')}"
-                ),
-            )
-        )
-    if entry.trace_id:
-        links.append(
-            ToolCallAuditRelatedLinkPayload(
-                kind="workflow_trace",
-                label="Workflow trace",
-                value=entry.trace_id,
-                href=(f"/api/workflow-editor/run-detail?trace_id={quote(entry.trace_id, safe='')}"),
-            )
-        )
-    return links
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_related_links
+
+    return tool_call_related_links(entry)
 
 
 def _tool_call_audit_entry_from_payload(
     payload: dict[str, Any],
 ) -> ToolCallAuditEntryPayload | None:
-    created_at = _parse_tool_call_datetime(
-        payload.get("created_at") or payload.get("timestamp") or payload.get("occurred_at")
+    from agent_sandbox.admin.services.approval_audit_service import (
+        tool_call_audit_entry_from_payload,
     )
-    if created_at is None:
-        return None
-    raw_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-    raw_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    redacted_args = _redact_sensitive_payload(raw_args)
-    redacted_result = _redact_sensitive_payload(raw_result)
-    approval_diagnostic = redacted_result.get("approval_diagnostic")
-    if not isinstance(approval_diagnostic, dict):
-        approval_diagnostic = None
-    status = _tool_call_failure_status(payload)
-    decision = str(payload.get("decision") or payload.get("status") or "").strip() or None
-    request_id = None
-    for candidate in (
-        payload.get("request_id"),
-        raw_args.get("request_id"),
-        raw_result.get("request_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            request_id = text
-            break
-    correlation_id = None
-    for candidate in (
-        payload.get("correlation_id"),
-        raw_args.get("correlation_id"),
-        raw_result.get("correlation_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            correlation_id = text
-            break
-    approval_request_id = None
-    for candidate in (
-        payload.get("approval_request_id"),
-        raw_args.get("approval_request_id"),
-        raw_result.get("approval_request_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            approval_request_id = text
-            break
-    mcp_tool_approval_lease_id = None
-    for candidate in (
-        payload.get("mcp_tool_approval_lease_id"),
-        payload.get("tool_approval_lease_id"),
-        raw_args.get("mcp_tool_approval_lease_id"),
-        raw_args.get("tool_approval_lease_id"),
-        raw_result.get("mcp_tool_approval_lease_id"),
-        raw_result.get("tool_approval_lease_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            mcp_tool_approval_lease_id = text
-            break
-    tool_name = None
-    for candidate in (payload.get("tool_name"), payload.get("tool"), raw_args.get("tool_name")):
-        text = str(candidate or "").strip()
-        if text:
-            tool_name = text
-            break
-    session_id = None
-    for candidate in (
-        payload.get("session_id"),
-        raw_args.get("session_id"),
-        raw_result.get("session_id"),
-        payload.get("target_session_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            session_id = text
-            break
-    vm_id = None
-    for candidate in (
-        payload.get("vm_id"),
-        payload.get("vm_name"),
-        raw_args.get("vm_id"),
-        raw_args.get("vm_name"),
-        raw_result.get("vm_id"),
-        raw_result.get("vm_name"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            vm_id = text
-            break
-    directory_path = AdminService._agent_record_directory_path(payload.get("directory_path"))
-    agent_role = None
-    for candidate in (payload.get("agent_role"), payload.get("role")):
-        text = str(candidate or "").strip()
-        if text:
-            agent_role = text
-            break
-    actor_user_id = None
-    for candidate in (payload.get("actor_user_id"), payload.get("user_id")):
-        text = str(candidate or "").strip()
-        if text:
-            actor_user_id = text
-            break
-    workflow_run_id = None
-    for candidate in (
-        payload.get("workflow_run_id"),
-        raw_args.get("workflow_run_id"),
-        raw_result.get("workflow_run_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            workflow_run_id = text
-            break
-    trace_id = None
-    for candidate in (
-        payload.get("trace_id"),
-        payload.get("workflow_trace_id"),
-        raw_args.get("trace_id"),
-        raw_args.get("workflow_trace_id"),
-        raw_result.get("trace_id"),
-        raw_result.get("workflow_trace_id"),
-    ):
-        text = str(candidate or "").strip()
-        if text:
-            trace_id = text
-            break
-    duration_ms = payload.get("duration_ms")
-    try:
-        normalized_duration_ms = int(duration_ms) if duration_ms is not None else None
-    except (TypeError, ValueError):
-        normalized_duration_ms = None
-    entry = ToolCallAuditEntryPayload(
-        created_at=created_at,
-        session_id=session_id,
-        vm_id=vm_id,
-        directory_path=directory_path,
-        agent_role=agent_role,
-        actor_user_id=actor_user_id,
-        tool_name=tool_name,
-        request_id=request_id,
-        correlation_id=correlation_id,
-        approval_request_id=approval_request_id,
-        mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-        workflow_run_id=workflow_run_id,
-        trace_id=trace_id,
-        duration_ms=normalized_duration_ms,
-        decision=decision,
-        status=status,
-        error_summary=_tool_call_error_summary(payload, status, raw_result),
-        args=redacted_args,
-        result=redacted_result,
-        approval_diagnostic=approval_diagnostic,
-    )
-    entry.related_links = _tool_call_related_links(entry)
-    return entry
+
+    return tool_call_audit_entry_from_payload(payload)
 
 
 def _tool_call_audit_tail_scan_supported(
@@ -18643,32 +8717,30 @@ def _tool_call_audit_tail_scan_supported(
     created_before: datetime | None,
     q: str | None,
 ) -> bool:
-    if created_after is not None or created_before is not None:
-        return False
-    return not any(str(value or "").strip() for value in (session_id, tool_name, status, q))
+    from agent_sandbox.admin.services.approval_audit_service import (
+        tool_call_audit_tail_scan_supported,
+    )
+
+    return tool_call_audit_tail_scan_supported(
+        session_id=session_id,
+        tool_name=tool_name,
+        status=status,
+        created_after=created_after,
+        created_before=created_before,
+        q=q,
+    )
 
 
 def _tool_call_recent_scan_max_lines(limit: int) -> int:
-    return max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, max(1, int(limit)) * 25))
+    from agent_sandbox.admin.services.approval_audit_service import tool_call_recent_scan_max_lines
+
+    return tool_call_recent_scan_max_lines(limit)
 
 
 def _iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterator[str]:
-    with path.open("rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        position = handle.tell()
-        buffer = b""
-        while position > 0:
-            read_size = min(block_size, position)
-            position -= read_size
-            handle.seek(position)
-            chunk = handle.read(read_size)
-            lines = (chunk + buffer).split(b"\n")
-            buffer = lines[0]
-            for raw_line in reversed(lines[1:]):
-                if raw_line:
-                    yield raw_line.decode("utf-8", errors="replace")
-        if buffer:
-            yield buffer.decode("utf-8", errors="replace")
+    from agent_sandbox.admin.services.approval_audit_service import iter_file_lines_reverse
+
+    return iter_file_lines_reverse(path, block_size=block_size)
 
 
 def _tool_call_audit_entry_matches_filters(
@@ -18683,47 +8755,18 @@ def _tool_call_audit_entry_matches_filters(
     created_before: datetime | None,
     q: str | None,
 ) -> bool:
-    if session_id is not None and entry.session_id != str(session_id).strip():
-        return False
-    if tool_name is not None and entry.tool_name != str(tool_name).strip():
-        return False
-    if status is not None and entry.status != str(status).strip().casefold():
-        return False
-    if not _tool_call_directory_matches(
-        entry.directory_path,
-        directory_path,
+    from agent_sandbox.admin.services.approval_audit_service import (
+        tool_call_audit_entry_matches_filters,
+    )
+
+    return tool_call_audit_entry_matches_filters(
+        entry,
+        session_id=session_id,
+        tool_name=tool_name,
+        status=status,
+        directory_path=directory_path,
         direct_only=direct_only,
-    ):
-        return False
-    if created_after is not None and entry.created_at < created_after:
-        return False
-    if created_before is not None and entry.created_at > created_before:
-        return False
-    normalized_query = str(q or "").strip().casefold()
-    if normalized_query:
-        search_haystack = " ".join(
-            part
-            for part in (
-                _tool_call_safe_text(entry.session_id),
-                _tool_call_safe_text(entry.vm_id),
-                _tool_call_safe_text(entry.directory_path),
-                _tool_call_safe_text(entry.agent_role),
-                _tool_call_safe_text(entry.actor_user_id),
-                _tool_call_safe_text(entry.tool_name),
-                _tool_call_safe_text(entry.request_id),
-                _tool_call_safe_text(entry.correlation_id),
-                _tool_call_safe_text(entry.approval_request_id),
-                _tool_call_safe_text(entry.mcp_tool_approval_lease_id),
-                _tool_call_safe_text(entry.workflow_run_id),
-                _tool_call_safe_text(entry.trace_id),
-                _tool_call_safe_text(entry.decision),
-                _tool_call_safe_text(entry.status),
-                _tool_call_safe_text(entry.error_summary),
-                _tool_call_safe_text(entry.args),
-                _tool_call_safe_text(entry.result),
-            )
-            if part
-        ).casefold()
-        if normalized_query not in search_haystack:
-            return False
-    return True
+        created_after=created_after,
+        created_before=created_before,
+        q=q,
+    )

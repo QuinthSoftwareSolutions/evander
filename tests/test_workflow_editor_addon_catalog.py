@@ -100,6 +100,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     nodes = {node["type"]: node for node in payload["nodes"]}
     wake = nodes["effect:team:wake-due-agents"]
     finalize_dispatch = nodes["effect:team:finalize-agent-dispatch"]
+    create_task = nodes["effect:team:create-task"]
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
     read_state = nodes["query:team:state"]
@@ -129,6 +130,15 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert finalize_fields["session_id"]["required"] is True
     assert finalize_fields["dispatch_id"]["required"] is True
     assert finalize_fields["agent_id"]["kind"] == "string"
+    create_task_fields = {field["key"]: field for field in create_task["fields"]}
+    assert create_task["kind"] == "effect"
+    assert create_task["label"] == "Create Team task"
+    assert create_task_fields["team_id"]["required"] is True
+    assert create_task_fields["project_id"]["required"] is True
+    assert create_task_fields["owner_agent_id"]["required"] is True
+    assert create_task_fields["priority"]["kind"] == "number"
+    assert create_task_fields["description"]["multiline"] is True
+    assert create_task_fields["dependency_task_ids"]["json_value_type"] == "array"
     create_case_fields = {field["key"]: field for field in create_case["fields"]}
     assert create_case["kind"] == "effect"
     assert create_case["label"] == "Create Team case"

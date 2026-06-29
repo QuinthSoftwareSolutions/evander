@@ -997,9 +997,9 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
             return {"deleted": True, "session_id": session_id}
 
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 
@@ -1094,9 +1094,9 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
             )
 
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 

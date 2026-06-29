@@ -300,6 +300,12 @@ the same repository validation as the Admin API, may link existing `task_ids`,
 and are intended for ticket/accounting intake bridges that should create or
 refresh Team cases before waking persistent Team agents.
 
+Workflow automation can also create concrete execution work with
+`effect:team:create-task`. The node is operator-authored, requires `team_id`,
+`project_id`, `owner_agent_id`, `priority`, `title`, and `description`, and uses
+the Admin API task creation semantics: a missing `task_id` creates a task, while
+an existing matching task id updates/reprioritizes that task.
+
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
 Team state revision. Workflow effects and agent-action application may omit
@@ -508,6 +514,9 @@ set:
   `operator_directive` inbox item. The item defaults to the team manager,
   resets the manager's no-progress throttle, and is handled by the next normal
   Team wake through ordinary Team MCP tools.
+- `effect:team:create-task` directly creates or updates an operator-authored Team
+  task for a specific project owner. Agent-authored task creation remains through
+  `team_create_task` and `team_create_tasks` during persistent Team wakes.
 - `team_create_operator_directive` is the add-on-owned MCP tool for governance
   managers. It creates the same durable `operator_directive` inbox item, but
   only for member Teams of a governance group managed by the caller, and only

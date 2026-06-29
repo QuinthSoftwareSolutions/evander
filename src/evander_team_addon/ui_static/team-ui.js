@@ -84,7 +84,6 @@ const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
 const teamViewIds = new Set([
   "workspace",
-  "overview",
   "operations",
   "delivery",
   "projects",
@@ -153,6 +152,11 @@ let activeTeamView = readStoredTeamView();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
+let projectCreateFormOpen = false;
+let projectReviewProfileCreateProjectId = null;
+const projectRecordSectionPages = {};
+const projectRecordShowRejected = new Set();
+const openProjectRecordSections = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
 const expandedTeamRecordGroupIds = new Set();
@@ -191,6 +195,7 @@ const ephemeralWorkKinds = new Set([
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 const timelinePageSize = 10;
+const projectRecordPageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
 const chatBottomStickinessPx = 96;
@@ -201,7 +206,6 @@ const chatOlderMessageLoads = new Set();
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
   statusMessage: document.querySelector("#status-message"),
-  summaryGrid: document.querySelector("#summary-grid"),
   runtimeOperationsView: document.querySelector("#runtime-operations-view"),
   runtimeFilterButtons: Array.from(document.querySelectorAll("[data-runtime-filter]")),
   reviewDeliveryView: document.querySelector("#review-delivery-view"),
@@ -578,12 +582,12 @@ const timelineTypeOrder = [
 
 function bindTopLevelTabs() {
   document.addEventListener("click", (event) => {
-    const button = event.target?.closest?.("[data-team-view]");
+    const button = event.target?.closest?.("[data-team-view], [data-team-link-view]");
     if (!button) {
       return;
     }
     event.preventDefault();
-    setTeamView(button.dataset.teamView || defaultTeamView);
+    setTeamView(button.dataset.teamView || button.dataset.teamLinkView || defaultTeamView);
   });
   updateTeamViewTabs();
 }
@@ -1424,14 +1428,106 @@ function bindPlanningFilters() {
 }
 
 function bindProjectFocus() {
-  document.addEventListener("click", (event) => {
-    const button = event.target?.closest?.("[data-project-focus-id]");
-    if (!button) {
+  document.addEventListener("toggle", (event) => {
+    const section = event.target;
+    if (!section?.matches?.("[data-project-record-section]")) {
       return;
     }
-    event.preventDefault();
-    selectedProjectFocusId = text(button.dataset.projectFocusId) || null;
-    renderProjectFocus();
+    const key = projectRecordSectionKey(section.dataset.projectId, section.dataset.projectSection);
+    if (section.open) {
+      openProjectRecordSections.add(key);
+    } else {
+      openProjectRecordSections.delete(key);
+    }
+  }, true);
+
+  document.addEventListener("click", (event) => {
+    const createToggle = event.target?.closest?.("[data-project-create-toggle]");
+    if (createToggle) {
+      event.preventDefault();
+      projectCreateFormOpen = !projectCreateFormOpen;
+      syncProjectCreatePanel();
+      if (projectCreateFormOpen) {
+        const form = document.querySelector("[data-project-create-form]");
+        if (form) {
+          fillSelectsIn(form);
+          decorateFieldTooltips(form);
+        }
+        form?.querySelector("select, input, textarea")?.focus();
+      }
+      return;
+    }
+
+    const createClose = event.target?.closest?.("[data-project-create-close]");
+    if (createClose) {
+      event.preventDefault();
+      projectCreateFormOpen = false;
+      syncProjectCreatePanel({ reset: true });
+      return;
+    }
+
+    const button = event.target?.closest?.("[data-project-focus-id]");
+    if (button) {
+      event.preventDefault();
+      selectedProjectFocusId = text(button.dataset.projectFocusId) || null;
+      projectReviewProfileCreateProjectId = null;
+      renderProjectFocus();
+      return;
+    }
+
+    const reviewProfileCreateToggle = event.target?.closest?.("[data-project-review-profile-create-toggle]");
+    if (reviewProfileCreateToggle) {
+      event.preventDefault();
+      const projectId = text(reviewProfileCreateToggle.dataset.projectId);
+      projectReviewProfileCreateProjectId =
+        text(projectReviewProfileCreateProjectId) === projectId ? null : projectId;
+      renderProjectFocus();
+      const form = document.querySelector("[data-project-review-profile-create-form]");
+      if (form) {
+        fillSelectsIn(form);
+        decorateFieldTooltips(form);
+        form.querySelector("input, select, textarea")?.focus();
+      }
+      return;
+    }
+
+    const reviewProfileCreateClose = event.target?.closest?.("[data-project-review-profile-create-close]");
+    if (reviewProfileCreateClose) {
+      event.preventDefault();
+      projectReviewProfileCreateProjectId = null;
+      renderProjectFocus();
+      return;
+    }
+
+    const rejectedToggle = event.target?.closest?.("[data-project-section-show-rejected]");
+    if (rejectedToggle) {
+      event.preventDefault();
+      const key = projectRecordSectionKey(
+        rejectedToggle.dataset.projectId,
+        rejectedToggle.dataset.projectSection,
+      );
+      if (projectRecordShowRejected.has(key)) {
+        projectRecordShowRejected.delete(key);
+      } else {
+        projectRecordShowRejected.add(key);
+      }
+      projectRecordSectionPages[key] = 1;
+      openProjectRecordSections.add(key);
+      renderProjectFocus();
+      return;
+    }
+
+    const pageButton = event.target?.closest?.("[data-project-section-page]");
+    if (pageButton) {
+      event.preventDefault();
+      const key = projectRecordSectionKey(
+        pageButton.dataset.projectId,
+        pageButton.dataset.projectSection,
+      );
+      projectRecordSectionPages[key] = Math.max(1, Math.floor(Number(pageButton.dataset.projectSectionPage) || 1));
+      openProjectRecordSections.add(key);
+      renderProjectFocus();
+    }
   });
 }
 
@@ -1657,7 +1753,7 @@ function scheduleAuxiliaryLoadsForView(view) {
   if (view !== "chat") {
     void loadCosts();
   }
-  if (view === "timeline" || view === "workspace") {
+  if (view === "timeline") {
     void loadTimeline();
   }
 }
@@ -2346,23 +2442,7 @@ function render() {
 function renderActiveView(view = activeTeamView) {
   switch (normalizedTeamView(view)) {
     case "workspace":
-      renderSummary();
-      renderRuntimeOperations();
-      renderReviewDeliveryWorkspace();
-      renderHierarchy();
-      renderAgents();
-      renderRoles();
-      renderProjects();
-      renderCases();
-      renderReviewProfiles();
-      renderReleases();
-      renderTemplateSetup();
-      refreshSelects();
-      renderTimeline();
-      decorateActiveViewTooltips();
-      break;
-    case "overview":
-      renderSummary();
+      renderWorkspaceDashboard();
       decorateActiveViewTooltips();
       break;
     case "operations":
@@ -2427,8 +2507,8 @@ function renderActiveViewLoading(view = activeTeamView) {
     panel?.querySelector("[data-chat-thread-view]") ||
     panel?.querySelector("[data-agent-detail-view]") ||
     panel?.querySelector("[data-projects-focus-detail]") ||
+    panel?.querySelector("[data-workspace-attention-column]") ||
     panel?.querySelector("[data-runtime-operations-view]") ||
-    panel?.querySelector("[data-summary-grid]") ||
     panel?.querySelector("[data-review-delivery-view]") ||
     panel?.querySelector("[data-projects-view]") ||
     panel?.querySelector("[data-cases-view]") ||
@@ -2526,46 +2606,587 @@ function renderReviewDeliveryWorkspace() {
   bindWorkspaceReviewDecisionForms();
 }
 
-function renderSummary() {
-  const teams = values(state.teams);
-  const visibleTeams = teams.filter(isVisibleTeam);
-  const projects = values(state.projects);
-  const visibleProjects = projects.filter(isVisibleProject);
-  const visibleAgents = values(state.agents).filter(isVisibleAgent);
-  const visibleGovernanceGroups = values(state.governance_groups).filter(isVisibleGovernanceGroup);
-  const tasks = values(state.tasks);
-  const cases = values(state.cases);
-  const deliverables = values(state.deliverables);
-  const reviews = values(state.review_requests);
-  const reviewProfiles = values(state.review_profiles);
-  const visibleReviewProfiles = reviewProfiles.filter(isVisibleReviewProfile);
-  const ephemeral = values(state.ephemeral_assignments);
+function renderWorkspaceDashboard() {
+  const panel = document.querySelector("#team-workspace-page");
+  if (!panel || panel.hidden) {
+    return;
+  }
+  const model = buildWorkspaceDashboardModel();
+  const subtitle = panel.querySelector("[data-workspace-dashboard-subtitle]");
+  if (subtitle) {
+    subtitle.textContent = workspaceDashboardSubtitle(model);
+  }
+  renderWorkspaceTarget(panel, "[data-workspace-dashboard-actions]", renderWorkspaceDashboardActions());
+  renderWorkspaceTarget(panel, "[data-workspace-dashboard-metrics]", renderWorkspaceMetricCards(model));
+  renderWorkspaceTarget(
+    panel,
+    "[data-workspace-attention-column]",
+    [
+      renderWorkspaceAttentionPanel(model),
+      renderWorkspaceDeliveryPanel(model),
+    ].join(""),
+  );
+  renderWorkspaceTarget(
+    panel,
+    "[data-workspace-status-column]",
+    [
+      renderWorkspaceTeamStatusPanel(model),
+      renderWorkspaceWorkStatusPanel(model),
+      renderWorkspaceNavigationPanel(),
+    ].join(""),
+  );
+}
 
+function renderWorkspaceTarget(panel, selector, html) {
+  const target = panel.querySelector(selector);
+  if (target) {
+    target.innerHTML = html;
+  }
+}
+
+function buildWorkspaceDashboardModel() {
+  const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
+  const visibleTeamIds = new Set(visibleTeams.map((team) => text(team.id)));
+  const visibleProjects = values(state.projects)
+    .filter(isVisibleProject)
+    .filter((project) => !project.team_id || visibleTeamIds.has(text(project.team_id)))
+    .sort(compareTeamProjects);
+  const visibleProjectIds = new Set(visibleProjects.map((project) => text(project.id)));
+  const visibleAgents = values(state.agents)
+    .filter(isVisibleAgent)
+    .filter((agent) => !agent.team_id || visibleTeamIds.has(text(agent.team_id)))
+    .sort(byId);
+  const visibleAgentIds = new Set(visibleAgents.map((agent) => text(agent.id)));
+  const openTasks = values(state.tasks)
+    .filter((task) => !terminalTaskStates.has(task.state))
+    .filter((task) => workspaceTaskIsVisible(task, visibleProjectIds))
+    .sort(comparePlanningTasks);
+  const blockedTasks = openTasks.filter(isTaskWaitingOrBlocked);
+  const pendingInbox = values(state.inbox)
+    .filter((item) => text(item.state) !== "handled")
+    .filter((item) => visibleAgentIds.has(text(item.recipient_agent_id)))
+    .sort(compareWorkspaceInboxItems);
+  const pendingReviews = values(state.review_requests)
+    .filter((review) => !terminalRecordStates.has(review.state))
+    .filter((review) => workspaceReviewIsVisible(review, visibleProjectIds))
+    .sort(compareWorkspaceReviews);
+  const pendingGovernanceAgenda = values(state.governance_agenda)
+    .filter((item) => text(item.state || "pending") === "pending")
+    .filter((item) => workspaceGovernanceAgendaIsVisible(item, visibleTeamIds, visibleProjectIds))
+    .sort(compareWorkspaceGovernanceAgenda);
+  const runtime = state.runtime_operations || { agents: [], attention: [] };
+  const runtimeAttention = (runtime.attention || [])
+    .filter(isVisibleRuntimeRow)
+    .sort(runtimeSortRows);
+  const dueAgents = dueLeasedAgentsForFilter(runtime.agents || []);
+  const deliveryRows = buildReviewDeliveryRows();
+  const costAttention = workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds);
+  const attentionItems = workspaceAttentionItems({
+    runtimeAttention,
+    costAttention,
+    blockedTasks,
+    pendingReviews,
+    pendingInbox,
+    pendingGovernanceAgenda,
+  });
+  return {
+    visibleTeams,
+    visibleProjects,
+    visibleAgents,
+    openTasks,
+    blockedTasks,
+    pendingInbox,
+    pendingReviews,
+    pendingGovernanceAgenda,
+    runtimeAttention,
+    dueAgents,
+    deliveryRows,
+    costAttention,
+    attentionItems,
+    generatedAt: runtime.generated_at || null,
+  };
+}
+
+function workspaceDashboardSubtitle(model) {
+  const attention = model.attentionItems.length;
+  if (attention) {
+    return `${attention} item${attention === 1 ? "" : "s"} need attention.`;
+  }
+  if (!model.visibleTeams.length) {
+    return "No active teams are registered.";
+  }
+  return "No active blockers detected in the current Team state.";
+}
+
+function renderWorkspaceDashboardActions() {
+  return [
+    workspaceViewButton("operations", "Operations"),
+    workspaceViewButton("delivery", "Delivery"),
+    workspaceViewButton("task-board", "Task board"),
+    workspaceViewButton("people", "Teams"),
+  ].join("");
+}
+
+function renderWorkspaceMetricCards(model) {
   const metrics = [
-    ["Teams", visibleTeams.length],
-    ["Governance groups", visibleGovernanceGroups.length],
-    ["Projects", visibleProjects.length],
-    ["Agents", visibleAgents.length],
-    ["Open cases", cases.filter((item) => item.status !== "closed").length],
-    ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
-    ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
-    ["Review profiles", visibleReviewProfiles.length],
-    ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
+    {
+      label: "Needs attention",
+      value: model.attentionItems.length,
+      detail: "Blockers, runtime alerts, pending reviews",
+      view: "operations",
+      tone: model.attentionItems.some((item) => item.severity === "critical") ? "critical" : model.attentionItems.length ? "warning" : "ok",
+    },
+    {
+      label: "Blocked / waiting",
+      value: model.blockedTasks.length,
+      detail: `${model.openTasks.length} open task${model.openTasks.length === 1 ? "" : "s"}`,
+      view: "task-board",
+      tone: model.blockedTasks.length ? "warning" : "ok",
+    },
+    {
+      label: "Pending reviews",
+      value: model.pendingReviews.length,
+      detail: `${model.deliveryRows.length} deliverable${model.deliveryRows.length === 1 ? "" : "s"}`,
+      view: "delivery",
+      tone: model.pendingReviews.length ? "warning" : "ok",
+    },
+    {
+      label: "Due / leased agents",
+      value: model.dueAgents.length,
+      detail: `${model.visibleAgents.length} visible agent${model.visibleAgents.length === 1 ? "" : "s"}`,
+      view: "operations",
+      tone: model.dueAgents.length ? "warning" : "ok",
+    },
+    {
+      label: "Active teams",
+      value: model.visibleTeams.length,
+      detail: `${model.visibleProjects.length} project${model.visibleProjects.length === 1 ? "" : "s"}`,
+      view: "people",
+      tone: model.visibleTeams.length ? "info" : "warning",
+    },
+    {
+      label: "Cost alerts",
+      value: model.costAttention.length,
+      detail: costState.error ? "cost data unavailable" : "estimated cap checks",
+      view: "governance",
+      tone: model.costAttention.length || costState.error ? "warning" : "ok",
+    },
   ];
+  return metrics.map(renderWorkspaceMetricCard).join("");
+}
 
-  const html = metrics
-    .map(([label, value]) => {
-      return `<div class="metric"><strong>${value}</strong><span>${escapeHtml(label)}</span></div>`;
-    })
-    .join("")
-    .concat(
-      !teams.length
-        ? `<p class="empty-state summary-empty-state">No teams registered.</p>`
-        : !visibleTeams.length
-          ? `<p class="empty-state summary-empty-state">No active team.</p>`
-      : "",
-    );
-  renderIntoActiveTargets("[data-summary-grid]", html);
+function renderWorkspaceMetricCard(metric) {
+  return `
+    <button
+      type="button"
+      class="workspace-metric-card workspace-tone-${escapeAttr(metric.tone || "info")}"
+      data-team-link-view="${escapeAttr(metric.view)}"
+    >
+      <span>${escapeHtml(metric.label)}</span>
+      <strong>${escapeHtml(metric.value)}</strong>
+      <small>${escapeHtml(metric.detail)}</small>
+    </button>
+  `;
+}
+
+function renderWorkspaceAttentionPanel(model) {
+  const limit = 7;
+  const visibleItems = model.attentionItems.slice(0, limit);
+  const remaining = Math.max(0, model.attentionItems.length - visibleItems.length);
+  const body = visibleItems.length
+    ? `
+      <ul class="workspace-attention-list">
+        ${visibleItems.map(renderWorkspaceAttentionItem).join("")}
+      </ul>
+      ${remaining ? `<div class="workspace-more-row">${remaining} more item${remaining === 1 ? "" : "s"} in detailed tabs.</div>` : ""}
+    `
+    : `<p class="empty-state">No runtime blockers, pending reviews, open inbox items, or governance agenda items need attention.</p>`;
+  return `
+    <section class="workspace-dashboard-panel workspace-attention-panel" aria-labelledby="workspace-attention-heading">
+      <div class="workspace-panel-header">
+        <div>
+          <p class="section-label">Attention</p>
+          <h3 id="workspace-attention-heading">Needs attention now</h3>
+        </div>
+        ${workspaceViewButton("operations", "Open operations")}
+      </div>
+      ${body}
+      ${model.generatedAt ? `<div class="meta-line">Runtime generated ${escapeHtml(model.generatedAt)}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderWorkspaceAttentionItem(item) {
+  return `
+    <li class="workspace-attention-item workspace-tone-${escapeAttr(item.severity || "info")}">
+      <div class="workspace-attention-copy">
+        <strong>${escapeHtml(item.title)}</strong>
+        ${item.meta ? `<span>${escapeHtml(item.meta)}</span>` : ""}
+      </div>
+      <button type="button" class="record-action" data-team-link-view="${escapeAttr(item.view)}">${escapeHtml(item.action)}</button>
+    </li>
+  `;
+}
+
+function renderWorkspaceDeliveryPanel(model) {
+  const counts = workspaceDeliveryCounts(model.deliveryRows);
+  const total = model.deliveryRows.length;
+  return `
+    <section class="workspace-dashboard-panel" aria-labelledby="workspace-delivery-heading">
+      <div class="workspace-panel-header">
+        <div>
+          <p class="section-label">Delivery</p>
+          <h3 id="workspace-delivery-heading">Review &amp; delivery</h3>
+        </div>
+        ${workspaceViewButton("delivery", "Open delivery")}
+      </div>
+      ${
+        total
+          ? `
+            <div class="workspace-status-strip">
+              ${deliveryStatusOrder
+                .map((status) => renderWorkspaceStatusCount(deliveryStatusLabels[status] || status, counts[status] || 0, status))
+                .join("")}
+            </div>
+          `
+          : `<p class="empty-state">No deliverables recorded.</p>`
+      }
+    </section>
+  `;
+}
+
+function renderWorkspaceTeamStatusPanel(model) {
+  const teamRows = model.visibleTeams.slice(0, 4);
+  const remaining = Math.max(0, model.visibleTeams.length - teamRows.length);
+  return `
+    <section class="workspace-dashboard-panel" aria-labelledby="workspace-team-status-heading">
+      <div class="workspace-panel-header">
+        <div>
+          <p class="section-label">Teams</p>
+          <h3 id="workspace-team-status-heading">Team status</h3>
+        </div>
+        ${workspaceViewButton("people", "Open teams")}
+      </div>
+      ${
+        teamRows.length
+          ? `
+            <ul class="workspace-team-list">
+              ${teamRows.map(renderWorkspaceTeamStatusRow).join("")}
+            </ul>
+            ${remaining ? `<div class="workspace-more-row">${remaining} more team${remaining === 1 ? "" : "s"}.</div>` : ""}
+          `
+          : `<p class="empty-state">No active team.</p>`
+      }
+    </section>
+  `;
+}
+
+function renderWorkspaceTeamStatusRow(team) {
+  const teamAgents = values(state.agents).filter((agent) => isVisibleAgent(agent) && text(agent.team_id) === text(team.id));
+  const teamProjectIds = new Set(
+    values(state.projects)
+      .filter((project) => isVisibleProject(project) && text(project.team_id) === text(team.id))
+      .map((project) => text(project.id)),
+  );
+  const teamTasks = values(state.tasks).filter((task) => teamProjectIds.has(text(task.project_id)));
+  const openTasks = teamTasks.filter((task) => !terminalTaskStates.has(task.state));
+  const blockedTasks = openTasks.filter(isTaskWaitingOrBlocked);
+  const inboxCount = values(state.inbox).filter((item) => {
+    const agent = state.agents[text(item.recipient_agent_id)];
+    return text(item.state) !== "handled" && agent && text(agent.team_id) === text(team.id);
+  }).length;
+  const dueCount = (state.runtime_operations?.agents || []).filter((row) => {
+    return text(row.team_id) === text(team.id) && isDueOrLeasedAgent(row);
+  }).length;
+  const attention = blockedTasks.length + inboxCount + dueCount;
+  return `
+    <li class="workspace-team-row${attention ? " workspace-team-row-attention" : ""}">
+      <div>
+        <strong>${escapeHtml(team.name || team.id)}</strong>
+        <span>${escapeHtml(team.id)}</span>
+      </div>
+      <div class="workspace-team-row-meta">
+        <span>${teamAgents.length} agent${teamAgents.length === 1 ? "" : "s"}</span>
+        <span>${openTasks.length} open</span>
+        ${blockedTasks.length ? `<span class="state-pill blocked">${blockedTasks.length} blocked</span>` : ""}
+        ${inboxCount ? `<span class="state-pill warning">${inboxCount} inbox</span>` : ""}
+        ${dueCount ? `<span class="state-pill warning">${dueCount} due</span>` : ""}
+      </div>
+    </li>
+  `;
+}
+
+function renderWorkspaceWorkStatusPanel(model) {
+  const openCases = values(state.cases).filter((item) => isVisibleCase(item) && !["resolved", "closed"].includes(text(item.status)));
+  const pendingGovernance = model.pendingGovernanceAgenda.length;
+  return `
+    <section class="workspace-dashboard-panel" aria-labelledby="workspace-work-status-heading">
+      <div class="workspace-panel-header">
+        <div>
+          <p class="section-label">Work</p>
+          <h3 id="workspace-work-status-heading">Current workload</h3>
+        </div>
+        ${workspaceViewButton("task-board", "Open board")}
+      </div>
+      <div class="workspace-status-strip workspace-status-strip-compact">
+        ${renderWorkspaceStatusCount("Open tasks", model.openTasks.length, model.blockedTasks.length ? "blocked" : "info")}
+        ${renderWorkspaceStatusCount("Open cases", openCases.length, openCases.length ? "warning" : "info")}
+        ${renderWorkspaceStatusCount("Inbox", model.pendingInbox.length, model.pendingInbox.length ? "warning" : "info")}
+        ${renderWorkspaceStatusCount("Governance", pendingGovernance, pendingGovernance ? "warning" : "info")}
+      </div>
+    </section>
+  `;
+}
+
+function renderWorkspaceNavigationPanel() {
+  const links = [
+    ["projects", "Projects", "Project catalog and review profiles"],
+    ["task-board", "Task board", "Project work by lane"],
+    ["cases", "Cases", "Intake and ticket context"],
+    ["governance", "Governance", "Groups, agenda, and oversight"],
+    ["timeline", "Timeline", "Derived audit view"],
+    ["org", "Org chart", "Team graph"],
+  ];
+  return `
+    <section class="workspace-dashboard-panel" aria-labelledby="workspace-navigation-heading">
+      <div class="workspace-panel-header">
+        <div>
+          <p class="section-label">Drill down</p>
+          <h3 id="workspace-navigation-heading">Detailed tabs</h3>
+        </div>
+      </div>
+      <div class="workspace-link-grid">
+        ${links
+          .map(([view, label, detail]) => `
+            <button type="button" class="workspace-link-card" data-team-link-view="${escapeAttr(view)}">
+              <strong>${escapeHtml(label)}</strong>
+              <span>${escapeHtml(detail)}</span>
+            </button>
+          `)
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderWorkspaceStatusCount(label, value, tone = "info") {
+  return `
+    <div class="workspace-status-count workspace-tone-${escapeAttr(tone || "info")}">
+      <strong>${escapeHtml(value)}</strong>
+      <span>${escapeHtml(label)}</span>
+    </div>
+  `;
+}
+
+function workspaceViewButton(view, label) {
+  return `<button type="button" class="workspace-view-link" data-team-link-view="${escapeAttr(view)}">${escapeHtml(label)}</button>`;
+}
+
+function workspaceDeliveryCounts(rows) {
+  return rows.reduce((counts, row) => {
+    counts[row.effectiveStatus] = (counts[row.effectiveStatus] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function workspaceTaskIsVisible(task, visibleProjectIds) {
+  const projectId = text(task.project_id);
+  return !projectId || visibleProjectIds.has(projectId);
+}
+
+function workspaceReviewIsVisible(review, visibleProjectIds) {
+  const deliverable = state.deliverables[text(review.deliverable_id)];
+  const task = deliverable ? state.tasks[text(deliverable.task_id)] : null;
+  return !task || workspaceTaskIsVisible(task, visibleProjectIds);
+}
+
+function workspaceGovernanceAgendaIsVisible(item, visibleTeamIds, visibleProjectIds) {
+  const group = state.governance_groups[text(item.governance_group_id)];
+  if (group && !isVisibleGovernanceGroup(group)) {
+    return false;
+  }
+  const teamId = text(item.team_id);
+  const projectId = text(item.project_id);
+  return (!teamId || visibleTeamIds.has(teamId)) && (!projectId || visibleProjectIds.has(projectId));
+}
+
+function compareWorkspaceInboxItems(left, right) {
+  return (
+    prioritySortValue(left.priority) - prioritySortValue(right.priority) ||
+    String(left.created_at || "").localeCompare(String(right.created_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function compareWorkspaceReviews(left, right) {
+  return (
+    recordStateAttentionRank(left.state) - recordStateAttentionRank(right.state) ||
+    String(left.created_at || "").localeCompare(String(right.created_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function compareWorkspaceGovernanceAgenda(left, right) {
+  return (
+    prioritySortValue(left.priority) - prioritySortValue(right.priority) ||
+    String(left.created_at || "").localeCompare(String(right.created_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function recordStateAttentionRank(stateValue) {
+  const order = { blocked: 0, rejected: 1, pending: 2, in_progress: 3, accepted: 4 };
+  return order[text(stateValue)] ?? 9;
+}
+
+function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
+  const rows = [];
+  Object.entries(costState.team_costs || {}).forEach(([teamId, cost]) => {
+    if (cost?.cost_limit_reached && visibleTeamIds.has(text(teamId))) {
+      const team = state.teams[text(teamId)];
+      rows.push({
+        title: `${team?.name || teamId} cost cap reached`,
+        meta: `${formatUsd(cost.estimated_cost)} estimated`,
+        severity: "warning",
+        view: "operations",
+        action: "Open operations",
+      });
+    }
+  });
+  Object.entries(costState.project_costs || {}).forEach(([projectId, cost]) => {
+    if (cost?.cost_limit_reached && visibleProjectIds.has(text(projectId))) {
+      const project = state.projects[text(projectId)];
+      rows.push({
+        title: `${project?.name || projectId} cost cap reached`,
+        meta: `${formatUsd(cost.estimated_cost)} estimated`,
+        severity: "warning",
+        view: "projects",
+        action: "Open projects",
+      });
+    }
+  });
+  Object.entries(costState.governance_group_costs || {}).forEach(([groupId, cost]) => {
+    const group = state.governance_groups[text(groupId)];
+    if (!group || !isVisibleGovernanceGroup(group)) {
+      return;
+    }
+    if (cost?.cost_limit_reached || (cost?.member_team_cap_reached_ids || []).length) {
+      rows.push({
+        title: `${group.name || groupId} cost attention`,
+        meta: cost?.cost_limit_reached
+          ? `${formatUsd(cost.estimated_cost)} estimated`
+          : `${(cost.member_team_cap_reached_ids || []).length} member cap${(cost.member_team_cap_reached_ids || []).length === 1 ? "" : "s"} reached`,
+        severity: "warning",
+        view: "governance",
+        action: "Open governance",
+      });
+    }
+  });
+  if (costState.error) {
+    rows.push({
+      title: "Cost data unavailable",
+      meta: costState.error,
+      severity: "warning",
+      view: "operations",
+      action: "Open operations",
+    });
+  }
+  return rows.sort((left, right) => left.title.localeCompare(right.title));
+}
+
+function workspaceAttentionItems({
+  runtimeAttention,
+  costAttention,
+  blockedTasks,
+  pendingReviews,
+  pendingInbox,
+  pendingGovernanceAgenda,
+}) {
+  const items = [];
+  runtimeAttention.forEach((row) => {
+    items.push({
+      title: row.title || row.id,
+      meta: workspaceRuntimeAttentionMeta(row),
+      severity: row.severity || "info",
+      view: "operations",
+      action: "Open operations",
+    });
+  });
+  costAttention.forEach((row) => items.push(row));
+  blockedTasks.forEach((task) => {
+    const project = state.projects[text(task.project_id)];
+    const owner = state.agents[text(task.owner_agent_id)];
+    items.push({
+      title: task.title || task.id,
+      meta: [
+        humanizeToken(task.state),
+        project ? project.name || project.id : text(task.project_id),
+        owner ? agentLabel(owner) : text(task.owner_agent_id),
+      ].filter(Boolean).join(" - "),
+      severity: task.state === "blocked" ? "warning" : "info",
+      view: "task-board",
+      action: "Open board",
+    });
+  });
+  pendingReviews.forEach((review) => {
+    const deliverable = state.deliverables[text(review.deliverable_id)];
+    const reviewer = state.agents[text(review.reviewer_agent_id)];
+    items.push({
+      title: `Review ${review.id}`,
+      meta: [
+        humanizeToken(review.state || "pending"),
+        deliverable ? deliverable.summary || deliverable.id : text(review.deliverable_id),
+        reviewer ? agentLabel(reviewer) : text(review.reviewer_agent_id),
+      ].filter(Boolean).join(" - "),
+      severity: review.state === "blocked" ? "warning" : "info",
+      view: "delivery",
+      action: "Open delivery",
+    });
+  });
+  pendingInbox.forEach((item) => {
+    const recipient = state.agents[text(item.recipient_agent_id)];
+    items.push({
+      title: inboxItemLabels[item.item_type] || humanizeToken(item.item_type || "inbox item"),
+      meta: [
+        inboxItemDetail(item) || item.id,
+        recipient ? agentLabel(recipient) : text(item.recipient_agent_id),
+      ].filter(Boolean).join(" - "),
+      severity: item.priority === "high" ? "warning" : "info",
+      view: "people",
+      action: "Open teams",
+    });
+  });
+  pendingGovernanceAgenda.forEach((item) => {
+    items.push({
+      title: item.title || item.id,
+      meta: [
+        humanizeToken(item.item_type || "agenda"),
+        item.priority || "normal",
+        item.team_id ? `team ${item.team_id}` : "",
+      ].filter(Boolean).join(" - "),
+      severity: item.priority === "high" ? "warning" : "info",
+      view: "governance",
+      action: "Open governance",
+    });
+  });
+  return items.sort(compareWorkspaceAttentionItems);
+}
+
+function workspaceRuntimeAttentionMeta(row) {
+  return [
+    humanizeToken(row.kind || "attention"),
+    row.state ? humanizeToken(row.state) : "",
+    row.agent_id ? `agent ${row.agent_id}` : "",
+    row.project_id ? `project ${row.project_id}` : "",
+  ].filter(Boolean).join(" - ");
+}
+
+function compareWorkspaceAttentionItems(left, right) {
+  return (
+    runtimeSeverityRank(left.severity) - runtimeSeverityRank(right.severity) ||
+    text(left.title).localeCompare(text(right.title)) ||
+    text(left.meta).localeCompare(text(right.meta))
+  );
 }
 
 function renderTeamCostCounter(teamId) {
@@ -5519,10 +6140,10 @@ function applyPendingChatScroll(conversationId) {
   if (!pending || text(pending.conversationId) !== text(conversationId)) {
     return;
   }
-  window.requestAnimationFrame(() => {
+  const applyScroll = () => {
     const list = chatMessageListElement(conversationId);
     if (!list || pendingChatScroll !== pending) {
-      return;
+      return false;
     }
     if (pending.mode === "bottom") {
       list.scrollTop = list.scrollHeight;
@@ -5531,7 +6152,18 @@ function applyPendingChatScroll(conversationId) {
     } else {
       list.scrollTop = pending.scrollTop;
     }
-    pendingChatScroll = null;
+    return true;
+  };
+  window.requestAnimationFrame(() => {
+    if (!applyScroll()) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      applyScroll();
+      if (pendingChatScroll === pending) {
+        pendingChatScroll = null;
+      }
+    });
   });
 }
 
@@ -6848,10 +7480,12 @@ function renderProjectFocus() {
   if (!document.querySelector("[data-projects-focus-list]")) {
     return;
   }
+  syncProjectCreatePanel();
   const allProjects = values(state.projects).sort(compareTeamProjects);
   const projects = allProjects.filter(isVisibleProject);
   if (!projects.some((project) => project.id === selectedProjectFocusId)) {
     selectedProjectFocusId = projects[0]?.id || null;
+    projectReviewProfileCreateProjectId = null;
   }
   const selectedProject = selectedProjectFocusId ? state.projects[selectedProjectFocusId] : null;
 
@@ -6882,19 +7516,20 @@ function renderProjectFocus() {
     fillSelectsIn(target);
     decorateFieldTooltips(target);
   });
+  syncProjectCreatePanel();
 }
 
 function renderProjectFocusListItem(project) {
   const active = project.id === selectedProjectFocusId;
   const team = state.teams[project.team_id];
-  const tasks = values(state.tasks).filter((task) => task.project_id === project.id);
   const reviewProfiles = projectSpecificReviewProfiles(project);
   return `
     <button
       type="button"
       class="projects-focus-row${active ? " active" : ""}"
+      role="tab"
       data-project-focus-id="${escapeAttr(project.id)}"
-      aria-pressed="${active ? "true" : "false"}"
+      aria-selected="${active ? "true" : "false"}"
     >
       <span class="projects-focus-row-main">
         <strong>${escapeHtml(project.name)}</strong>
@@ -6902,7 +7537,6 @@ function renderProjectFocusListItem(project) {
       </span>
       <span class="projects-focus-row-meta">
         <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
-        <span>${tasks.length} tasks</span>
         <span>${reviewProfiles.length} profiles</span>
       </span>
     </button>
@@ -6918,10 +7552,10 @@ function renderProjectFocusDetail(project) {
   const taskIds = new Set(tasks.map((task) => task.id));
   const deliverables = values(state.deliverables)
     .filter((deliverable) => taskIds.has(deliverable.task_id))
-    .sort(byId);
+    .sort(compareProjectDeliverablesLatest);
   const releases = values(state.release_packages)
     .filter((release) => release.project_id === project.id)
-    .sort(byId);
+    .sort(compareProjectReleasesLatest);
   const projectProfiles = projectSpecificReviewProfiles(project);
   const teamProfiles = teamWideReviewProfilesForProject(project);
   const projectAgents = values(state.agents)
@@ -6968,18 +7602,10 @@ function renderProjectFocusDetail(project) {
         <h3>Project agents</h3>
         ${renderProjectFocusAgents(projectAgents)}
       </section>
-      <section>
-        <h3>Tasks</h3>
-        ${renderTasks(tasks, { compact: true })}
-      </section>
-      <section>
-        <h3>Deliverables</h3>
-        ${renderDeliverables(deliverables, { compact: true })}
-      </section>
-      <section>
-        <h3>Releases</h3>
-        ${releases.length ? `<ul class="release-list compact-record-list">${releases.map(renderCompactRelease).join("")}</ul>` : `<p class="empty-state">No release packages.</p>`}
-      </section>
+    </div>
+    <div class="project-record-sections">
+      ${renderProjectRecordSection(project, "deliverables", "Deliverables", deliverables, renderProjectDeliverablePage)}
+      ${renderProjectRecordSection(project, "releases", "Releases", releases, renderProjectReleasePage)}
     </div>
     <section class="project-review-profile-panel">
       <div class="projects-detail-section-header">
@@ -6988,10 +7614,165 @@ function renderProjectFocusDetail(project) {
           <h3>Project review profiles</h3>
         </div>
       </div>
-      ${renderProjectReviewProfileCreateForm(project)}
       ${renderProjectReviewProfiles(projectProfiles, teamProfiles)}
+      ${renderProjectReviewProfileCreatePanel(project)}
     </section>
   `;
+}
+
+function syncProjectCreatePanel({ reset = false } = {}) {
+  const form = document.querySelector("[data-project-create-form]");
+  const button = document.querySelector("[data-project-create-toggle]");
+  if (form) {
+    form.hidden = !projectCreateFormOpen;
+    if (reset) {
+      form.reset();
+    }
+    if (projectCreateFormOpen) {
+      fillSelectsIn(form);
+      decorateFieldTooltips(form);
+    }
+  }
+  if (button) {
+    button.setAttribute("aria-expanded", projectCreateFormOpen ? "true" : "false");
+  }
+}
+
+function renderProjectRecordSection(project, section, title, records, renderPageRecords) {
+  const key = projectRecordSectionKey(project.id, section);
+  const rejectedRecords = records.filter(isRejectedProjectRecord);
+  const showRejected = projectRecordShowRejected.has(key);
+  const visibleRecords = showRejected
+    ? records
+    : records.filter((record) => !isRejectedProjectRecord(record));
+  const totalPages = Math.max(1, Math.ceil(visibleRecords.length / projectRecordPageSize));
+  const page = clampPage(projectRecordSectionPages[key] || 1, totalPages);
+  projectRecordSectionPages[key] = page;
+  const start = (page - 1) * projectRecordPageSize;
+  const pageRecords = visibleRecords.slice(start, start + projectRecordPageSize);
+  const summaryParts = [
+    `${visibleRecords.length} shown`,
+    rejectedRecords.length && !showRejected ? `${rejectedRecords.length} rejected hidden` : "",
+    visibleRecords.length > projectRecordPageSize ? `page ${page} of ${totalPages}` : "",
+  ].filter(Boolean);
+  return `
+    <details
+      class="project-record-section"
+      data-project-record-section
+      data-project-id="${escapeAttr(project.id)}"
+      data-project-section="${escapeAttr(section)}"
+      ${openProjectRecordSections.has(key) ? "open" : ""}
+    >
+      <summary class="project-record-section-summary">
+        <span class="compact-record-main">
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml(summaryParts.join(" - ") || "No records")}</span>
+        </span>
+      </summary>
+      <div class="project-record-section-body">
+        <div class="project-record-section-controls">
+          ${
+            rejectedRecords.length
+              ? `<button
+                  type="button"
+                  class="record-action"
+                  aria-pressed="${showRejected ? "true" : "false"}"
+                  data-project-id="${escapeAttr(project.id)}"
+                  data-project-section="${escapeAttr(section)}"
+                  data-project-section-show-rejected
+                >${showRejected ? "Hide rejected" : "Show rejected"}</button>`
+              : ""
+          }
+        </div>
+        ${renderPageRecords(pageRecords)}
+        ${renderProjectRecordPager(project.id, section, page, totalPages, visibleRecords.length, start, pageRecords.length)}
+      </div>
+    </details>
+  `;
+}
+
+function renderProjectDeliverablePage(deliverables) {
+  return renderDeliverables(deliverables, { compact: true });
+}
+
+function renderProjectReleasePage(releases) {
+  if (!releases.length) {
+    return `<p class="empty-state">No release packages.</p>`;
+  }
+  return `<ul class="release-list compact-record-list">${releases.map(renderCompactRelease).join("")}</ul>`;
+}
+
+function renderProjectRecordPager(projectId, section, page, totalPages, totalRecords, start, pageLength) {
+  if (totalRecords <= projectRecordPageSize) {
+    return `<div class="team-record-pager-summary">Showing ${escapeHtml(totalRecords)} ${escapeHtml(section)}</div>`;
+  }
+  const first = start + 1;
+  const last = start + pageLength;
+  return `
+    <div class="team-record-pager" aria-label="${escapeAttr(section)} pages">
+      <button
+        type="button"
+        data-project-id="${escapeAttr(projectId)}"
+        data-project-section="${escapeAttr(section)}"
+        data-project-section-page="${page - 1}"
+        ${page <= 1 ? "disabled" : ""}
+      >Previous</button>
+      <span>${escapeHtml(first)}-${escapeHtml(last)} of ${escapeHtml(totalRecords)}</span>
+      <button
+        type="button"
+        data-project-id="${escapeAttr(projectId)}"
+        data-project-section="${escapeAttr(section)}"
+        data-project-section-page="${page + 1}"
+        ${page >= totalPages ? "disabled" : ""}
+      >Next</button>
+    </div>
+  `;
+}
+
+function projectRecordSectionKey(projectId, section) {
+  return `${text(projectId)}:${text(section)}`;
+}
+
+function isRejectedProjectRecord(record) {
+  return text(record?.state) === "rejected";
+}
+
+function compareProjectDeliverablesLatest(left, right) {
+  return compareProjectRecordsLatest(left, right, ["created_at"]);
+}
+
+function compareProjectReleasesLatest(left, right) {
+  return compareProjectRecordsLatest(left, right, ["published_at", "updated_at", "created_at"]);
+}
+
+function compareProjectRecordsLatest(left, right, fields) {
+  const leftTime = projectRecordSortTime(left, fields);
+  const rightTime = projectRecordSortTime(right, fields);
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+  for (const field of fields) {
+    const leftText = text(left?.[field]);
+    const rightText = text(right?.[field]);
+    if (leftText !== rightText) {
+      return rightText.localeCompare(leftText);
+    }
+  }
+  return text(right?.id).localeCompare(text(left?.id));
+}
+
+function projectRecordSortTime(record, fields) {
+  for (const field of fields) {
+    const value = text(record?.[field]);
+    if (!value) {
+      continue;
+    }
+    const parsed = Date.parse(normalizeTimelineTimestampForSort(value));
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return Number.NEGATIVE_INFINITY;
 }
 
 function renderProjectFocusMetric(label, value) {
@@ -7185,6 +7966,26 @@ function caseStatusRank(status) {
   return order[text(status)] ?? 99;
 }
 
+function renderProjectReviewProfileCreatePanel(project) {
+  const open = text(projectReviewProfileCreateProjectId) === text(project.id);
+  if (!open) {
+    return `
+      <div class="project-review-profile-create-actions">
+        <button
+          type="button"
+          class="record-action"
+          aria-expanded="false"
+          data-project-id="${escapeAttr(project.id)}"
+          data-project-review-profile-create-toggle
+        >
+          Add review profile
+        </button>
+      </div>
+    `;
+  }
+  return renderProjectReviewProfileCreateForm(project);
+}
+
 function renderProjectReviewProfileCreateForm(project) {
   return `
     <form
@@ -7194,7 +7995,15 @@ function renderProjectReviewProfileCreateForm(project) {
       data-endpoint="/review-profiles"
       data-method="POST"
       data-delegated-create-form
+      data-project-review-profile-create-form
     >
+      <div class="project-review-profile-form-header">
+        <div>
+          <p class="section-label">Review profile</p>
+          <h3>Add review profile</h3>
+        </div>
+        <button type="button" class="record-action" data-project-review-profile-create-close>Close</button>
+      </div>
       <input type="hidden" name="team_id" value="${escapeAttr(project.team_id)}" />
       <input type="hidden" name="project_id" value="${escapeAttr(project.id)}" />
       <div class="project-review-profile-fields">
@@ -9496,11 +10305,20 @@ async function submitCreateForm(form) {
       .sort((left, right) =>
         String(right.created_at || "").localeCompare(String(left.created_at || "")) || byId(left, right),
       );
+    if (form.hasAttribute("data-project-create-form")) {
+      projectCreateFormOpen = false;
+    }
     if (createdProjects.length) {
       selectedProjectFocusId = createdProjects[0].id;
       renderProjectFocus();
       refreshSelects();
+    } else {
+      syncProjectCreatePanel();
     }
+  }
+  if (saved && formId === "create-review-profile-form" && form.hasAttribute("data-project-review-profile-create-form")) {
+    projectReviewProfileCreateProjectId = null;
+    renderProjectFocus();
   }
   if (saved && formId === "create-team-from-teams-form") {
     closeTeamsCreateTeamPanel({ reset: true });

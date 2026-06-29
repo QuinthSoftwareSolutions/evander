@@ -9,26 +9,100 @@ import re
 import shutil
 import tempfile
 import urllib.parse
+import yaml
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from agent_sandbox.admin.services import issue_helpers, process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.ports import DirectoryPathPort, DirectoryOwnershipPort
 
-from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.models import (
-    ApprovalDecisionRecord,
-    ApprovalQueueHealth,
-    ApprovalRequest,
-    ApprovalStatus,
     LocalIssueRecord,
     RemoteIssueReference,
     VmActionResult,
 )
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
+
+
+class GitImportConflictError(RuntimeError):
+    status_code = 409
+
+
+def _extract_local_issue_id_candidate(value: str) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.isdigit():
+        return normalized
+    if normalized.startswith("vm-") and normalized[3:].isdigit():
+        return normalized[3:]
+    prefixed_match = re.match(
+        r"^(?:local|issue)[:/\-]([0-9]+)$", normalized, flags=re.IGNORECASE
+    )
+    if prefixed_match:
+        return prefixed_match.group(1)
+    session_match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
+    if session_match:
+        return session_match.group(1)
+    return None
+
+
+def _normalize_import_bare_repo_name(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[: -len(".git")]
+    if not normalized:
+        raise ValueError("bare_repo_name is required")
+    if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
+        raise ValueError("bare_repo_name must be a single repository name, not a path")
+    return normalized
+
+
+def _git_config_value(git_dir: Path, key: str) -> str | None:
+    result = process_helpers.run_subprocess(
+        ["git", f"--git-dir={git_dir}", "config", "--get", key],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
+def _bare_repo_agent_refs(git_dir: Path) -> list[str]:
+    if not git_dir.exists():
+        return []
+    result = process_helpers.run_subprocess(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/agents",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(message or f"Failed to inspect agent branches in {git_dir}")
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+
+
+def _infer_git_provider_from_url(url: str | None) -> str | None:
+    normalized = str(url or "").strip().lower()
+    if not normalized:
+        return None
+    if "github.com" in normalized:
+        return "github"
+    if "dev.azure.com" in normalized or "visualstudio.com" in normalized:
+        return "azure_devops"
+    return None
 
 
 def _apply_issue_metadata_dot_patch(
@@ -216,6 +290,9 @@ class IssueGitAdminDependencies:
     refresh_proxy_cache_from_remote: Any
     write_local_issue_yaml: Any
     directory_ownership: DirectoryOwnershipPort
+    resolve_issue_setup: Any | None = None
+    resolve_repo_source: Any | None = None
+    sync_repo_into_bare_remote: Any | None = None
 
 
 @dataclass
@@ -267,15 +344,18 @@ class IssueGitAdminSupport:
         self.local_issue_counter_path.write_text(f"{current}\n", encoding="utf-8")
         return str(current)
 
+    def extract_local_issue_id_candidate(self, value: str) -> str | None:
+        return _extract_local_issue_id_candidate(value)
+
     def canonical_local_issue_id(self, issue_number: str, directory_path: str) -> str:
-        return _admin_service._scoped_issue_id(
+        return issue_helpers.scoped_issue_id(
             issue_number, directory_path=directory_path, provider="local"
         )
 
     def canonical_issue_id(self, record: LocalIssueRecord) -> str:
         remote = record.remote_reference
         if remote is not None and remote.provider == "azure_devops" and remote.work_item_id:
-            return _admin_service._scoped_issue_id(
+            return issue_helpers.scoped_issue_id(
                 remote.work_item_id,
                 directory_path=record.directory_path,
                 provider="azure_devops",
@@ -330,10 +410,10 @@ class IssueGitAdminSupport:
         issue.url = str(remote_payload.get("url") or issue.url or "").strip() or None
         issue.comments = remote_comments
         if issue.remote_reference is not None:
-            issue.remote_reference.last_synced_at = _admin_service._utc_now()
+            issue.remote_reference.last_synced_at = session_helpers.utc_now()
             issue.remote_reference.last_known_remote_state = issue.state
             issue.remote_reference.work_item_url = issue.url or issue.remote_reference.work_item_url
-        issue.updated_at = _admin_service._utc_now()
+        issue.updated_at = session_helpers.utc_now()
         self.local_issue_store.put(issue.issue_id, issue)
         return issue
 
@@ -344,7 +424,7 @@ class IssueGitAdminSupport:
         payload: dict[str, object] = {}
         if yaml_path.exists():
             try:
-                loaded = _admin_service.yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+                loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             except Exception:
                 loaded = {}
             if isinstance(loaded, dict):
@@ -354,7 +434,7 @@ class IssueGitAdminSupport:
         payload["body"] = issue.body
         payload["state"] = issue.state
         payload["source"] = issue.source or "local_gui"
-        fields = _admin_service._local_issue_fields(issue)
+        fields = issue_helpers.local_issue_fields(issue)
         if fields:
             payload["fields"] = fields
         else:
@@ -377,7 +457,7 @@ class IssueGitAdminSupport:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         yaml_path.write_text(
-            _admin_service.yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+            yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
         )
 
     def direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
@@ -503,6 +583,82 @@ class IssueGitAdminService:
     def _combined_output(stdout: str, stderr: str) -> str:
         return "\n".join(part.strip() for part in (stderr, stdout) if part.strip())
 
+    def import_git_repo(
+        self,
+        *,
+        repo_source: str,
+        bare_repo_name: str | None = None,
+        directory_path: str = "root",
+    ) -> dict[str, Any]:
+        admin = self._deps
+        normalized_source = str(repo_source or "").strip()
+        if not normalized_source:
+            raise ValueError("repo_source is required")
+        if (
+            admin.resolve_issue_setup is None
+            or admin.resolve_repo_source is None
+            or admin.sync_repo_into_bare_remote is None
+        ):
+            raise RuntimeError("import_git_repo dependencies are not configured")
+        normalized_directory = admin.directory_path.normalize_directory_path(directory_path)
+        issue_setup = admin.resolve_issue_setup(
+            normalized_directory,
+            root_dir=admin.project_dir,
+        )
+        resolved_repo_path, resolved_repo_name = admin.resolve_repo_source(normalized_source)
+        import_repo_name = _normalize_import_bare_repo_name(bare_repo_name or resolved_repo_name)
+        bare_repo_path = Path(issue_setup.git_root) / f"{import_repo_name}.git"
+        agent_refs = _bare_repo_agent_refs(bare_repo_path)
+        if agent_refs:
+            sample = agent_refs[0]
+            extra = len(agent_refs) - 1
+            suffix = f" and {extra} more" if extra else ""
+            raise GitImportConflictError(
+                f"Cannot import into existing mirror {bare_repo_path}: "
+                f"it already has agent branches ({sample}{suffix}). "
+                "Create a new bare repo name or use a dedicated source-ref refresh."
+            )
+        bare_repo_path = admin.sync_repo_into_bare_remote(
+            import_repo_name,
+            resolved_repo_path,
+            issue_setup=issue_setup,
+            repo_source=normalized_source,
+        )
+        bare_repo_name_with_suffix = f"{import_repo_name}.git"
+        canonical_origin_url = _git_config_value(
+            bare_repo_path,
+            "agent-sandbox.canonicalOriginUrl",
+        )
+        base_branch = _git_config_value(bare_repo_path, "agent-sandbox.baseBranch")
+        provider = _infer_git_provider_from_url(canonical_origin_url)
+        git_config: dict[str, Any] = {
+            "host_repo_path": resolved_repo_path,
+            "bare_repo_name": bare_repo_name_with_suffix,
+        }
+        if base_branch:
+            git_config["base_branch"] = base_branch
+        if canonical_origin_url:
+            git_config["canonical_origin_url"] = canonical_origin_url
+        if provider:
+            git_config["provider"] = provider
+        return {
+            "success": True,
+            "repo_source": normalized_source,
+            "host_repo_path": resolved_repo_path,
+            "repo_name": import_repo_name,
+            "bare_repo_name": bare_repo_name_with_suffix,
+            "bare_repo_path": str(bare_repo_path),
+            "git_root": issue_setup.git_root,
+            "git_ssh_alias": issue_setup.git_ssh_alias,
+            "remote_url": f"ssh://{issue_setup.git_ssh_alias}{bare_repo_path}",
+            "base_branch": base_branch,
+            "canonical_origin_url": canonical_origin_url,
+            "provider": provider,
+            "directory_path": normalized_directory,
+            "git": git_config,
+            "message": f"Imported {resolved_repo_path} into {bare_repo_path}",
+        }
+
     def _git_push_auth_prefix(
         self,
         *,
@@ -531,7 +687,7 @@ class IssueGitAdminService:
             https_origin_url = self._github_https_origin_url(origin_url)
             gh_status = None
             if shutil.which("gh"):
-                gh_status = _admin_service._run_subprocess(
+                gh_status = process_helpers.run_subprocess(
                     ["gh", "auth", "status"],
                     capture_output=True,
                     text=True,
@@ -554,7 +710,7 @@ class IssueGitAdminService:
         git_config_args: list[str],
         args: list[str],
     ):
-        return _admin_service._run_subprocess(
+        return process_helpers.run_subprocess(
             ["git", "-C", host_repo_path, *git_config_args, *args],
             capture_output=True,
             text=True,
@@ -638,7 +794,7 @@ class IssueGitAdminService:
         origin_url = str(canonical_origin_url or "").strip()
         remote_name = "agent-sandbox-pr-origin" if origin_url else "origin"
         if not origin_url:
-            origin_result = _admin_service._run_subprocess(
+            origin_result = process_helpers.run_subprocess(
                 ["git", "-C", host_repo_path, "remote", "get-url", "origin"],
                 capture_output=True,
                 text=True,
@@ -662,14 +818,14 @@ class IssueGitAdminService:
             remote_name = "agent-sandbox-pr-origin"
 
         if remote_name != "origin":
-            current_result = _admin_service._run_subprocess(
+            current_result = process_helpers.run_subprocess(
                 ["git", "-C", host_repo_path, "remote", "get-url", remote_name],
                 capture_output=True,
                 text=True,
             )
             if current_result.returncode == 0:
                 if (current_result.stdout or "").strip() != push_remote_url:
-                    set_result = _admin_service._run_subprocess(
+                    set_result = process_helpers.run_subprocess(
                         [
                             "git",
                             "-C",
@@ -691,7 +847,7 @@ class IssueGitAdminService:
                             or f"Failed to update remote {remote_name}"
                         )
             else:
-                add_result = _admin_service._run_subprocess(
+                add_result = process_helpers.run_subprocess(
                     ["git", "-C", host_repo_path, "remote", "add", remote_name, push_remote_url],
                     capture_output=True,
                     text=True,
@@ -702,7 +858,7 @@ class IssueGitAdminService:
                         or f"Failed to add remote {remote_name}"
                     )
 
-        local_rev_result = _admin_service._run_subprocess(
+        local_rev_result = process_helpers.run_subprocess(
             [
                 "git",
                 "-C",
@@ -793,7 +949,7 @@ class IssueGitAdminService:
                     stderr=fetch_result.stderr or "",
                 )
 
-            destination_rev_result = _admin_service._run_subprocess(
+            destination_rev_result = process_helpers.run_subprocess(
                 [
                     "git",
                     "-C",
@@ -806,7 +962,7 @@ class IssueGitAdminService:
                 text=True,
             )
             destination_commit = (destination_rev_result.stdout or "").strip()
-            merge_base_result = _admin_service._run_subprocess(
+            merge_base_result = process_helpers.run_subprocess(
                 [
                     "git",
                     "-C",
@@ -843,7 +999,7 @@ class IssueGitAdminService:
                     stderr=merge_base_result.stderr or "",
                 )
             if merge_base_result.returncode == 1:
-                counts_result = _admin_service._run_subprocess(
+                counts_result = process_helpers.run_subprocess(
                     [
                         "git",
                         "-C",
@@ -1021,7 +1177,7 @@ class IssueGitAdminService:
             if canonical_origin_url:
                 env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = canonical_origin_url
 
-            completed = _admin_service._run_subprocess(cmd, capture_output=True, text=True, env=env)
+            completed = process_helpers.run_subprocess(cmd, capture_output=True, text=True, env=env)
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
             if completed.returncode != 0:
@@ -1084,7 +1240,7 @@ class IssueGitAdminService:
         if explicit_target_branch:
             cmd.append(explicit_target_branch)
 
-        completed = _admin_service._run_subprocess(cmd, capture_output=True, text=True)
+        completed = process_helpers.run_subprocess(cmd, capture_output=True, text=True)
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         if completed.returncode != 0:
@@ -1122,7 +1278,7 @@ class IssueGitAdminService:
         resolved_remote_name = (remote_name or "").strip() or "agent-dropbox-auto"
         resolved_notes_ref = (notes_ref or "").strip() or "refs/notes/agent-pr"
 
-        remote_url_result = _admin_service._run_subprocess(
+        remote_url_result = process_helpers.run_subprocess(
             ["git", "-C", host_repo_path, "remote", "get-url", resolved_remote_name],
             capture_output=True,
             text=True,
@@ -1135,7 +1291,7 @@ class IssueGitAdminService:
         remote_url = (remote_url_result.stdout or "").strip()
         local_notes_ref = self._derive_local_pr_notes_ref(remote_url)
 
-        fetch_result = _admin_service._run_subprocess(
+        fetch_result = process_helpers.run_subprocess(
             [
                 "git",
                 "-C",
@@ -1159,7 +1315,7 @@ class IssueGitAdminService:
                 "commit_sha": None,
             }
 
-        rev_parse_result = _admin_service._run_subprocess(
+        rev_parse_result = process_helpers.run_subprocess(
             ["git", "-C", host_repo_path, "rev-parse", local_branch],
             capture_output=True,
             text=True,
@@ -1172,7 +1328,7 @@ class IssueGitAdminService:
         commit_sha = (rev_parse_result.stdout or "").strip()
 
         def read_note(target_sha: str) -> str | None:
-            note_result = _admin_service._run_subprocess(
+            note_result = process_helpers.run_subprocess(
                 [
                     "git",
                     "-C",
@@ -1191,7 +1347,7 @@ class IssueGitAdminService:
 
         body = read_note(commit_sha)
         if body is None:
-            rev_list_result = _admin_service._run_subprocess(
+            rev_list_result = process_helpers.run_subprocess(
                 [
                     "git",
                     "-C",
@@ -1231,7 +1387,7 @@ class IssueGitAdminService:
     ) -> dict[str, Any]:
         session_repository = self._session_repository()
         session_id, manifest = self._resolve_session_target(target)
-        merged_metadata = _admin_service._deep_merge_mapping(manifest.metadata, metadata)
+        merged_metadata = session_helpers.deep_merge_mapping(manifest.metadata, metadata)
         updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
         session_repository.upsert_session(updated_manifest)
         return {
@@ -1287,7 +1443,7 @@ class IssueGitAdminService:
             value.strip() for value in (exclude_states or set()) if value.strip()
         } or None
         issues = sorted(
-            admin.local_issue_store.read_all().values(), key=_admin_service._issue_number_sort_key
+            admin.local_issue_store.read_all().values(), key=issue_helpers.issue_number_sort_key
         )
         filtered: list[LocalIssueRecord] = []
         for issue in issues:
@@ -1302,290 +1458,6 @@ class IssueGitAdminService:
                 issue for issue in filtered if issue.directory_path == normalized_directory_path
             ]
         return filtered
-
-    def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
-        admin = self._deps
-        session = self._session_repository().get_session(request.session_id)
-        mutated = False
-        if not request.directory_path and session is not None:
-            request.directory_path = session.directory_path
-            mutated = True
-        if request.vm_id is None and session is not None and session.vm_id:
-            request.vm_id = session.vm_id
-            mutated = True
-        if not request.tool_name:
-            request.tool_name = request.action_type
-            mutated = True
-        if (
-            request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
-            and request.expires_at <= _admin_service._utc_now()
-        ):
-            request.status = ApprovalStatus.EXPIRED
-            mutated = True
-        if mutated:
-            admin.runtime.approvals.put(request.request_id, request)
-        return request
-
-    def _approval_matches_filters(
-        self,
-        request: ApprovalRequest,
-        *,
-        statuses: set[ApprovalStatus] | None = None,
-        directory_path: str | None = None,
-        direct_only: bool = False,
-        session_id: str | None = None,
-        vm_id: str | None = None,
-        tool_name: str | None = None,
-        min_age_seconds: int | None = None,
-    ) -> bool:
-        admin = self._deps
-        if statuses is not None and request.status not in statuses:
-            return False
-        if directory_path is not None:
-            normalized_directory_path = admin.directory_path.normalize_directory_path(directory_path)
-            request_directory_path = admin.directory_path.normalize_directory_path(
-                request.directory_path
-            )
-            if not _admin_service._directory_path_matches_scope(
-                request_directory_path,
-                normalized_directory_path,
-                direct_only=direct_only,
-            ):
-                return False
-        if session_id is not None and request.session_id != session_id.strip():
-            return False
-        if vm_id is not None and (request.vm_id or "") != vm_id.strip():
-            return False
-        if (
-            tool_name is not None
-            and (request.tool_name or request.action_type) != tool_name.strip()
-        ):
-            return False
-        if min_age_seconds is not None:
-            age_seconds = int((_admin_service._utc_now() - request.created_at).total_seconds())
-            if age_seconds < min_age_seconds:
-                return False
-        return True
-
-    def list_approval_requests(
-        self,
-        *,
-        statuses: set[ApprovalStatus] | None = None,
-        directory_path: str | None = None,
-        direct_only: bool = False,
-        session_id: str | None = None,
-        vm_id: str | None = None,
-        tool_name: str | None = None,
-        min_age_seconds: int | None = None,
-    ) -> list[ApprovalRequest]:
-        admin = self._deps
-        requests = [
-            self._refresh_approval_request(request)
-            for request in admin.runtime.approvals.read_all().values()
-        ]
-        filtered = [
-            request
-            for request in requests
-            if self._approval_matches_filters(
-                request,
-                statuses=statuses,
-                directory_path=directory_path,
-                direct_only=direct_only,
-                session_id=session_id,
-                vm_id=vm_id,
-                tool_name=tool_name,
-                min_age_seconds=min_age_seconds,
-            )
-        ]
-        return sorted(filtered, key=_admin_service._approval_sort_key)
-
-    def approval_queue_health(
-        self,
-        *,
-        statuses: set[ApprovalStatus] | None = None,
-        directory_path: str | None = None,
-        direct_only: bool = False,
-        session_id: str | None = None,
-        vm_id: str | None = None,
-        tool_name: str | None = None,
-        min_age_seconds: int | None = None,
-    ) -> ApprovalQueueHealth:
-        requests = self.list_approval_requests(
-            statuses=statuses,
-            directory_path=directory_path,
-            direct_only=direct_only,
-            session_id=session_id,
-            vm_id=vm_id,
-            tool_name=tool_name,
-            min_age_seconds=min_age_seconds,
-        )
-        health = ApprovalQueueHealth(total=len(requests))
-        pending_ages: list[int] = []
-        for request in requests:
-            if request.status == ApprovalStatus.PENDING:
-                health.pending += 1
-                pending_ages.append(
-                    int((_admin_service._utc_now() - request.created_at).total_seconds())
-                )
-            elif request.status == ApprovalStatus.APPROVED:
-                health.approved += 1
-            elif request.status == ApprovalStatus.DENIED:
-                health.denied += 1
-            elif request.status == ApprovalStatus.EXPIRED:
-                health.expired += 1
-            elif request.status == ApprovalStatus.EXHAUSTED:
-                health.exhausted += 1
-        if pending_ages:
-            health.oldest_pending_age_seconds = max(pending_ages)
-        return health
-
-    def get_approval_request(self, request_id: str) -> ApprovalRequest:
-        request = self._deps.runtime.approvals.get(request_id)
-        if request is None:
-            raise ValueError(f"Unknown approval request: {request_id}")
-        return self._refresh_approval_request(request)
-
-    def _approval_audit_context(
-        self, request: ApprovalRequest, *, limit: int = 8
-    ) -> list[dict[str, Any]]:
-        admin = self._deps
-        if not admin.config.audit_log_path.exists():
-            return []
-        try:
-            lines = admin.config.audit_log_path.read_text(encoding="utf-8").splitlines()
-        except Exception:
-            return []
-        matches: list[dict[str, Any]] = []
-        for raw_line in reversed(lines):
-            try:
-                payload = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and _admin_service._approval_audit_payload_matches_request(
-                payload, request
-            ):
-                matches.append(payload)
-            if len(matches) >= limit:
-                break
-        matches.reverse()
-        return matches
-
-    def get_approval_review(self, request_id: str) -> dict[str, Any]:
-        request = self.get_approval_request(request_id)
-        return _admin_service.build_approval_review_payload(
-            request, self._approval_audit_context(request)
-        )
-
-    def decide_approval_request(
-        self,
-        request_id: str,
-        *,
-        approver: str,
-        approve: bool,
-        reason: str,
-    ) -> ApprovalRequest:
-        admin = self._deps
-        request = self.get_approval_request(request_id)
-        normalized_approver = approver.strip()
-        normalized_reason = reason.strip()
-        if not normalized_approver:
-            raise ValueError("approver is required")
-        if not normalized_reason:
-            raise ValueError("reason is required")
-        if request.status != ApprovalStatus.PENDING:
-            raise ValueError(f"Approval request {request_id} is not pending")
-        decision_status = ApprovalStatus.APPROVED if approve else ApprovalStatus.DENIED
-        decided_at = _admin_service._utc_now()
-        request.status = decision_status
-        request.approver = normalized_approver
-        request.decision_at = decided_at
-        request.decision_reason = normalized_reason
-        request.decision_history.append(
-            ApprovalDecisionRecord(
-                status=decision_status,
-                approver=normalized_approver,
-                reason=normalized_reason,
-                decided_at=decided_at,
-            )
-        )
-        admin.runtime.approvals.put(request.request_id, request)
-        admin.runtime.audit.log_decision(
-            event_type="approval_decision",
-            session_id=request.session_id,
-            vm_id=request.vm_id,
-            approval_request_id=request.request_id,
-            decision=request.status.value,
-            reason=normalized_reason,
-            args={
-                "request_id": request.request_id,
-                "tool_name": request.tool_name or request.action_type,
-                "approver": normalized_approver,
-                "payload_digest": request.payload_digest,
-            },
-            result={
-                "status": request.status.value,
-                "tool_name": request.tool_name or request.action_type,
-                "payload_digest": request.payload_digest,
-                "request_id": request.request_id,
-            },
-        )
-        return request
-
-    def revoke_approval_request(
-        self,
-        request_id: str,
-        *,
-        approver: str,
-        reason: str,
-    ) -> ApprovalRequest:
-        admin = self._deps
-        request = self.get_approval_request(request_id)
-        normalized_approver = approver.strip()
-        normalized_reason = reason.strip()
-        if not normalized_approver:
-            raise ValueError("approver is required")
-        if not normalized_reason:
-            raise ValueError("reason is required")
-        if request.status != ApprovalStatus.APPROVED:
-            raise ValueError(f"Approval request {request_id} is not approved")
-        if request.expires_at <= _admin_service._utc_now():
-            raise ValueError(f"Approval request {request_id} has expired")
-        decided_at = _admin_service._utc_now()
-        request.status = ApprovalStatus.DENIED
-        request.approver = normalized_approver
-        request.decision_at = decided_at
-        request.decision_reason = normalized_reason
-        request.decision_history.append(
-            ApprovalDecisionRecord(
-                status=ApprovalStatus.DENIED,
-                approver=normalized_approver,
-                reason=normalized_reason,
-                decided_at=decided_at,
-            )
-        )
-        admin.runtime.approvals.put(request.request_id, request)
-        admin.runtime.audit.log_decision(
-            event_type="approval_decision",
-            session_id=request.session_id,
-            vm_id=request.vm_id,
-            approval_request_id=request.request_id,
-            decision=request.status.value,
-            reason=normalized_reason,
-            args={
-                "request_id": request.request_id,
-                "tool_name": request.tool_name or request.action_type,
-                "approver": normalized_approver,
-                "payload_digest": request.payload_digest,
-            },
-            result={
-                "status": request.status.value,
-                "action": "revoke_approval",
-                "tool_name": request.tool_name or request.action_type,
-                "payload_digest": request.payload_digest,
-                "request_id": request.request_id,
-            },
-        )
-        return request
 
     def list_actionable_local_issues(
         self,
@@ -1647,8 +1519,8 @@ class IssueGitAdminService:
         normalized_title = title.strip()
         if not normalized_title:
             raise ValueError("title is required")
-        normalized_state = _admin_service._normalize_local_issue_state(state, allow_empty=False)
-        now = _admin_service._utc_now()
+        normalized_state = issue_helpers.normalize_local_issue_state(state, allow_empty=False)
+        now = session_helpers.utc_now()
         issue.title = normalized_title
         issue.body = body.strip()
         issue.state = normalized_state
@@ -1669,7 +1541,7 @@ class IssueGitAdminService:
         metadata: dict[str, Any] | None = None,
     ) -> LocalIssueRecord:
         admin = self._deps
-        now = _admin_service._utc_now()
+        now = session_helpers.utc_now()
         normalized_directory_path = admin.directory_path.normalize_directory_path(directory_path)
         merged_metadata: dict[str, Any] = dict(metadata or {})
         source_value = "local_gui"
@@ -1684,19 +1556,19 @@ class IssueGitAdminService:
                 source_text = source_path.read_text(encoding="utf-8")
                 try:
                     yaml_payload = json.loads(
-                        json.dumps(_admin_service.yaml.safe_load(source_text) or {})
+                        json.dumps(yaml.safe_load(source_text) or {})
                     )
                 except Exception:
                     yaml_payload = {}
-                issue_number = _admin_service._extract_issue_number_from_payload(
+                issue_number = issue_helpers.extract_issue_number_from_payload(
                     yaml_payload
-                ) or _admin_service._read_issue_number_from_yaml(source_path)
+                ) or session_helpers.read_issue_number_from_yaml(source_path)
                 target_yaml_path = admin.local_issue_yaml_dir / f"{issue_number}.yaml"
                 target_yaml_path.write_text(source_text, encoding="utf-8")
                 yaml_text = target_yaml_path.read_text(encoding="utf-8")
                 try:
                     yaml_payload = json.loads(
-                        json.dumps(_admin_service.yaml.safe_load(yaml_text) or {})
+                        json.dumps(yaml.safe_load(yaml_text) or {})
                     )
                 except Exception:
                     yaml_payload = {}
@@ -1798,7 +1670,7 @@ class IssueGitAdminService:
                 )
                 target_yaml_path.write_text(yaml_text, encoding="utf-8")
             if remote_reference is not None and remote_reference.provider == "azure_devops":
-                issue_id = _admin_service._scoped_issue_id(
+                issue_id = issue_helpers.scoped_issue_id(
                     issue_number,
                     directory_path=normalized_directory_path,
                     provider="azure_devops",
@@ -1821,7 +1693,7 @@ class IssueGitAdminService:
                 state=(
                     state_value
                     if source_type == "remote_proxy"
-                    else _admin_service._normalize_local_issue_state(state_value, allow_empty=False)
+                    else issue_helpers.normalize_local_issue_state(state_value, allow_empty=False)
                 ),
                 url=url_value,
                 comments=comments_value,
@@ -1898,11 +1770,11 @@ class IssueGitAdminService:
             issue.metadata = dict(issue.metadata)
             comments = list(issue.comments or issue.metadata.get("comments") or [])
             comments.append(
-                {"text": normalized_comment, "created_at": _admin_service._utc_now().isoformat()}
+                {"text": normalized_comment, "created_at": session_helpers.utc_now().isoformat()}
             )
             issue.metadata["comments"] = comments
             issue.comments = comments
-            issue.updated_at = _admin_service._utc_now()
+            issue.updated_at = session_helpers.utc_now()
             admin.local_issue_store.put(issue.issue_id, issue)
             return {
                 "issue_number": issue.issue_number,
@@ -1957,7 +1829,7 @@ class IssueGitAdminService:
             issue.metadata["plan_summary"] = normalized_summary
         else:
             issue.metadata.pop("plan_summary", None)
-        issue.updated_at = _admin_service._utc_now()
+        issue.updated_at = session_helpers.utc_now()
         admin.local_issue_store.put(issue.issue_id, issue)
         admin.write_local_issue_yaml(issue, updated_at=issue.updated_at)
         return {
@@ -1997,7 +1869,7 @@ class IssueGitAdminService:
         if proxy_target is None:
             issue.metadata = dict(issue.metadata)
             if state is not None:
-                normalized_state = _admin_service._normalize_local_issue_state(
+                normalized_state = issue_helpers.normalize_local_issue_state(
                     state, allow_empty=False
                 )
                 issue.metadata["state"] = normalized_state
@@ -2007,7 +1879,7 @@ class IssueGitAdminService:
                 local_fields.update(fields)
                 issue.metadata["fields"] = local_fields
             issue.sync_derived_fields()
-            issue.updated_at = _admin_service._utc_now()
+            issue.updated_at = session_helpers.utc_now()
             admin.local_issue_store.put(issue.issue_id, issue)
             admin.write_local_issue_yaml(issue, updated_at=issue.updated_at)
             return {"issue_number": issue.issue_number, "source_type": "local", "updated": True}
@@ -2074,7 +1946,7 @@ class IssueGitAdminService:
 
         issue.metadata = updated_metadata
         issue.sync_derived_fields()
-        issue.updated_at = _admin_service._utc_now()
+        issue.updated_at = session_helpers.utc_now()
         admin.local_issue_store.put(issue.issue_id, issue)
         admin.write_local_issue_yaml(issue, updated_at=issue.updated_at)
 
@@ -2121,21 +1993,21 @@ class IssueGitAdminService:
             self.list_actionable_local_issues(
                 directory_path=session.directory_path, states={"Committed"}
             ),
-            key=_admin_service._issue_priority_sort_key,
+            key=issue_helpers.issue_priority_sort_key,
         )
         if not candidates:
             return None
         issue = candidates[0]
         issue.metadata = dict(issue.metadata)
-        local_fields = _admin_service._local_issue_fields(issue)
+        local_fields = issue_helpers.local_issue_fields(issue)
         local_fields["claimed_by_session_id"] = session_id
         if session.vm_id:
             local_fields["claimed_by_vm_id"] = session.vm_id
-        local_fields["claimed_at"] = _admin_service._utc_now().isoformat()
+        local_fields["claimed_at"] = session_helpers.utc_now().isoformat()
         issue.metadata["fields"] = local_fields
         issue.state = "In Progress"
         issue.metadata["state"] = issue.state
-        issue.updated_at = _admin_service._utc_now()
+        issue.updated_at = session_helpers.utc_now()
         admin.local_issue_store.put(issue.issue_id, issue)
         return issue
 
@@ -2159,16 +2031,16 @@ class IssueGitAdminService:
         if issue.state != "In Progress":
             raise ValueError(f"Issue {issue.issue_number} must be In Progress before completion.")
         issue.metadata = dict(issue.metadata)
-        local_fields = _admin_service._local_issue_fields(issue)
+        local_fields = issue_helpers.local_issue_fields(issue)
         local_fields["completed_summary"] = normalized_summary
         local_fields["completed_by_session_id"] = session_id
         if session.vm_id:
             local_fields["completed_by_vm_id"] = session.vm_id
-        local_fields["completed_at"] = _admin_service._utc_now().isoformat()
+        local_fields["completed_at"] = session_helpers.utc_now().isoformat()
         issue.metadata["fields"] = local_fields
         issue.state = "Completed"
         issue.metadata["state"] = issue.state
-        issue.updated_at = _admin_service._utc_now()
+        issue.updated_at = session_helpers.utc_now()
         admin.local_issue_store.put(issue.issue_id, issue)
         return issue
 
@@ -2194,7 +2066,7 @@ class IssueGitAdminService:
         issue_number = issue.issue_number
 
         vm_name = f"vm-{issue_number}"
-        existing_vm_state = _admin_service._dominfo_field(vm_name, "State")
+        existing_vm_state = vm_helpers.dominfo_field(vm_name, "State")
         sessions = self._session_repository().read_all()
         blocking_sessions = [
             (session_id, session)

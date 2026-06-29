@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from agent_sandbox.admin.release_metadata import read_release_metadata
 from agent_sandbox.admin.services.ports import PrivilegedHelperFactoryPort, PrivilegedHelperPort
+from agent_sandbox.config import AssistantSettingsConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.events.internal import InternalEventSource
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from agent_sandbox.events.models import TriggerEvent
 
 from agent_sandbox.models import ToolName
+
+_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID = "system.chat_assistant"
 
 
 class OperationsAdminService:
@@ -16,21 +29,32 @@ class OperationsAdminService:
     def __init__(
         self,
         *,
+        config: Any | None = None,
         project_dir: Path,
         privileged_helper: PrivilegedHelperPort,
         teams_admin: Any,
         session_admin: Any,
         worker_admin: Any,
         directory_admin: Any,
+        workflow_config_admin: Any | None = None,
+        trigger_repository: Any | None = None,
         privileged_helper_factory: PrivilegedHelperFactoryPort,
+        admin_config_mutation_lock: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
+        self._config = config
         self._project_dir = project_dir
         self._privileged_helper = privileged_helper
         self._teams_admin = teams_admin
         self._session_admin = session_admin
         self._worker_admin = worker_admin
         self._directory_admin = directory_admin
+        self._workflow_config_admin = workflow_config_admin
+        self._trigger_repository = trigger_repository
         self._privileged_helper_factory = privileged_helper_factory
+        self._admin_config_mutation_lock = admin_config_mutation_lock or nullcontext
+
+    def admin_config_mutation_lock(self) -> AbstractContextManager[None]:
+        return self._admin_config_mutation_lock()
 
     def privileged_helper_required(self) -> bool:
         return bool(self._privileged_helper.get_use_privileged_helper())
@@ -130,6 +154,34 @@ class OperationsAdminService:
         return self._session_admin.list_wake_schedules(
             session_id=session_id,
             include_disabled=include_disabled,
+        )
+
+    def list_scheduled_wake_ledger(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+        include_completed: bool = True,
+    ):
+        return self._session_admin.list_scheduled_wake_ledger(
+            statuses=statuses,
+            session_id=session_id,
+            limit=limit,
+            include_completed=include_completed,
+        )
+
+    def retry_scheduled_wake(
+        self,
+        request_id: str,
+        *,
+        resume_at: datetime | None = None,
+        run_now: bool = True,
+    ):
+        return self._session_admin.retry_scheduled_wake(
+            request_id,
+            resume_at=resume_at,
+            run_now=run_now,
         )
 
     def create_wake_schedule(
@@ -241,4 +293,194 @@ class OperationsAdminService:
         return self._directory_admin.compute_effective_config(
             self._normalize_directory_path(directory_path),
             domain=domain,
+        )
+
+    def read_deployment_status(self):
+        from agent_sandbox.admin.service import (
+            DeploymentStatusPayload,
+            _coerce_optional_datetime,
+            _read_json_object,
+            _utc_now,
+        )
+
+        payload_path = self._config.runtime_dir / "deployment-status.json"
+        raw = _read_json_object(payload_path)
+        if not raw:
+            return DeploymentStatusPayload()
+        try:
+            status = DeploymentStatusPayload.model_validate(raw)
+        except ValidationError:
+            return DeploymentStatusPayload()
+        if not status.active:
+            return status
+        started_at = _coerce_optional_datetime(status.started_at)
+        updated_at = _coerce_optional_datetime(status.updated_at)
+        status = status.model_copy(update={"started_at": started_at, "updated_at": updated_at})
+        checked_at = updated_at or started_at
+        is_stale = False
+        if checked_at is not None:
+            is_stale = (_utc_now() - checked_at).total_seconds() > status.ttl_seconds
+        if is_stale:
+            return status.model_copy(update={"active": False, "stale": True})
+        if not status.message:
+            return status.model_copy(update={"message": "Control plane update in progress."})
+        return status
+
+    def read_release_info(self, *, news_index: int = 0):
+        from agent_sandbox.admin.service import (
+            ReleaseChangelogEntryPayload,
+            ReleaseChangelogPayload,
+            ReleaseInfoPayload,
+            ReleaseNewsBlockPayload,
+            ReleaseNewsPayload,
+        )
+
+        release_metadata = read_release_metadata(self._project_dir, news_index=news_index)
+        return ReleaseInfoPayload(
+            version=release_metadata.version,
+            version_source=release_metadata.version_source,
+            build=release_metadata.build,
+            build_source=release_metadata.build_source,
+            changelog=(
+                None
+                if release_metadata.changelog is None
+                else ReleaseChangelogPayload(
+                    source=release_metadata.changelog.source,
+                    path=release_metadata.changelog.path,
+                    heading=release_metadata.changelog.heading,
+                    entries=[
+                        ReleaseChangelogEntryPayload(
+                            text=entry.text,
+                            kind=entry.kind,
+                        )
+                        for entry in release_metadata.changelog.entries
+                    ],
+                )
+            ),
+            news=(
+                None
+                if release_metadata.news is None
+                else ReleaseNewsPayload(
+                    source=release_metadata.news.source,
+                    path=release_metadata.news.path,
+                    index=release_metadata.news.index,
+                    heading=release_metadata.news.heading,
+                    blocks=[
+                        ReleaseNewsBlockPayload(
+                            kind=block.kind,
+                            text=block.text,
+                            level=block.level,
+                            items=list(block.items),
+                            src=block.src,
+                            dark_src=block.dark_src,
+                            alt=block.alt,
+                            title=block.title,
+                        )
+                        for block in release_metadata.news.blocks
+                    ],
+                    has_previous=release_metadata.news.has_previous,
+                    has_next=release_metadata.news.has_next,
+                    previous_index=release_metadata.news.previous_index,
+                    next_index=release_metadata.news.next_index,
+                )
+            ),
+            missing_reasons=release_metadata.missing_reasons,
+        )
+
+    def release_changelog_file(self) -> Path:
+        changelog_path = self._project_dir / "CHANGELOG.md"
+        if not changelog_path.is_file():
+            raise FileNotFoundError(f"{changelog_path.name} is missing.")
+        return changelog_path
+
+    def assistant_settings_path(self) -> Path:
+        return self._config.runtime_dir / "assistant-settings.json"
+
+    def read_assistant_settings(self) -> dict[str, object]:
+        path = self.assistant_settings_path()
+        if not path.exists():
+            return self._config.assistant_settings.model_dump(mode="json", exclude_none=True)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"assistant settings file {path} must contain a JSON object")
+        return AssistantSettingsConfig.model_validate(payload).model_dump(
+            mode="json", exclude_none=True
+        )
+
+    def write_assistant_settings(self, payload: dict[str, object]) -> dict[str, object]:
+        config = AssistantSettingsConfig.model_validate(payload).model_dump(
+            mode="json", exclude_none=True
+        )
+        path = self.assistant_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+        return config
+
+    def ensure_chat_assistant_workflow(self):
+        return self._trigger_repository.read_document()
+
+    def publish_chat_assistant_message(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        user_message_id: str,
+        content: str,
+        backend: str | None = None,
+        assistant_capability_mode: str | None = None,
+    ) -> dict[str, object]:
+        from agent_sandbox.admin.service import _utc_now
+
+        document = self.ensure_chat_assistant_workflow()
+        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
+        if worker_config.orchestration_store_backend == "sqlite":
+            queue = SqliteTriggerEventQueue(
+                worker_config.orchestration_store_path,
+                retention_days=worker_config.orchestration_retention_days,
+            )
+        else:
+            queue = TriggerEventQueue(
+                worker_config.event_queue_store_path,
+                journal_path=worker_config.workflow_event_journal_path,
+            )
+        normalized_backend = str(backend or self._config.execution_backend).strip() or "libvirt_vm"
+        normalized_capability_mode = str(assistant_capability_mode or "").strip() or "read-only"
+        if normalized_capability_mode != "full-access":
+            normalized_capability_mode = "read-only"
+        event_id = f"chat:{user_message_id}"
+        event = TriggerEvent(
+            event_id=event_id,
+            trigger_id=_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
+            trigger_type="trigger:system:chat-assistant",
+            occurred_at=_utc_now(),
+            payload={
+                "user_id": user_id,
+                "thread_id": thread_id,
+                "user_message_id": user_message_id,
+                "content": content,
+                "backend": normalized_backend,
+                "assistant_capability_mode": normalized_capability_mode,
+            },
+        )
+        already_queued = queue.contains(event_id)
+        record = queue.publish(event, idempotency_key=event_id)
+        if not already_queued and record.event_id == event_id:
+            notify_wake_socket_for_lock(worker_config.effect_lock_path)
+        return record.model_dump(mode="json")
+
+    def publish_external_workflow_event(
+        self,
+        *,
+        event_type: object,
+        payload: dict[str, Any],
+        correlation_key: object | None = None,
+        idempotency_key: str | None = None,
+        source: InternalEventSource | dict[str, Any] | None = None,
+    ) -> dict[str, object]:
+        return self._workflow_config_admin.publish_external_workflow_event(
+            event_type=event_type,
+            payload=payload,
+            correlation_key=correlation_key,
+            idempotency_key=idempotency_key,
+            source=source,
         )

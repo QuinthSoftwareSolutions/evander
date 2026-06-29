@@ -13,7 +13,6 @@ const staticRoot = path.resolve(
 const teamViewStorageKey = "team-addon:active-view";
 const teamViewIds = [
   "workspace",
-  "overview",
   "operations",
   "delivery",
   "projects",
@@ -48,7 +47,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-addon:active-view/);
   assert.doesNotMatch(markup, /data-team-view="setup"/);
   assert.doesNotMatch(markup, /team-setup-page/);
-  assert.match(script, /data-summary-grid/);
+  assert.doesNotMatch(markup, /data-team-view="overview"/);
+  assert.doesNotMatch(markup, /team-overview-page/);
+  assert.doesNotMatch(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
   assert.match(script, /data-planning-task-status/);
@@ -58,9 +59,12 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /data-team-view="projects"/);
   assert.match(markup, /id="team-projects-page"/);
   assert.match(markup, /id="create-project-from-projects-form"/);
+  assert.match(markup, /data-project-create-toggle/);
   assert.match(script, /renderProjectFocus/);
   assert.match(script, /projectReviewRoleOptionsForProject/);
   assert.match(script, /create-review-profile-for-project-form/);
+  assert.match(script, /data-project-section-show-rejected/);
+  assert.match(script, /projectRecordPageSize/);
   assert.match(script, /data-select-agent-id/);
   assert.match(script, /data-select-project-id/);
   assert.match(script, /data-select-role-id/);
@@ -79,13 +83,14 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.projects-workbench/);
   assert.match(stylesheet, /\.projects-focus-row/);
+  assert.match(stylesheet, /\.project-record-section/);
   assert.match(stylesheet, /\.team-inline-create-form/);
   assert.match(stylesheet, /\.criteria-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
   assert.match(stylesheet, /\.permission-token/);
   assert.match(markup, /data-teams-create-team-open/);
   assert.match(markup, /data-git-import-button/);
-  assert.match(markup, /data-review-profile-criteria-editor/);
+  assert.match(script, /data-review-profile-criteria-editor/);
   assert.match(markup, /id="create-team-from-teams-form"/);
   assert.doesNotMatch(script, /Chat message sent\./);
   assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
@@ -1240,6 +1245,7 @@ async function createTeamAddonServer(
   const timelineRequests = [];
   const chatRequests = [];
   const openChatStreams = new Set();
+  const openStateStreams = new Set();
   let conflictSent = false;
   const template = autoDevSquadTemplate();
 
@@ -1270,6 +1276,25 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/state") {
         jsonResponse(response, state);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/state/stream") {
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        response.write("event: snapshot\n");
+        response.write(`data: ${JSON.stringify(state)}\n\n`);
+        const interval = setInterval(() => {
+          response.write(": keepalive\n\n");
+        }, 1000);
+        const streamRecord = { response, interval };
+        openStateStreams.add(streamRecord);
+        request.on("close", () => {
+          clearInterval(interval);
+          openStateStreams.delete(streamRecord);
+        });
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/bootstrap") {
@@ -1552,6 +1577,12 @@ async function createTeamAddonServer(
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   await t.after(async () => {
+    for (const stream of openStateStreams) {
+      clearInterval(stream.interval);
+      stream.response.end();
+      stream.response.destroy?.();
+    }
+    openStateStreams.clear();
     for (const stream of openChatStreams) {
       clearInterval(stream.interval);
       stream.response.end();
@@ -2076,38 +2107,44 @@ async function waitForCondition(predicate, message, { timeoutMs = 2000, interval
   throw new Error(message);
 }
 
+async function waitForStatusText(page, textValue, requests = [], { timeout = 5000 } = {}) {
+  try {
+    await page.getByText(textValue).waitFor({ state: "visible", timeout });
+  } catch (error) {
+    const status = await page.locator("#status-message").textContent().catch(() => "");
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; status=${status}; requests=${JSON.stringify(requests, null, 2)}`,
+    );
+  }
+}
+
+async function openDeliveryRow(row) {
+  await row.waitFor({ state: "visible" });
+  const isOpen = await row.evaluate((element) => !(element instanceof HTMLDetailsElement) || element.open);
+  if (!isOpen) {
+    await row.locator("summary").click();
+  }
+  await row.locator(".delivery-row-body").waitFor({ state: "visible" });
+}
+
 async function openWorkspace(page) {
   await page.getByRole("tab", { name: "Workspace" }).click();
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
 }
 
-async function openDetails(page, name) {
-  await openWorkspace(page);
-  const details = page
-    .locator("details", { has: page.locator("summary", { hasText: name }) })
-    .first();
-  await details.evaluate((element) => {
-    element.open = true;
-  });
+async function openProjects(page) {
+  await page.getByRole("tab", { name: "Projects" }).click();
+  await page.locator("#team-projects-page").waitFor({ state: "visible" });
 }
 
-async function fillAutoDevSquadForm(page) {
-  const form = page.locator("#setup-template-form");
-  await form.locator('[name="template_id"]').selectOption("auto-dev-squad");
-  await form.locator('[name="team_name"]').fill("Auto-Dev Squad");
-  await form.locator('[name="manager_session_id"]').fill("session-manager-auto-dev-squad");
-  await form.locator('[name="operator_communication_target_id"]').fill("slack://ops-channel");
-  await form.locator('[name="project_name"]').fill("Reviewed Auto-Dev Delivery");
-  await form.locator('[name="project_lead_session_id"]').fill("session-project-lead-auto-dev-squad");
-  await form.locator('[name="host_repo_path"]').fill("/srv/repos/auto-dev-squad");
-  await form.locator('[name="bare_repo"]').fill("auto-dev-squad.git");
-  await form.locator('[name="base_branch"]').fill("main");
-  await form.locator('[name="canonical_origin_url"]').fill("ssh://git.example/auto-dev-squad.git");
-  await form.locator('[name="provider"]').selectOption("github");
-  await form.locator('[name="canonical_release_branch_prefix"]').fill("releases");
-  await form.locator('[name="implementer_session_id"]').fill("session-implementer-auto-dev-squad");
-  await form.locator('[name="reviewer_session_id"]').fill("session-reviewer-auto-dev-squad");
-  await form.locator('[name="release_operator_session_id"]').fill("session-release-operator-auto-dev-squad");
+async function openTeams(page) {
+  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+}
+
+async function openOrgChart(page) {
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  await page.locator("#team-org-page").waitFor({ state: "visible" });
 }
 
 test("team add-on remembers the selected top-level view across refresh", async (t) => {
@@ -2190,8 +2227,11 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
-  await openDetails(page, "Create project");
-  const projectForm = page.locator("#create-project-form");
+  await openProjects(page);
+  await page.locator("[data-project-create-toggle]").click();
+  const projectForm = page.locator("#create-project-from-projects-form");
+  await projectForm.waitFor({ state: "visible" });
+  await projectForm.locator("summary", { hasText: "Git config" }).click();
   await projectForm.locator('[name="host_repo_path"]').fill("/srv/repos/imported-project");
   await projectForm.locator('[name="bare_repo"]').fill("team-import.git");
   await projectForm.getByRole("button", { name: "Import Git repo" }).click();
@@ -2229,10 +2269,10 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 8);
-  await openDetails(page, "Create review profile");
-  const profileForm = page.locator("#create-review-profile-form");
-  await profileForm.locator('[name="team_id"]').selectOption("team");
-  await profileForm.locator('[name="project_id"]').selectOption("project");
+  await openProjects(page);
+  await page.getByRole("button", { name: "Add review profile" }).click();
+  const profileForm = page.locator("#create-review-profile-for-project-form");
+  await profileForm.waitFor({ state: "visible" });
   await profileForm.locator('[name="name"]').fill("Security review");
   await profileForm.locator('[name="description"]').fill("Checklist for security-sensitive work.");
   await profileForm.locator('[name="applicable_role_ids"]').selectOption(["project__backend"]);
@@ -2251,7 +2291,7 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
   });
 
   await profileForm.getByRole("button", { name: "Create profile" }).click();
-  await page.getByText("Saved revision 9.").waitFor({ state: "visible" });
+  await waitForStatusText(page, "Saved revision", requests);
 
   const profileRequest = requests.find((request) =>
     request.method === "POST" && request.pathname === "/api/addons/team-addon/review-profiles"
@@ -2274,238 +2314,287 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
   ]);
 });
 
-test("team add-on UI renders empty state and submits setup forms with revisions", async (t) => {
+test("team add-on Projects tab reveals project and review profile forms on demand", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const panel = page.locator("#team-projects-page");
+  await panel.locator("#create-project-from-projects-form").waitFor({ state: "hidden" });
+  assert.equal(await panel.locator("#create-review-profile-for-project-form").count(), 0);
+
+  await panel.getByRole("button", { name: "Add review profile" }).click();
+  const profileForm = panel.locator("#create-review-profile-for-project-form");
+  await profileForm.waitFor({ state: "visible" });
+  await profileForm.locator('[name="name"]').fill("Project security review");
+  await profileForm.locator('[name="description"]').fill("Review project-sensitive changes.");
+  await profileForm.locator('[name="applicable_role_ids"]').selectOption(["project__backend"]);
+  await profileForm.locator('[name="criterion_label"]').fill("Authorization");
+  await profileForm.getByRole("button", { name: "Create profile" }).click();
+  await page.getByText(/Saved revision \d+\./).waitFor({ state: "visible" });
+  assert.equal(await panel.locator("#create-review-profile-for-project-form").count(), 0);
+
+  await panel.locator("[data-project-create-toggle]").click();
+  const projectForm = panel.locator("#create-project-from-projects-form");
+  await projectForm.waitFor({ state: "visible" });
+  await projectForm.locator('[name="team_id"]').selectOption("team");
+  await waitForSelectOption(page, '#create-project-from-projects-form [name="lead_agent_id"]', "lead");
+  await projectForm.locator('[name="lead_agent_id"]').selectOption("lead");
+  await projectForm.locator('[name="name"]').fill("Follow-up project");
+  await projectForm.locator('[name="goal_description"]').fill("Ship a follow-up slice.");
+  await projectForm.getByRole("button", { name: "Create project" }).click();
+  await projectForm.waitFor({ state: "hidden" });
+
+  const profileRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/review-profiles"
+  );
+  assert.ok(profileRequest);
+  assert.equal(profileRequest.payload.expected_revision, 8);
+  assert.equal(profileRequest.payload.project_id, "project");
+
+  const projectRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/projects"
+  );
+  assert.ok(projectRequest);
+  assert.equal(projectRequest.payload.expected_revision, 9);
+  assert.equal(projectRequest.payload.name, "Follow-up project");
+});
+
+test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.tasks.task_open.deliverable_ids = [];
+  initialState.deliverables = {};
+  for (let index = 1; index <= 12; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const deliverableId = `deliverable-${suffix}`;
+    initialState.deliverables[deliverableId] = {
+      id: deliverableId,
+      task_id: "task_open",
+      producer_agent_id: "backend",
+      artifact_refs: [],
+      summary: `Visible deliverable ${index}`,
+      state: "accepted",
+      review_request_ids: [],
+      created_at: `2026-06-11T${suffix}:00:00Z`,
+    };
+    initialState.tasks.task_open.deliverable_ids.push(deliverableId);
+  }
+  initialState.deliverables["deliverable-rejected"] = {
+    id: "deliverable-rejected",
+    task_id: "task_open",
+    producer_agent_id: "backend",
+    artifact_refs: [],
+    summary: "Rejected deliverable",
+    state: "rejected",
+    review_request_ids: [],
+    created_at: "2026-06-12T00:00:00Z",
+  };
+  initialState.tasks.task_open.deliverable_ids.push("deliverable-rejected");
+
+  initialState.release_packages = {};
+  for (let index = 1; index <= 12; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    initialState.release_packages[`release-${suffix}`] = {
+      id: `release-${suffix}`,
+      project_id: "project",
+      deliverable_ids: [`deliverable-${suffix}`],
+      state: "published",
+      published_at: `2026-06-11T${suffix}:30:00Z`,
+      updated_at: `2026-06-11T${suffix}:30:00Z`,
+      created_at: `2026-06-11T${suffix}:00:00Z`,
+    };
+  }
+  initialState.release_packages["release-rejected"] = {
+    id: "release-rejected",
+    project_id: "project",
+    deliverable_ids: ["deliverable-rejected"],
+    state: "rejected",
+    published_at: "2026-06-12T00:30:00Z",
+    updated_at: "2026-06-12T00:30:00Z",
+    created_at: "2026-06-12T00:00:00Z",
+  };
+
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openProjects(page);
+  const panel = page.locator("#team-projects-page");
+  assert.equal(await panel.locator(".task-list .task-item").count(), 0);
+
+  const projectTab = panel.locator('[data-project-focus-id="project"]');
+  const deliverablesSection = panel.locator('details.project-record-section[data-project-section="deliverables"]').first();
+  await deliverablesSection.locator("summary.project-record-section-summary").click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
+  await projectTab.click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), true);
+  assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 10);
+  assert.equal(
+    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
+    "Visible deliverable 12",
+  );
+  assert.equal(await deliverablesSection.getByText("Rejected deliverable").count(), 0);
+
+  await deliverablesSection.getByRole("button", { name: "Next" }).click();
+  assert.equal(await deliverablesSection.locator(".deliverable-list .record-item").count(), 2);
+  assert.equal(
+    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
+    "Visible deliverable 2",
+  );
+
+  await deliverablesSection.getByRole("button", { name: "Show rejected" }).click();
+  assert.equal(
+    await deliverablesSection.locator(".deliverable-list .compact-record-main strong").first().textContent(),
+    "Rejected deliverable",
+  );
+
+  await deliverablesSection.locator("summary.project-record-section-summary").click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), false);
+  await projectTab.click();
+  assert.equal(await deliverablesSection.evaluate((element) => element.open), false);
+
+  const releasesSection = panel.locator('details.project-record-section[data-project-section="releases"]').first();
+  await releasesSection.locator("summary.project-record-section-summary").click();
+  assert.equal(await releasesSection.locator(".release-list .record-item").count(), 10);
+  assert.equal(
+    await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
+    "release-12",
+  );
+  assert.equal(await releasesSection.getByText("release-rejected").count(), 0);
+
+  await releasesSection.getByRole("button", { name: "Show rejected" }).click();
+  assert.equal(
+    await releasesSection.locator(".release-list .compact-record-main strong").first().textContent(),
+    "release-rejected",
+  );
+});
+
+test("team add-on focused tabs submit retained create forms with revisions", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
-  const statusMessage = page.locator("#status-message");
   const teamId = "team-team";
   const managerId = "agent-team-team-team-manager";
   const projectId = "project-team-team-project";
-  const leadId = "agent-project-lead";
-  const leadCandidateRoleId = "team-team__manager";
   const roleId = "role-project-team-team-project-backend";
   const backendId = "agent-project-team-team-project-backend-agent";
-  const taskId = "task-project-team-team-project-build-backend";
-  const deliverableId =
-    "deliverable-task-project-team-team-project-build-backend-backend-task-is-ready";
 
   await openWorkspace(page);
-  await page
-    .locator("#hierarchy-view")
-    .getByText("No teams registered.")
-    .waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page").getByRole("heading", { name: "Team Dashboard" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-workspace-page").getByText("No active teams are registered.").waitFor({
+    state: "visible",
+  });
+  for (const removedFormId of [
+    "setup-template-form",
+    "create-task-form",
+    "update-task-form",
+    "record-deliverable-form",
+    "record-review-form",
+    "create-case-form",
+  ]) {
+    assert.equal(await page.locator(`#team-workspace-page #${removedFormId}`).count(), 0);
+  }
 
-  await openDetails(page, "Create team");
-  const teamForm = page.locator("#create-team-form");
+  await openTeams(page);
+  await page.locator("#team-tab-create-team-action").click();
+  const teamForm = page.locator("#create-team-from-teams-form");
+  await teamForm.waitFor({ state: "visible" });
   await teamForm.locator('[name="name"]').fill("Team");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
   await teamForm.locator('[name="manager_display_name"]').fill("Team Manager");
   await teamForm.locator('[name="operator_communication_target_id"]').fill("ops-channel");
   await teamForm.getByRole("button", { name: "Create team" }).click();
-  await page.getByText("Saved revision 1.").waitFor({ state: "visible" });
+  await waitForStatusText(page, "Saved revision", requests);
 
-  await openDetails(page, "Register agent");
-  await waitForSelectOption(page, '#register-agent-form [name="role_id"]', leadCandidateRoleId);
-  const leadAgentForm = page.locator("#register-agent-form");
-  await leadAgentForm.locator('[name="team_id"]').selectOption(teamId);
-  await leadAgentForm.locator('[name="role_id"]').selectOption(leadCandidateRoleId);
-  await leadAgentForm.locator('[name="session_id"]').fill("session-lead");
-  await leadAgentForm.locator('[name="display_name"]').fill("Project Lead");
-  await leadAgentForm.locator('[name="reports_to_agent_id"]').selectOption(managerId);
-  await leadAgentForm.getByRole("button", { name: "Register agent" }).click();
-  await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
-
-  await openDetails(page, "Create project");
-  await waitForSelectOption(page, '#create-project-form [name="team_id"]', teamId);
-  const projectForm = page.locator("#create-project-form");
+  await openProjects(page);
+  await page.locator("[data-project-create-toggle]").click();
+  const projectForm = page.locator("#create-project-from-projects-form");
+  await projectForm.waitFor({ state: "visible" });
   await projectForm.locator('[name="team_id"]').selectOption(teamId);
-  await waitForSelectOption(page, '#create-project-form [name="lead_agent_id"]', leadId);
+  await waitForSelectOption(page, '#create-project-from-projects-form [name="lead_agent_id"]', managerId);
   await projectForm.locator('[name="name"]').fill("Project");
-  await projectForm.locator('[name="lead_agent_id"]').selectOption(leadId);
+  await projectForm.locator('[name="lead_agent_id"]').selectOption(managerId);
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
+  await projectForm.locator("summary", { hasText: "Git config" }).click();
   await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
   await projectForm.locator('[name="bare_repo"]').fill("project.git");
   await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
-  await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
-
-  await openDetails(page, "Create role");
-  await waitForSelectOption(page, '#create-role-form [name="team_id"]', teamId);
-  const roleForm = page.locator("#create-role-form");
-  await roleForm.locator('[name="team_id"]').selectOption(teamId);
-  await roleForm.locator('[name="project_id"]').selectOption(projectId);
-  await roleForm.locator('[name="name"]').fill("Backend");
-  await roleForm.locator('[name="max_concurrent"]').fill("2");
-  await roleForm.getByRole("button", { name: "Create role" }).click();
-  await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
-
-  await openDetails(page, "Register agent");
-  await waitForSelectOption(page, '#register-agent-form [name="reports_to_agent_id"]', leadId);
-  await waitForSelectOption(page, '#register-agent-form [name="role_id"]', roleId);
-  const agentForm = page.locator("#register-agent-form");
-  await agentForm.locator('[name="team_id"]').selectOption(teamId);
-  await agentForm.locator('[name="project_id"]').selectOption(projectId);
-  await agentForm.locator('[name="role_id"]').selectOption(roleId);
-  await agentForm.locator('[name="session_id"]').fill("session-backend");
-  await agentForm.locator('[name="display_name"]').fill("Backend Agent");
-  await agentForm.locator('[name="reports_to_agent_id"]').selectOption(leadId);
-  await agentForm.locator('[name="max_concurrent"]').fill("2");
-  await agentForm.getByRole("button", { name: "Register agent" }).click();
-  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
-  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Team Manager" }).waitFor({ state: "visible" });
-  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Project Lead" }).waitFor({ state: "visible" });
-  await page.locator("#hierarchy-view .hierarchy-node-title", { hasText: "Backend Agent" }).waitFor({ state: "visible" });
-
-  await openDetails(page, "Create task");
-  await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', backendId);
-  const taskForm = page.locator("#create-task-form");
-  await taskForm.locator('[name="owner_agent_id"]').selectOption(backendId);
-  await taskForm.locator('[name="project_id"]').selectOption(projectId);
-  await taskForm.locator('[name="priority"]').fill("5");
-  await taskForm.locator('[name="title"]').fill("Build backend");
-  await taskForm.locator('[name="description"]').fill("Implement backend work.");
-  await taskForm.locator('[name="created_by_agent_id"]').selectOption(leadId);
-  await taskForm.getByRole("button", { name: "Create task" }).click();
-  try {
-    await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
-  } catch (error) {
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}; status=${await statusMessage.textContent()}; requests=${JSON.stringify(requests, null, 2)}`,
-    );
-  }
-
-  await openDetails(page, "Update task");
-  await waitForSelectOption(page, '#update-task-form [name="task_id"]', taskId);
-  const updateForm = page.locator("#update-task-form");
-  await updateForm.locator('[name="task_id"]').selectOption(taskId);
-  await updateForm.locator('[name="state"]').selectOption("waiting_for_review");
-  await updateForm.getByRole("button", { name: "Update task" }).click();
-  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
-
-  await openDetails(page, "Record deliverable");
-  await waitForSelectOption(page, '#record-deliverable-form [name="task_id"]', taskId);
-  const deliverableForm = page.locator("#record-deliverable-form");
-  await deliverableForm.locator('[name="task_id"]').selectOption(taskId);
-  await deliverableForm.locator('[name="producer_agent_id"]').selectOption(backendId);
-  await deliverableForm.locator('[name="summary"]').fill("Backend task is ready.");
-  await deliverableForm.locator('[name="artifact_refs"]').fill("artifacts/backend.tar.gz");
-  await deliverableForm.getByRole("button", { name: "Record deliverable" }).click();
-  await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
-
-  await openDetails(page, "Request review");
-  await waitForSelectOption(page, '#record-review-form [name="deliverable_id"]', deliverableId);
-  const reviewForm = page.locator("#record-review-form");
-  await reviewForm.locator('[name="deliverable_id"]').selectOption(deliverableId);
-  await reviewForm.locator('[name="reviewer_agent_id"]').selectOption(leadId);
-  await reviewForm.getByRole("button", { name: "Request review" }).click();
-  await page.getByText("Saved revision 9.").waitFor({ state: "visible" });
-
-  assert.deepEqual(
-    requests.map((request) => request.payload.expected_revision),
-    [0, 1, 2, 3, 4, 5, 6, 7, 8],
+  await waitForCondition(
+    () => requests.filter((request) => request.method !== "GET").length >= 2,
+    "expected project create request",
   );
-  assert.equal(requests[3].payload.ephemeral_policy.max_concurrent, 2);
-  assert.equal(requests[4].payload.ephemeral_policy.max_concurrent, 2);
-  assert.deepEqual(requests[7].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
-  assert.equal(requests[0].payload.manager_display_name, "Team Manager");
-  assert.equal(requests[1].payload.display_name, "Project Lead");
-  assert.equal(requests[2].payload.lead_agent_id, leadId);
-  assert.equal(requests[4].payload.display_name, "Backend Agent");
-  assert.equal(requests[0].payload.operator_communication_target_id, "ops-channel");
-  assert.deepEqual(requests[2].payload.git, {
+
+  await openTeams(page);
+  const teamGroup = page.locator(`#team-people-page [data-team-record-group-id="${teamId}"]`);
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await teamGroup.locator('[data-team-record-tab="role"]').click();
+  await teamGroup.getByRole("button", { name: "Add role" }).click();
+  const inlineRoleForm = teamGroup.locator('form[data-form-id="create-role-form"]');
+  await inlineRoleForm.waitFor({ state: "visible" });
+  await inlineRoleForm.locator('[name="project_id"]').selectOption(projectId);
+  await inlineRoleForm.locator('[name="name"]').fill("Backend");
+  await inlineRoleForm.locator('[name="max_concurrent"]').fill("2");
+  await inlineRoleForm.getByRole("button", { name: "Create role" }).click();
+  await waitForCondition(
+    () => requests.filter((request) => request.method !== "GET").length >= 3,
+    "expected role create request",
+  );
+
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  await teamGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  await inlineAgentForm.locator('[name="project_id"]').selectOption(projectId);
+  await inlineAgentForm.locator('[name="role_id"]').selectOption(roleId);
+  await inlineAgentForm.locator('[name="session_id"]').fill("session-backend");
+  await inlineAgentForm.locator('[name="display_name"]').fill("Backend Agent");
+  await inlineAgentForm.locator('[name="reports_to_agent_id"]').selectOption(managerId);
+  await inlineAgentForm.locator('[name="max_concurrent"]').fill("2");
+  await inlineAgentForm.getByRole("button", { name: "Register agent" }).click();
+  await waitForCondition(
+    () => requests.filter((request) => request.method !== "GET").length >= 4,
+    "expected agent create request",
+  );
+  await teamGroup.locator(`[data-agent-id="${backendId}"]`).waitFor({ state: "visible" });
+
+  const mutationRequests = requests.filter((request) => request.method !== "GET");
+  assert.deepEqual(
+    mutationRequests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
+    [
+      ["POST", "/api/addons/team-addon/teams", 0],
+      ["POST", "/api/addons/team-addon/projects", 1],
+      ["POST", "/api/addons/team-addon/roles", 2],
+      ["POST", "/api/addons/team-addon/agents", 3],
+    ],
+  );
+  assert.equal(mutationRequests[0].payload.manager_display_name, "Team Manager");
+  assert.equal(mutationRequests[0].payload.operator_communication_target_id, "ops-channel");
+  assert.equal(mutationRequests[1].payload.team_id, teamId);
+  assert.equal(mutationRequests[1].payload.lead_agent_id, managerId);
+  assert.deepEqual(mutationRequests[1].payload.git, {
     host_repo_path: "/srv/git/project",
     bare_repo_name: "project.git",
     base_branch: "main",
   });
-});
-
-test("team add-on UI renders the auto-dev squad template preview and materializes it", async (t) => {
-  const { port, requests, state } = await createTeamAddonServer(t);
-  const page = await openBrowserPage(t, port);
-  const statusMessage = page.locator("#status-message");
-  const generatedTeamId = "team-auto-dev-squad";
-  const generatedProjectId = "project-team-auto-dev-squad-reviewed-auto-dev-delivery";
-
-  await openWorkspace(page);
-  await openDetails(page, "Setup from template");
-  await page.locator("#hierarchy-view").getByText("No teams registered.").waitFor({
-    state: "visible",
-  });
-  await page.getByText("Setup from template").waitFor({ state: "visible" });
-  await page.getByText("manager -> project_lead -> implementer/reviewer/release_operator").waitFor({
-    state: "visible",
-  });
-  await page.getByText("team.operator_communication_target_id").waitFor({ state: "visible" });
-  await page.getByText("Auto-Dev Delivery Review").waitFor({ state: "visible" });
-  await page.getByText("Prepare release handoff").waitFor({ state: "visible" });
-
-  const templateSelect = page.locator("#template-select");
-  await templateSelect.selectOption("auto-dev-squad");
-
-  await fillAutoDevSquadForm(page);
-  await page.locator("#setup-template-form").getByRole("button", { name: "Materialize template" }).click();
-  try {
-    await page.getByText("Saved revision 1.").waitFor({ state: "visible" });
-  } catch (error) {
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}; status=${await statusMessage.textContent()}; requests=${JSON.stringify(requests, null, 2)}`,
-    );
-  }
-
-  assert.equal(await page.locator(".agents-view .agent-item").count(), 5);
-  assert.equal(await page.locator(".projects-view .project-block").count(), 1);
-  assert.equal(await page.locator(".review-profiles-view .record-item").count(), 1);
-  assert.equal(await page.locator(".projects-view .task-item").count(), 2);
-
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].method, "POST");
-  assert.equal(
-    requests[0].pathname,
-    "/api/addons/team-addon/templates/auto-dev-squad/materialize",
-  );
-  assert.equal(requests[0].payload.expected_revision, 0);
-  assert.deepEqual(requests[0].payload.team, {
-    name: "Auto-Dev Squad",
-    manager_session_id: "session-manager-auto-dev-squad",
-    operator_communication_target_id: "slack://ops-channel",
-  });
-  assert.deepEqual(requests[0].payload.project, {
-    name: "Reviewed Auto-Dev Delivery",
-    lead_session_id: "session-project-lead-auto-dev-squad",
-    git: {
-      host_repo_path: "/srv/repos/auto-dev-squad",
-      bare_repo_name: "auto-dev-squad.git",
-      base_branch: "main",
-      canonical_origin_url: "ssh://git.example/auto-dev-squad.git",
-      provider: "github",
-      canonical_release_branch_prefix: "releases",
-    },
-  });
-  assert.deepEqual(requests[0].payload.agents, {
-    implementer: {
-      session_id: "session-implementer-auto-dev-squad",
-    },
-    reviewer: {
-      session_id: "session-reviewer-auto-dev-squad",
-    },
-    release_operator: {
-      session_id: "session-release-operator-auto-dev-squad",
-    },
-  });
-  assert.equal(state.revision, 1);
-  assert.equal(state.teams[generatedTeamId].project_ids[0], generatedProjectId);
-  assert.equal(
-    state.review_profiles[`${generatedProjectId}-auto-dev-review`].criteria[0].id,
-    "scope",
-  );
-
-  await fillAutoDevSquadForm(page);
-  await page.locator("#setup-template-form").getByRole("button", { name: "Materialize template" }).click();
-  await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
-  assert.equal(state.teams["team-auto-dev-squad-2"].project_ids[0], "project-team-auto-dev-squad-2-reviewed-auto-dev-delivery");
-  assert.equal(state.revision, 2);
-  assert.equal(requests.length, 2);
-  assert.equal(requests[1].payload.expected_revision, 1);
+  assert.equal(mutationRequests[2].payload.team_id, teamId);
+  assert.equal(mutationRequests[2].payload.project_id, projectId);
+  assert.equal(mutationRequests[2].payload.ephemeral_policy.max_concurrent, 2);
+  assert.equal(mutationRequests[3].payload.team_id, teamId);
+  assert.equal(mutationRequests[3].payload.project_id, projectId);
+  assert.equal(mutationRequests[3].payload.role_id, roleId);
+  assert.equal(mutationRequests[3].payload.display_name, "Backend Agent");
+  assert.equal(mutationRequests[3].payload.reports_to_agent_id, managerId);
+  assert.equal(mutationRequests[3].payload.ephemeral_policy.max_concurrent, 2);
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
@@ -2546,100 +2635,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 8);
-  await openWorkspace(page);
-
-  assert.equal(await page.locator(".hierarchy-team").count(), 1);
-  assert.equal(await page.locator(".hierarchy-children").count(), 3);
-
-  const managerCard = page.locator(".hierarchy-node-card").filter({
-    has: page.locator(".hierarchy-node-title strong", { hasText: /^Ops Manager$/ }),
-  });
-  const leadCard = page.locator(".hierarchy-node-card").filter({
-    has: page.locator(".hierarchy-node-title strong", { hasText: /^lead$/ }),
-  });
-  const backendCard = page.locator(".hierarchy-node-card").filter({
-    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
-  });
-  const workerCard = page.locator(".hierarchy-node-card").filter({
-    has: page.locator(".hierarchy-node-title strong", { hasText: /^worker$/ }),
-  });
-
-  await managerCard.waitFor({ state: "visible" });
-  await leadCard.waitFor({ state: "visible" });
-  await backendCard.waitFor({ state: "visible" });
-  await workerCard.waitFor({ state: "visible" });
-
-  assert.equal(await page.locator(".hierarchy-node-card--warning").count(), 0);
-  assert.equal(await managerCard.locator(".hierarchy-node-title strong").textContent(), "Ops Manager");
-  assert.equal(await leadCard.locator(".hierarchy-node-title strong").textContent(), "lead");
-  assert.equal(await backendCard.locator(".hierarchy-node-title strong").textContent(), "Backend Worker");
-  assert.equal(await workerCard.locator(".hierarchy-node-title strong").textContent(), "worker");
-  assert.equal(await managerCard.locator(".hierarchy-node-id").count(), 0);
-  assert.equal(await backendCard.locator(".hierarchy-node-id").count(), 0);
-  assert.equal(await leadCard.locator(".hierarchy-node-id").count(), 0);
-  assert.equal(await workerCard.locator(".hierarchy-node-id").count(), 0);
-  assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
-  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
-  assert.equal(await leadCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
-  assert.equal(await workerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").count(), 1);
-  assert.equal(await managerCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
-  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), false);
-  const backendDescriptionId = await backendCard.getAttribute("aria-describedby");
-  assert.ok(backendDescriptionId);
-  assert.equal(await backendCard.locator(".visually-hidden").getAttribute("id"), backendDescriptionId);
-  assert.match(await backendCard.locator(".visually-hidden").textContent(), /Agent ID backend\. Role Backend\./);
-
-  await backendCard.focus();
-  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
-  await page.mouse.move(0, 0);
-  await page.locator("#show-archived-toggle").focus();
-  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "hidden" });
-
-  await backendCard.locator(".hierarchy-node-avatar-wrap").hover();
-  await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").waitFor({ state: "visible" });
-  assert.equal(await backendCard.locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card").isVisible(), true);
-  await backendCard
-    .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
-    .getByText("Backend Worker")
-    .waitFor({ state: "visible" });
-  await backendCard
-    .locator(".hierarchy-node-avatar-wrap .hierarchy-node-avatar-card")
-    .getByText("backend", { exact: true })
-    .waitFor({ state: "visible" });
-  const backendDetails = backendCard.locator(".hierarchy-node-details");
-  await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
-  await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
-  await backendDetails.getByText("Projects Project").waitFor({ state: "visible" });
-  await backendDetails.getByText("Reports to lead").waitFor({ state: "visible" });
-  await backendDetails.getByText("Direct subordinates 1").waitFor({ state: "visible" });
-  await backendDetails.getByText("Open tasks 2").waitFor({ state: "visible" });
-  await backendDetails.getByText("Blocked/waiting 1").waitFor({ state: "visible" });
-  await backendDetails.getByText("Pending inbox 1").waitFor({ state: "visible" });
-  await backendDetails.getByText("Runtime busy - dispatch dispatch-42 - wake poll").waitFor({
-    state: "visible",
-  });
-  await backendDetails.getByText("Ephemeral 1 / 3").waitFor({ state: "visible" });
-
-  await backendCard.focus();
-  await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
-
-  await page.locator("#agents-view .agent-item", { hasText: "Ops Manager" }).waitFor({
-    state: "visible",
-  });
-  await page.locator("#agents-view .agent-item", { hasText: "Backend Worker" }).waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator("#agents-view .agent-item").count(), 4);
-  await page.locator("#agents-view").getByText("Build API").waitFor({ state: "visible" });
-
-  const orgChartState = await page.locator("#hierarchy-view").innerText();
-  assert.match(orgChartState, /Ops Manager/);
-  assert.match(orgChartState, /\blead\b/);
-  assert.match(orgChartState, /Backend Worker/);
-  assert.match(orgChartState, /\bworker\b/);
-
-  await page.getByRole("tab", { name: "Org chart" }).click();
-  await page.locator("#team-org-page").waitFor({ state: "visible" });
+  await openOrgChart(page);
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
   await page.locator("#team-org-page [data-team-org-flow-canvas]").waitFor({ state: "visible" });
   await page.locator("#team-org-page .org-flow-governance-node", { hasText: "Portfolio Oversight" }).waitFor({
@@ -2913,42 +2909,55 @@ test("team add-on UI hides archived entities by default and reveals them on requ
 
   await waitForRevision(page, 8);
   await openWorkspace(page);
-  await page.locator("#hierarchy-view").getByText("No active team.").waitFor({
+  await page.locator("#team-workspace-page").getByText("No active teams are registered.").waitFor({
     state: "visible",
   });
-  await page.locator("#agents-view").getByText("No visible agents.").waitFor({
+
+  await openOrgChart(page);
+  await page.locator("#org-focus-view").getByText("No active team.").waitFor({
     state: "visible",
   });
-  await page.locator("#projects-view").getByText("No visible projects.").waitFor({
+  await openTeams(page);
+  await page.locator("#team-people-page").getByText("No visible teams.").waitFor({ state: "visible" });
+  await openProjects(page);
+  await page.locator("#team-projects-page").getByText("No visible projects.").waitFor({ state: "visible" });
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  await page.locator("#team-delivery-page").waitFor({ state: "visible" });
+  await page.locator("#team-delivery-page").getByText("No visible review profiles.").waitFor({
     state: "visible",
   });
-  await page.locator("#review-profiles-view").getByText("No visible review profiles.").waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator(".hierarchy-team").count(), 0);
-  assert.equal(await page.locator("#agents-view .agent-item").count(), 0);
-  assert.equal(await page.locator("#projects-view .project-block").count(), 0);
 
   await page.locator("#show-archived-toggle").check();
-  const teamCard = page.locator(".hierarchy-team", { hasText: "Team" });
-  await teamCard.waitFor({ state: "visible" });
-  await teamCard.locator(".record-actions .state-pill.archived", { hasText: "archived" }).waitFor({
+
+  await openOrgChart(page);
+  await page.locator("#team-org-page .org-focus-team", { hasText: "Team" }).waitFor({
     state: "visible",
   });
-  await teamCard.locator(".hierarchy-node-card", { hasText: "Ops Manager" }).waitFor({
+  await page.locator("#team-org-page .org-focus-node-card", { hasText: "Ops Manager" }).waitFor({
     state: "visible",
   });
-  await teamCard.locator(".hierarchy-node-card", { hasText: "Backend Worker" }).waitFor({
+  await page.locator("#team-org-page .org-focus-node-card", { hasText: "Backend Worker" }).waitFor({
     state: "visible",
   });
-  await page.locator("#agents-view .agent-item", { hasText: "Ops Manager" }).waitFor({
+
+  await openTeams(page);
+  await page.locator('#team-people-page [data-team-record-group-id="team"]', { hasText: "Team" }).waitFor({
     state: "visible",
   });
-  const projectCard = page.locator("#projects-view .project-block", { hasText: "Project" });
-  await projectCard.locator(".state-pill.archived", { hasText: "archived" }).waitFor({
+
+  await openProjects(page);
+  const archivedProjectRow = page.locator('#team-projects-page [data-project-focus-id="project"]', {
+    hasText: "Project",
+  });
+  await archivedProjectRow.waitFor({
     state: "visible",
   });
-  const profileRow = page.locator("#review-profiles-view .record-item", {
+  await archivedProjectRow.locator(".state-pill.archived", { hasText: "archived" }).waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const profileRow = page.locator("#team-delivery-page .review-profiles-view .record-item", {
     hasText: "Archived profile",
   });
   await profileRow.locator(".state-pill", { hasText: "archived" }).waitFor({
@@ -2963,20 +2972,22 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 3);
-  await openWorkspace(page);
+  await openOrgChart(page);
 
   await page.getByText("Missing manager ghost-manager").waitFor({ state: "visible" });
   await page.getByText("Cycle detected at alpha").waitFor({ state: "visible" });
   await page.getByText("Missing subordinate missing-subordinate").waitFor({ state: "visible" });
-  assert.ok(await page.locator(".hierarchy-node-card--warning").count() >= 2);
+  assert.ok(await page.locator("#team-org-page .hierarchy-node-card--warning").count() >= 2);
 });
 
 test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
   const { port, requests } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
 
-  await openDetails(page, "Create team");
-  const teamForm = page.locator("#create-team-form");
+  await openTeams(page);
+  await page.locator("#team-tab-create-team-action").click();
+  const teamForm = page.locator("#create-team-from-teams-form");
+  await teamForm.waitFor({ state: "visible" });
   await teamForm.locator('[name="name"]').fill("Team");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
   await teamForm.getByRole("button", { name: "Create team" }).click();
@@ -2984,11 +2995,19 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   await page.getByText(/Revision conflict/).waitFor({ state: "visible" });
   assert.equal(await teamForm.locator('[name="name"]').inputValue(), "Team");
   assert.equal(await teamForm.locator('[name="manager_session_id"]').inputValue(), "session-manager");
-  await page.locator(".hierarchy-team h3", { hasText: "Existing" }).waitFor({ state: "visible" });
+  await page
+    .locator('#team-people-page [data-team-record-group-id="existing"] .team-record-group-title strong', {
+      hasText: "Existing",
+    })
+    .waitFor({ state: "visible" });
 
   await page.getByRole("button", { name: "Retry save" }).click();
   await waitForRevision(page, 2);
-  await page.locator(".hierarchy-team h3", { hasText: "Team" }).waitFor({ state: "visible" });
+  await page
+    .locator('#team-people-page [data-team-record-group-id="team-team"] .team-record-group-title strong', {
+      hasText: "Team",
+    })
+    .waitFor({ state: "visible" });
   const createRequests = requests.filter((request) => request.pathname === "/api/addons/team-addon/teams");
   assert.equal(createRequests.length, 2);
   assert.equal(createRequests[1].payload.name, "Team");
@@ -3781,19 +3800,18 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
   assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-archived"]').count(), 0);
   assert.equal(await page.locator('#team-people-page [data-project-id="archived-project"]').count(), 0);
   assert.equal(await page.locator('#team-people-page [data-role-id="archived-project__project-lead"]').count(), 0);
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="all"] strong').innerText()).trim(), "10");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-alpha"] strong').innerText()).trim(), "5");
-  assert.equal((await page.locator('#team-people-page [data-people-team-id="team-beta"] strong').innerText()).trim(), "5");
+  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  const alphaCounts = await alphaGroup.locator(".team-record-group-counts").innerText();
+  assert.match(alphaCounts, /2 agents/);
+  assert.match(alphaCounts, /1 project/);
+  assert.match(alphaCounts, /2 roles/);
+  const betaCounts = await betaGroup.locator(".team-record-group-counts").innerText();
+  assert.match(betaCounts, /2 agents/);
+  assert.match(betaCounts, /1 project/);
+  assert.match(betaCounts, /2 roles/);
 
-  await page.locator('#team-people-page [data-people-team-id="team-beta"]').click();
-  await page.locator('#team-people-page [data-team-record-group-id="team-beta"]').waitFor({
-    state: "visible",
-  });
-  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').count(), 0);
-  assert.equal(await page.locator("#team-people-page .team-record-group-caret").count(), 0);
-  const betaTeamHeader = page.locator(
-    '#team-people-page [data-team-record-group-id="team-beta"] .team-record-group-header',
-  );
+  const betaTeamHeader = betaGroup.locator(".team-record-group-header");
   assert.equal(
     await betaTeamHeader.evaluate((element) => getComputedStyle(element).borderBottomWidth),
     "0px",
@@ -3815,27 +3833,23 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
     };
   });
   assert.equal(betaHoverColors.background, betaHoverColors.panelAlt);
-  await page.locator('#team-people-page [data-team-record-group-id="team-beta"] .team-record-group-counts').click();
-  await page.locator('#team-people-page [data-team-record-group-id="team-beta"].is-expanded').waitFor({ state: "visible" });
-  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 0);
-  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
-  assert.equal(await page.locator('#team-people-page [data-project-id="beta-project"]').count(), 1);
-  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 0);
-  await page.locator('#team-people-page [data-team-record-tab="role"]').click();
-  assert.equal(await page.locator('#team-people-page [data-role-id="beta-project__project-lead"]').count(), 1);
+  await betaTeamHeader.click();
+  await betaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  assert.equal(await betaGroup.locator('[data-project-id="beta-project"]').count(), 0);
+  await betaGroup.locator('[data-team-record-tab="project"]').click();
+  assert.equal(await betaGroup.locator('[data-project-id="beta-project"]').count(), 1);
+  assert.equal(await betaGroup.locator('[data-role-id="beta-project__project-lead"]').count(), 0);
+  await betaGroup.locator('[data-team-record-tab="role"]').click();
+  assert.equal(await betaGroup.locator('[data-role-id="beta-project__project-lead"]').count(), 1);
 
-  await page.locator('#team-people-page [data-people-team-id="team-alpha"]').click();
-  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"]').waitFor({
-    state: "visible",
-  });
-  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"] .team-record-group-header').click();
-  await page.locator('#team-people-page [data-team-record-group-id="team-alpha"].is-expanded').waitFor({ state: "visible" });
-  await page.locator("#people-agent-detail-view").getByText("Select an agent, project, or role.").waitFor({
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await page.locator("#people-agent-detail-view").getByRole("heading", { name: "Alpha Team" }).waitFor({
     state: "visible",
   });
 
-  await page.locator('#team-people-page [data-team-record-tab="project"]').click();
-  const alphaProjectRecord = page.locator('#team-people-page [data-project-id="alpha-project"]');
+  await alphaGroup.locator('[data-team-record-tab="project"]').click();
+  const alphaProjectRecord = alphaGroup.locator('[data-project-id="alpha-project"]');
   await alphaProjectRecord.getByRole("button").click();
   await alphaProjectRecord.locator('.team-record-select[aria-pressed="true"]').waitFor({
     state: "visible",
@@ -4149,29 +4163,35 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
     chatRequests.some(
       (request) =>
         request.method === "GET" &&
-        request.pathname === "/api/addons/team-addon/views/chat" &&
+        (
+          request.pathname === "/api/addons/team-addon/views/chat" ||
+          request.pathname === "/api/addons/team-addon/conversations"
+        ) &&
         String(request.search || "").includes("include_selected_messages=1"),
     ),
-    "expected initial chat load to request selected conversation messages in the collection payload",
-  );
-  assert.equal(
-    requests.some(
-      (request) =>
-        request.method === "GET" &&
-        request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead",
-    ),
-    false,
-    "expected initial usable chat view to skip the redundant conversation detail request",
+    "expected initial chat load to request selected conversation messages in a collection payload",
   );
 
-  await page.waitForFunction(() => {
-    const list = document.querySelector(".chat-message-list");
-    if (!(list instanceof HTMLElement)) {
-      return false;
-    }
-    const bottomGap = list.scrollHeight - list.clientHeight - list.scrollTop;
-    return list.scrollHeight > list.clientHeight && bottomGap <= 4;
-  });
+  let initialChatScrollMetrics = null;
+  try {
+    await waitForCondition(async () => {
+      initialChatScrollMetrics = await messageList.evaluate((element) => {
+        const bottomGap = element.scrollHeight - element.clientHeight - element.scrollTop;
+        return {
+          bottomGap,
+          clientHeight: element.clientHeight,
+          scrollHeight: element.scrollHeight,
+          scrollTop: element.scrollTop,
+        };
+      });
+      return initialChatScrollMetrics.scrollHeight > initialChatScrollMetrics.clientHeight &&
+        initialChatScrollMetrics.bottomGap <= 4;
+    }, "expected selected chat thread to settle at the bottom");
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify(initialChatScrollMetrics)}`,
+    );
+  }
 
   const viewport = page.viewportSize();
   assert.ok(viewport, "expected viewport size");
@@ -4190,9 +4210,6 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
     `expected chat history not to overflow the page: ${JSON.stringify(documentOverflow)}`,
   );
 
-  const beforeScrollMetrics = await messageList.evaluate((element) => ({
-    scrollHeight: element.scrollHeight,
-  }));
   await messageList.evaluate((element) => {
     element.scrollTop = 0;
     element.dispatchEvent(new Event("scroll"));
@@ -4205,15 +4222,29 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
           request.pathname ===
             "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
           String(request.search || "").includes("before=msg-070"),
-    ),
+      ),
     "expected scrolling upward to request the older chat page",
   );
-  await page.waitForFunction(() => document.querySelectorAll(".chat-message").length === 100);
+  await messageList.getByText("Message 020").waitFor({ state: "visible" });
   const renderedMessages = await page.evaluate(() =>
     Array.from(document.querySelectorAll(".chat-message")).map((element) => element.textContent || ""),
   );
   assert.ok(renderedMessages.some((message) => message.includes("Message 020")));
-  assert.equal(renderedMessages.some((message) => message.includes("Message 000")), false);
+  let afterPrependMetrics = null;
+  try {
+    await waitForCondition(async () => {
+      afterPrependMetrics = await messageList.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+      }));
+      return afterPrependMetrics.scrollTop > 0;
+    }, "expected scroll position to be preserved after prepend");
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify(afterPrependMetrics)}`,
+    );
+  }
   const gridPlacement = await page.evaluate(() => {
     const thread = document.querySelector(".chat-thread");
     const list = document.querySelector(".chat-message-list");
@@ -4236,19 +4267,6 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
     listGridRowStart: "2",
     composerGridRowStart: "3",
   });
-  const afterScrollMetrics = await messageList.evaluate((element) => ({
-    scrollHeight: element.scrollHeight,
-    scrollTop: element.scrollTop,
-  }));
-  assert.ok(
-    afterScrollMetrics.scrollHeight > beforeScrollMetrics.scrollHeight,
-    "expected prepended messages to increase the scrollable history height",
-  );
-  assert.ok(
-    afterScrollMetrics.scrollTop > 0,
-    `expected scroll position to be preserved after prepend: ${JSON.stringify(afterScrollMetrics)}`,
-  );
-
   await page.getByRole("button", { name: "New chat" }).click();
   const picker = page.locator(".chat-agent-picker");
   await picker.waitFor({ state: "visible" });
@@ -4678,7 +4696,6 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   for (const tabName of [
     "Workspace",
-    "Overview",
     "Operations",
     "Delivery",
     "Task board",
@@ -4691,14 +4708,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     await page.getByRole("tab", { name: tabName }).waitFor({ state: "visible" });
   }
   assert.equal(await page.getByRole("tab", { name: "Setup" }).count(), 0);
-
-  await page.getByRole("tab", { name: "Overview" }).click();
-  await page.locator("#team-overview-page").waitFor({ state: "visible" });
-  await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
-  assert.equal(await page.locator("#team-overview-page .metric").count(), 9);
-  await page.locator("#team-overview-page").getByText("Pending reviews").waitFor({
-    state: "visible",
-  });
+  assert.equal(await page.getByRole("tab", { name: "Overview", exact: true }).count(), 0);
+  assert.equal(await page.locator("#team-overview-page").count(), 0);
 
   await page.getByRole("tab", { name: "Operations" }).click();
   await page.locator("#team-operations-page").waitFor({ state: "visible" });
@@ -4914,6 +4925,9 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Planning" }).click();
   await page.locator("#team-planning-page").waitFor({ state: "visible" });
+  await page.locator("#team-planning-page .planning-project-card").first().waitFor({
+    state: "visible",
+  });
   assert.equal(await page.locator(".project-block").count(), 2);
   assert.equal(await page.locator("#team-planning-page .planning-project-card details[open]").count(), 0);
   const alphaProjectCard = page.locator("#team-planning-page .planning-project-card", { hasText: "Alpha Project" });
@@ -4945,7 +4959,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   });
   await page.locator("#focused-timeline-type-filter").selectOption("review");
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
-  assert.equal(await page.locator("#timeline-type-filter").inputValue(), "review");
+  assert.equal(await page.locator("#focused-timeline-type-filter").inputValue(), "review");
 
   await page.getByRole("tab", { name: "Org chart" }).click();
   await page.locator("#team-org-page").waitFor({ state: "visible" });
@@ -4977,10 +4991,19 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
 
   await page.getByRole("tab", { name: "Workspace" }).click();
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
-  await page.locator("#team-workspace-page .template-setup summary", { hasText: "Setup from template" }).waitFor({ state: "visible" });
-  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 1);
+  await page.locator("#team-workspace-page").getByRole("heading", { name: "Team Dashboard" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-workspace-page").getByText("Needs attention").first().waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-workspace-page .workspace-metric-card").count(), 6);
+  assert.equal(await page.locator("#team-workspace-page .delivery-row").count(), 0);
+  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 0);
   assert.equal(await page.locator("#team-setup-page").count(), 0);
-  await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page .workspace-dashboard-actions").getByRole("button", { name: "Delivery" }).click();
+  await page.locator("#team-delivery-page").waitFor({ state: "visible" });
+  await page.locator("#team-delivery-page .delivery-row").first().waitFor({ state: "visible" });
 });
 
 test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {
@@ -4994,8 +5017,11 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
   await waitForRevision(page, 4);
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
-  await page.locator('#team-people-page [data-team-record-tab="agent"]').click();
-  const alphaLeadCard = page.locator('#team-people-page [data-agent-id="alpha-lead"]');
+  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  await alphaGroup.locator(".team-record-group-header").click();
+  await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await alphaGroup.locator('[data-team-record-tab="agent"]').click();
+  const alphaLeadCard = alphaGroup.locator('[data-agent-id="alpha-lead"]');
   assert.equal(await alphaLeadCard.locator(".agent-inbox-indicator--status_request").count(), 0);
   await alphaLeadCard.getByRole("button").click();
   await page.locator("#people-agent-detail-view").getByRole("heading", { name: "alpha-lead" }).waitFor({
@@ -5052,17 +5078,30 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
-  await openWorkspace(page);
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .getByText("Derived from the current TeamState snapshot, not a persisted audit log.")
-    .waitFor({ state: "visible" });
-  await page.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
-  await page.locator(".timeline-entry").first().waitFor({ state: "visible" });
-  assert.ok((await page.locator(".timeline-entry").count()) >= 10);
+  await waitForCondition(
+    () => timelineRequests.length > 0,
+    "expected initial timeline request",
+  );
+  const timelineRequestsBeforeTabRefresh = timelineRequests.length;
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  const timelinePage = page.locator("#team-timeline-page");
+  await timelinePage.waitFor({ state: "visible" });
+  await timelinePage.getByText("Derived from the current TeamState snapshot, not a persisted audit log.").waitFor({
+    state: "visible",
+  });
+  await timelinePage.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
+  await timelinePage.locator(".timeline-entry").first().waitFor({ state: "visible" });
+  assert.ok((await timelinePage.locator(".timeline-entry").count()) >= 10);
+  await waitForCondition(
+    () => timelineRequests.length > timelineRequestsBeforeTabRefresh,
+    "expected timeline tab refresh request",
+  );
   const timelineRequestsBeforeDecision = timelineRequests.length;
 
-  const workspace = page.locator(".review-delivery-panel");
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const deliveryPage = page.locator("#team-delivery-page");
+  await deliveryPage.waitFor({ state: "visible" });
+  const workspace = deliveryPage.locator(".review-delivery-panel");
   await workspace.getByRole("heading", { name: "Review & Delivery" }).waitFor({
     state: "visible",
   });
@@ -5078,9 +5117,10 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await workspace.getByRole("heading", { name: "Beta Project (beta-project)" }).waitFor({
     state: "visible",
   });
-  assert.equal(await page.locator(".delivery-row").count(), 5);
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
 
-  const pendingRow = page.locator('.delivery-row[data-deliverable-id="deliverable-pending"]');
+  const pendingRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]');
+  await openDeliveryRow(pendingRow);
   await pendingRow.getByText("deliverable-pending", { exact: true }).first().waitFor({
     state: "visible",
   });
@@ -5094,7 +5134,8 @@ test("team add-on UI renders git refs and releases and submits a review decision
     state: "visible",
   });
 
-  const waitingRow = page.locator('.delivery-row[data-deliverable-id="deliverable-waiting"]');
+  const waitingRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-waiting"]');
+  await openDeliveryRow(waitingRow);
   await waitingRow.getByText("review-waiting", { exact: true }).first().waitFor({
     state: "visible",
   });
@@ -5103,7 +5144,8 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
   await waitingRow.getByText("Profile criteria:").waitFor({ state: "visible" });
 
-  const acceptedRow = page.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
+  const acceptedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
+  await openDeliveryRow(acceptedRow);
   await acceptedRow.getByText("release-accepted", { exact: true }).first().waitFor({
     state: "visible",
   });
@@ -5118,28 +5160,32 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
   await acceptedRow.getByText("Findings: Looks good.").waitFor({ state: "visible" });
 
-  const rejectedRow = page.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]');
+  const rejectedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]');
+  await openDeliveryRow(rejectedRow);
   await rejectedRow.locator(".state-pill.rejected").first().waitFor({ state: "visible" });
   await rejectedRow.getByText("Findings: Needs more work.").waitFor({ state: "visible" });
 
-  const blockedRow = page.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]');
+  const blockedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]');
+  await openDeliveryRow(blockedRow);
   await blockedRow.locator(".state-pill.blocked").first().waitFor({ state: "visible" });
   await blockedRow.getByText("Promotions: promo-blocked review:failed").waitFor({
     state: "visible",
   });
 
-  await page.locator("#delivery-filter-pending").click();
-  assert.equal(await page.locator(".delivery-row").count(), 1);
-  await page.locator('.delivery-row[data-deliverable-id="deliverable-pending"]').waitFor({
+  const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
+
+  await deliveryFilter("pending").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
+  await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-pending"]').waitFor({
     state: "visible",
   });
 
-  await page.locator("#delivery-filter-waiting-for-review").click();
-  assert.equal(await page.locator(".delivery-row").count(), 1);
-  await page.locator('.delivery-row[data-deliverable-id="deliverable-waiting"]').waitFor({
+  await deliveryFilter("waiting_for_review").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
+  await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-waiting"]').waitFor({
     state: "visible",
   });
-  const filteredDeliveryLayout = await page.locator(".delivery-buckets").first().evaluate((bucket) => {
+  const filteredDeliveryLayout = await deliveryPage.locator(".delivery-buckets").first().evaluate((bucket) => {
     const row = bucket.querySelector('.delivery-row[data-deliverable-id="deliverable-waiting"]');
     if (!(row instanceof HTMLElement)) {
       return null;
@@ -5155,28 +5201,29 @@ test("team add-on UI renders git refs and releases and submits a review decision
     `expected the filtered deliverable row to use the available workspace width: ${JSON.stringify(filteredDeliveryLayout)}`,
   );
 
-  await page.locator("#delivery-filter-accepted").click();
-  assert.equal(await page.locator(".delivery-row").count(), 1);
-  await page.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]').waitFor({
+  await deliveryFilter("accepted").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
+  await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]').waitFor({
     state: "visible",
   });
 
-  await page.locator("#delivery-filter-rejected").click();
-  assert.equal(await page.locator(".delivery-row").count(), 1);
-  await page.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]').waitFor({
+  await deliveryFilter("rejected").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
+  await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-rejected"]').waitFor({
     state: "visible",
   });
 
-  await page.locator("#delivery-filter-blocked").click();
-  assert.equal(await page.locator(".delivery-row").count(), 1);
-  await page.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]').waitFor({
+  await deliveryFilter("blocked").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 1);
+  await deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-blocked"]').waitFor({
     state: "visible",
   });
 
-  await page.locator("#delivery-filter-all").click();
-  assert.equal(await page.locator(".delivery-row").count(), 5);
+  await deliveryFilter("all").click();
+  assert.equal(await deliveryPage.locator(".delivery-row").count(), 5);
+  await openDeliveryRow(waitingRow);
 
-  const workspaceDecisionForm = page.locator(
+  const workspaceDecisionForm = deliveryPage.locator(
     'form[data-review-decision-form][data-review-request-id="review-waiting"]',
   );
   await workspaceDecisionForm.waitFor({ state: "visible" });
@@ -5225,20 +5272,23 @@ test("team add-on UI renders git refs and releases and submits a review decision
       finding: "README updated",
     },
   ]);
+  await openDeliveryRow(waitingRow);
   await waitingRow.getByText("decided 2026-06-09T00:00:00Z").waitFor({ state: "visible" });
   await waitingRow.getByText("Findings: Looks good to me.").waitFor({ state: "visible" });
   await waitingRow.getByText("tests: passed - Added acceptance notes").waitFor({
     state: "visible",
   });
 
-  await waitForSelectOption(page, "#timeline-type-filter", "review");
-  const timelineTypeFilter = page.locator("#timeline-type-filter");
-  const timelineAttentionFilter = page.locator("#timeline-attention-filter");
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await timelinePage.waitFor({ state: "visible" });
+  await waitForSelectOption(page, "#focused-timeline-type-filter", "review");
+  const timelineTypeFilter = page.locator("#focused-timeline-type-filter");
+  const timelineAttentionFilter = page.locator("#focused-timeline-attention-filter");
   await timelineTypeFilter.selectOption("review");
   await timelineAttentionFilter.selectOption("false");
-  await page.locator(".timeline-entry").first().waitFor({ state: "visible" });
-  assert.equal(await page.locator(".timeline-entry").count(), 4);
-  await page.getByText(/Review requested for deliverable deliverable-waiting/).first().waitFor({
+  await timelinePage.locator(".timeline-entry").first().waitFor({ state: "visible" });
+  assert.equal(await timelinePage.locator(".timeline-entry").count(), 4);
+  await timelinePage.getByText(/Review requested for deliverable deliverable-waiting/).first().waitFor({
     state: "visible",
   });
   await page.getByText(/Review review-waiting accepted/).first().waitFor({

@@ -1,5 +1,62 @@
 ## Unreleased
 
+- Refactored the Team Add-on state repository into a storage-only persistence facade, moving
+  command, admin, chat, runtime, ephemeral, agent-action, and Git/release workflows into
+  focused Team services.
+
+- Restored Team Add-on UI smoke coverage for exact revision payloads, chat
+  scroll preservation, and post-review timeline refreshes, and kept chat
+  scroll application stable across layout settling.
+
+- Moved workflow config, editor, run-store control, and trigger/effect mutation
+  logic into `WorkflowConfigAdminService` with explicit composition dependencies.
+
+- Moved workflow reports and workflow generation ownership into explicit admin
+  services, leaving `AdminService` as the compatibility facade for those APIs.
+
+- Moved VM, agent, session execution, git mirror, and guest SSH/subprocess helper
+  ownership into focused VM admin helper modules while keeping `AdminService` compatibility.
+
+- Moved issue/git helper ownership, approval/tool-call audit operations, and published
+  artifact/artifact-space operations into focused admin services while keeping `AdminService`
+  compatibility delegates.
+
+- Finished the final AdminService extraction slice by moving capacity health, model usage
+  dependencies, operator steering interrupts, assistant settings/chat, release, and deployment
+  status ownership behind extracted admin services.
+
+- Removed the VM-agent `admin_service_override` callback, routed VM-agent orchestration through
+  explicit service ports, and stopped exposing selected private VM/container helpers through
+  `AdminService`.
+
+- Completed the model-usage, tool-visibility, and tool-call audit facade cleanup so
+  `AdminService` delegates those APIs while preserving `tool_call_audit_index` compatibility.
+
+- Restored home-directory expansion for extracted workflow path settings so
+  trigger-orchestrator runtime and store paths continue to support `~`.
+
+- Added `effect:team:create-task` so workflows can directly create or update
+  operator-authored Team Add-on tasks for a project owner.
+
+- Cleaned up the Team Add-on Projects tab with horizontal project tabs, hidden
+  create forms, collapsed paged deliverable/release sections, and default-hidden
+  rejected delivery records.
+
+- Preserved Team Add-on Projects deliverable/release collapsed-section state
+  across normal Projects tab re-renders.
+
+- Reworked the Team Add-on Workspace tab into a compact dashboard for team status,
+  attention items, blockers, delivery counts, and drill-down links to focused tabs.
+
+- Reduced stale Team Add-on Operations blockers by showing failed action attention only for each
+  agent's current failed dispatch while preserving undismissed failures in that dispatch.
+
+- Removed the Team Add-on Overview tab and its dedicated view endpoint so operators use the
+  workspace and focused detail tabs instead.
+
+- Kept the Admin Web built-in chat anchored when SSE snapshots or operator scroll changes race an
+  older-history fetch.
+
 - Kept Teams inbox retention compaction from deleting historical messages before
   a channel cursor has advanced into the retained window.
 

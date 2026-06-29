@@ -71,17 +71,6 @@
           Workspace
         </button>
         <button
-          id="team-view-overview-tab"
-          class="team-view-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          aria-controls="team-overview-page"
-          data-team-view="overview"
-        >
-          Overview
-        </button>
-        <button
           id="team-view-operations-tab"
           class="team-view-tab"
           type="button"
@@ -206,470 +195,30 @@
 
       <main
         id="team-workspace-page"
-        class="team-layout"
+        class="workspace-dashboard-page"
         role="tabpanel"
         aria-labelledby="team-view-workspace-tab"
         data-team-view-panel="workspace"
         hidden
       >
-        <section class="team-main">
-          <section class="summary-panel" aria-labelledby="summary-heading">
-            <h2 id="summary-heading">Overview</h2>
-            <div id="summary-grid" class="summary-grid" data-summary-grid></div>
-          </section>
-
-          <section class="content-panel runtime-operations-panel" aria-labelledby="runtime-operations-heading">
-            <div class="runtime-operations-header">
-              <div>
-                <p class="section-label">Operations</p>
-                <h2 id="runtime-operations-heading">Runtime / Blockers</h2>
-              </div>
-              <div
-                class="runtime-filter-group"
-                id="runtime-filter-group"
-                role="toolbar"
-                aria-label="Runtime filters"
-              >
-                <button class="runtime-filter-button" type="button" data-runtime-filter="all">All</button>
-                <button class="runtime-filter-button" type="button" data-runtime-filter="needs_attention">
-                  Needs attention
-                </button>
-                <button class="runtime-filter-button" type="button" data-runtime-filter="due_leased_agents">
-                  Due / leased agents
-                </button>
-                <button class="runtime-filter-button" type="button" data-runtime-filter="blocked_waiting_work">
-                  Blocked / waiting work
-                </button>
-                <button class="runtime-filter-button" type="button" data-runtime-filter="ephemeral_work">
-                  Ephemeral work
-                </button>
-              </div>
-            </div>
-            <div id="runtime-operations-view" class="runtime-operations-view" data-runtime-operations-view></div>
-          </section>
-
-          <section class="content-panel review-delivery-panel" aria-labelledby="review-delivery-heading">
-            <div class="review-delivery-header">
-              <div>
-                <p class="subheading">Workspace</p>
-                <h2 id="review-delivery-heading">Review &amp; Delivery</h2>
-              </div>
-              <div class="review-delivery-filters" role="toolbar" aria-label="Review and delivery filters">
-                <button type="button" id="delivery-filter-all" class="delivery-filter is-active" data-filter="all">
-                  All
-                </button>
-                <button type="button" id="delivery-filter-pending" class="delivery-filter" data-filter="pending">
-                  Pending
-                </button>
-                <button
-                  type="button"
-                  id="delivery-filter-waiting-for-review"
-                  class="delivery-filter"
-                  data-filter="waiting_for_review"
-                >
-                  Waiting for review
-                </button>
-                <button type="button" id="delivery-filter-accepted" class="delivery-filter" data-filter="accepted">
-                  Accepted
-                </button>
-                <button type="button" id="delivery-filter-rejected" class="delivery-filter" data-filter="rejected">
-                  Rejected
-                </button>
-                <button type="button" id="delivery-filter-blocked" class="delivery-filter" data-filter="blocked">
-                  Blocked
-                </button>
-              </div>
-            </div>
-            <div id="review-delivery-view" class="review-delivery-view" data-review-delivery-view>
-              <p class="empty-state">Review &amp; Delivery rows render here.</p>
-            </div>
-          </section>
-
-          <section class="content-grid">
-            <div class="content-panel" aria-labelledby="hierarchy-heading">
-              <h2 id="hierarchy-heading">Hierarchy</h2>
-              <div id="hierarchy-view" class="hierarchy-view" data-hierarchy-view></div>
-            </div>
-
-            <div class="content-panel" aria-labelledby="agents-heading">
-              <h2 id="agents-heading">Agents</h2>
-              <div id="agents-view" class="agents-view" data-agents-view></div>
-            </div>
-          </section>
-
-          <section class="content-panel" aria-labelledby="roles-heading">
-            <h2 id="roles-heading">Roles</h2>
-            <div id="roles-view" class="roles-view" data-roles-view></div>
-          </section>
-
-          <section class="content-panel" aria-labelledby="projects-heading">
-            <h2 id="projects-heading">Projects</h2>
-            <div id="projects-view" class="projects-view" data-projects-view></div>
-          </section>
-
-          <section class="content-panel" aria-labelledby="cases-heading">
-            <h2 id="cases-heading">Cases</h2>
-            <div id="cases-view" class="cases-view" data-cases-view></div>
-          </section>
-
-          <section class="content-panel" aria-labelledby="review-profiles-heading">
-            <h2 id="review-profiles-heading">Review profiles</h2>
-            <div id="review-profiles-view" class="review-profiles-view" data-review-profiles-view></div>
-          </section>
-
-          <section class="content-panel" aria-labelledby="releases-heading">
-            <h2 id="releases-heading">Releases</h2>
-            <div id="releases-view" class="releases-view" data-releases-view></div>
-          </section>
-
-          <section class="content-panel timeline-panel" aria-labelledby="timeline-heading">
-            <div class="timeline-header">
-              <div>
-                <h2 id="timeline-heading">Timeline / Audit</h2>
-                <p class="timeline-note">
-                  Derived from the current TeamState snapshot, not a persisted audit log.
-                </p>
-              </div>
-              <div id="timeline-summary" class="timeline-summary" data-timeline-summary></div>
-            </div>
-
-            <div class="timeline-filters" aria-label="Timeline filters">
-              <label>
-                Team
-                <select
-                  id="timeline-team-filter"
-                  data-timeline-filter="team_id"
-                  data-options="timeline-teams"
-                  data-placeholder="All teams"
-                ></select>
-              </label>
-              <label>
-                Project
-                <select
-                  id="timeline-project-filter"
-                  data-timeline-filter="project_id"
-                  data-options="timeline-projects"
-                  data-placeholder="All projects"
-                ></select>
-              </label>
-              <label>
-                Agent
-                <select
-                  id="timeline-agent-filter"
-                  data-timeline-filter="agent_id"
-                  data-options="timeline-agents"
-                  data-placeholder="All agents"
-                ></select>
-              </label>
-              <label>
-                Item type
-                <select
-                  id="timeline-type-filter"
-                  data-timeline-filter="type"
-                  data-options="timeline-types"
-                  data-placeholder="All types"
-                ></select>
-              </label>
-              <label>
-                Status
-                <select
-                  id="timeline-status-filter"
-                  data-timeline-filter="status"
-                  data-options="timeline-statuses"
-                  data-placeholder="All statuses"
-                ></select>
-              </label>
-              <label>
-                Attention needed
-                <select
-                  id="timeline-attention-filter"
-                  data-timeline-filter="attention_needed"
-                  data-options="timeline-attention"
-                  data-placeholder="Any attention"
-                >
-                  <option value=""></option>
-                  <option value="true">Yes</option>
-                  <option value="false">No</option>
-                </select>
-              </label>
-            </div>
-
-            <div id="timeline-status" class="timeline-status" role="status" aria-live="polite" data-timeline-status></div>
-            <div id="timeline-view" class="timeline-view" data-timeline-view></div>
-          </section>
+        <section class="workspace-dashboard-hero" aria-labelledby="workspace-dashboard-heading">
+          <div class="workspace-dashboard-title">
+            <p class="section-label">Workspace</p>
+            <h2 id="workspace-dashboard-heading">Team Dashboard</h2>
+            <p class="workspace-dashboard-subtitle" data-workspace-dashboard-subtitle></p>
+          </div>
+          <div class="workspace-dashboard-actions" data-workspace-dashboard-actions></div>
         </section>
 
-        <span id="workspace-setup-anchor" hidden></span>
-        <aside id="setup-forms-panel" class="forms-panel" aria-labelledby="forms-heading" data-setup-forms-panel>
-          <h2 id="forms-heading">Setup</h2>
-          <div class="form-stack">
-            <details class="template-setup">
-              <summary>Setup from template</summary>
-              <div class="template-setup-body">
-                <form id="setup-template-form" data-template-endpoint="/templates/{template_id}/materialize" data-method="POST">
-                  <label>Template <select id="template-select" name="template_id" required></select></label>
-                  <div id="template-preview" class="template-preview" aria-live="polite"></div>
-                  <p class="subheading">Team</p>
-                  <label>Team name <input name="team_name" required /></label>
-                  <label>Operator communication target id <input name="operator_communication_target_id" /></label>
-                  <label class="checkbox-label">
-                    <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
-                  </label>
-                  <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
-                  <p class="subheading">Project</p>
-                  <label>Project name <input name="project_name" required /></label>
-                  <div data-template-role-fields></div>
-                  <div data-template-git-fields>
-                    <p class="subheading">Git config (optional)</p>
-                    <label>Host repo path <input name="host_repo_path" /></label>
-                    <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
-                    <div class="git-import-actions">
-                      <button type="button" data-git-import-button>Import Git repo</button>
-                      <span class="meta-line" data-git-import-status></span>
-                    </div>
-                    <label>Base branch <input name="base_branch" placeholder="main" /></label>
-                    <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                    <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
-                    <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
-                  </div>
-                  <button type="submit">Materialize template</button>
-                </form>
-              </div>
-            </details>
+        <section
+          class="workspace-dashboard-metrics"
+          aria-label="Team dashboard summary"
+          data-workspace-dashboard-metrics
+        ></section>
 
-            <details>
-              <summary>Create team</summary>
-              <form id="create-team-form" data-endpoint="/teams" data-method="POST">
-                <label>Name <input name="name" required /></label>
-                <label>
-                  Manager existing agent
-                  <select
-                    name="manager_existing_agent_id"
-                    data-options="agents"
-                    data-placeholder="Select existing agent"
-                    data-agent-source-picker
-                    data-session-field="manager_session_id"
-                    data-display-field="manager_display_name"
-                    data-suggested-role="manager"
-                  ></select>
-                </label>
-                <label>Manager session ID <input name="manager_session_id" required /></label>
-                <label>Manager display name <input name="manager_display_name" /></label>
-                <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
-                <label>Operator communication target id <input name="operator_communication_target_id" /></label>
-                <label class="checkbox-label">
-                  <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
-                </label>
-                <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
-                <button type="submit">Create team</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Create governance agenda item</summary>
-              <form id="create-governance-agenda-form" data-endpoint="/governance-agenda" data-method="POST">
-                <label>Governance group <select name="governance_group_id" required data-options="governance-groups"></select></label>
-                <label>Type <select name="item_type" required data-options="governance-agenda-types"></select></label>
-                <label>Priority <select name="priority" data-options="inbox-priorities"></select></label>
-                <label>Team <select name="team_id" data-options="teams"></select></label>
-                <label>Project <select name="project_id" data-options="projects"></select></label>
-                <label>Agent <select name="agent_id" data-options="agents"></select></label>
-                <label>Title <input name="title" required /></label>
-                <label>Summary <textarea name="summary" rows="3" required></textarea></label>
-                <button type="submit">Create agenda item</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Create project</summary>
-              <form id="create-project-form" data-endpoint="/projects" data-method="POST">
-                <label>Team <select name="team_id" required data-options="teams"></select></label>
-                <label>Name <input name="name" required /></label>
-                <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
-                <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
-                <p class="subheading">Git config (optional)</p>
-                <label>Host repo path <input name="host_repo_path" /></label>
-                <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
-                <div class="git-import-actions">
-                  <button type="button" data-git-import-button>Import Git repo</button>
-                  <span class="meta-line" data-git-import-status></span>
-                </div>
-                <label>Base branch <input name="base_branch" placeholder="main" /></label>
-                <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
-                <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
-                <button type="submit">Create project</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Create role</summary>
-              <form id="create-role-form" data-endpoint="/roles" data-method="POST">
-                <label>Team <select name="team_id" required data-options="teams"></select></label>
-                <label>Project <select name="project_id" data-options="projects"></select></label>
-                <label>Name <input name="name" required /></label>
-                <label>Description <textarea name="description" rows="2"></textarea></label>
-                <label>Permissions <select name="permissions" multiple size="3" data-options="role-permissions"></select></label>
-                <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
-                <button type="submit">Create role</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Register agent</summary>
-                <p class="form-note">Teamless agents can be registered with only a session ID, then assigned to a team later.</p>
-              <form id="register-agent-form" data-endpoint="/agents" data-method="POST">
-                <label>
-                  Existing agent defaults
-                  <select
-                    name="existing_agent_id"
-                    data-options="agents"
-                    data-placeholder="Select existing agent"
-                    data-agent-source-picker
-                    data-session-field="session_id"
-                    data-display-field="display_name"
-                    data-role-field="role_id"
-                    data-project-field="project_id"
-                    data-reports-to-field="reports_to_agent_id"
-                    data-max-concurrent-field="max_concurrent"
-                  ></select>
-                </label>
-                <label>Team <select name="team_id" data-options="teams" data-placeholder="No team"></select></label>
-                <label>Project <select name="project_id" data-options="projects" data-placeholder="No project"></select></label>
-                <label>Role <select name="role_id" data-options="roles" data-placeholder="No role"></select></label>
-                <label>Session ID <input name="session_id" required /></label>
-                <label>Display name <input name="display_name" /></label>
-                <label>Reports to <select name="reports_to_agent_id" data-options="agents" data-placeholder="No superior"></select></label>
-                <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
-                <button type="submit">Register agent</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Create case</summary>
-              <form id="create-case-form" data-endpoint="/cases" data-method="POST">
-                <label>Team <select name="team_id" required data-options="teams"></select></label>
-                <label>Project <select name="project_id" data-options="projects" data-placeholder="Team-wide"></select></label>
-                <label>Owner <select name="owner_agent_id" data-options="agents" data-placeholder="No owner"></select></label>
-                <label>Status <select name="status" data-options="case-statuses"></select></label>
-                <label>Priority <select name="priority" data-options="inbox-priorities"></select></label>
-                <label>Title <input name="title" required /></label>
-                <label>Description <textarea name="description" rows="3"></textarea></label>
-                <label>Source <input name="source" placeholder="github, jira, zendesk" /></label>
-                <label>Source ref <input name="source_ref" placeholder="External ticket or issue id" /></label>
-                <label>Tags <textarea name="tags" rows="2"></textarea></label>
-                <label>Linked tasks <textarea name="task_ids" rows="2"></textarea></label>
-                <button type="submit">Create case</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Create task</summary>
-              <form id="create-task-form" data-endpoint="/tasks" data-method="POST">
-                <label>Owner <select name="owner_agent_id" required data-options="agents"></select></label>
-                <label>Project <select name="project_id" required data-options="projects"></select></label>
-                <label>Case <select name="case_id" data-options="cases" data-placeholder="No case"></select></label>
-                <label>Priority <input name="priority" type="number" min="0" value="10" required /></label>
-                <label>Title <input name="title" required /></label>
-                <label>Description <textarea name="description" rows="3" required></textarea></label>
-                <label>Created by <select name="created_by_agent_id" required data-options="agents"></select></label>
-                <label>State <select name="state" data-options="task-states"></select></label>
-                <label>Parent task <select name="parent_task_id" data-options="tasks"></select></label>
-                <label>Dependency tasks <textarea name="dependency_task_ids" rows="2"></textarea></label>
-                <button type="submit">Create task</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Update task</summary>
-              <form id="update-task-form">
-                <label>Task <select name="task_id" required data-options="tasks"></select></label>
-                <label>State <select name="state" data-options="task-states"></select></label>
-                <label>Case <select name="case_id" data-options="cases" data-placeholder="No case"></select></label>
-                <label>Priority <input name="priority" type="number" min="0" /></label>
-                <label>Title <input name="title" /></label>
-                <label>Description <textarea name="description" rows="3"></textarea></label>
-                <label>Parent task <select name="parent_task_id" data-options="tasks"></select></label>
-                <label>Dependency tasks <textarea name="dependency_task_ids" rows="2"></textarea></label>
-                <button type="submit">Update task</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Create review profile</summary>
-              <form id="create-review-profile-form" data-endpoint="/review-profiles" data-method="POST">
-                <label>Team <select name="team_id" required data-options="teams"></select></label>
-                <label>Project <select name="project_id" data-options="projects"></select></label>
-                <label>Name <input name="name" required /></label>
-                <label>Description <textarea name="description" rows="3"></textarea></label>
-                <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="roles"></select></label>
-                <fieldset class="criteria-editor" data-review-profile-criteria-editor>
-                  <legend>Criteria</legend>
-                  <div class="criteria-editor-rows" data-review-profile-criteria-rows>
-                    <div class="criteria-editor-row" data-review-profile-criterion-row>
-                      <label>Label <input name="criterion_label" placeholder="Authorization" /></label>
-                      <label>Description <input name="criterion_description" placeholder="What reviewers should check" /></label>
-                      <label>Key <input name="criterion_id" placeholder="Auto from label" /></label>
-                      <label class="checkbox-label criteria-editor-required"><input name="criterion_required" type="checkbox" checked /> Required</label>
-                      <button class="record-action criteria-editor-remove" type="button" data-review-profile-criterion-remove>Remove</button>
-                    </div>
-                  </div>
-                  <button class="record-action criteria-editor-add" type="button" data-review-profile-criterion-add>Add criterion</button>
-                </fieldset>
-                <button type="submit">Create profile</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Record deliverable</summary>
-              <form id="record-deliverable-form" data-endpoint="/deliverables" data-method="POST">
-                <label>Task <select name="task_id" required data-options="tasks"></select></label>
-                <label>Producer <select name="producer_agent_id" required data-options="agents"></select></label>
-                <label>Summary <textarea name="summary" rows="3" required></textarea></label>
-                <label>Artifact refs <textarea name="artifact_refs" rows="2"></textarea></label>
-                <label>State <select name="state" data-options="record-states"></select></label>
-                <button type="submit">Record deliverable</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Request review</summary>
-              <form id="record-review-form" data-endpoint="/review-requests" data-method="POST">
-                <label>Deliverable <select name="deliverable_id" required data-options="deliverables"></select></label>
-                <label>Reviewer <select name="reviewer_agent_id" required data-options="agents"></select></label>
-                <label>Review profile <select name="review_profile_id" data-options="review-profiles"></select></label>
-                <label>Instructions <textarea name="instructions" rows="3"></textarea></label>
-                <label>Findings <textarea name="findings" rows="3"></textarea></label>
-                <label>State <select name="state" data-options="record-states"></select></label>
-                <button type="submit">Request review</button>
-              </form>
-            </details>
-
-            <details>
-              <summary>Decide review</summary>
-              <form id="decide-review-form">
-                <label>Review <select name="review_request_id" required data-options="review-requests"></select></label>
-                <label>Decision <select name="state" required data-options="decision-states"></select></label>
-                <label>Findings <textarea name="findings" rows="3"></textarea></label>
-                <label>Criteria results <textarea name="criteria" rows="4" placeholder="criterion_id | passed | finding"></textarea></label>
-                <button type="submit">Submit decision</button>
-              </form>
-            </details>
-          </div>
-        </aside>
-      </main>
-
-      <main
-        id="team-overview-page"
-        class="focused-team-page"
-        role="tabpanel"
-        aria-labelledby="team-view-overview-tab"
-        data-team-view-panel="overview"
-        hidden
-      >
-        <section class="summary-panel" aria-labelledby="focused-overview-heading">
-          <h2 id="focused-overview-heading">Overview</h2>
-          <div class="summary-grid" data-summary-grid></div>
+        <section class="workspace-dashboard-grid" aria-label="Team dashboard details">
+          <div class="workspace-dashboard-column workspace-dashboard-column-main" data-workspace-attention-column></div>
+          <div class="workspace-dashboard-column" data-workspace-status-column></div>
         </section>
       </main>
 
@@ -819,13 +368,34 @@
                 <h2 id="projects-workbench-heading">Project Catalog</h2>
               </div>
             </div>
+            <div class="projects-focus-list" data-projects-focus-list></div>
+            <div class="projects-create-actions">
+              <button
+                type="button"
+                class="record-action"
+                aria-controls="create-project-from-projects-form"
+                aria-expanded="false"
+                data-project-create-toggle
+              >
+                Create project
+              </button>
+            </div>
             <form
               id="create-project-from-projects-form"
               class="projects-create-form"
               data-form-id="create-project-form"
               data-endpoint="/projects"
               data-method="POST"
+              data-project-create-form
+              hidden
             >
+              <div class="projects-create-form-header">
+                <div>
+                  <p class="section-label">Project</p>
+                  <h3>Create project</h3>
+                </div>
+                <button type="button" class="record-action" data-project-create-close>Close</button>
+              </div>
               <label>Team <select name="team_id" required data-options="teams"></select></label>
               <label>Name <input name="name" required /></label>
               <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
@@ -845,7 +415,6 @@
               </details>
               <button type="submit">Create project</button>
             </form>
-            <div class="projects-focus-list" data-projects-focus-list></div>
           </section>
           <section class="content-panel projects-detail-panel" aria-label="Selected project">
             <div class="projects-focus-detail" data-projects-focus-detail></div>

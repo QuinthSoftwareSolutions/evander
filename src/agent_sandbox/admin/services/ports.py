@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 
@@ -90,3 +91,40 @@ class WorkflowConfigPort(Protocol):
     def upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> Any: ...
 
     def delete_effect_config(self, effect_id: str) -> Any: ...
+
+
+class VmLifecyclePort(Protocol):
+    """Public VM lifecycle operations needed by agent orchestration."""
+
+    def create_vm(self, **kwargs: Any) -> Any: ...
+
+    def start_vm(self, target: str) -> Any: ...
+
+
+class AgentCreatePort(Protocol):
+    """Runs a normalized admin-agent create request."""
+
+    def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]: ...
+
+
+class AgentPromptDispatchPort(Protocol):
+    """Dispatches a prompt to an existing admin agent target."""
+
+    def prompt_admin_agent(
+        self,
+        agent_id: str,
+        *,
+        backend: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]: ...
+
+
+class ContainerWorkerBackendPort(Protocol):
+    """Builds a container-worker backend for a directory or worker URL."""
+
+    def container_worker_backend(
+        self,
+        *,
+        directory_path: str | None = None,
+        worker_url: str | None = None,
+    ) -> Any: ...

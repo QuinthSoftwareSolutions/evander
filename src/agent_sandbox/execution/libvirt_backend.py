@@ -140,7 +140,9 @@ class LibvirtVmExecutionBackend:
     def _vm_name_for_session(self, session_id: str | None) -> str | None:
         if not session_id:
             return None
-        runtime = getattr(self._admin_service, "runtime", None)
+        runtime = getattr(self._admin_service, "runtime", None) or getattr(
+            self._delegate, "runtime", None
+        )
         session_repository = getattr(runtime, "session_repository", None) or getattr(
             runtime, "sessions", None
         )

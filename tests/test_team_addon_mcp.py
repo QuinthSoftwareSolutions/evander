@@ -49,9 +49,19 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.repository import (
     ADDON_ID,
-    AGENT_WAKE_REQUESTED_EVENT_TYPE,
     TeamStateRepository,
 )
+from evander_team_addon.services.domain_helpers import AGENT_WAKE_REQUESTED_EVENT_TYPE
+from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.git_release_service import TeamGitReleaseService
+
+
+def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repo)
+
+
+def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
+    return TeamGitReleaseService(repo)
 
 
 def _runtime(tmp_path: Path, *, allowed_tools: list[str]):
@@ -131,26 +141,26 @@ def _upsert_session(context, *, session_id: str, allowed_tools: list[str]) -> No
 
 def _seed_governance_state(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other-team",
         name="Other Team",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
@@ -162,7 +172,7 @@ def _seed_governance_state(runtime_dir: Path) -> TeamStateRepository:
 
 def _seed_planning_state(runtime_dir: Path) -> TeamStateRepository:
     repo = _seed_governance_state(runtime_dir)
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -171,14 +181,14 @@ def _seed_planning_state(runtime_dir: Path) -> TeamStateRepository:
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=repo.read().revision,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -206,14 +216,14 @@ def _lease_planning_agents(repo: TeamStateRepository) -> None:
 
 def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -221,14 +231,14 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
         lead_session_id="session-lead",
         expected_revision=repo.read().revision,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -237,7 +247,7 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
         reports_to_agent_id="lead",
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
         owner_agent_id="backend",
         project_id="project",
@@ -246,7 +256,7 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
         description="Implement the task.",
         created_by_agent_id="lead",
     )
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id="deliverable",
         task_id="task",
         producer_agent_id="backend",
@@ -503,9 +513,7 @@ def test_team_addon_mcp_record_note_uses_command_implementation(
     assert result["note_id"] == result["action_record_id"]
     assert result["progress_made"] is False
     state = repo.read()
-    assert state.action_records[result["action_record_id"]].action["body"] == (
-        "MCP command note."
-    )
+    assert state.action_records[result["action_record_id"]].action["body"] == ("MCP command note.")
     assert state.agent_runtimes["manager"].active_dispatch_id == "dispatch-mcp-note"
 
 
@@ -733,7 +741,7 @@ def test_team_addon_mcp_slice8_git_intent_tools_smoke(tmp_path: Path) -> None:
         },
         _make_request_context(session_id="session-lead"),
     )
-    repo.record_git_promotion_result(
+    _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_result["promotion_event_ids"][0],
         success=False,
         error="merge conflict while merging feature",
@@ -809,7 +817,7 @@ def test_team_addon_mcp_slice9_tools_smoke_and_worker_visibility(
     context = _runtime(tmp_path, allowed_tools=[])
     _upsert_session(context, session_id="session-backend", allowed_tools=persistent_tools)
     repo = _seed_planning_state(context.config.runtime_dir)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
         owner_agent_id="backend",
         project_id="project",
@@ -879,9 +887,7 @@ def test_team_addon_mcp_slice9_tools_smoke_and_worker_visibility(
     assert requested["async_effect_pending"] is True
     assert requested["assignment_id"] == "ephemeral-1"
     assert requested["worker_session_id"] == "session-ephemeral"
-    assert requested["events"][0]["payload"]["allowed_tools"] == [
-        TEAM_REPORT_EPHEMERAL_RESULT_TOOL
-    ]
+    assert requested["events"][0]["payload"]["allowed_tools"] == [TEAM_REPORT_EPHEMERAL_RESULT_TOOL]
     assert visible == {TEAM_REPORT_EPHEMERAL_RESULT_TOOL}
     assert reported["success"] is True
     assert reported["assignment_id"] == "ephemeral-1"
@@ -903,7 +909,7 @@ def test_team_addon_mcp_slice9_request_requires_active_dispatch_without_mutation
         allowed_tools=[TEAM_REQUEST_EPHEMERAL_AGENT_TOOL],
     )
     repo = _seed_planning_state(context.config.runtime_dir)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
         owner_agent_id="backend",
         project_id="project",
@@ -940,7 +946,7 @@ def test_team_addon_mcp_slice9_worker_assignment_mismatch_denied(
     context = _runtime(tmp_path, allowed_tools=[])
     _upsert_session(context, session_id="session-backend", allowed_tools=tools)
     repo = _seed_planning_state(context.config.runtime_dir)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
         owner_agent_id="backend",
         project_id="project",
@@ -1019,7 +1025,7 @@ def test_team_addon_mcp_marks_governance_agenda_handled(tmp_path: Path) -> None:
         allowed_tools=[TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL],
     )
     repo = _seed_governance_state(context.config.runtime_dir)
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -1055,26 +1061,26 @@ def test_team_addon_mcp_rejects_agenda_handling_outside_governance_scope(
         allowed_tools=[TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL],
     )
     repo = _seed_governance_state(context.config.runtime_dir)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="unmanaged-team",
         name="Unmanaged Team",
         manager_agent_id="unmanaged-manager",
         manager_session_id="session-unmanaged-manager",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="other-governance-manager",
         session_id="session-other-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="other-portfolio",
         name="Other Portfolio",
         manager_agent_id="other-governance-manager",
         member_team_ids=["unmanaged-team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="outside-agenda",
         governance_group_id="other-portfolio",
         item_type="operator_directive",
@@ -1104,7 +1110,7 @@ def test_team_addon_mcp_agenda_handling_reports_revision_conflict(
         allowed_tools=[TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL],
     )
     repo = _seed_governance_state(context.config.runtime_dir)
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",

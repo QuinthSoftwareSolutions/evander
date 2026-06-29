@@ -83,12 +83,15 @@ def _service(
 ) -> OperationsAdminService:
     domain = RecordingDomain()
     return OperationsAdminService(
+        config=SimpleNamespace(),
         project_dir=Path("/tmp/project"),
         privileged_helper=privileged_helper or FakePrivilegedHelperPort(),
         teams_admin=teams_admin or domain,
         session_admin=session_admin or domain,
         worker_admin=worker_admin or domain,
         directory_admin=directory_admin or domain,
+        workflow_config_admin=domain,
+        trigger_repository=domain,
         privileged_helper_factory=privileged_helper_factory or FakePrivilegedHelperFactory(),
     )
 

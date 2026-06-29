@@ -9121,7 +9121,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    monkeypatch.setattr(service, "list_vms", lambda **kwargs: [])
+    monkeypatch.setattr(service.vm_agent_admin, "list_vms", lambda **kwargs: [])
     monkeypatch.setattr(
         service,
         "read_workflow_editor_document",
@@ -11003,12 +11003,20 @@ def test_admin_web_rejects_start_when_vm_session_model_is_missing(
     def start_vm(self, _vm_name: str):
         raise AssertionError("start_vm should not be called when validation fails")
 
-    monkeypatch.setattr(service, "list_vms", MethodType(list_vms, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(list_vms, service.vm_agent_admin),
+    )
     monkeypatch.setattr(service, "list_sessions", MethodType(list_sessions, service))
     monkeypatch.setattr(
         service, "compute_directory_effective_config", MethodType(compute_effective, service)
     )
-    monkeypatch.setattr(service, "start_vm", MethodType(start_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "start_vm",
+        MethodType(start_vm, service.vm_agent_admin),
+    )
 
     client = TestClient(create_app(service))
 
@@ -11129,7 +11137,11 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
             )
         ]
 
-    monkeypatch.setattr(service, "list_vms", MethodType(list_vms, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(list_vms, service.vm_agent_admin),
+    )
 
     client = TestClient(create_app(service))
     response = client.get(
@@ -11362,7 +11374,9 @@ def test_admin_web_agents_backend_filter_controls_vm_inventory_failures(
     def fail_list_vms(self, **_kwargs):
         raise RuntimeError("sudo: a password is required")
 
-    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin, "list_vms", MethodType(fail_list_vms, service.vm_agent_admin)
+    )
     client = TestClient(create_app(service))
 
     container_response = client.get(
@@ -11518,11 +11532,13 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     def fail_list_vms(self, **_kwargs):
         raise AssertionError("container routes should not require VM summaries")
 
-    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        service.vm_agent_admin, "list_vms", MethodType(fail_list_vms, service.vm_agent_admin)
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
     client = TestClient(create_app(service))
@@ -11660,9 +11676,9 @@ def test_admin_web_container_agent_log_threads_view_groups_threads(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 
@@ -11731,7 +11747,11 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             provider="libvirt",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_vm",
+        MethodType(create_vm, service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -11852,7 +11872,11 @@ def test_admin_web_agents_create_rejects_capability_limited_email_targets(
         create_vm_calls.append(payload)
         raise AssertionError("create_vm should not run for invalid email targets")
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_vm",
+        MethodType(create_vm, service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -12029,7 +12053,11 @@ def test_admin_web_agents_create_vm_duplicate_session_returns_409(
             message="Session already exists: lab-session",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_vm",
+        MethodType(create_vm, service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -12066,7 +12094,11 @@ def test_admin_web_agents_create_operations_submit_list_and_get(
             "session_id": "container-session",
         }
 
-    monkeypatch.setattr(service, "create_admin_agent", MethodType(create_admin_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_admin_agent",
+        MethodType(create_admin_agent, service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -12155,7 +12187,11 @@ def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
             provider="libvirt",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_vm",
+        MethodType(create_vm, service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -12222,11 +12258,15 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
-    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     create_response = client.post(
@@ -12323,9 +12363,9 @@ def test_admin_web_agents_create_container_duplicate_session_returns_400(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 
@@ -12550,9 +12590,9 @@ def test_admin_web_agents_delete_container_cleans_mapping_and_session(
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(lambda self, **_kwargs: fake_backend, service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 
@@ -12610,9 +12650,9 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
         return fake_backend
 
     monkeypatch.setattr(
-        service,
-        "_container_worker_backend",
-        MethodType(fake_container_worker_backend, service),
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(fake_container_worker_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 
@@ -12668,7 +12708,11 @@ def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeyp
             message="started",
         )
 
-    monkeypatch.setattr(service, "start_vm", MethodType(start_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "start_vm",
+        MethodType(start_vm, service.vm_agent_admin),
+    )
 
     client = TestClient(create_app(service))
     response = client.post("/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", json={})
@@ -12714,7 +12758,11 @@ def test_admin_web_agent_prompt_action_uses_existing_vm_path(
             "session_id": "session-123",
         }
 
-    monkeypatch.setattr(service, "_prompt_admin_agent", MethodType(prompt_admin_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "prompt_admin_agent",
+        MethodType(prompt_admin_agent, service.vm_agent_admin),
+    )
 
     client = TestClient(create_app(service))
     response = client.post(
@@ -12786,7 +12834,11 @@ def test_admin_web_agent_prompt_action_uses_existing_container_path(
             "session_id": "container-session",
         }
 
-    monkeypatch.setattr(service, "_prompt_admin_agent", MethodType(prompt_admin_agent, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "prompt_admin_agent",
+        MethodType(prompt_admin_agent, service.vm_agent_admin),
+    )
 
     client = TestClient(create_app(service))
     response = client.post(

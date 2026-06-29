@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import evander_team_addon.repository as team_repository_module
+import evander_team_addon.services.domain_helpers as team_domain_helpers
 from evander_team_addon.models import (
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -46,6 +46,10 @@ from evander_team_addon.models import (
     project_lead_agent_id,
 )
 from evander_team_addon.repository import (
+    TeamStateConflictError,
+    TeamStateRepository,
+)
+from evander_team_addon.services.domain_helpers import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
@@ -53,10 +57,17 @@ from evander_team_addon.repository import (
     EPHEMERAL_REQUESTED_EVENT_TYPE,
     GIT_PROMOTION_EVENT_TYPE,
     GIT_RELEASE_RECOVERY_EVENT_TYPE,
+)
+from evander_team_addon.services.agent_action_service import TeamAgentActionService
+from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.ephemeral_service import TeamEphemeralService
+from evander_team_addon.services.git_release_service import TeamGitReleaseService
+from evander_team_addon.services.runtime_service import TeamRuntimeService
+from evander_team_addon.services.command_service import (
     TeamCommandApplyResult,
     TeamCommandContext,
-    TeamStateConflictError,
-    TeamStateRepository,
+    TeamCommandService,
 )
 from evander_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
@@ -65,11 +76,39 @@ from evander_team_addon.sqlite_store import (
 )
 
 
+def _command_service(repo: TeamStateRepository) -> TeamCommandService:
+    return TeamCommandService(repo)
+
+
+def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repo)
+
+
+def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
+    return TeamChatService(repo)
+
+
+def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
+    return TeamRuntimeService(repo)
+
+
+def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
+    return TeamAgentActionService(repo)
+
+
+def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
+    return TeamEphemeralService(repo)
+
+
+def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
+    return TeamGitReleaseService(repo)
+
+
 def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
     """manager -> lead (project) -> backend -> worker, all in one team/project."""
 
     repo = TeamStateRepository(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
@@ -77,7 +116,7 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         manager_display_name="  Team Manager  ",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -87,21 +126,21 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=repo.read().revision,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=repo.read().revision,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__worker",
         team_id="team",
         project_id="project",
         name="Worker",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -111,7 +150,7 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         display_name="Backend Agent",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="worker",
         team_id="team",
         project_id="project",
@@ -170,7 +209,7 @@ def _register_release_operator(
     permissions: list[str] | None = None,
 ) -> None:
     if role_id not in repo.read().roles:
-        repo.create_role(
+        _team_admin_service(repo).create_role(
             role_id=role_id,
             team_id="team",
             project_id="project",
@@ -178,7 +217,7 @@ def _register_release_operator(
             permissions=permissions if permissions is not None else ["request_release"],
             expected_revision=repo.read().revision,
         )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="release-operator",
         team_id="team",
         project_id="project",
@@ -252,9 +291,7 @@ def _accounting_department_ui_inputs() -> dict[str, object]:
             "bookkeeping_clerk": {"session_id": "session-bookkeeping-clerk-accounting"},
             "invoice_reviewer": {"session_id": "session-invoice-reviewer-accounting"},
             "payment_preparer": {"session_id": "session-payment-preparer-accounting"},
-            "tax_compliance_reviewer": {
-                "session_id": "session-tax-compliance-reviewer-accounting"
-            },
+            "tax_compliance_reviewer": {"session_id": "session-tax-compliance-reviewer-accounting"},
         },
     }
 
@@ -320,9 +357,7 @@ def test_repository_mcp_storage_tables_preserve_state_projection(
     reopened.store.ensure_schema()
 
     assert reopened.read().model_dump(mode="json") == state_before
-    assert [activity.id for activity in reopened.list_dispatch_activity()] == [
-        "activity-1"
-    ]
+    assert [activity.id for activity in reopened.list_dispatch_activity()] == ["activity-1"]
     assert reopened.get_idempotency_record(
         tool_name="team_record_note",
         caller_identity="agent:backend",
@@ -578,7 +613,7 @@ def test_repository_record_team_note_command_preserves_active_dispatch_lease(
     repo.update(_lease_backend)
     state_before = repo.read()
 
-    state, result = repo.record_team_note_command(
+    state, result = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-1",
         correlation_id="corr-1",
@@ -602,9 +637,7 @@ def test_repository_record_team_note_command_preserves_active_dispatch_lease(
         dispatch_id="dispatch-note",
         request_id="request-note-1",
     )
-    assert [activity.status for activity in activities] == [
-        TeamDispatchActivityStatus.SUCCESS
-    ]
+    assert [activity.status for activity in activities] == [TeamDispatchActivityStatus.SUCCESS]
     assert activities[0].action_record_id == result["action_record_id"]
     assert activities[0].progress_classification == "context"
     assert repo.list_outbox_records() == []
@@ -625,12 +658,12 @@ def test_repository_record_team_note_command_exact_replay_is_idempotent(
 
     repo.update(_lease_backend)
 
-    _state, first = repo.record_team_note_command(
+    _state, first = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-1",
         body="Same payload.",
     )
-    state, second = repo.record_team_note_command(
+    state, second = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-1",
         body="Same payload.",
@@ -662,12 +695,12 @@ def test_repository_record_team_note_command_conflicting_replay_fails_before_mut
 
     repo.update(_lease_backend)
 
-    _state, first = repo.record_team_note_command(
+    _state, first = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-1",
         body="First payload.",
     )
-    state, conflict = repo.record_team_note_command(
+    state, conflict = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-1",
         body="Different payload.",
@@ -695,7 +728,7 @@ def test_repository_record_team_note_validation_failure_records_activity_only(
 
     state_before = repo.update(_lease_backend)
 
-    state, result = repo.record_team_note_command(
+    state, result = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-empty",
         body=" ",
@@ -753,7 +786,7 @@ def test_repository_record_team_note_handles_inbox_items_atomically(
 
     repo.update(_prepare_state)
 
-    state, result = repo.record_team_note_command(
+    state, result = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-inbox",
         body="Handled after checking the status request.",
@@ -799,7 +832,7 @@ def test_repository_record_team_note_invalid_inbox_item_is_all_or_nothing(
     repo.update(_prepare_state)
     state_before = repo.read()
 
-    state, result = repo.record_team_note_command(
+    state, result = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-bad-inbox",
         body="This should not land.",
@@ -850,7 +883,7 @@ def test_repository_mark_inbox_handled_command_is_all_or_nothing(
     repo.update(_prepare_state)
     before = repo.read()
 
-    state, result = repo.mark_inbox_handled_command(
+    state, result = _command_service(repo).mark_inbox_handled_command(
         session_id="session-backend",
         inbox_item_ids=["inbox-owned-1", "inbox-owned-2"],
     )
@@ -862,7 +895,7 @@ def test_repository_mark_inbox_handled_command_is_all_or_nothing(
     assert state.inbox["inbox-owned-1"].state == TeamInboxItemState.HANDLED
     assert state.inbox["inbox-owned-2"].state == TeamInboxItemState.HANDLED
 
-    replay_state, replay = repo.mark_inbox_handled_command(
+    replay_state, replay = _command_service(repo).mark_inbox_handled_command(
         session_id="session-backend",
         inbox_item_ids=["inbox-owned-1"],
     )
@@ -876,7 +909,7 @@ def test_repository_mark_inbox_handled_command_requires_active_dispatch(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.mark_inbox_handled_command(
+    state, result = _command_service(repo).mark_inbox_handled_command(
         session_id="session-backend",
         inbox_item_ids=["inbox-missing"],
     )
@@ -893,21 +926,21 @@ def test_repository_request_status_command_creates_subordinate_inbox_and_replays
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-status")
     before = repo.read()
 
-    state, first = repo.request_status_command(
+    state, first = _command_service(repo).request_status_command(
         session_id="session-backend",
         recipient_agent_id="worker",
         question="What is the worker status?",
         request_id="request-status-1",
         priority="high",
     )
-    state, second = repo.request_status_command(
+    state, second = _command_service(repo).request_status_command(
         session_id="session-backend",
         recipient_agent_id="worker",
         question="What is the worker status?",
         request_id="request-status-1",
         priority="high",
     )
-    state, conflict = repo.request_status_command(
+    state, conflict = _command_service(repo).request_status_command(
         session_id="session-backend",
         recipient_agent_id="worker",
         question="Different status question?",
@@ -928,12 +961,15 @@ def test_repository_request_status_command_creates_subordinate_inbox_and_replays
     assert item.priority == TeamInboxPriority.HIGH
     assert item.payload["question"] == "What is the worker status?"
     assert state.agent_runtimes["worker"].next_wake_at is None
-    assert len(
-        repo.list_dispatch_activity(
-            tool_name="team_request_status",
-            request_id="request-status-1",
+    assert (
+        len(
+            repo.list_dispatch_activity(
+                tool_name="team_request_status",
+                request_id="request-status-1",
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_repository_request_status_command_rejects_non_subordinate(
@@ -943,7 +979,7 @@ def test_repository_request_status_command_rejects_non_subordinate(
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-status")
     before = repo.read()
 
-    state, result = repo.request_status_command(
+    state, result = _command_service(repo).request_status_command(
         session_id="session-backend",
         recipient_agent_id="lead",
         question="Status?",
@@ -962,13 +998,13 @@ def test_repository_question_and_progress_report_are_upward_only(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-upward")
 
-    state, question = repo.ask_question_command(
+    state, question = _command_service(repo).ask_question_command(
         session_id="session-backend",
         question="Can you clarify the rollout window?",
         request_id="request-question-1",
         summary="Rollout window clarification",
     )
-    state, report = repo.send_progress_report_command(
+    state, report = _command_service(repo).send_progress_report_command(
         session_id="session-backend",
         message="I finished the first backend slice.",
         request_id="request-progress-1",
@@ -988,7 +1024,7 @@ def test_repository_question_and_progress_report_are_upward_only(
     assert report_item.priority == TeamInboxPriority.LOW
 
     _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-manager")
-    _state, denied = repo.ask_question_command(
+    _state, denied = _command_service(repo).ask_question_command(
         session_id="session-manager",
         question="Can an operator decide this?",
         request_id="request-question-top",
@@ -1004,17 +1040,17 @@ def test_repository_question_command_replay_and_conflict(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-question")
 
-    _state, first = repo.ask_question_command(
+    _state, first = _command_service(repo).ask_question_command(
         session_id="session-backend",
         question="Same question?",
         request_id="request-question-replay",
     )
-    state, replay = repo.ask_question_command(
+    state, replay = _command_service(repo).ask_question_command(
         session_id="session-backend",
         question="Same question?",
         request_id="request-question-replay",
     )
-    _state, conflict = repo.ask_question_command(
+    _state, conflict = _command_service(repo).ask_question_command(
         session_id="session-backend",
         question="Different question?",
         request_id="request-question-replay",
@@ -1034,22 +1070,22 @@ def test_repository_progress_report_command_replay_and_validation(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-progress")
 
-    _state, first = repo.send_progress_report_command(
+    _state, first = _command_service(repo).send_progress_report_command(
         session_id="session-backend",
         message="Same progress.",
         request_id="request-progress-replay",
     )
-    state, replay = repo.send_progress_report_command(
+    state, replay = _command_service(repo).send_progress_report_command(
         session_id="session-backend",
         message="Same progress.",
         request_id="request-progress-replay",
     )
-    _state, conflict = repo.send_progress_report_command(
+    _state, conflict = _command_service(repo).send_progress_report_command(
         session_id="session-backend",
         message="Different progress.",
         request_id="request-progress-replay",
     )
-    _state, validation = repo.send_progress_report_command(
+    _state, validation = _command_service(repo).send_progress_report_command(
         session_id="session-backend",
         message=" ",
         request_id="request-progress-empty",
@@ -1071,45 +1107,45 @@ def test_repository_reply_to_chat_command_marks_source_replied_without_finalizin
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you reply?",
         created_by="operator:alice",
         expected_revision=state.revision,
     )
-    repo.begin_chat_message_dispatch(
+    _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id="team-chat:slice5",
         lease_seconds=60,
     )
 
-    state, first = repo.reply_to_chat_command(
+    state, first = _command_service(repo).reply_to_chat_command(
         session_id="session-backend",
         conversation_id=conversation.id,
         message_id=message.id,
         body="Yes, I checked it.",
         request_id="request-chat-reply-1",
     )
-    state, replay = repo.reply_to_chat_command(
+    state, replay = _command_service(repo).reply_to_chat_command(
         session_id="session-backend",
         conversation_id=conversation.id,
         message_id=message.id,
         body="Yes, I checked it.",
         request_id="request-chat-reply-1",
     )
-    _state, conflict = repo.reply_to_chat_command(
+    _state, conflict = _command_service(repo).reply_to_chat_command(
         session_id="session-backend",
         conversation_id=conversation.id,
         message_id=message.id,
         body="Different reply.",
         request_id="request-chat-reply-1",
     )
-    _state, duplicate = repo.reply_to_chat_command(
+    _state, duplicate = _command_service(repo).reply_to_chat_command(
         session_id="session-backend",
         conversation_id=conversation.id,
         message_id=message.id,
@@ -1131,18 +1167,18 @@ def test_repository_reply_to_chat_command_rejects_non_chat_dispatch(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you reply?",
         expected_revision=state.revision,
     )
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-not-chat")
 
-    _state, result = repo.reply_to_chat_command(
+    _state, result = _command_service(repo).reply_to_chat_command(
         session_id="session-backend",
         conversation_id=conversation.id,
         message_id=message.id,
@@ -1159,28 +1195,28 @@ def test_repository_send_operator_chat_message_command_creates_conversation_and_
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-chat")
-    repo.create_or_get_conversation(
+    _team_chat_service(repo).create_or_get_conversation(
         agent_id="manager",
         operator_user_id="operator-alice",
         operator_display_name="Operator Alice",
         expected_revision=repo.read().revision,
     )
 
-    state, first = repo.send_operator_chat_message_command(
+    state, first = _command_service(repo).send_operator_chat_message_command(
         session_id="session-backend",
         recipient_operator_user_id="operator-alice",
         body="I need operator visibility on this.",
         summary="Visibility request",
         request_id="request-operator-chat-1",
     )
-    state, replay = repo.send_operator_chat_message_command(
+    state, replay = _command_service(repo).send_operator_chat_message_command(
         session_id="session-backend",
         recipient_operator_user_id="operator-alice",
         body="I need operator visibility on this.",
         summary="Visibility request",
         request_id="request-operator-chat-1",
     )
-    _state, conflict = repo.send_operator_chat_message_command(
+    _state, conflict = _command_service(repo).send_operator_chat_message_command(
         session_id="session-backend",
         recipient_operator_user_id="operator-alice",
         body="Different operator chat.",
@@ -1204,7 +1240,7 @@ def test_repository_send_operator_chat_message_rejects_unknown_operator(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-chat")
 
-    state, result = repo.send_operator_chat_message_command(
+    state, result = _command_service(repo).send_operator_chat_message_command(
         session_id="session-backend",
         recipient_operator_user_id="unknown-operator",
         body="This should fail.",
@@ -1223,7 +1259,7 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
     _set_operator_target(repo, "operator:ops-channel")
     _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-escalation")
 
-    state, first = repo.escalate_operator_command(
+    state, first = _command_service(repo).escalate_operator_command(
         session_id="session-manager",
         title="Need a decision",
         message="Blocked waiting on operator input.",
@@ -1231,7 +1267,7 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
         project_id="project",
         request_id="request-escalation-1",
     )
-    state, replay = repo.escalate_operator_command(
+    state, replay = _command_service(repo).escalate_operator_command(
         session_id="session-manager",
         title="Need a decision",
         message="Blocked waiting on operator input.",
@@ -1239,7 +1275,7 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
         project_id="project",
         request_id="request-escalation-1",
     )
-    _state, conflict = repo.escalate_operator_command(
+    _state, conflict = _command_service(repo).escalate_operator_command(
         session_id="session-manager",
         title="Need a different decision",
         message="Blocked waiting on operator input.",
@@ -1263,9 +1299,7 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
     assert outbox.intent_type == "team.operator.escalation_requested"
     assert outbox.payload["payload"]["communication_target_id"] == "operator:ops-channel"
     escalation_items = [
-        item
-        for item in state.inbox.values()
-        if item.item_type == TeamInboxItemType.ESCALATION
+        item for item in state.inbox.values() if item.item_type == TeamInboxItemType.ESCALATION
     ]
     assert len(escalation_items) == 1
 
@@ -1277,7 +1311,7 @@ def test_repository_escalate_operator_command_rejects_non_manager(
     _set_operator_target(repo, "operator:ops-channel")
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-escalation-denied")
 
-    state, result = repo.escalate_operator_command(
+    state, result = _command_service(repo).escalate_operator_command(
         session_id="session-lead",
         title="Need a decision",
         message="Blocked waiting on operator input.",
@@ -1294,12 +1328,12 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
@@ -1318,7 +1352,7 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
         dispatch_id="dispatch-governance-escalation",
     )
 
-    state, result = repo.escalate_operator_command(
+    state, result = _command_service(repo).escalate_operator_command(
         session_id="session-manager",
         title="Governance decision needed",
         message="The project needs portfolio guidance.",
@@ -1338,41 +1372,41 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
 @pytest.mark.parametrize(
     "command",
     [
-        lambda repo: repo.record_team_note_command(
+        lambda repo: _command_service(repo).record_team_note_command(
             session_id="session-backend",
             body="Note without a lease.",
             request_id="request-note-no-lease",
         ),
-        lambda repo: repo.request_status_command(
+        lambda repo: _command_service(repo).request_status_command(
             session_id="session-backend",
             recipient_agent_id="worker",
             question="Status without a lease?",
             request_id="request-status-no-lease",
         ),
-        lambda repo: repo.ask_question_command(
+        lambda repo: _command_service(repo).ask_question_command(
             session_id="session-backend",
             question="Question without a lease?",
             request_id="request-question-no-lease",
         ),
-        lambda repo: repo.send_progress_report_command(
+        lambda repo: _command_service(repo).send_progress_report_command(
             session_id="session-backend",
             message="Progress without a lease.",
             request_id="request-progress-no-lease",
         ),
-        lambda repo: repo.reply_to_chat_command(
+        lambda repo: _command_service(repo).reply_to_chat_command(
             session_id="session-backend",
             conversation_id="conversation-missing",
             message_id="chatmsg-missing",
             body="Reply without a lease.",
             request_id="request-chat-no-lease",
         ),
-        lambda repo: repo.send_operator_chat_message_command(
+        lambda repo: _command_service(repo).send_operator_chat_message_command(
             session_id="session-backend",
             recipient_operator_user_id="operator-alice",
             body="Operator chat without a lease.",
             request_id="request-operator-chat-no-lease",
         ),
-        lambda repo: repo.escalate_operator_command(
+        lambda repo: _command_service(repo).escalate_operator_command(
             session_id="session-manager",
             title="Escalation without a lease",
             message="This should be denied before mutation.",
@@ -1411,7 +1445,7 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
             "source_paths": list(kwargs["source_paths"]),  # type: ignore[index]
         }
 
-    state, first = repo.submit_deliverable_command(
+    state, first = _command_service(repo).submit_deliverable_command(
         session_id="session-backend",
         id="deliverable-1",
         task_id="task",
@@ -1425,7 +1459,7 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         request_id="request-submit-deliverable",
         artifact_publisher=publish,
     )
-    state, replay = repo.submit_deliverable_command(
+    state, replay = _command_service(repo).submit_deliverable_command(
         session_id="session-backend",
         id="deliverable-1",
         task_id="task",
@@ -1488,7 +1522,7 @@ def test_submit_deliverable_command_publish_failure_does_not_mutate_state(
     def fail_publish(**_: object) -> dict[str, object]:
         raise RuntimeError("artifact file not found: reports/missing.txt")
 
-    state, result = repo.submit_deliverable_command(
+    state, result = _command_service(repo).submit_deliverable_command(
         session_id="session-backend",
         id="deliverable-1",
         task_id="task",
@@ -1504,10 +1538,13 @@ def test_submit_deliverable_command_publish_failure_does_not_mutate_state(
     assert state.deliverables == {}
     assert state.tasks["task"].state == TeamTaskState.PENDING
     assert state.inbox == {}
-    assert repo.list_dispatch_activity(
-        dispatch_id="dispatch-slice7",
-        request_id="request-submit-fail",
-    )[0].status == TeamDispatchActivityStatus.FAILURE
+    assert (
+        repo.list_dispatch_activity(
+            dispatch_id="dispatch-slice7",
+            request_id="request-submit-fail",
+        )[0].status
+        == TeamDispatchActivityStatus.FAILURE
+    )
 
 
 def test_submit_deliverable_for_review_suppresses_superior_notice(
@@ -1518,13 +1555,15 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     _seed_review_profile(repo)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
 
-    state, result = repo.submit_deliverable_for_review_command(
+    state, result = _command_service(repo).submit_deliverable_for_review_command(
         session_id="session-backend",
         deliverable={
             "id": "deliverable-1",
             "task_id": "task",
             "summary": "Backend work is ready.",
-            "artifact_refs": ["artifact-space:/teams/team/projects/project/deliverables/deliverable-1"],
+            "artifact_refs": [
+                "artifact-space:/teams/team/projects/project/deliverables/deliverable-1"
+            ],
             "verification": {
                 "status": "failed",
                 "summary": "Unit suite failed before handoff.",
@@ -1552,8 +1591,7 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     review_items = [
         item
         for item in state.inbox.values()
-        if item.recipient_agent_id == "worker"
-        and item.payload.get("kind") == "review_request"
+        if item.recipient_agent_id == "worker" and item.payload.get("kind") == "review_request"
     ]
     assert len(review_items) == 1
     assert review_items[0].payload["review_profile"]["id"] == "profile"
@@ -1575,7 +1613,7 @@ def test_decide_review_command_failure_returns_current_correction_state(
     _request_review_with_profile(repo)
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
 
-    state, result = repo.decide_review_command(
+    state, result = _command_service(repo).decide_review_command(
         session_id="session-backend",
         review_request_id="review-1",
         state="accepted",
@@ -1613,7 +1651,7 @@ def test_repository_finalize_agent_dispatch_closes_after_progress_activity(
 
     assert repo.read().agent_runtimes["backend"].active_dispatch_id == "dispatch-progress"
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="dispatch-progress",
     )
@@ -1635,7 +1673,7 @@ def test_repository_finalize_agent_dispatch_without_activity_counts_no_progress(
     repo = _seed_hierarchy(tmp_path)
     _lease_backend(repo, dispatch_id="dispatch-empty", no_progress_count=2)
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="dispatch-empty",
     )
@@ -1656,7 +1694,7 @@ def test_repository_finalize_agent_dispatch_note_only_is_context_not_progress(
     repo = _seed_hierarchy(tmp_path)
     _lease_backend(repo, dispatch_id="dispatch-note", no_progress_count=0)
 
-    state, note_result = repo.record_team_note_command(
+    state, note_result = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-finalize",
         body="Keep this handoff detail in context.",
@@ -1664,7 +1702,7 @@ def test_repository_finalize_agent_dispatch_note_only_is_context_not_progress(
     assert state.agent_runtimes["backend"].active_dispatch_id == "dispatch-note"
     assert note_result["progress_made"] is False
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="dispatch-note",
     )
@@ -1698,7 +1736,7 @@ def test_repository_finalize_agent_dispatch_counts_mark_inbox_handled_when_class
         )
     )
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="dispatch-inbox",
     )
@@ -1712,7 +1750,7 @@ def test_high_priority_inbox_action_emits_debounced_wake_request(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    _state, result = repo.apply_agent_action(
+    _state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "questions": [
@@ -1747,7 +1785,7 @@ def test_create_task_command_enqueues_debounced_wake_request_outbox(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
 
-    _state, result = repo.create_task_command(
+    _state, result = _command_service(repo).create_task_command(
         session_id="session-lead",
         request_id="request-create-task-wake",
         task_id="task-wake",
@@ -1784,9 +1822,9 @@ def test_create_task_command_reports_stored_debounced_wake_outbox_id(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(team_repository_module, "utc_now", lambda: now)
+    monkeypatch.setattr(team_domain_helpers, "utc_now", lambda: now)
 
-    _state, first = repo.create_task_command(
+    _state, first = _command_service(repo).create_task_command(
         session_id="session-lead",
         request_id="request-create-task-wake-a",
         task_id="task-wake-a",
@@ -1796,7 +1834,7 @@ def test_create_task_command_reports_stored_debounced_wake_outbox_id(
         title="Wake backend A",
         description="First wake in the debounce bucket.",
     )
-    _state, second = repo.create_task_command(
+    _state, second = _command_service(repo).create_task_command(
         session_id="session-lead",
         request_id="request-create-task-wake-b",
         task_id="task-wake-b",
@@ -1831,7 +1869,7 @@ def test_low_priority_inbox_action_does_not_emit_wake_request(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    _state, result = repo.apply_agent_action(
+    _state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "status_reports": [
@@ -1845,10 +1883,7 @@ def test_low_priority_inbox_action_does_not_emit_wake_request(
         },
     )
 
-    assert all(
-        event["event_type"] != AGENT_WAKE_REQUESTED_EVENT_TYPE
-        for event in result["events"]
-    )
+    assert all(event["event_type"] != AGENT_WAKE_REQUESTED_EVENT_TYPE for event in result["events"])
 
 
 def test_immediate_lease_path_bypasses_wake_interval_for_ready_task(
@@ -1868,12 +1903,12 @@ def test_immediate_lease_path_bypasses_wake_interval_for_ready_task(
 
     repo.update(_throttle_by_interval)
 
-    _state, cron_leases = repo.lease_due_agents(
+    _state, cron_leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=now,
         respect_wake_interval=True,
     )
-    state, immediate_leases = repo.lease_due_agents(
+    state, immediate_leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=now,
         respect_wake_interval=False,
@@ -1907,7 +1942,7 @@ def test_finalize_reemits_wake_request_for_inbox_arriving_during_active_lease(
 
     repo.update(_add_pending_message)
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="dispatch-active",
     )
@@ -1932,7 +1967,7 @@ def test_repository_finalize_agent_dispatch_validation_failure_has_no_action_fee
     _seed_task(repo, task_id="backend-task", owner_agent_id="backend")
     _lease_backend(repo, dispatch_id="dispatch-failure")
 
-    state, command_result = repo.record_team_note_command(
+    state, command_result = _command_service(repo).record_team_note_command(
         session_id="session-backend",
         request_id="request-note-empty-finalize",
         body=" ",
@@ -1941,7 +1976,7 @@ def test_repository_finalize_agent_dispatch_validation_failure_has_no_action_fee
     assert state.action_records == {}
     assert len(repo.list_dispatch_activity(dispatch_id="dispatch-failure")) == 1
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="dispatch-failure",
     )
@@ -1949,7 +1984,7 @@ def test_repository_finalize_agent_dispatch_validation_failure_has_no_action_fee
     assert result["progress_made"] is False
     assert result["failed_activity_count"] == 1
     assert state.action_records == {}
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2099, 1, 1, 0, 16, tzinfo=UTC),
         max_no_progress_count=-1,
     )
@@ -1961,22 +1996,22 @@ def test_repository_finalize_team_chat_without_reply_marks_message_failed(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you reply to this?",
         expected_revision=state.revision,
     )
-    state, message = repo.begin_chat_message_dispatch(
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id="team-chat:finalize-missing",
         lease_seconds=60,
     )
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="team-chat:finalize-missing",
     )
@@ -1995,16 +2030,16 @@ def test_repository_finalize_team_chat_reply_activity_marks_source_replied(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you reply to this?",
         expected_revision=state.revision,
     )
-    state, message = repo.begin_chat_message_dispatch(
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id="team-chat:finalize-replied",
         lease_seconds=60,
@@ -2023,7 +2058,7 @@ def test_repository_finalize_team_chat_reply_activity_marks_source_replied(
         )
     )
 
-    state, result = repo.finalize_agent_dispatch_from_activity(
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-backend",
         dispatch_id="team-chat:finalize-replied",
     )
@@ -2039,12 +2074,12 @@ def test_repository_command_framework_resolves_governance_scope(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
@@ -2066,7 +2101,7 @@ def test_repository_command_framework_resolves_governance_scope(
             response_payload={"scope": "governance", "progress_made": False}
         )
 
-    state, result = repo._execute_team_command(
+    state, result = _command_service(repo)._execute_team_command(
         context=TeamCommandContext(
             ambient_session_id="session-governance",
             wake_session_class="governance",
@@ -2104,7 +2139,7 @@ def test_repository_command_framework_resolves_governance_scope(
     assert idem is not None
     assert idem.response_payload == result
 
-    replay_state, replay = repo._execute_team_command(
+    replay_state, replay = _command_service(repo)._execute_team_command(
         context=TeamCommandContext(
             ambient_session_id="session-governance",
             wake_session_class="governance",
@@ -2127,12 +2162,12 @@ def test_repository_command_framework_rejects_wrong_governance_manager(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
@@ -2140,7 +2175,7 @@ def test_repository_command_framework_rejects_wrong_governance_manager(
         expected_revision=repo.read().revision,
     )
 
-    state, result = repo._execute_team_command(
+    state, result = _command_service(repo)._execute_team_command(
         context=TeamCommandContext(
             ambient_session_id="session-manager",
             wake_session_class="governance",
@@ -2180,7 +2215,7 @@ def test_repository_command_framework_resolves_ephemeral_assignment_scope(
 
     repo.update(_enable_ephemeral)
     _seed_task(repo, task_id="task")
-    repo.request_ephemeral_assignments(
+    _team_ephemeral_service(repo).request_ephemeral_assignments(
         parent_agent_id="backend",
         requests=[
             {
@@ -2204,7 +2239,7 @@ def test_repository_command_framework_resolves_ephemeral_assignment_scope(
             response_payload={"scope": "assignment", "progress_made": False}
         )
 
-    _state, result = repo._execute_team_command(
+    _state, result = _command_service(repo)._execute_team_command(
         context=TeamCommandContext(
             ambient_session_id="session-ephemeral",
             wake_session_class="ephemeral_worker",
@@ -2251,7 +2286,7 @@ def test_repository_command_framework_rejects_assignment_session_mismatch(
 
     repo.update(_enable_ephemeral)
     _seed_task(repo, task_id="task")
-    repo.request_ephemeral_assignments(
+    _team_ephemeral_service(repo).request_ephemeral_assignments(
         parent_agent_id="backend",
         requests=[
             {
@@ -2264,7 +2299,7 @@ def test_repository_command_framework_rejects_assignment_session_mismatch(
         ],
     )
 
-    state, result = repo._execute_team_command(
+    state, result = _command_service(repo)._execute_team_command(
         context=TeamCommandContext(
             ambient_session_id="wrong-session",
             wake_session_class="ephemeral_worker",
@@ -2299,7 +2334,7 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="lead")
 
-    state, result = repo.create_tasks_command(
+    state, result = _command_service(repo).create_tasks_command(
         session_id="session-lead",
         request_id="request-create-task-batch",
         tasks=[
@@ -2326,7 +2361,7 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     assert result["success"] is True
     assert result["created_task_ids"] == ["batch-a", "batch-b"]
     assert state.tasks["batch-b"].dependency_task_ids == ["batch-a"]
-    replay_state, replay = repo.create_tasks_command(
+    replay_state, replay = _command_service(repo).create_tasks_command(
         session_id="session-lead",
         request_id="request-create-task-batch",
         tasks=[
@@ -2360,7 +2395,7 @@ def test_repository_create_tasks_command_rejects_cycles_atomically(
     _lease_agent_dispatch(repo, agent_id="lead")
     before = repo.read()
 
-    state, result = repo.create_tasks_command(
+    state, result = _command_service(repo).create_tasks_command(
         session_id="session-lead",
         request_id="request-create-cycle",
         tasks=[
@@ -2399,7 +2434,7 @@ def test_repository_update_task_command_reports_cross_project_graph_context(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="backend-task")
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="other-project",
         team_id="team",
         name="Other Project",
@@ -2407,7 +2442,7 @@ def test_repository_update_task_command_reports_cross_project_graph_context(
         lead_session_id=None,
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="other-task",
         owner_agent_id="lead",
         project_id="other-project",
@@ -2418,7 +2453,7 @@ def test_repository_update_task_command_reports_cross_project_graph_context(
     )
     _lease_agent_dispatch(repo, agent_id="backend")
 
-    state, result = repo.update_task_command(
+    state, result = _command_service(repo).update_task_command(
         session_id="session-backend",
         task_id="backend-task",
         dependency_task_ids=["other-task"],
@@ -2442,7 +2477,7 @@ def test_repository_update_task_command_supervisor_finishes_subordinate_task(
     _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
     _lease_agent_dispatch(repo, agent_id="backend")
 
-    state, result = repo.update_task_command(
+    state, result = _command_service(repo).update_task_command(
         session_id="session-backend",
         task_id="worker-task",
         state="finished",
@@ -2460,7 +2495,7 @@ def test_repository_update_task_command_supervisor_claims_and_finishes_subordina
     _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
     _lease_agent_dispatch(repo, agent_id="backend")
 
-    state, result = repo.update_task_command(
+    state, result = _command_service(repo).update_task_command(
         session_id="session-backend",
         task_id="worker-task",
         state="finished",
@@ -2478,7 +2513,7 @@ def test_repository_stand_down_command_blocks_held_subtree_commands(
     repo = _seed_hierarchy(tmp_path)
     _lease_agent_dispatch(repo, agent_id="lead")
 
-    state, result = repo.stand_down_agent_command(
+    state, result = _command_service(repo).stand_down_agent_command(
         session_id="session-lead",
         agent_id="backend",
         reason="Pause backend subtree.",
@@ -2486,12 +2521,10 @@ def test_repository_stand_down_command_blocks_held_subtree_commands(
     )
 
     assert result["success"] is True
-    assert state.stand_downs[result["stand_down_id"]].source == (
-        AgentStandDownSource.SUPERIOR
-    )
+    assert state.stand_downs[result["stand_down_id"]].source == (AgentStandDownSource.SUPERIOR)
 
     _lease_agent_dispatch(repo, agent_id="worker")
-    state, blocked = repo.record_team_note_command(
+    state, blocked = _command_service(repo).record_team_note_command(
         session_id="session-worker",
         body="I should not be able to mutate while stood down.",
         request_id="request-worker-note-blocked",
@@ -2506,14 +2539,14 @@ def test_repository_revoke_stand_down_command_leaves_operator_holds_active(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state = repo.stand_down_agent(
+    state = _team_runtime_service(repo).stand_down_agent(
         agent_id="backend",
         reason="Operator hold.",
         set_by="operator:test",
     )
     operator_stand_down_id = next(iter(state.stand_downs))
     _lease_agent_dispatch(repo, agent_id="lead")
-    state, result = repo.stand_down_agent_command(
+    state, result = _command_service(repo).stand_down_agent_command(
         session_id="session-lead",
         agent_id="backend",
         reason="Lead hold.",
@@ -2521,7 +2554,7 @@ def test_repository_revoke_stand_down_command_leaves_operator_holds_active(
     )
     superior_stand_down_id = result["stand_down_id"]
 
-    state, result = repo.revoke_stand_down_command(
+    state, result = _command_service(repo).revoke_stand_down_command(
         session_id="session-lead",
         agent_id="backend",
     )
@@ -2541,7 +2574,7 @@ def test_repository_round_trips_agent_avatar_metadata(tmp_path: Path) -> None:
         sha256="a" * 64,
     )
 
-    state = repo.set_agent_avatar(
+    state = _team_admin_service(repo).set_agent_avatar(
         agent_id="backend",
         avatar=avatar,
         expected_revision=repo.read().revision,
@@ -2561,7 +2594,7 @@ def test_repository_round_trips_agent_voice_profile(tmp_path: Path) -> None:
         speaking_style="Calm, concise, and lightly upbeat.",
     )
 
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="backend",
         voice_profile=voice_profile,
         set_voice_profile=True,
@@ -2576,7 +2609,7 @@ def test_repository_round_trips_agent_voice_profile(tmp_path: Path) -> None:
         "Calm, concise, and lightly upbeat."
     )
 
-    cleared = TeamStateRepository(tmp_path).update_agent(
+    cleared = _team_admin_service(TeamStateRepository(tmp_path)).update_agent(
         agent_id="backend",
         voice_profile=AgentVoiceProfile(),
         set_voice_profile=True,
@@ -2591,19 +2624,19 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, conversation, created = repo.create_or_get_conversation(
+    state, conversation, created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
     assert created is True
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you summarize the blocker?",
         created_by="operator:alice",
         expected_revision=state.revision,
     )
-    state, message = repo.begin_chat_message_dispatch(
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id="team-chat:test",
         lease_seconds=60,
@@ -2616,11 +2649,9 @@ def test_repository_round_trips_team_chat_conversation_and_reply(
 
     reread = TeamStateRepository(tmp_path).read()
     assert reread.conversations[conversation.id].agent_id == "backend"
-    assert reread.conversation_messages[message.id].body == (
-        "Can you summarize the blocker?"
-    )
+    assert reread.conversation_messages[message.id].body == ("Can you summarize the blocker?")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "dispatch_id": "team-chat:test",
@@ -2657,24 +2688,24 @@ def test_live_replied_chat_dispatch_lease_blocks_normal_inbox_wake(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you summarize the blocker?",
         created_by="operator:alice",
         expected_revision=state.revision,
     )
-    state, message = repo.begin_chat_message_dispatch(
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id="team-chat:live",
         lease_seconds=3600,
     )
 
-    state, result = repo.reply_to_chat_command(
+    state, result = _command_service(repo).reply_to_chat_command(
         session_id="session-backend",
         conversation_id=conversation.id,
         message_id=message.id,
@@ -2698,7 +2729,7 @@ def test_live_replied_chat_dispatch_lease_blocks_normal_inbox_wake(
         return state
 
     repo.update(_pin_live_chat_lease)
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=now + timedelta(minutes=2),
     )
@@ -2714,18 +2745,18 @@ def test_completed_chat_dispatch_lease_does_not_block_normal_inbox_wake(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you summarize the blocker?",
         created_by="operator:alice",
         expected_revision=state.revision,
     )
-    state, message = repo.begin_chat_message_dispatch(
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id="team-chat:stale",
         lease_seconds=3600,
@@ -2733,12 +2764,8 @@ def test_completed_chat_dispatch_lease_does_not_block_normal_inbox_wake(
 
     def _leave_replied_chat_dispatch_stale(state):
         state.conversation_messages[message.id].status = "replied"
-        state.conversation_messages[message.id].updated_at = datetime(
-            2026, 1, 1, 0, 1, tzinfo=UTC
-        )
-        state.agent_runtimes["backend"].wake_leased_until = datetime(
-            2026, 1, 1, 0, 2, tzinfo=UTC
-        )
+        state.conversation_messages[message.id].updated_at = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+        state.agent_runtimes["backend"].wake_leased_until = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
         state.inbox["normal-note"] = AgentInboxItem(
             id="normal-note",
             recipient_agent_id="backend",
@@ -2754,7 +2781,7 @@ def test_completed_chat_dispatch_lease_does_not_block_normal_inbox_wake(
 
     repo.update(_leave_replied_chat_dispatch_stale)
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, 0, 3, tzinfo=UTC),
     )
@@ -2781,12 +2808,12 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
         return state
 
     repo.update(_mark_backend_busy)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you check this after the current wake?",
         created_by="operator:alice",
@@ -2794,7 +2821,7 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     )
     dispatch_id = f"team-chat:{message.id}"
 
-    state, message = repo.queue_chat_message_dispatch(
+    state, message = _team_chat_service(repo).queue_chat_message_dispatch(
         message_id=message.id,
         dispatch_id=dispatch_id,
         reason="agent backend already has active Team dispatch team-dispatch-active",
@@ -2804,7 +2831,7 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     assert message.dispatch_id == dispatch_id
     assert state.agent_runtimes["backend"].active_dispatch_id == "team-dispatch-active"
 
-    _state, claims = repo.claim_pending_chat_message_dispatches(now=now)
+    _state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(now=now)
     assert claims == []
 
     def _release_backend(state):
@@ -2812,7 +2839,7 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
         return state
 
     repo.update(_release_backend)
-    state, claims = repo.claim_pending_chat_message_dispatches(
+    state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
         now=now + timedelta(minutes=1),
     )
 
@@ -2846,25 +2873,25 @@ def test_repository_reemits_chat_event_when_active_dispatch_releases(
         return state
 
     repo.update(_mark_backend_busy)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Please pick this up as soon as your current wake finishes.",
         created_by="operator:alice",
         expected_revision=state.revision,
     )
     queued_dispatch_id = f"team-chat:{message.id}"
-    repo.queue_chat_message_dispatch(
+    _team_chat_service(repo).queue_chat_message_dispatch(
         message_id=message.id,
         dispatch_id=queued_dispatch_id,
         reason="agent backend already has active Team dispatch team-dispatch-active",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={"agent_id": "backend", "dispatch_id": active_dispatch_id},
         dispatch_id=active_dispatch_id,
         expected_revision=repo.read().revision,
@@ -2898,25 +2925,25 @@ def test_repository_claim_pending_chat_message_dispatches_honors_limit_zero(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Please answer when available.",
         created_by="operator:alice",
         expected_revision=state.revision,
     )
     dispatch_id = f"team-chat:{message.id}"
-    repo.queue_chat_message_dispatch(
+    _team_chat_service(repo).queue_chat_message_dispatch(
         message_id=message.id,
         dispatch_id=dispatch_id,
         reason="agent backend already has active Team dispatch team-dispatch-active",
     )
 
-    state, claims = repo.claim_pending_chat_message_dispatches(now=now, limit=0)
+    state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(now=now, limit=0)
 
     assert claims == []
     assert state.conversation_messages[message.id].status == "queued"
@@ -2930,23 +2957,23 @@ def test_repository_fails_active_team_chat_message_when_reply_item_is_invalid(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Can you summarize the blocker?",
         expected_revision=state.revision,
     )
     dispatch_id = "team-chat:test"
-    state, message = repo.begin_chat_message_dispatch(
+    state, message = _team_chat_service(repo).begin_chat_message_dispatch(
         message_id=message.id,
         dispatch_id=dispatch_id,
         lease_seconds=60,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "dispatch_id": dispatch_id,
@@ -2975,11 +3002,11 @@ def test_repository_records_conversation_voice_call_idempotently(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, first_message = repo.record_conversation_voice_call(
+    state, first_message = _team_chat_service(repo).record_conversation_voice_call(
         conversation_id=conversation.id,
         voice_session_id="voice-1",
         status="running",
@@ -2987,7 +3014,7 @@ def test_repository_records_conversation_voice_call_idempotently(
     )
     revision = state.revision
 
-    state, second_message = repo.record_conversation_voice_call(
+    state, second_message = _team_chat_service(repo).record_conversation_voice_call(
         conversation_id=conversation.id,
         voice_session_id="voice-1",
         status="running",
@@ -3007,7 +3034,7 @@ def test_repository_gets_existing_team_chat_conversation_without_revision_bump(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, created = repo.create_or_get_conversation(
+    state, conversation, created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=repo.read().revision,
@@ -3015,7 +3042,7 @@ def test_repository_gets_existing_team_chat_conversation_without_revision_bump(
     assert created is True
     revision = state.revision
 
-    state, same_conversation, created = repo.create_or_get_conversation(
+    state, same_conversation, created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         created_by="operator:alice",
         expected_revision=revision,
@@ -3031,7 +3058,7 @@ def test_repository_creates_separate_team_chat_conversations_per_operator(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, alice_conversation, created = repo.create_or_get_conversation(
+    state, alice_conversation, created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
@@ -3040,7 +3067,7 @@ def test_repository_creates_separate_team_chat_conversations_per_operator(
     )
     assert created is True
 
-    state, bob_conversation, created = repo.create_or_get_conversation(
+    state, bob_conversation, created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         operator_user_id="bob@example.com",
         operator_display_name="Bob",
@@ -3056,17 +3083,17 @@ def test_repository_creates_separate_team_chat_conversations_per_operator(
 
 def test_repository_rejects_chat_reply_from_wrong_agent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, conversation, _created = repo.create_or_get_conversation(
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, message = repo.record_operator_chat_message(
+    state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Are you blocked?",
         expected_revision=state.revision,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "chat_replies": [
@@ -3090,14 +3117,14 @@ def test_repository_agent_action_sends_chat_message_to_known_operator(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state, _conversation, _created = repo.create_or_get_conversation(
+    state, _conversation, _created = _team_chat_service(repo).create_or_get_conversation(
         agent_id="lead",
         operator_user_id="alice@example.com",
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "operator_chat_messages": [
@@ -3127,7 +3154,7 @@ def test_repository_agent_action_rejects_unknown_operator_chat_recipient(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "operator_chat_messages": [
@@ -3180,42 +3207,27 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert repo.read().action_records == {}
     with sqlite3.connect(db_path) as connection:
         action_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_action_records)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_action_records)")
         }
-        inbox_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_inbox)")
-        }
+        inbox_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(team_inbox)")}
         runtime_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_agent_runtimes)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_agent_runtimes)")
         }
         agent_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_agents)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_agents)")
         }
         governance_runtime_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_governance_runtimes)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_governance_runtimes)")
         }
-        task_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_tasks)")
-        }
+        task_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(team_tasks)")}
         deliverable_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_deliverables)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_deliverables)")
         }
         tables = {
             str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        metadata = dict(
-            connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
-        )
+        metadata = dict(connection.execute("SELECT key, value FROM team_state_metadata").fetchall())
     assert "feedback_delivered_at" in action_columns
     assert "feedback_delivered_by_dispatch_id" in action_columns
     assert "response_requested" in inbox_columns
@@ -3268,8 +3280,7 @@ def test_repository_migrates_global_chat_conversation_unique_constraint(
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
         columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(team_conversations)")
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(team_conversations)")
         }
         unique_indexes = [
             str(row["name"])
@@ -3399,9 +3410,7 @@ def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     assert imported.projects.keys() == state.projects.keys()
     assert legacy_path.is_file()
     with sqlite3.connect(tmp_path / "addons" / "team-addon" / "state.db") as connection:
-        metadata = dict(
-            connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
-        )
+        metadata = dict(connection.execute("SELECT key, value FROM team_state_metadata").fetchall())
     assert metadata["legacy_json_path"] == str(legacy_path)
     assert len(metadata["legacy_json_sha256"]) == 64
 
@@ -3421,9 +3430,13 @@ def test_task_state_entered_at_changes_only_on_state_transition(
             datetime(2026, 6, 21, 10, 2, 1, tzinfo=UTC),
         ]
     )
-    monkeypatch.setattr("evander_team_addon.repository.utc_now", lambda: next(moments))
+    def fake_now() -> datetime:
+        return next(moments)
 
-    state = repo.create_or_reprioritize_task(
+    monkeypatch.setattr(team_domain_helpers, "utc_now", fake_now)
+    monkeypatch.setattr("evander_team_addon.repository.utc_now", fake_now)
+
+    state = _team_admin_service(repo).create_or_reprioritize_task(
         task_id="board-task",
         owner_agent_id="backend",
         project_id="project",
@@ -3436,14 +3449,14 @@ def test_task_state_entered_at_changes_only_on_state_transition(
     original_entered_at = state.tasks["board-task"].state_entered_at
     assert original_entered_at == datetime(2026, 6, 21, 10, 0, tzinfo=UTC)
 
-    state = repo.update_task(
+    state = _team_admin_service(repo).update_task(
         task_id="board-task",
         title="Build project board",
         expected_revision=state.revision,
     )
     assert state.tasks["board-task"].state_entered_at == original_entered_at
 
-    state = repo.update_task(
+    state = _team_admin_service(repo).update_task(
         task_id="board-task",
         state=TeamTaskState.WAITING_FOR_REVIEW,
         expected_revision=state.revision,
@@ -3460,7 +3473,7 @@ def test_task_state_entered_at_changes_only_on_state_transition(
 
 def test_repository_creates_persists_and_updates_cases(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="case-task",
         owner_agent_id="backend",
         project_id="project",
@@ -3471,7 +3484,7 @@ def test_repository_creates_persists_and_updates_cases(tmp_path: Path) -> None:
         expected_revision=repo.read().revision,
     )
 
-    state = repo.create_case(
+    state = _team_admin_service(repo).create_case(
         case_id="case-1",
         team_id="team",
         project_id="project",
@@ -3496,7 +3509,7 @@ def test_repository_creates_persists_and_updates_cases(tmp_path: Path) -> None:
     assert reread.cases["case-1"].source_ref == "issue-42"
     assert reread.tasks["case-task"].case_id == "case-1"
 
-    state = repo.update_case(
+    state = _team_admin_service(repo).update_case(
         case_id="case-1",
         status="closed",
         owner_agent_id=None,
@@ -3514,7 +3527,7 @@ def test_repository_creates_persists_and_updates_cases(tmp_path: Path) -> None:
 
 def test_repository_clears_case_description(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state = repo.create_case(
+    state = _team_admin_service(repo).create_case(
         case_id="case-1",
         team_id="team",
         project_id="project",
@@ -3523,7 +3536,7 @@ def test_repository_clears_case_description(tmp_path: Path) -> None:
         expected_revision=repo.read().revision,
     )
 
-    state = repo.update_case(
+    state = _team_admin_service(repo).update_case(
         case_id="case-1",
         description="",
         expected_revision=state.revision,
@@ -3535,7 +3548,7 @@ def test_repository_clears_case_description(tmp_path: Path) -> None:
 
 def test_agent_case_update_errors_restore_case_and_task_state(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="case-task",
         owner_agent_id="backend",
         project_id="project",
@@ -3545,7 +3558,7 @@ def test_agent_case_update_errors_restore_case_and_task_state(tmp_path: Path) ->
         created_by_agent_id="lead",
         expected_revision=repo.read().revision,
     )
-    repo.create_case(
+    _team_admin_service(repo).create_case(
         case_id="case-1",
         team_id="team",
         project_id="project",
@@ -3555,7 +3568,7 @@ def test_agent_case_update_errors_restore_case_and_task_state(tmp_path: Path) ->
         expected_revision=repo.read().revision,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "case_updates": [
@@ -3594,7 +3607,7 @@ def test_agent_case_update_errors_restore_case_and_task_state(tmp_path: Path) ->
 
 def test_repository_rejects_cross_project_case_task_link(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="other",
         team_id="team",
         name="Other",
@@ -3602,7 +3615,7 @@ def test_repository_rejects_cross_project_case_task_link(tmp_path: Path) -> None
         lead_session_id=None,
         expected_revision=repo.read().revision,
     )
-    repo.create_case(
+    _team_admin_service(repo).create_case(
         case_id="case-1",
         team_id="team",
         project_id="project",
@@ -3611,7 +3624,7 @@ def test_repository_rejects_cross_project_case_task_link(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="cannot be linked to case case-1"):
-        repo.create_or_reprioritize_task(
+        _team_admin_service(repo).create_or_reprioritize_task(
             task_id="other-task",
             owner_agent_id="backend",
             project_id="other",
@@ -3626,7 +3639,7 @@ def test_repository_rejects_cross_project_case_task_link(tmp_path: Path) -> None
 
 def test_repository_prefers_sqlite_when_legacy_json_also_exists(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="db-team",
         name="DB Team",
         manager_agent_id="db-manager",
@@ -3634,7 +3647,7 @@ def test_repository_prefers_sqlite_when_legacy_json_also_exists(tmp_path: Path) 
         expected_revision=0,
     )
     legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
-    legacy_state = TeamStateRepository(tmp_path / "legacy").create_team(
+    legacy_state = _team_admin_service(TeamStateRepository(tmp_path / "legacy")).create_team(
         team_id="json-team",
         name="JSON Team",
         manager_agent_id="json-manager",
@@ -3655,7 +3668,7 @@ def test_repository_prefers_sqlite_when_legacy_json_also_exists(tmp_path: Path) 
 def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state = repo.create_team(
+    state = _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
@@ -3665,11 +3678,9 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     )
     assert state.revision == 1
     assert state.agents["manager"].display_name == "Team Manager"
-    assert state.roles["team__manager"].permissions == [
-        RolePermission.CREATE_ROOT_TASK
-    ]
+    assert state.roles["team__manager"].permissions == [RolePermission.CREATE_ROOT_TASK]
 
-    state = repo.create_project(
+    state = _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -3681,18 +3692,16 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     )
     assert state.revision == 2
     assert state.agents["lead"].display_name == "Project Lead"
-    assert state.roles["project__project-lead"].permissions == [
-        RolePermission.CREATE_ROOT_TASK
-    ]
+    assert state.roles["project__project-lead"].permissions == [RolePermission.CREATE_ROOT_TASK]
 
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=2,
     )
-    state = repo.register_agent(
+    state = _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -3710,7 +3719,7 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
 
 def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
-    state = repo.create_team(
+    state = _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
@@ -3719,7 +3728,7 @@ def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Pat
     )
     manager_before = state.agents["manager"].model_copy(deep=True)
 
-    state = repo.create_project(
+    state = _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -3735,29 +3744,27 @@ def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Pat
     assert state.agents["manager"].reports_to_agent_id == manager_before.reports_to_agent_id
     assert state.agents["manager"].session_id == manager_before.session_id
     assert "manager" not in state.agents["manager"].subordinate_agent_ids
-    assert state.roles["project__project-lead"].permissions == [
-        RolePermission.CREATE_ROOT_TASK
-    ]
+    assert state.roles["project__project-lead"].permissions == [RolePermission.CREATE_ROOT_TASK]
 
 
 def test_create_project_existing_project_lead_is_assignment_overlay(
     tmp_path: Path,
 ) -> None:
     repo = TeamStateRepository(tmp_path)
-    state = repo.create_team(
+    state = _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    state = repo.create_role(
+    state = _team_admin_service(repo).create_role(
         role_id="team__lead-candidate",
         team_id="team",
         name="Lead Candidate",
         expected_revision=state.revision,
     )
-    state = repo.register_agent(
+    state = _team_admin_service(repo).register_agent(
         agent_id="candidate",
         team_id="team",
         project_id=None,
@@ -3768,7 +3775,7 @@ def test_create_project_existing_project_lead_is_assignment_overlay(
     )
     candidate_before = state.agents["candidate"].model_copy(deep=True)
 
-    state = repo.create_project(
+    state = _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -3795,11 +3802,11 @@ def test_create_project_existing_project_lead_is_assignment_overlay(
         return state
 
     repo.update(_add_candidate_inbox, expected_revision=state.revision)
-    state, leases = repo.lease_due_agents(agent_id="candidate")
+    state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="candidate")
     assert len(leases) == 1
     assert "create_root_task" in leases[0]["agent"]["effective_role_permissions"]
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "candidate",
             "dispatch_id": leases[0]["dispatch_id"],
@@ -3825,14 +3832,14 @@ def test_create_project_allows_same_agent_to_lead_multiple_projects(
     tmp_path: Path,
 ) -> None:
     repo = TeamStateRepository(tmp_path)
-    state = repo.create_team(
+    state = _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    state = repo.create_project(
+    state = _team_admin_service(repo).create_project(
         project_id="first-project",
         team_id="team",
         name="First Project",
@@ -3841,7 +3848,7 @@ def test_create_project_allows_same_agent_to_lead_multiple_projects(
         expected_revision=state.revision,
     )
 
-    state = repo.create_project(
+    state = _team_admin_service(repo).create_project(
         project_id="second-project",
         team_id="team",
         name="Second Project",
@@ -3858,14 +3865,14 @@ def test_create_project_allows_same_agent_to_lead_multiple_projects(
 def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -3873,20 +3880,20 @@ def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path)
         lead_session_id="session-lead",
         expected_revision=1,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="team__ops",
         team_id="team",
         name="Ops",
         expected_revision=2,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=3,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="ops",
         team_id="team",
         role_id="team__ops",
@@ -3894,7 +3901,7 @@ def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path)
         reports_to_agent_id="manager",
         expected_revision=4,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -3904,7 +3911,7 @@ def test_update_team_can_reassign_manager_to_existing_team_agent(tmp_path: Path)
         expected_revision=5,
     )
 
-    state = repo.update_team(
+    state = _team_admin_service(repo).update_team(
         team_id="team",
         manager_agent_id="ops",
         expected_revision=6,
@@ -3925,14 +3932,14 @@ def test_reassigned_project_lead_manager_can_create_tasks_across_team_projects(
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-a",
         team_id="team",
         name="Project A",
@@ -3940,7 +3947,7 @@ def test_reassigned_project_lead_manager_can_create_tasks_across_team_projects(
         lead_session_id="session-lead-a",
         expected_revision=1,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-b",
         team_id="team",
         name="Project B",
@@ -3948,13 +3955,13 @@ def test_reassigned_project_lead_manager_can_create_tasks_across_team_projects(
         lead_session_id="session-lead-b",
         expected_revision=2,
     )
-    repo.update_team(
+    _team_admin_service(repo).update_team(
         team_id="team",
         manager_agent_id="lead-a",
         expected_revision=3,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead-a",
             "task_creations": [
@@ -3980,14 +3987,14 @@ def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> Non
     from evander_team_addon.models import AgentStatus
 
     repo = TeamStateRepository(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -3995,14 +4002,14 @@ def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> Non
         lead_session_id="session-lead",
         expected_revision=1,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=2,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -4011,7 +4018,7 @@ def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> Non
         reports_to_agent_id="lead",
         expected_revision=3,
     )
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
@@ -4020,19 +4027,19 @@ def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="manager agent missing"):
-        repo.update_team(
+        _team_admin_service(repo).update_team(
             team_id="team",
             manager_agent_id="missing",
             expected_revision=5,
         )
     with pytest.raises(ValueError, match="manager agent other-manager is not in team team"):
-        repo.update_team(
+        _team_admin_service(repo).update_team(
             team_id="team",
             manager_agent_id="other-manager",
             expected_revision=5,
         )
     with pytest.raises(ValueError, match="nested under current manager"):
-        repo.update_team(
+        _team_admin_service(repo).update_team(
             team_id="team",
             manager_agent_id="backend",
             expected_revision=5,
@@ -4044,7 +4051,7 @@ def test_update_team_rejects_invalid_manager_reassignment(tmp_path: Path) -> Non
 
     repo.update(_pause_lead)
     with pytest.raises(ValueError, match="manager agent lead is not active"):
-        repo.update_team(
+        _team_admin_service(repo).update_team(
             team_id="team",
             manager_agent_id="lead",
             expected_revision=6,
@@ -4056,7 +4063,7 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state = repo.create_team(
+    state = _team_admin_service(repo).create_team(
         team_id=None,
         name="Platform Team",
         manager_agent_id=None,
@@ -4067,7 +4074,7 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     assert "team-platform-team__manager" in state.roles
     assert "agent-team-platform-team-platform-manager" in state.agents
 
-    state = repo.create_project(
+    state = _team_admin_service(repo).create_project(
         project_id=None,
         team_id="team-platform-team",
         name="Runtime Upgrade",
@@ -4086,14 +4093,14 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
         "goal-project-team-platform-team-runtime-upgrade-ship-runtime-upgrade"
     )
 
-    state = repo.create_role(
+    state = _team_admin_service(repo).create_role(
         role_id=None,
         team_id="team-platform-team",
         project_id=project_id,
         name="Backend",
         expected_revision=state.revision,
     )
-    state = repo.create_role(
+    state = _team_admin_service(repo).create_role(
         role_id=None,
         team_id="team-platform-team",
         project_id=project_id,
@@ -4103,7 +4110,7 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     assert "role-project-team-platform-team-runtime-upgrade-backend" in state.roles
     assert "role-project-team-platform-team-runtime-upgrade-backend-2" in state.roles
 
-    state = repo.register_agent(
+    state = _team_admin_service(repo).register_agent(
         agent_id=None,
         team_id="team-platform-team",
         project_id=project_id,
@@ -4116,7 +4123,7 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     agent_id = "agent-project-team-platform-team-runtime-upgrade-backend-engineer"
     assert agent_id in state.agents
 
-    state = repo.create_or_reprioritize_task(
+    state = _team_admin_service(repo).create_or_reprioritize_task(
         task_id=None,
         owner_agent_id=agent_id,
         project_id=project_id,
@@ -4129,7 +4136,7 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     task_id = "task-project-team-platform-team-runtime-upgrade-implement-api"
     assert task_id in state.tasks
 
-    state = repo.record_deliverable(
+    state = _team_admin_service(repo).record_deliverable(
         deliverable_id=None,
         task_id=task_id,
         producer_agent_id=agent_id,
@@ -4139,7 +4146,7 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     deliverable_id = f"deliverable-{task_id}-api-patch"
     assert deliverable_id in state.deliverables
 
-    state = repo.create_review_profile(
+    state = _team_admin_service(repo).create_review_profile(
         profile_id=None,
         team_id="team-platform-team",
         project_id=project_id,
@@ -4149,20 +4156,22 @@ def test_repository_generates_missing_operator_ids_with_collision_suffixes(
     profile_id = "profile-project-team-platform-team-runtime-upgrade-standard-review"
     assert profile_id in state.review_profiles
 
-    state = repo.record_review_request(
+    state = _team_admin_service(repo).record_review_request(
         review_request_id=None,
         deliverable_id=deliverable_id,
         reviewer_agent_id=state.projects[project_id].lead_agent_id,
         review_profile_id=profile_id,
         expected_revision=state.revision,
     )
-    assert any(review_id.startswith(f"review-{deliverable_id}") for review_id in state.review_requests)
+    assert any(
+        review_id.startswith(f"review-{deliverable_id}") for review_id in state.review_requests
+    )
 
 
 def test_repository_preserves_explicit_operator_ids(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state = repo.create_team(
+    state = _team_admin_service(repo).create_team(
         team_id="explicit-team",
         name="Display Name",
         manager_agent_id="explicit-manager",
@@ -4179,7 +4188,7 @@ def test_repository_preserves_explicit_operator_ids(tmp_path: Path) -> None:
 def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state = repo.update_team(
+    state = _team_admin_service(repo).update_team(
         team_id="team",
         name="Renamed Team",
         operator_communication_target_id=None,
@@ -4196,14 +4205,16 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert team.operator_communication_target_id is None
     assert str(team.max_cost_usd) == "123.45"
     assert team.archived is True
-    assert {agent.id for agent in state.agents.values() if agent.status is AgentStatus.ARCHIVED} == {
+    assert {
+        agent.id for agent in state.agents.values() if agent.status is AgentStatus.ARCHIVED
+    } == {
         "backend",
         "lead",
         "manager",
         "worker",
     }
 
-    state = repo.update_project(
+    state = _team_admin_service(repo).update_project(
         project_id="project",
         name="Renamed Project",
         status=ProjectStatus.BLOCKED,
@@ -4221,14 +4232,14 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert project.git.bare_repo_name == "repo.git"
     assert [goal.id for goal in project.goals] == ["goal-2"]
 
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__qa",
         team_id="team",
         project_id="project",
         name="QA",
         expected_revision=repo.read().revision,
     )
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="worker",
         role_id="project__qa",
         session_id="session-worker-2",
@@ -4252,7 +4263,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert state.agents["backend"].subordinate_agent_ids == []
     assert state.agents["lead"].subordinate_agent_ids == ["backend", "worker"]
 
-    state = repo.update_team(
+    state = _team_admin_service(repo).update_team(
         team_id="team",
         max_cost_usd=None,
         set_max_cost_usd=True,
@@ -4260,7 +4271,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert state.teams["team"].max_cost_usd is None
 
     try:
-        repo.update_team(
+        _team_admin_service(repo).update_team(
             team_id="team",
             max_cost_usd="-1",
             set_max_cost_usd=True,
@@ -4275,7 +4286,7 @@ def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_pat
     repo = _seed_hierarchy(tmp_path)
 
     with pytest.raises(ValidationError, match="reporting cycle"):
-        repo.update_agent(
+        _team_admin_service(repo).update_agent(
             agent_id="lead",
             reports_to_agent_id="worker",
             set_reports_to_agent_id=True,
@@ -4291,7 +4302,7 @@ def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_pat
 def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state, result = repo.materialize_template(
+    state, result = _team_admin_service(repo).materialize_template(
         "auto-dev-squad",
         inputs=_auto_dev_squad_inputs(),
         expected_revision=0,
@@ -4341,10 +4352,20 @@ def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> No
         "reviewer-auto-dev-squad",
         "release-operator-auto-dev-squad",
     ]
-    assert state.agents["project-lead-auto-dev-squad"].reports_to_agent_id == "manager-auto-dev-squad"
-    assert state.agents["implementer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
-    assert state.agents["reviewer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
-    assert state.agents["release-operator-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
+    assert (
+        state.agents["project-lead-auto-dev-squad"].reports_to_agent_id == "manager-auto-dev-squad"
+    )
+    assert (
+        state.agents["implementer-auto-dev-squad"].reports_to_agent_id
+        == "project-lead-auto-dev-squad"
+    )
+    assert (
+        state.agents["reviewer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
+    )
+    assert (
+        state.agents["release-operator-auto-dev-squad"].reports_to_agent_id
+        == "project-lead-auto-dev-squad"
+    )
     assert {
         role_key: state.agents[agent_id].ephemeral_policy.max_concurrent
         for role_key, agent_id in result["agent_ids"].items()
@@ -4371,9 +4392,7 @@ def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> No
     assert implement_task.owner_agent_id == "implementer-auto-dev-squad"
     assert implement_task.created_by_agent_id == "project-lead-auto-dev-squad"
     assert release_task.owner_agent_id == "release-operator-auto-dev-squad"
-    assert release_task.dependency_task_ids == [
-        "project-auto-dev-squad-implement-scoped-slice"
-    ]
+    assert release_task.dependency_task_ids == ["project-auto-dev-squad-implement-scoped-slice"]
 
 
 def test_repository_materializes_accounting_department_without_git(
@@ -4381,7 +4400,7 @@ def test_repository_materializes_accounting_department_without_git(
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state, result = repo.materialize_template(
+    state, result = _team_admin_service(repo).materialize_template(
         "accounting-department",
         inputs=_accounting_department_ui_inputs(),
         expected_revision=0,
@@ -4398,12 +4417,8 @@ def test_repository_materializes_accounting_department_without_git(
         "payment_preparer",
         "tax_compliance_reviewer",
     }
-    assert result["goal_ids"] == [
-        f"{result['project_id']}-bookkeeping-operations"
-    ]
-    assert result["review_profile_ids"] == [
-        f"{result['project_id']}-bookkeeping-action-review"
-    ]
+    assert result["goal_ids"] == [f"{result['project_id']}-bookkeeping-operations"]
+    assert result["review_profile_ids"] == [f"{result['project_id']}-bookkeeping-action-review"]
     assert result["task_ids"] == [
         f"{result['project_id']}-process-inbox-receipts",
         f"{result['project_id']}-reconcile-supplier-invoices",
@@ -4489,14 +4504,10 @@ def test_repository_materializes_accounting_department_without_git(
         "approval_boundary",
     ]
 
-    review_task = state.tasks[
-        f"{result['project_id']}-review-prepared-bookkeeping-actions"
-    ]
+    review_task = state.tasks[f"{result['project_id']}-review-prepared-bookkeeping-actions"]
     payment_task = state.tasks[f"{result['project_id']}-prepare-bank-payments"]
     assert review_task.owner_agent_id == result["agent_ids"]["invoice_reviewer"]
-    assert review_task.dependency_task_ids == [
-        f"{result['project_id']}-process-inbox-receipts"
-    ]
+    assert review_task.dependency_task_ids == [f"{result['project_id']}-process-inbox-receipts"]
     assert payment_task.owner_agent_id == result["agent_ids"]["payment_preparer"]
     assert payment_task.dependency_task_ids == [
         f"{result['project_id']}-reconcile-supplier-invoices"
@@ -4508,7 +4519,7 @@ def test_repository_materializes_auto_dev_squad_with_team_project_and_agents_sha
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state, result = repo.materialize_template(
+    state, result = _team_admin_service(repo).materialize_template(
         "auto-dev-squad",
         inputs={
             "team": {
@@ -4563,12 +4574,12 @@ def test_repository_materialize_template_allows_multiple_unique_squads(
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    first_state, first_result = repo.materialize_template(
+    first_state, first_result = _team_admin_service(repo).materialize_template(
         "auto-dev-squad",
         inputs=_auto_dev_squad_inputs(suffix="alpha"),
         expected_revision=0,
     )
-    second_state, second_result = repo.materialize_template(
+    second_state, second_result = _team_admin_service(repo).materialize_template(
         "auto-dev-squad",
         inputs=_auto_dev_squad_inputs(suffix="beta"),
         expected_revision=first_state.revision,
@@ -4585,10 +4596,9 @@ def test_repository_materialize_template_allows_multiple_unique_squads(
         "project-beta-implement-scoped-slice",
         "project-beta-release-handoff",
     }.issubset(second_state.tasks)
-    assert (
-        second_state.tasks["project-beta-release-handoff"].dependency_task_ids
-        == ["project-beta-implement-scoped-slice"]
-    )
+    assert second_state.tasks["project-beta-release-handoff"].dependency_task_ids == [
+        "project-beta-implement-scoped-slice"
+    ]
 
 
 def test_repository_materialize_template_rejects_duplicate_ids_without_writing(
@@ -4597,7 +4607,7 @@ def test_repository_materialize_template_rejects_duplicate_ids_without_writing(
     repo = TeamStateRepository(tmp_path)
 
     with pytest.raises(ValueError, match="materialization ids contains duplicate ids"):
-        repo.materialize_template(
+        _team_admin_service(repo).materialize_template(
             "auto-dev-squad",
             inputs=_auto_dev_squad_inputs(duplicate_reviewer_id="implementer-auto-dev-squad"),
             expected_revision=0,
@@ -4616,7 +4626,7 @@ def test_repository_materialize_template_rejects_stale_revision_without_writing(
     tmp_path: Path,
 ) -> None:
     repo = TeamStateRepository(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="existing-team",
         name="Existing Team",
         manager_agent_id="existing-manager",
@@ -4625,7 +4635,7 @@ def test_repository_materialize_template_rejects_stale_revision_without_writing(
     )
 
     with pytest.raises(TeamStateConflictError):
-        repo.materialize_template(
+        _team_admin_service(repo).materialize_template(
             "auto-dev-squad",
             inputs=_auto_dev_squad_inputs(),
             expected_revision=0,
@@ -4641,8 +4651,10 @@ def test_repository_materialize_template_rejects_malformed_git_config(
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    with pytest.raises(ValidationError, match="exactly one of bare_repo_name or bare_repo_path must be set"):
-        repo.materialize_template(
+    with pytest.raises(
+        ValidationError, match="exactly one of bare_repo_name or bare_repo_path must be set"
+    ):
+        _team_admin_service(repo).materialize_template(
             "auto-dev-squad",
             inputs=_auto_dev_squad_inputs(bad_git=True),
             expected_revision=0,
@@ -4653,14 +4665,14 @@ def test_repository_materialize_template_rejects_malformed_git_config(
 
 def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
         expected_revision=0,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project",
         team_id="team",
         name="Project",
@@ -4668,14 +4680,14 @@ def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> Non
         lead_session_id="session-lead",
         expected_revision=1,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project__backend",
         team_id="team",
         project_id="project",
         name="Backend",
         expected_revision=2,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
@@ -4685,7 +4697,7 @@ def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> Non
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=1),
         expected_revision=3,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
         owner_agent_id="backend",
         project_id="project",
@@ -4697,7 +4709,7 @@ def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="max_concurrent=1"):
-        repo.request_ephemeral_assignments(
+        _team_ephemeral_service(repo).request_ephemeral_assignments(
             parent_agent_id="backend",
             requests=[
                 {"task_id": "task", "title": "One", "prompt": "Do one thing."},
@@ -4721,7 +4733,7 @@ def test_repository_slice9_request_ephemeral_agents_is_all_or_nothing(
 
     repo.update(_enable_ephemeral)
 
-    state, result = repo.request_ephemeral_agents_command(
+    state, result = _command_service(repo).request_ephemeral_agents_command(
         session_id="session-backend",
         request_id="request-ephemeral-too-many",
         assignments=[
@@ -4759,7 +4771,7 @@ def test_repository_slice9_report_replay_does_not_duplicate_notice_or_event(
         return state
 
     repo.update(_enable_ephemeral)
-    _state, requested = repo.request_ephemeral_agent_command(
+    _state, requested = _command_service(repo).request_ephemeral_agent_command(
         session_id="session-backend",
         id="ephemeral-1",
         task_id="task",
@@ -4772,11 +4784,9 @@ def test_repository_slice9_report_replay_does_not_duplicate_notice_or_event(
     assert requested["success"] is True
     assert requested["intent_recorded"] is True
     assert requested["events"][0]["event_type"] == EPHEMERAL_REQUESTED_EVENT_TYPE
-    assert requested["events"][0]["payload"]["allowed_tools"] == [
-        "team_report_ephemeral_result"
-    ]
+    assert requested["events"][0]["payload"]["allowed_tools"] == ["team_report_ephemeral_result"]
 
-    _state, reported = repo.report_ephemeral_result_command(
+    _state, reported = _command_service(repo).report_ephemeral_result_command(
         session_id="session-ephemeral",
         assignment_id="ephemeral-1",
         summary="Worker result is ready.",
@@ -4785,7 +4795,7 @@ def test_repository_slice9_report_replay_does_not_duplicate_notice_or_event(
         commit_sha="abc1234",
         request_id="request-ephemeral-result",
     )
-    _state, replayed = repo.report_ephemeral_result_command(
+    _state, replayed = _command_service(repo).report_ephemeral_result_command(
         session_id="session-ephemeral",
         assignment_id="ephemeral-1",
         summary="Worker result is ready.",
@@ -4827,7 +4837,7 @@ def test_repository_slice9_accept_completed_assignment_creates_deliverable(
         return state
 
     repo.update(_enable_ephemeral)
-    repo.request_ephemeral_agent_command(
+    _command_service(repo).request_ephemeral_agent_command(
         session_id="session-backend",
         id="ephemeral-1",
         task_id="task",
@@ -4836,14 +4846,14 @@ def test_repository_slice9_accept_completed_assignment_creates_deliverable(
         prompt="Implement the scoped worker task.",
         request_id="request-ephemeral-start",
     )
-    repo.report_ephemeral_result_command(
+    _command_service(repo).report_ephemeral_result_command(
         session_id="session-ephemeral",
         summary="Worker result is ready.",
         artifact_refs=["artifact-space:/teams/team/ephemeral/result"],
         request_id="request-ephemeral-result",
     )
 
-    _state, accepted = repo.accept_ephemeral_result_command(
+    _state, accepted = _command_service(repo).accept_ephemeral_result_command(
         session_id="session-backend",
         assignment_id="ephemeral-1",
         deliverable_id="deliverable-ephemeral",
@@ -4861,7 +4871,7 @@ def test_repository_slice9_accept_completed_assignment_creates_deliverable(
 
 def test_repository_stale_revision_rejects_without_writing(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="team",
         name="Team",
         manager_agent_id="manager",
@@ -4870,7 +4880,7 @@ def test_repository_stale_revision_rejects_without_writing(tmp_path: Path) -> No
     )
 
     with pytest.raises(TeamStateConflictError):
-        repo.create_project(
+        _team_admin_service(repo).create_project(
             project_id="project",
             team_id="team",
             name="Project",
@@ -4918,7 +4928,7 @@ def test_deleting_addon_state_does_not_affect_sessions_file(tmp_path: Path) -> N
 def test_apply_agent_action_allows_self_and_subordinate_task_creation(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_creations": [
@@ -4954,7 +4964,7 @@ def test_apply_agent_action_task_creation_batch_allows_sibling_dependencies(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_creations": [
@@ -5003,7 +5013,7 @@ def test_apply_agent_action_project_lead_can_target_project_hierarchy(tmp_path: 
     repo = _seed_hierarchy(tmp_path)
 
     # worker is in the project but reports to backend, not directly to the lead.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_creations": [
@@ -5027,7 +5037,7 @@ def test_apply_agent_action_project_lead_can_target_project_hierarchy(tmp_path: 
 def test_apply_agent_action_manager_can_assign_project_leads(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
             "task_creations": [
@@ -5051,7 +5061,7 @@ def test_apply_agent_action_manager_can_assign_project_leads(tmp_path: Path) -> 
 def test_apply_agent_action_rejects_root_task_without_permission(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -5079,14 +5089,14 @@ def test_operator_stand_down_blocks_subtree_wakes_and_active_dispatch_actions(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="backend-task", owner_agent_id="backend")
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
     assert len(leases) == 1
     dispatch_id = leases[0]["dispatch_id"]
 
-    state = repo.stand_down_agent(
+    state = _team_runtime_service(repo).stand_down_agent(
         agent_id="lead",
         reason="Pause project work.",
         set_by="operator:test",
@@ -5094,7 +5104,7 @@ def test_operator_stand_down_blocks_subtree_wakes_and_active_dispatch_actions(
     assert state.stand_downs
     assert state.stand_downs[next(iter(state.stand_downs))].agent_id == "lead"
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "dispatch_id": dispatch_id,
@@ -5109,18 +5119,18 @@ def test_operator_stand_down_blocks_subtree_wakes_and_active_dispatch_actions(
     assert state.tasks["backend-task"].state == TeamTaskState.PENDING
     assert state.agent_runtimes["backend"].active_dispatch_id is None
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, minute=5, tzinfo=UTC),
     )
     assert "backend" not in [lease["agent"]["id"] for lease in leases]
 
-    state = repo.revoke_operator_stand_downs(
+    state = _team_runtime_service(repo).revoke_operator_stand_downs(
         agent_id="lead",
         revoked_by="operator:test",
     )
     assert all(stand_down.cleared_at is not None for stand_down in state.stand_downs.values())
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, minute=10, tzinfo=UTC),
     )
@@ -5131,7 +5141,7 @@ def test_governance_group_persists_without_relaxing_same_team_reporting(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
@@ -5139,7 +5149,7 @@ def test_governance_group_persists_without_relaxing_same_team_reporting(
         expected_revision=repo.read().revision,
     )
 
-    state = repo.create_governance_group(
+    state = _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -5158,7 +5168,7 @@ def test_governance_group_persists_without_relaxing_same_team_reporting(
     assert reloaded.governance_groups["portfolio"].member_team_ids == ["team", "other"]
 
     with pytest.raises(ValueError, match="superior agent other-manager is not in team team"):
-        repo.update_agent(
+        _team_admin_service(repo).update_agent(
             agent_id="backend",
             reports_to_agent_id="other-manager",
             set_reports_to_agent_id=True,
@@ -5170,14 +5180,14 @@ def test_governance_agenda_derives_and_validates_reference_team_membership(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="other-project",
         team_id="other",
         name="Other Project",
@@ -5185,7 +5195,7 @@ def test_governance_agenda_derives_and_validates_reference_team_membership(
         lead_session_id="session-other-lead",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -5193,7 +5203,7 @@ def test_governance_agenda_derives_and_validates_reference_team_membership(
         expected_revision=repo.read().revision,
     )
 
-    state = repo.create_governance_agenda_item(
+    state = _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="project-agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -5206,7 +5216,7 @@ def test_governance_agenda_derives_and_validates_reference_team_membership(
     assert state.governance_agenda["project-agenda"].team_id == "team"
 
     with pytest.raises(ValueError, match="team other is not in governance group portfolio"):
-        repo.create_governance_agenda_item(
+        _team_admin_service(repo).create_governance_agenda_item(
             agenda_item_id="bad-project-agenda",
             governance_group_id="portfolio",
             item_type="operator_directive",
@@ -5217,7 +5227,7 @@ def test_governance_agenda_derives_and_validates_reference_team_membership(
         )
 
     with pytest.raises(ValueError, match="agent other-lead does not belong to team team"):
-        repo.create_governance_agenda_item(
+        _team_admin_service(repo).create_governance_agenda_item(
             agenda_item_id="bad-agent-agenda",
             governance_group_id="portfolio",
             item_type="operator_directive",
@@ -5233,21 +5243,21 @@ def test_governance_group_member_removal_handles_removed_team_agenda(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
         member_team_ids=["team", "other"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="other-agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -5257,7 +5267,7 @@ def test_governance_group_member_removal_handles_removed_team_agenda(
         expected_revision=repo.read().revision,
     )
 
-    state = repo.update_governance_group(
+    state = _team_admin_service(repo).update_governance_group(
         governance_group_id="portfolio",
         member_team_ids=["team"],
         set_member_team_ids=True,
@@ -5265,14 +5275,9 @@ def test_governance_group_member_removal_handles_removed_team_agenda(
     )
 
     assert state.governance_groups["portfolio"].member_team_ids == ["team"]
-    assert (
-        state.governance_agenda["other-agenda"].state
-        == GovernanceAgendaItemState.HANDLED
-    )
+    assert state.governance_agenda["other-agenda"].state == GovernanceAgendaItemState.HANDLED
     membership_agenda = [
-        item
-        for item in state.governance_agenda.values()
-        if item.id != "other-agenda"
+        item for item in state.governance_agenda.values() if item.id != "other-agenda"
     ]
     assert len(membership_agenda) == 1
     assert membership_agenda[0].item_type == GovernanceAgendaItemType.POLICY_DECISION
@@ -5286,14 +5291,14 @@ def test_governance_group_member_addition_creates_due_agenda(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -5310,7 +5315,7 @@ def test_governance_group_member_addition_creates_due_agenda(
 
     repo.update(_future_governance_wake)
 
-    state = repo.update_governance_group(
+    state = _team_admin_service(repo).update_governance_group(
         governance_group_id="portfolio",
         member_team_ids=["team", "other"],
         set_member_team_ids=True,
@@ -5330,7 +5335,7 @@ def test_governance_group_member_addition_creates_due_agenda(
     }
     assert state.governance_runtimes["portfolio"].next_wake_at is None
 
-    state, leases = repo.lease_due_governance_managers(now=now)
+    state, leases = _team_runtime_service(repo).lease_due_governance_managers(now=now)
 
     assert len(leases) == 1
     assert leases[0]["reason"] == "policy_decision"
@@ -5347,21 +5352,21 @@ def test_governance_group_unarchive_with_member_addition_creates_due_agenda(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.update_governance_group(
+    _team_admin_service(repo).update_governance_group(
         governance_group_id="portfolio",
         archived=True,
         expected_revision=repo.read().revision,
@@ -5376,7 +5381,7 @@ def test_governance_group_unarchive_with_member_addition_creates_due_agenda(
 
     repo.update(_future_governance_wake)
 
-    state = repo.update_governance_group(
+    state = _team_admin_service(repo).update_governance_group(
         governance_group_id="portfolio",
         member_team_ids=["team", "other"],
         set_member_team_ids=True,
@@ -5398,14 +5403,14 @@ def test_governance_group_archive_with_member_removal_does_not_create_due_agenda
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
     future_wake = now + timedelta(hours=12)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -5422,7 +5427,7 @@ def test_governance_group_archive_with_member_removal_does_not_create_due_agenda
 
     repo.update(_future_governance_wake)
 
-    state = repo.update_governance_group(
+    state = _team_admin_service(repo).update_governance_group(
         governance_group_id="portfolio",
         member_team_ids=["team"],
         set_member_team_ids=True,
@@ -5440,14 +5445,14 @@ def test_governance_group_member_reorder_does_not_create_agenda(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_team(
+    _team_admin_service(repo).create_team(
         team_id="other",
         name="Other",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -5455,7 +5460,7 @@ def test_governance_group_member_reorder_does_not_create_agenda(
         expected_revision=repo.read().revision,
     )
 
-    state = repo.update_governance_group(
+    state = _team_admin_service(repo).update_governance_group(
         governance_group_id="portfolio",
         member_team_ids=["other", "team"],
         set_member_team_ids=True,
@@ -5469,14 +5474,14 @@ def test_governance_group_member_reorder_does_not_create_agenda(
 def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -5496,7 +5501,7 @@ def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -
 
     repo.update(_lease_manager)
 
-    _state, leases = repo.lease_due_governance_managers(now=now)
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(now=now)
 
     assert leases == []
 
@@ -5504,7 +5509,7 @@ def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -
 def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
@@ -5530,7 +5535,7 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
         }
     }
 
-    _state, leases = repo.lease_due_governance_managers(
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=now,
         cost_payload=over_cap_costs,
     )
@@ -5538,12 +5543,12 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
     assert len(leases) == 1
     assert leases[0]["reason"] == "cost_cap_reached"
     assert leases[0]["cost_signals"][0]["team_id"] == "team"
-    repo.complete_governance_dispatch(
+    _team_runtime_service(repo).complete_governance_dispatch(
         governance_group_id="portfolio",
         dispatch_id=leases[0]["dispatch_id"],
     )
 
-    state, leases = repo.lease_due_governance_managers(
+    state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=now + timedelta(hours=2),
         cost_payload=over_cap_costs,
     )
@@ -5553,7 +5558,7 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
         "team:cost_cap_reached"
     ]
 
-    state, leases = repo.lease_due_governance_managers(
+    state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=now + timedelta(hours=3),
         cost_payload=clear_costs,
     )
@@ -5561,7 +5566,7 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
     assert leases == []
     assert state.governance_runtimes["portfolio"].last_cost_signal_fingerprints == []
 
-    _state, leases = repo.lease_due_governance_managers(
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=now + timedelta(hours=4),
         cost_payload=over_cap_costs,
     )
@@ -5573,14 +5578,14 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
 def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="blocked-a",
         owner_agent_id="backend",
         project_id="project",
@@ -5592,21 +5597,23 @@ def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) 
         expected_revision=repo.read().revision,
     )
 
-    _state, leases = repo.lease_due_governance_managers(now=now)
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(now=now)
 
     assert len(leases) == 1
     assert leases[0]["reason"] == "blocked_team"
     assert leases[0]["blocked_team_signals"][0]["blocked_task_ids"] == ["blocked-a"]
-    repo.complete_governance_dispatch(
+    _team_runtime_service(repo).complete_governance_dispatch(
         governance_group_id="portfolio",
         dispatch_id=leases[0]["dispatch_id"],
     )
 
-    _state, leases = repo.lease_due_governance_managers(now=now + timedelta(hours=2))
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
+        now=now + timedelta(hours=2)
+    )
 
     assert leases == []
 
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="blocked-b",
         owner_agent_id="backend",
         project_id="project",
@@ -5618,7 +5625,9 @@ def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) 
         expected_revision=repo.read().revision,
     )
 
-    _state, leases = repo.lease_due_governance_managers(now=now + timedelta(hours=3))
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
+        now=now + timedelta(hours=3)
+    )
 
     assert len(leases) == 1
     assert leases[0]["reason"] == "blocked_team"
@@ -5634,12 +5643,10 @@ def test_superior_action_stand_downs_and_revokes_direct_subordinate(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="backend-task", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "stand_downs": [
-                {"agent_id": "backend", "reason": "Await revised project plan."}
-            ],
+            "stand_downs": [{"agent_id": "backend", "reason": "Await revised project plan."}],
         },
     )
 
@@ -5649,13 +5656,13 @@ def test_superior_action_stand_downs_and_revokes_direct_subordinate(
     assert state.stand_downs[stand_down_id].source == AgentStandDownSource.SUPERIOR
     assert state.stand_downs[stand_down_id].set_by == "lead"
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
     assert leases == []
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "stand_down_revocations": [{"agent_id": "backend"}],
@@ -5666,7 +5673,7 @@ def test_superior_action_stand_downs_and_revokes_direct_subordinate(
     assert result["revoked_stand_down_ids"] == [stand_down_id]
     assert state.stand_downs[stand_down_id].cleared_by == "lead"
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, minute=5, tzinfo=UTC),
     )
@@ -5675,14 +5682,14 @@ def test_superior_action_stand_downs_and_revokes_direct_subordinate(
 
 def test_superior_action_cannot_revoke_operator_stand_down(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state = repo.stand_down_agent(
+    state = _team_runtime_service(repo).stand_down_agent(
         agent_id="backend",
         reason="Operator hold.",
         set_by="operator:test",
     )
     operator_stand_down_id = next(iter(state.stand_downs))
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "stand_down_revocations": [{"agent_id": "backend"}],
@@ -5700,7 +5707,7 @@ def test_apply_agent_action_item_errors_do_not_abort_valid_task_creation(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
             "task_updates": [{"state": "finished"}],
@@ -5721,9 +5728,7 @@ def test_apply_agent_action_item_errors_do_not_abort_valid_task_creation(
     assert result["applied"] is True
     assert result["created_task_ids"] == ["task-lead"]
     assert result["updated_task_ids"] == []
-    assert result["errors"] == [
-        "task_updates[0]: task_id must be a non-empty string"
-    ]
+    assert result["errors"] == ["task_updates[0]: task_id must be a non-empty string"]
     assert state.tasks["task-lead"].owner_agent_id == "lead"
     assert state.agent_runtimes["lead"].no_progress_count == 0
     action_record = next(iter(state.action_records.values()))
@@ -5735,7 +5740,7 @@ def test_apply_agent_action_rejects_unrelated_agent_task_creation(tmp_path: Path
     repo = _seed_hierarchy(tmp_path)
 
     # backend cannot create a task for its own superior.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -5759,7 +5764,7 @@ def test_apply_agent_action_rejects_unrelated_agent_task_creation(tmp_path: Path
 
 def test_apply_agent_action_rejects_cross_project_task_creation(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-2",
         team_id="team",
         name="Second Project",
@@ -5769,7 +5774,7 @@ def test_apply_agent_action_rejects_cross_project_task_creation(tmp_path: Path) 
     )
 
     # lead leads "project" but tries to place a task on backend inside "project-2".
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_creations": [
@@ -5794,7 +5799,7 @@ def test_apply_agent_action_rejects_cross_project_self_task_creation(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-2",
         team_id="team",
         name="Second Project",
@@ -5803,7 +5808,7 @@ def test_apply_agent_action_rejects_cross_project_self_task_creation(
         expected_revision=repo.read().revision,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -5827,7 +5832,7 @@ def test_apply_agent_action_rejects_cross_project_self_task_creation(
 def test_apply_agent_action_rejects_terminal_task_creation_state(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_creations": [
@@ -5851,7 +5856,7 @@ def test_apply_agent_action_rejects_terminal_task_creation_state(tmp_path: Path)
 def test_apply_agent_action_accepts_explicit_non_terminal_state(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_creations": [
@@ -5875,7 +5880,7 @@ def test_apply_agent_action_accepts_explicit_non_terminal_state(tmp_path: Path) 
 def test_apply_agent_action_creates_status_request_for_subordinate(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "status_requests": [
@@ -5903,7 +5908,7 @@ def test_apply_agent_action_sets_reply_intent_defaults_and_overrides(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "questions": [
@@ -5926,9 +5931,7 @@ def test_apply_agent_action_sets_reply_intent_defaults_and_overrides(
     assert result["success"] is True
     items = [state.inbox[item_id] for item_id in result["created_inbox_item_ids"]]
     question = next(item for item in items if item.item_type == TeamInboxItemType.QUESTION)
-    report = next(
-        item for item in items if item.item_type == TeamInboxItemType.PROGRESS_REPORT
-    )
+    report = next(item for item in items if item.item_type == TeamInboxItemType.PROGRESS_REPORT)
     assert question.response_requested is False
     assert report.response_requested is False
     assert question.priority == TeamInboxPriority.HIGH
@@ -5938,7 +5941,7 @@ def test_apply_agent_action_sets_reply_intent_defaults_and_overrides(
     assert "priority" not in question.payload
     assert "priority" not in report.payload
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "status_reports": [
@@ -5961,7 +5964,7 @@ def test_apply_agent_action_sets_reply_intent_defaults_and_overrides(
 def test_apply_agent_action_rejects_non_boolean_reply_intent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "questions": [
@@ -5982,7 +5985,7 @@ def test_apply_agent_action_rejects_non_boolean_reply_intent(tmp_path: Path) -> 
 def test_apply_agent_action_rejects_invalid_inbox_priority(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "questions": [
@@ -6003,7 +6006,7 @@ def test_apply_agent_action_rejects_invalid_inbox_priority(tmp_path: Path) -> No
 def test_repository_round_trips_inbox_reply_intent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "status_reports": [
@@ -6027,12 +6030,10 @@ def test_repository_round_trips_inbox_reply_intent(tmp_path: Path) -> None:
 def test_apply_agent_action_rejects_status_request_to_non_subordinate(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
-            "status_requests": [
-                {"recipient_agent_id": "lead", "question": "Status?"}
-            ],
+            "status_requests": [{"recipient_agent_id": "lead", "question": "Status?"}],
         },
     )
 
@@ -6046,7 +6047,7 @@ def test_apply_agent_action_rejects_question_to_non_superior(tmp_path: Path) -> 
     repo = _seed_hierarchy(tmp_path)
 
     # backend's superior is lead; sending to worker (a subordinate) is rejected.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "questions": [{"recipient_agent_id": "worker", "question": "?"}],
@@ -6061,7 +6062,7 @@ def test_apply_agent_action_rejects_question_to_non_superior(tmp_path: Path) -> 
 def test_apply_agent_action_manager_question_redirected_to_escalations(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
             "questions": [{"recipient_agent_id": "lead", "question": "?"}],
@@ -6077,10 +6078,12 @@ def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Pat
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="parent", owner_agent_id="backend")
 
-    repo.apply_agent_action(action={"agent_id": "backend"}, valid=False, error="boom")
+    _team_agent_action_service(repo).apply_agent_action(
+        action={"agent_id": "backend"}, valid=False, error="boom"
+    )
     assert repo.read().agent_runtimes["backend"].no_progress_count == 1
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -6103,7 +6106,7 @@ def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Pat
 def test_context_clearing_is_disabled_by_default_for_idle_agents(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state = repo.create_or_reprioritize_task(
+    state = _team_admin_service(repo).create_or_reprioritize_task(
         task_id="already-done",
         owner_agent_id="backend",
         project_id="project",
@@ -6123,7 +6126,7 @@ def test_manual_context_rotation_marks_pending_even_when_agent_has_work(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="active-work",
         owner_agent_id="backend",
         project_id="project",
@@ -6133,7 +6136,7 @@ def test_manual_context_rotation_marks_pending_even_when_agent_has_work(
         created_by_agent_id="lead",
     )
 
-    state = repo.request_agent_context_rotation(
+    state = _team_runtime_service(repo).request_agent_context_rotation(
         agent_id="backend",
         requested_by="operator:test",
         request_note="controlled test",
@@ -6154,7 +6157,7 @@ def test_auto_context_rotation_marks_pending_when_enabled_agent_becomes_idle(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="finish-me",
         owner_agent_id="backend",
         project_id="project",
@@ -6164,7 +6167,7 @@ def test_auto_context_rotation_marks_pending_when_enabled_agent_becomes_idle(
         created_by_agent_id="lead",
     )
 
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="backend",
         auto_context_clearing_enabled=True,
         set_auto_context_clearing_enabled=True,
@@ -6173,7 +6176,7 @@ def test_auto_context_rotation_marks_pending_when_enabled_agent_becomes_idle(
     assert state.agent_runtimes["backend"].auto_context_clearing_enabled is True
     assert state.agent_runtimes["backend"].context_rotation_pending is False
 
-    state = repo.update_task(task_id="finish-me", state=TeamTaskState.ACCEPTED)
+    state = _team_admin_service(repo).update_task(task_id="finish-me", state=TeamTaskState.ACCEPTED)
 
     runtime = state.agent_runtimes["backend"]
     assert runtime.context_rotation_pending is True
@@ -6187,7 +6190,7 @@ def test_auto_context_rotation_waits_for_activity_after_fresh_context(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="finish-me",
         owner_agent_id="backend",
         project_id="project",
@@ -6196,22 +6199,22 @@ def test_auto_context_rotation_waits_for_activity_after_fresh_context(
         description="Work that will make the agent non-idle.",
         created_by_agent_id="lead",
     )
-    repo.update_agent(
+    _team_admin_service(repo).update_agent(
         agent_id="backend",
         auto_context_clearing_enabled=True,
         set_auto_context_clearing_enabled=True,
     )
-    repo.update_task(task_id="finish-me", state=TeamTaskState.ACCEPTED)
-    _state, leases = repo.lease_due_agents(agent_id="backend")
+    _team_admin_service(repo).update_task(task_id="finish-me", state=TeamTaskState.ACCEPTED)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="backend")
     assert len(leases) == 1
     dispatch_id = leases[0]["dispatch_id"]
-    repo.record_context_rotation_dispatch_started(
+    _team_runtime_service(repo).record_context_rotation_dispatch_started(
         agent_id="backend",
         dispatch_id=dispatch_id,
         thread_id="fresh-thread",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={"agent_id": "backend"},
         dispatch_id=dispatch_id,
     )
@@ -6223,7 +6226,7 @@ def test_auto_context_rotation_waits_for_activity_after_fresh_context(
     assert runtime.last_context_rotated_at is not None
     assert runtime.no_progress_count == 1
 
-    state = repo.create_or_reprioritize_task(
+    state = _team_admin_service(repo).create_or_reprioritize_task(
         task_id="post-rotation-work",
         owner_agent_id="backend",
         project_id="project",
@@ -6234,7 +6237,7 @@ def test_auto_context_rotation_waits_for_activity_after_fresh_context(
     )
     assert state.agent_runtimes["backend"].context_rotation_pending is False
 
-    state = repo.update_task(
+    state = _team_admin_service(repo).update_task(
         task_id="post-rotation-work",
         state=TeamTaskState.ACCEPTED,
     )
@@ -6248,14 +6251,14 @@ def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_operator_directive(
+    _team_admin_service(repo).create_operator_directive(
         team_id="team",
         recipient_agent_id="backend",
         message="Handle this first.",
         created_by="operator:test",
     )
 
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="backend",
         auto_context_clearing_enabled=True,
         set_auto_context_clearing_enabled=True,
@@ -6270,7 +6273,7 @@ def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
 def test_every_wake_context_policy_rotates_ready_task_wakes(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     base_time = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="active-work",
         owner_agent_id="backend",
         project_id="project",
@@ -6279,14 +6282,14 @@ def test_every_wake_context_policy_rotates_ready_task_wakes(tmp_path: Path) -> N
         description="Every wake policy should rotate when this wake is leased.",
         created_by_agent_id="lead",
     )
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="backend",
         context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
         set_context_clearing_policy=True,
     )
     assert state.agent_runtimes["backend"].context_rotation_pending is False
 
-    state, leases = repo.lease_due_agents(agent_id="backend", now=base_time)
+    state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="backend", now=base_time)
 
     assert len(leases) == 1
     runtime = state.agent_runtimes["backend"]
@@ -6302,7 +6305,7 @@ def test_every_wake_context_policy_rotates_ready_task_wakes(tmp_path: Path) -> N
 
 def test_every_wake_context_policy_does_not_wake_idle_agent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="backend",
         context_clearing_policy="every_wake",
         set_context_clearing_policy=True,
@@ -6311,7 +6314,7 @@ def test_every_wake_context_policy_does_not_wake_idle_agent(tmp_path: Path) -> N
         AgentContextClearingPolicy.EVERY_WAKE
     )
 
-    state, leases = repo.lease_due_agents(agent_id="backend")
+    state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="backend")
 
     assert leases == []
     runtime = state.agent_runtimes["backend"]
@@ -6326,7 +6329,7 @@ def test_waiting_review_deliverable_does_not_reschedule_producer(
     _seed_task(repo, task_id="task")
     base_time = datetime(2026, 1, 1, tzinfo=UTC)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -6343,7 +6346,7 @@ def test_waiting_review_deliverable_does_not_reschedule_producer(
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time + timedelta(minutes=20),
     )
@@ -6356,7 +6359,7 @@ def test_response_requested_inbox_can_wake_waiting_review_producer(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -6384,7 +6387,7 @@ def test_response_requested_inbox_can_wake_waiting_review_producer(
 
     repo.update(_add_follow_up)
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
@@ -6399,7 +6402,7 @@ def test_no_reply_inbox_does_not_wake_waiting_review_producer(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -6427,7 +6430,7 @@ def test_no_reply_inbox_does_not_wake_waiting_review_producer(
 
     repo.update(_add_no_reply_feedback)
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, tzinfo=UTC),
         low_priority_wake_after_cycles=1,
@@ -6458,7 +6461,7 @@ def test_normal_no_reply_inbox_wakes_recipient(tmp_path: Path) -> None:
 
     repo.update(_add_normal_note)
 
-    _state, leases = repo.lease_due_agents(
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
     )
@@ -6473,7 +6476,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="stalled-task")
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -6486,7 +6489,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
         },
     )
     assert result["success"] is True
-    state = repo.record_review_request(
+    state = _team_admin_service(repo).record_review_request(
         review_request_id="review-stalled",
         deliverable_id="deliverable-stalled",
         reviewer_agent_id="manager",
@@ -6494,8 +6497,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     )
     assert state.tasks["stalled-task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert any(
-        item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE
-        and item.task_id == "stalled-task"
+        item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE and item.task_id == "stalled-task"
         for item in state.inbox.values()
     )
 
@@ -6533,7 +6535,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     repo.update(_throttle_manager)
     repo.update(_add_manager_non_wakeable_inbox)
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
@@ -6554,9 +6556,7 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     assert {item["id"] for item in fallback_summary["projects"]} == {"project"}
     work = {item["id"]: item for item in fallback_summary["open_work"]}
     assert work["stalled-task"]["state"] == "waiting_for_review"
-    deliverables = {
-        item["id"]: item for item in fallback_summary["deliverables"]
-    }
+    deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
     assert deliverables["deliverable-stalled"]["task_id"] == "stalled-task"
     reviews = {item["id"]: item for item in fallback_summary["review_requests"]}
     assert reviews["review-stalled"]["reviewer_agent_id"] == "manager"
@@ -6578,7 +6578,7 @@ def test_manager_fallback_leases_for_pending_deliverable_on_terminal_task(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="done-task")
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id="deliverable-pending",
         task_id="done-task",
         producer_agent_id="backend",
@@ -6591,7 +6591,9 @@ def test_manager_fallback_leases_for_pending_deliverable_on_terminal_task(
         return state
 
     repo.update(_mark_task_terminal)
-    state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
 
     assert [lease["agent"]["id"] for lease in leases] == ["manager"]
     assert leases[0]["reason"] == "manager_fallback"
@@ -6600,9 +6602,7 @@ def test_manager_fallback_leases_for_pending_deliverable_on_terminal_task(
     work = {item["id"]: item for item in fallback_summary["open_work"]}
     assert work["done-task"]["state"] == "accepted"
     assert work["done-task"]["deliverable_ids"] == ["deliverable-pending"]
-    deliverables = {
-        item["id"]: item for item in fallback_summary["deliverables"]
-    }
+    deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
     assert deliverables["deliverable-pending"]["state"] == "pending"
     assert fallback_summary["summary_counts"]["open_task_count"] == 1
     assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
@@ -6613,7 +6613,7 @@ def test_every_wake_context_policy_preserves_low_priority_batching(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     base_time = datetime(2026, 1, 1, tzinfo=UTC)
-    repo.update_agent(
+    _team_admin_service(repo).update_agent(
         agent_id="backend",
         context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
         set_context_clearing_policy=True,
@@ -6631,7 +6631,7 @@ def test_every_wake_context_policy_preserves_low_priority_batching(
 
     repo.update(_add_low_inbox)
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time,
         low_priority_wake_after_cycles=2,
@@ -6641,7 +6641,7 @@ def test_every_wake_context_policy_preserves_low_priority_batching(
     assert runtime.context_rotation_pending is False
     assert runtime.low_priority_batch_cycle_count == 1
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time + timedelta(minutes=15),
         low_priority_wake_after_cycles=2,
@@ -6671,7 +6671,7 @@ def test_low_priority_inbox_wakes_after_configured_wake_cycles(tmp_path: Path) -
 
     repo.update(_add_low_inbox)
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time,
         low_priority_wake_after_cycles=3,
@@ -6694,7 +6694,7 @@ def test_low_priority_inbox_wakes_after_configured_wake_cycles(tmp_path: Path) -
 
     repo.update(_add_second_low_inbox)
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time.replace(minute=15),
         low_priority_wake_after_cycles=3,
@@ -6704,7 +6704,7 @@ def test_low_priority_inbox_wakes_after_configured_wake_cycles(tmp_path: Path) -
     assert runtime.low_priority_batch_started_at == base_time
     assert runtime.low_priority_batch_cycle_count == 2
 
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time.replace(minute=30),
         low_priority_wake_after_cycles=3,
@@ -6734,7 +6734,7 @@ def test_normal_inbox_cancels_low_priority_batch_countdown(tmp_path: Path) -> No
         return state
 
     repo.update(_add_low_inbox)
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time,
         low_priority_wake_after_cycles=4,
@@ -6753,7 +6753,7 @@ def test_normal_inbox_cancels_low_priority_batch_countdown(tmp_path: Path) -> No
         return state
 
     repo.update(_add_normal_inbox)
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time.replace(minute=15),
         low_priority_wake_after_cycles=4,
@@ -6782,7 +6782,7 @@ def test_handled_low_priority_inbox_clears_batch_countdown(tmp_path: Path) -> No
         return state
 
     repo.update(_add_low_inbox)
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time,
         low_priority_wake_after_cycles=2,
@@ -6795,7 +6795,7 @@ def test_handled_low_priority_inbox_clears_batch_countdown(tmp_path: Path) -> No
         return state
 
     repo.update(_handle_low_inbox)
-    state, leases = repo.lease_due_agents(
+    state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=base_time.replace(minute=15),
         low_priority_wake_after_cycles=2,
@@ -6819,7 +6819,7 @@ def test_operator_task_creation_resets_no_progress_and_wakes_owner(tmp_path: Pat
 
     repo.update(_throttle_manager)
 
-    state = repo.create_or_reprioritize_task(
+    state = _team_admin_service(repo).create_or_reprioritize_task(
         task_id="manager-delegate-prototype",
         owner_agent_id="manager",
         project_id="project",
@@ -6833,7 +6833,7 @@ def test_operator_task_creation_resets_no_progress_and_wakes_owner(tmp_path: Pat
     assert runtime.no_progress_count == 0
     assert runtime.next_wake_at is None
 
-    _state, leases = repo.lease_due_agents(max_no_progress_count=3)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(max_no_progress_count=3)
 
     assert [lease["agent"]["id"] for lease in leases] == ["manager"]
 
@@ -6849,7 +6849,7 @@ def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
         return state
 
     repo.update(_throttle_manager)
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="status-sweep",
         owner_agent_id="manager",
         project_id="project",
@@ -6859,7 +6859,7 @@ def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
         created_by_agent_id="manager",
     )
 
-    state, item = repo.create_operator_directive(
+    state, item = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Ask the lead for a status report on next Team dispatch.",
         title="Status report request",
@@ -6888,7 +6888,7 @@ def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
     assert runtime.no_progress_count == 0
     assert runtime.next_wake_at is None
 
-    _state, leases = repo.lease_due_agents(max_no_progress_count=3)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(max_no_progress_count=3)
 
     assert [lease["agent"]["id"] for lease in leases] == ["manager"]
     assert leases[0]["reason"] == "inbox"
@@ -6899,7 +6899,7 @@ def test_create_operator_directive_rejects_non_manager_session(tmp_path: Path) -
     repo = _seed_hierarchy(tmp_path)
 
     with pytest.raises(ValueError, match="team manager session"):
-        repo.create_operator_directive(
+        _team_admin_service(repo).create_operator_directive(
             team_id="team",
             message="Ask for status.",
             requesting_session_id="session-lead",
@@ -6910,12 +6910,12 @@ def test_create_operator_directive_accepts_governance_manager_session(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
@@ -6923,7 +6923,7 @@ def test_create_operator_directive_accepts_governance_manager_session(
         expected_revision=repo.read().revision,
     )
 
-    state, item = repo.create_operator_directive(
+    state, item = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Confirm the exact blocker and avoid retrying failed promotion.",
         title="Governance blocker check",
@@ -6942,19 +6942,19 @@ def test_mark_governance_agenda_handled_accepts_governance_manager_session(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -6964,7 +6964,7 @@ def test_mark_governance_agenda_handled_accepts_governance_manager_session(
         expected_revision=repo.read().revision,
     )
 
-    state, item = repo.mark_governance_agenda_handled_by_session(
+    state, item = _command_service(repo).mark_governance_agenda_handled_by_session(
         agenda_item_id="agenda",
         requesting_session_id="session-governance",
         expected_revision=repo.read().revision,
@@ -6973,7 +6973,7 @@ def test_mark_governance_agenda_handled_accepts_governance_manager_session(
     assert item.state == GovernanceAgendaItemState.HANDLED
     assert state.governance_agenda["agenda"].state == GovernanceAgendaItemState.HANDLED
 
-    state, item = repo.mark_governance_agenda_handled_by_session(
+    state, item = _command_service(repo).mark_governance_agenda_handled_by_session(
         agenda_item_id="agenda",
         requesting_session_id="session-governance",
         expected_revision=state.revision,
@@ -6986,19 +6986,19 @@ def test_mark_governance_agenda_handled_rejects_non_governance_manager_session(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -7009,7 +7009,7 @@ def test_mark_governance_agenda_handled_rejects_non_governance_manager_session(
     )
 
     with pytest.raises(ValueError, match="active governance manager session"):
-        repo.mark_governance_agenda_handled_by_session(
+        _command_service(repo).mark_governance_agenda_handled_by_session(
             agenda_item_id="agenda",
             requesting_session_id="session-manager",
             expected_revision=repo.read().revision,
@@ -7020,31 +7020,31 @@ def test_mark_governance_agenda_handled_rejects_other_group_manager_session(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="other-governance-manager",
         session_id="session-other-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="other-portfolio",
         name="Other Portfolio",
         manager_agent_id="other-governance-manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -7055,7 +7055,7 @@ def test_mark_governance_agenda_handled_rejects_other_group_manager_session(
     )
 
     with pytest.raises(ValueError, match="active governance manager session"):
-        repo.mark_governance_agenda_handled_by_session(
+        _command_service(repo).mark_governance_agenda_handled_by_session(
             agenda_item_id="agenda",
             requesting_session_id="session-other-governance",
             expected_revision=repo.read().revision,
@@ -7068,19 +7068,19 @@ def test_mark_governance_agenda_handled_rejects_inactive_governance_manager_sess
     status: AgentStatus,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_agenda_item(
+    _team_admin_service(repo).create_governance_agenda_item(
         agenda_item_id="agenda",
         governance_group_id="portfolio",
         item_type="operator_directive",
@@ -7097,7 +7097,7 @@ def test_mark_governance_agenda_handled_rejects_inactive_governance_manager_sess
     repo.update(_mark_inactive)
 
     with pytest.raises(ValueError, match="active governance manager session"):
-        repo.mark_governance_agenda_handled_by_session(
+        _command_service(repo).mark_governance_agenda_handled_by_session(
             agenda_item_id="agenda",
             requesting_session_id="session-governance",
             expected_revision=repo.read().revision,
@@ -7110,12 +7110,12 @@ def test_create_operator_directive_rejects_inactive_governance_manager_session(
     status: AgentStatus,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="governance-manager",
         session_id="session-governance",
         expected_revision=repo.read().revision,
     )
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="governance-manager",
@@ -7130,7 +7130,7 @@ def test_create_operator_directive_rejects_inactive_governance_manager_session(
     repo.update(_mark_inactive)
 
     with pytest.raises(ValueError, match="governance manager session"):
-        repo.create_operator_directive(
+        _team_admin_service(repo).create_operator_directive(
             team_id="team",
             message="This should not route after the governance manager is inactive.",
             requesting_session_id="session-governance",
@@ -7140,7 +7140,7 @@ def test_create_operator_directive_rejects_inactive_governance_manager_session(
 def test_operator_task_creation_can_use_operator_actor(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state = repo.create_or_reprioritize_task(
+    state = _team_admin_service(repo).create_or_reprioritize_task(
         task_id="manager-delegate-prototype",
         owner_agent_id="manager",
         project_id="project",
@@ -7167,7 +7167,7 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
     repo = _seed_hierarchy(tmp_path)
     _set_operator_target(repo, "operator:ops-channel")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
             "operator_escalations": [
@@ -7200,17 +7200,13 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
         "project_id": "project",
     }
     wake_events = [
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     ]
     assert len(wake_events) == 1
     assert wake_events[0]["payload"]["agent_id"] == "manager"
     assert wake_events[0]["payload"]["reason"] == "inbox"
     escalation_items = [
-        item
-        for item in state.inbox.values()
-        if item.item_type == TeamInboxItemType.ESCALATION
+        item for item in state.inbox.values() if item.item_type == TeamInboxItemType.ESCALATION
     ]
     assert len(escalation_items) == 1
     audit = escalation_items[0]
@@ -7223,12 +7219,10 @@ def test_apply_agent_action_rejects_non_manager_operator_escalation(tmp_path: Pa
     repo = _seed_hierarchy(tmp_path)
     _set_operator_target(repo, "operator:ops-channel")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "operator_escalations": [
-                {"title": "Hi", "message": "Please look."}
-            ],
+            "operator_escalations": [{"title": "Hi", "message": "Please look."}],
         },
     )
 
@@ -7236,29 +7230,23 @@ def test_apply_agent_action_rejects_non_manager_operator_escalation(tmp_path: Pa
     assert result["operator_escalation_event_ids"] == []
     assert result["events"] == []
     assert any("not permitted" in error for error in result["errors"])
-    assert all(
-        item.item_type != TeamInboxItemType.ESCALATION for item in state.inbox.values()
-    )
+    assert all(item.item_type != TeamInboxItemType.ESCALATION for item in state.inbox.values())
 
 
 def test_apply_agent_action_escalation_without_target_records_failure(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
-            "operator_escalations": [
-                {"title": "Hi", "message": "Please look."}
-            ],
+            "operator_escalations": [{"title": "Hi", "message": "Please look."}],
         },
     )
 
     assert result["success"] is False
     assert result["operator_escalation_event_ids"] == []
     assert result["events"] == []
-    assert any(
-        "operator_communication_target_id" in error for error in result["errors"]
-    )
+    assert any("operator_communication_target_id" in error for error in result["errors"])
     assert state.inbox == {}
     record = next(iter(state.action_records.values()))
     assert record.success is False
@@ -7270,7 +7258,7 @@ def _seed_task(
     task_id: str,
     owner_agent_id: str = "backend",
 ) -> None:
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id=task_id,
         owner_agent_id=owner_agent_id,
         project_id="project",
@@ -7288,7 +7276,7 @@ def _seed_deliverable(
     task_id: str,
     producer_agent_id: str = "backend",
 ) -> None:
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id=deliverable_id,
         task_id=task_id,
         producer_agent_id=producer_agent_id,
@@ -7302,7 +7290,7 @@ def test_apply_agent_action_review_request_creates_pending_review(tmp_path: Path
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
 
     # lead leads the project, so it may request review of backend's deliverable.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7350,7 +7338,7 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
         )
     )
 
-    state, result = repo.request_review_command(
+    state, result = _command_service(repo).request_review_command(
         session_id="session-lead",
         deliverable_id="deliverable",
         reviewer_agent_id="worker",
@@ -7382,14 +7370,14 @@ def test_request_review_command_is_idempotent_for_active_reviewer_request(
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
 
-    _state, first = repo.request_review_command(
+    _state, first = _command_service(repo).request_review_command(
         session_id="session-lead",
         deliverable_id="deliverable",
         reviewer_agent_id="worker",
         instructions="Check the slice carefully.",
         request_id="request-review-1",
     )
-    state, second = repo.request_review_command(
+    state, second = _command_service(repo).request_review_command(
         session_id="session-lead",
         deliverable_id="deliverable",
         reviewer_agent_id="worker",
@@ -7420,7 +7408,7 @@ def test_duplicate_request_review_command_counts_as_no_progress_on_finalize(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    _state, created = repo.apply_agent_action(
+    _state, created = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7447,7 +7435,7 @@ def test_duplicate_request_review_command_counts_as_no_progress_on_finalize(
 
     repo.update(_set_no_progress_count)
 
-    _state, duplicate = repo.request_review_command(
+    _state, duplicate = _command_service(repo).request_review_command(
         session_id="session-lead",
         deliverable_id="deliverable",
         reviewer_agent_id="worker",
@@ -7464,7 +7452,7 @@ def test_duplicate_request_review_command_counts_as_no_progress_on_finalize(
     assert len(activities) == 1
     assert activities[0].progress_classification == "none"
 
-    state, finalized = repo.finalize_agent_dispatch_from_activity(
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-lead",
         dispatch_id="dispatch-duplicate-review",
     )
@@ -7484,7 +7472,7 @@ def test_apply_agent_action_review_request_rejected_for_unrelated_agent(
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
 
     # worker neither produced nor supervises the producer (backend) and is not a lead.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "review_requests": [
@@ -7507,7 +7495,7 @@ def test_apply_agent_action_review_accept_cascades_to_task(tmp_path: Path) -> No
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7521,7 +7509,7 @@ def test_apply_agent_action_review_accept_cascades_to_task(tmp_path: Path) -> No
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "review_decisions": [
@@ -7548,7 +7536,7 @@ def test_apply_agent_action_review_decision_reviewer_only(tmp_path: Path) -> Non
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7563,12 +7551,10 @@ def test_apply_agent_action_review_decision_reviewer_only(tmp_path: Path) -> Non
     )
 
     # lead is not the assigned reviewer (worker is).
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "accepted"}],
         },
     )
 
@@ -7581,7 +7567,7 @@ def test_apply_agent_action_multi_review_holds_back_deliverable(tmp_path: Path) 
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7602,23 +7588,19 @@ def test_apply_agent_action_multi_review_holds_back_deliverable(tmp_path: Path) 
     )
 
     # Accepting only the first review must not accept the deliverable yet.
-    state, _ = repo.apply_agent_action(
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "accepted"}],
         },
     )
     assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
     assert state.tasks["task"].state != TeamTaskState.ACCEPTED
 
-    state, _ = repo.apply_agent_action(
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
-            "review_decisions": [
-                {"review_request_id": "review-2", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-2", "state": "accepted"}],
         },
     )
     assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
@@ -7630,7 +7612,7 @@ def test_apply_agent_action_multi_deliverable_holds_back_task(tmp_path: Path) ->
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable-a", task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable-b", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7650,23 +7632,19 @@ def test_apply_agent_action_multi_deliverable_holds_back_task(tmp_path: Path) ->
         },
     )
 
-    state, _ = repo.apply_agent_action(
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-a", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-a", "state": "accepted"}],
         },
     )
     assert state.deliverables["deliverable-a"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state != TeamTaskState.ACCEPTED
 
-    state, _ = repo.apply_agent_action(
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-b", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-b", "state": "accepted"}],
         },
     )
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
@@ -7678,14 +7656,14 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.create_governance_group(
+    _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7699,7 +7677,7 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "review_decisions": [
@@ -7733,13 +7711,13 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert rework_item.payload["supersedes_deliverable_id"] == "deliverable"
     assert rework_item.payload["findings"] == ["Needs rework."]
 
-    _state, leases = repo.lease_due_governance_managers(
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=state.tasks["task"].state_entered_at + timedelta(minutes=1),
     )
 
     assert leases == []
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -7747,9 +7725,7 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
                     "id": "deliverable-v2",
                     "task_id": "task",
                     "summary": "Reworked deliverable.",
-                    "supersedes_deliverable_id": rework_item.payload[
-                        "supersedes_deliverable_id"
-                    ],
+                    "supersedes_deliverable_id": rework_item.payload["supersedes_deliverable_id"],
                 }
             ],
         },
@@ -7757,15 +7733,11 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
 
     assert result["success"] is True
     assert result["created_deliverable_ids"] == ["deliverable-v2"]
-    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
-        "deliverable-v2"
-    )
-    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == (
-        "deliverable"
-    )
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == ("deliverable-v2")
+    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == ("deliverable")
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7779,12 +7751,10 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-2", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-2", "state": "accepted"}],
         },
     )
 
@@ -7799,7 +7769,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task", owner_agent_id="worker")
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "deliverables": [
@@ -7813,7 +7783,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
     )
     assert result["success"] is True
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7826,7 +7796,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
             ],
         },
     )
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "task", "owner_agent_id": "backend"}],
@@ -7835,7 +7805,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
     assert result["success"] is True
     assert state.tasks["task"].owner_agent_id == "backend"
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_decisions": [
@@ -7856,7 +7826,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
     assert state.tasks["task"].owner_agent_id == "backend"
     assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -7864,9 +7834,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
                     "id": "deliverable-v2",
                     "task_id": "task",
                     "summary": "Reworked by the current owner.",
-                    "supersedes_deliverable_id": rework_item.payload[
-                        "supersedes_deliverable_id"
-                    ],
+                    "supersedes_deliverable_id": rework_item.payload["supersedes_deliverable_id"],
                 }
             ],
         },
@@ -7875,16 +7843,12 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
     assert result["success"] is True
     assert result["created_deliverable_ids"] == ["deliverable-v2"]
     assert state.deliverables["deliverable"].producer_agent_id == "worker"
-    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
-        "deliverable-v2"
-    )
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == ("deliverable-v2")
     assert state.deliverables["deliverable-v2"].producer_agent_id == "backend"
-    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == (
-        "deliverable"
-    )
+    assert state.deliverables["deliverable-v2"].supersedes_deliverable_id == ("deliverable")
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
 
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="worker-2",
         team_id="team",
         project_id="project",
@@ -7893,7 +7857,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
         reports_to_agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_updates": [{"task_id": "task", "owner_agent_id": "worker-2"}],
@@ -7902,9 +7866,7 @@ def test_apply_agent_action_review_rejected_after_handoff_targets_current_owner(
 
     assert result["success"] is True
     assert state.tasks["task"].owner_agent_id == "worker-2"
-    assert state.deliverables["deliverable"].superseded_by_deliverable_id == (
-        "deliverable-v2"
-    )
+    assert state.deliverables["deliverable"].superseded_by_deliverable_id == ("deliverable-v2")
 
 
 def test_apply_agent_action_rework_requires_deliverable_supersession(
@@ -7913,7 +7875,7 @@ def test_apply_agent_action_rework_requires_deliverable_supersession(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7926,15 +7888,13 @@ def test_apply_agent_action_rework_requires_deliverable_supersession(
             ],
         },
     )
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "rejected"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "rejected"}],
         },
     )
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -7946,7 +7906,7 @@ def test_apply_agent_action_rework_requires_deliverable_supersession(
             ],
         },
     )
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7960,12 +7920,10 @@ def test_apply_agent_action_rework_requires_deliverable_supersession(
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-2", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-2", "state": "accepted"}],
         },
     )
 
@@ -7982,7 +7940,7 @@ def test_apply_agent_action_rework_rejects_self_superseding_deliverable_id(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -7995,16 +7953,14 @@ def test_apply_agent_action_rework_rejects_self_superseding_deliverable_id(
             ],
         },
     )
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "rejected"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "rejected"}],
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -8031,7 +7987,7 @@ def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -8045,12 +8001,10 @@ def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "blocked"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "blocked"}],
         },
     )
 
@@ -8065,12 +8019,10 @@ def test_apply_agent_action_goal_update_permission(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
     # backend is neither the project lead nor the team manager.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
-            "goal_updates": [
-                {"project_id": "project", "goal_id": "goal", "state": "accepted"}
-            ],
+            "goal_updates": [{"project_id": "project", "goal_id": "goal", "state": "accepted"}],
         },
     )
     assert result["success"] is False
@@ -8078,12 +8030,10 @@ def test_apply_agent_action_goal_update_permission(tmp_path: Path) -> None:
     assert state.projects["project"].goals[0].state == TeamRecordState.PENDING
 
     # the project lead may update the goal.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "goal_updates": [
-                {"project_id": "project", "goal_id": "goal", "state": "in_progress"}
-            ],
+            "goal_updates": [{"project_id": "project", "goal_id": "goal", "state": "in_progress"}],
         },
     )
     assert result["success"] is True
@@ -8091,12 +8041,10 @@ def test_apply_agent_action_goal_update_permission(tmp_path: Path) -> None:
     assert state.projects["project"].goals[0].state == TeamRecordState.IN_PROGRESS
 
     # the team manager may also update the goal.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
-            "goal_updates": [
-                {"project_id": "project", "goal_id": "goal", "state": "accepted"}
-            ],
+            "goal_updates": [{"project_id": "project", "goal_id": "goal", "state": "accepted"}],
         },
     )
     assert result["success"] is True
@@ -8107,7 +8055,7 @@ def test_apply_agent_action_project_status_completes(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -8120,23 +8068,19 @@ def test_apply_agent_action_project_status_completes(tmp_path: Path) -> None:
             ],
         },
     )
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "accepted"}],
         },
     )
     # Task is accepted; project not yet complete until the goal is accepted.
     assert repo.read().projects["project"].status == ProjectStatus.ACTIVE
 
-    state, _ = repo.apply_agent_action(
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "goal_updates": [
-                {"project_id": "project", "goal_id": "goal", "state": "accepted"}
-            ],
+            "goal_updates": [{"project_id": "project", "goal_id": "goal", "state": "accepted"}],
         },
     )
 
@@ -8146,15 +8090,15 @@ def test_apply_agent_action_project_status_completes(tmp_path: Path) -> None:
 def test_apply_agent_action_goal_update_resets_no_progress_count(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    repo.apply_agent_action(action={"agent_id": "lead"}, valid=False, error="boom")
+    _team_agent_action_service(repo).apply_agent_action(
+        action={"agent_id": "lead"}, valid=False, error="boom"
+    )
     assert repo.read().agent_runtimes["lead"].no_progress_count == 1
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "goal_updates": [
-                {"project_id": "project", "goal_id": "goal", "state": "in_progress"}
-            ],
+            "goal_updates": [{"project_id": "project", "goal_id": "goal", "state": "in_progress"}],
         },
     )
 
@@ -8194,7 +8138,7 @@ def _seed_completed_ephemeral(
 
     repo.update(_enable)
     _seed_task(repo, task_id="task")
-    repo.request_ephemeral_assignments(
+    _team_ephemeral_service(repo).request_ephemeral_assignments(
         parent_agent_id="backend",
         requests=[
             {
@@ -8206,7 +8150,7 @@ def _seed_completed_ephemeral(
             }
         ],
     )
-    repo.apply_ephemeral_action(
+    _team_ephemeral_service(repo).apply_ephemeral_action(
         session_id=session_id,
         action={
             "ephemeral_assignment_id": assignment_id,
@@ -8231,7 +8175,7 @@ def test_update_feature_branch_command_replay_conflict_and_outbox(
         dispatch_id="dispatch-feature-command",
     )
 
-    state, first = repo.update_feature_branch_command(
+    state, first = _command_service(repo).update_feature_branch_command(
         session_id="session-backend",
         task_id="task",
         source_review_branches=["team/team/reviews/deliverable"],
@@ -8239,7 +8183,7 @@ def test_update_feature_branch_command_replay_conflict_and_outbox(
         correlation_id="corr-feature",
         causation_id="cause-feature",
     )
-    state, replay = repo.update_feature_branch_command(
+    state, replay = _command_service(repo).update_feature_branch_command(
         session_id="session-backend",
         task_id="task",
         source_review_branches=["team/team/reviews/deliverable"],
@@ -8247,7 +8191,7 @@ def test_update_feature_branch_command_replay_conflict_and_outbox(
         correlation_id="corr-feature",
         causation_id="cause-feature",
     )
-    _state, conflict = repo.update_feature_branch_command(
+    _state, conflict = _command_service(repo).update_feature_branch_command(
         session_id="session-backend",
         task_id="task",
         source_review_branches=["team/team/reviews/other"],
@@ -8299,7 +8243,7 @@ def test_publish_review_branch_command_rejects_ambiguous_shape_without_mutation(
         dispatch_id="dispatch-review-command",
     )
 
-    state, result = repo.publish_review_branch_command(
+    state, result = _command_service(repo).publish_review_branch_command(
         session_id="session-backend",
         assignment_id="ephemeral-1",
         deliverable_id="deliverable",
@@ -8325,9 +8269,7 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     )
 
     def _set_review_branch(state):
-        state.deliverables["deliverable"].git_refs.review_branch = (
-            "team/team/reviews/deliverable"
-        )
+        state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
         return state
 
     repo.update(_set_review_branch)
@@ -8337,7 +8279,7 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
         dispatch_id="dispatch-release-command",
     )
 
-    state, result = repo.request_release_command(
+    state, result = _command_service(repo).request_release_command(
         session_id="session-lead",
         id="rel-1",
         project_id="project",
@@ -8386,7 +8328,7 @@ def test_recover_release_command_records_retryable_recovery_outbox(
         agent_id="lead",
         dispatch_id="dispatch-release-recovery-command",
     )
-    state, release_result = repo.request_release_command(
+    state, release_result = _command_service(repo).request_release_command(
         session_id="session-lead",
         id="rel-1",
         project_id="project",
@@ -8394,14 +8336,14 @@ def test_recover_release_command_records_retryable_recovery_outbox(
         request_id="request-release-before-recovery",
     )
     release_promotion_id = release_result["promotion_event_ids"][0]
-    state, _failure = repo.record_git_promotion_result(
+    state, _failure = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
         success=False,
         error="merge conflict while merging feature",
     )
     assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
 
-    state, result = repo.recover_release_command(
+    state, result = _command_service(repo).recover_release_command(
         session_id="session-lead",
         release_package_id="rel-1",
         agent_branch="refs/heads/agents/lead/release-resolved",
@@ -8409,7 +8351,7 @@ def test_recover_release_command_records_retryable_recovery_outbox(
         summary="Resolved release merge conflict.",
         request_id="request-release-recovery",
     )
-    state, replay = repo.recover_release_command(
+    state, replay = _command_service(repo).recover_release_command(
         session_id="session-lead",
         release_package_id="rel-1",
         agent_branch="refs/heads/agents/lead/release-resolved",
@@ -8458,7 +8400,7 @@ def test_apply_ephemeral_action_accepts_matching_agent_branch(tmp_path: Path) ->
 
     repo.update(_enable)
     _seed_task(repo, task_id="task")
-    repo.request_ephemeral_assignments(
+    _team_ephemeral_service(repo).request_ephemeral_assignments(
         parent_agent_id="backend",
         requests=[
             {
@@ -8471,7 +8413,7 @@ def test_apply_ephemeral_action_accepts_matching_agent_branch(tmp_path: Path) ->
         ],
     )
 
-    state, result = repo.apply_ephemeral_action(
+    state, result = _team_ephemeral_service(repo).apply_ephemeral_action(
         session_id="eph-1",
         action={
             "ephemeral_assignment_id": "ephemeral-1",
@@ -8497,7 +8439,7 @@ def test_apply_ephemeral_action_rejects_mismatched_agent_branch(tmp_path: Path) 
 
     repo.update(_enable)
     _seed_task(repo, task_id="task")
-    repo.request_ephemeral_assignments(
+    _team_ephemeral_service(repo).request_ephemeral_assignments(
         parent_agent_id="backend",
         requests=[
             {
@@ -8510,7 +8452,7 @@ def test_apply_ephemeral_action_rejects_mismatched_agent_branch(tmp_path: Path) 
         ],
     )
 
-    state, result = repo.apply_ephemeral_action(
+    state, result = _team_ephemeral_service(repo).apply_ephemeral_action(
         session_id="eph-1",
         action={
             "ephemeral_assignment_id": "ephemeral-1",
@@ -8532,7 +8474,7 @@ def test_apply_agent_action_git_review_promotion_parent_only(tmp_path: Path) -> 
     _seed_completed_ephemeral(repo)
 
     # lead is not the parent of the ephemeral assignment and cannot promote it.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
@@ -8543,7 +8485,7 @@ def test_apply_agent_action_git_review_promotion_parent_only(tmp_path: Path) -> 
     assert state.git_promotions == {}
 
     # backend (the parent) may promote its completed assignment's branch.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
@@ -8580,7 +8522,7 @@ def test_apply_agent_action_git_review_promotion_rejects_unrelated_deliverable(
         task_id="other-task",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_review_promotions": [
@@ -8602,7 +8544,7 @@ def test_apply_agent_action_git_review_promotion_requires_git_config(tmp_path: P
     repo = _seed_hierarchy(tmp_path)
     _seed_completed_ephemeral(repo)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
@@ -8618,7 +8560,7 @@ def test_apply_agent_action_records_deliverable_git_refs(tmp_path: Path) -> None
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -8647,7 +8589,7 @@ def test_apply_agent_action_persistent_git_review_promotion_from_commit(
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -8661,7 +8603,7 @@ def test_apply_agent_action_persistent_git_review_promotion_from_commit(
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_review_promotions": [{"deliverable_id": "deliverable"}],
@@ -8692,7 +8634,7 @@ def test_apply_agent_action_persistent_git_review_promotion_rejects_missing_sour
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_review_promotions": [{"deliverable_id": "deliverable"}],
@@ -8710,7 +8652,7 @@ def test_apply_agent_action_persistent_git_review_promotion_checks_authority(
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "deliverables": [
@@ -8724,7 +8666,7 @@ def test_apply_agent_action_persistent_git_review_promotion_checks_authority(
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "git_review_promotions": [{"deliverable_id": "deliverable"}],
@@ -8741,7 +8683,7 @@ def test_apply_agent_action_git_feature_update_default_branch(tmp_path: Path) ->
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_feature_updates": [
@@ -8776,7 +8718,7 @@ def test_apply_agent_action_git_feature_update_supervisor_allowed(tmp_path: Path
     _seed_task(repo, task_id="task")
 
     # lead supervises backend (the task owner) and may consolidate the task branches.
-    _state, lead_result = repo.apply_agent_action(
+    _state, lead_result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_feature_updates": [
@@ -8787,7 +8729,7 @@ def test_apply_agent_action_git_feature_update_supervisor_allowed(tmp_path: Path
     assert lead_result["success"] is True
 
     # worker neither owns nor supervises the task owner.
-    _state, worker_result = repo.apply_agent_action(
+    _state, worker_result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "git_feature_updates": [
@@ -8804,7 +8746,7 @@ def test_apply_agent_action_git_feature_update_rejects_bad_branch(tmp_path: Path
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_feature_updates": [
@@ -8834,21 +8776,17 @@ def test_record_git_feature_promotion_result_attaches_to_accepted_source_deliver
     )
 
     def _set_review_branch(state):
-        state.deliverables["deliverable"].git_refs.review_branch = (
-            "team/team/reviews/deliverable"
-        )
+        state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
         return state
 
     repo.update(_set_review_branch)
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_feature_updates": [
                 {
                     "task_id": "task",
-                    "source_review_branches": [
-                        "local-evander/team/team/reviews/deliverable"
-                    ],
+                    "source_review_branches": ["local-evander/team/team/reviews/deliverable"],
                 }
             ],
         },
@@ -8856,14 +8794,10 @@ def test_record_git_feature_promotion_result_attaches_to_accepted_source_deliver
     assert result["success"] is True
     promotion_id = result["git_promotion_event_ids"][0]
 
-    state, promotion_result = repo.record_git_promotion_result(
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=promotion_id,
         success=True,
-        outputs={
-            "merged_branches": [
-                "local-evander/team/team/reviews/deliverable"
-            ]
-        },
+        outputs={"merged_branches": ["local-evander/team/team/reviews/deliverable"]},
         commit_sha="feedface",
     )
 
@@ -8891,21 +8825,17 @@ def test_record_git_feature_promotion_result_requires_source_branch_match(
     )
 
     def _set_review_branch(state):
-        state.deliverables["deliverable"].git_refs.review_branch = (
-            "team/team/reviews/deliverable"
-        )
+        state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
         return state
 
     repo.update(_set_review_branch)
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "git_feature_updates": [
                 {
                     "task_id": "task",
-                    "source_review_branches": [
-                        "team/team/reviews/unrelated"
-                    ],
+                    "source_review_branches": ["team/team/reviews/unrelated"],
                 }
             ],
         },
@@ -8913,7 +8843,7 @@ def test_record_git_feature_promotion_result_requires_source_branch_match(
     assert result["success"] is True
     promotion_id = result["git_promotion_event_ids"][0]
 
-    state, promotion_result = repo.record_git_promotion_result(
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=promotion_id,
         success=True,
         outputs={"merged_branches": ["team/team/reviews/unrelated"]},
@@ -8945,9 +8875,7 @@ def test_repair_feature_promotion_deliverables_removes_safe_synthetic_pending(
 
     def _seed_stale_synthetic(state):
         state.tasks["task"].state = TeamTaskState.ACCEPTED
-        state.deliverables["deliverable"].git_refs.review_branch = (
-            "team/team/reviews/deliverable"
-        )
+        state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
         state.deliverables["synthetic"] = Deliverable(
             id="synthetic",
             task_id="task",
@@ -8972,16 +8900,12 @@ def test_repair_feature_promotion_deliverables_removes_safe_synthetic_pending(
             deliverable_id="synthetic",
             state="succeeded",
             commit_sha="feedface",
-            outputs={
-                "merged_branches": [
-                    "local-evander/team/team/reviews/deliverable"
-                ]
-            },
+            outputs={"merged_branches": ["local-evander/team/team/reviews/deliverable"]},
         )
         return state
 
     repo.update(_seed_stale_synthetic)
-    state, repair = repo.repair_feature_promotion_deliverables()
+    state, repair = _team_git_release_service(repo).repair_feature_promotion_deliverables()
 
     assert repair["success"] is True
     assert repair["applied"] is True
@@ -9007,7 +8931,7 @@ def _seed_accepted_feature_deliverable(
     artifact_refs: list[str] | None = None,
 ) -> None:
     _seed_task(repo, task_id=task_id)
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id=deliverable_id,
         task_id=task_id,
         producer_agent_id="backend",
@@ -9037,7 +8961,7 @@ def test_apply_agent_action_rejects_combined_feature_update_and_release_request(
         feature=None,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_feature_updates": [
@@ -9079,7 +9003,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
         feature="team/team/features/task-backend",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9101,8 +9025,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert release.canonical_branch == "releases/project/rel-1"
     assert len(release.git_promotion_record_ids) == 1
     kinds = sorted(
-        state.git_promotions[pid].promotion_kind
-        for pid in release.git_promotion_record_ids
+        state.git_promotions[pid].promotion_kind for pid in release.git_promotion_record_ids
     )
     assert kinds == ["release"]
     assert len(result["git_promotion_event_ids"]) == 1
@@ -9112,7 +9035,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert "canonical_push" not in payloads
 
     release_promotion_id = release.git_promotion_record_ids[0]
-    state, promotion_result = repo.record_git_promotion_result(
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
         success=True,
         commit_sha="feedface",
@@ -9129,8 +9052,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert canonical.target_branch == "releases/project/rel-1"
     assert promotion_result["git_promotion_event_ids"] == [canonical.id]
     payloads = {
-        event["payload"]["promotion_kind"]: event["payload"]
-        for event in promotion_result["events"]
+        event["payload"]["promotion_kind"]: event["payload"] for event in promotion_result["events"]
     }
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
@@ -9153,7 +9075,7 @@ def test_duplicate_git_release_request_points_to_existing_package(
         feature="team/team/features/task-backend",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9169,13 +9091,13 @@ def test_duplicate_git_release_request_points_to_existing_package(
 
     def _block_release(current):
         current.release_packages["rel-1"].state = TeamRecordState.BLOCKED
-        current.release_packages["rel-1"].error = (
-            "merge conflict while merging feature into team/team/releases/rel-1"
-        )
+        current.release_packages[
+            "rel-1"
+        ].error = "merge conflict while merging feature into team/team/releases/rel-1"
         return current
 
     repo.update(_block_release)
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9208,7 +9130,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         task_id="task",
         feature="team/team/features/task-backend",
     )
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9222,14 +9144,14 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
     )
     assert result["success"] is True
     release_promotion_id = state.release_packages["rel-1"].git_promotion_record_ids[0]
-    state, _failure = repo.record_git_promotion_result(
+    state, _failure = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
         success=False,
         error="merge conflict while merging team/team/features/task-backend",
     )
     assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_recoveries": [
@@ -9283,7 +9205,7 @@ def test_apply_agent_action_git_release_recovery_requires_agent_branch(
         task_id="task",
         feature="team/team/features/task-backend",
     )
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9296,13 +9218,13 @@ def test_apply_agent_action_git_release_recovery_requires_agent_branch(
         },
     )
     release_promotion_id = state.release_packages["rel-1"].git_promotion_record_ids[0]
-    repo.record_git_promotion_result(
+    _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
         success=False,
         error="merge conflict",
     )
 
-    _state, result = repo.apply_agent_action(
+    _state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_recoveries": [
@@ -9330,7 +9252,7 @@ def test_apply_agent_action_git_release_recovery_requires_commit_sha(
         task_id="task",
         feature="team/team/features/task-backend",
     )
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9344,13 +9266,13 @@ def test_apply_agent_action_git_release_recovery_requires_commit_sha(
     )
     assert result["success"] is True
     release_promotion_id = state.release_packages["rel-1"].git_promotion_record_ids[0]
-    repo.record_git_promotion_result(
+    _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
         success=False,
         error="merge conflict",
     )
 
-    _state, result = repo.apply_agent_action(
+    _state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_recoveries": [
@@ -9380,13 +9302,11 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     )
 
     def _set_review_branch(state):
-        state.deliverables["deliverable"].git_refs.review_branch = (
-            "team/team/reviews/deliverable"
-        )
+        state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
         return state
 
     repo.update(_set_review_branch)
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9420,7 +9340,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     assert payload["source_branches"] == ["team/team/reviews/deliverable"]
     assert payload["bare_repo_name"] == "Truman.git"
 
-    state, promotion_result = repo.record_git_promotion_result(
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=feature_promotion_id,
         success=True,
         outputs={"merged_branches": ["team/team/reviews/deliverable"]},
@@ -9443,8 +9363,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     assert release_promotion.target_branch == "team/team/releases/rel-1"
     assert promotion_result["git_promotion_event_ids"] == [release_promotion.id]
     payloads = {
-        event["payload"]["promotion_kind"]: event["payload"]
-        for event in promotion_result["events"]
+        event["payload"]["promotion_kind"]: event["payload"] for event in promotion_result["events"]
     }
     assert payloads["release"]["source_branches"] == ["team/team/features/task-lead"]
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
@@ -9461,7 +9380,7 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
         artifact_refs=["artifact-space:/teams/team/result"],
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9499,7 +9418,7 @@ def test_apply_agent_action_git_release_request_mixed_deliverables_requires_git(
         artifact_refs=["artifact-space:/teams/team/result"],
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9528,7 +9447,7 @@ def test_apply_agent_action_git_release_request_git_only_requires_git_config(
         feature="team/team/features/task-backend",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9554,7 +9473,7 @@ def test_apply_agent_action_git_release_request_requires_releasable_ref_or_artif
         feature=None,
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "git_release_requests": [
@@ -9583,7 +9502,7 @@ def test_apply_agent_action_git_release_request_allows_project_release_operator(
         feature="team/team/features/task-backend",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "release-operator",
             "git_release_requests": [
@@ -9609,12 +9528,10 @@ def test_apply_agent_action_git_release_request_rejects_unaccepted(tmp_path: Pat
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "git_release_requests": [
-                {"project_id": "project", "deliverable_ids": ["deliverable"]}
-            ],
+            "git_release_requests": [{"project_id": "project", "deliverable_ids": ["deliverable"]}],
         },
     )
 
@@ -9635,12 +9552,10 @@ def test_apply_agent_action_git_release_request_requires_lead_or_manager(
         feature="team/team/features/task-backend",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
-            "git_release_requests": [
-                {"project_id": "project", "deliverable_ids": ["deliverable"]}
-            ],
+            "git_release_requests": [{"project_id": "project", "deliverable_ids": ["deliverable"]}],
         },
     )
 
@@ -9654,7 +9569,7 @@ def test_apply_agent_action_creates_child_task_with_graph_fields(tmp_path: Path)
     _seed_task(repo, task_id="parent", owner_agent_id="backend")
     _seed_task(repo, task_id="dep", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -9686,7 +9601,7 @@ def test_apply_agent_action_rejects_batch_child_under_subordinate_parent(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="backend-parent", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -9724,7 +9639,7 @@ def test_apply_agent_action_rejects_batch_child_under_subordinate_parent(
 def test_apply_agent_action_task_creation_rejects_missing_parent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -9752,7 +9667,7 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="parent", owner_agent_id="backend")
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-2",
         team_id="team",
         name="Second Project",
@@ -9760,7 +9675,7 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
         lead_session_id="session-lead-2",
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="other",
         owner_agent_id="lead-2",
         project_id="project-2",
@@ -9770,7 +9685,7 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
         created_by_agent_id="lead-2",
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -9800,7 +9715,7 @@ def test_apply_agent_action_task_creation_batch_rejects_sibling_cycle(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="parent", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -9840,7 +9755,7 @@ def test_apply_agent_action_task_creation_rejects_conflicting_task_id_alias(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_creations": [
@@ -9868,7 +9783,7 @@ def test_apply_agent_action_owner_edits_dependencies(tmp_path: Path) -> None:
     _seed_task(repo, task_id="a", owner_agent_id="backend")
     _seed_task(repo, task_id="b", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "a", "dependency_task_ids": ["b"]}],
@@ -9884,14 +9799,14 @@ def test_apply_agent_action_task_update_rejects_dependency_cycle(tmp_path: Path)
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="a", owner_agent_id="backend")
     _seed_task(repo, task_id="b", owner_agent_id="backend")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "a", "dependency_task_ids": ["b"]}],
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "b", "dependency_task_ids": ["a"]}],
@@ -9910,7 +9825,7 @@ def test_apply_agent_action_supervisor_edits_dependencies(tmp_path: Path) -> Non
     _seed_task(repo, task_id="w2", owner_agent_id="worker")
 
     # backend supervises worker but is neither project lead nor team manager.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "w1", "dependency_task_ids": ["w2"]}],
@@ -9925,7 +9840,7 @@ def test_apply_agent_action_supervisor_claims_subordinate_task(tmp_path: Path) -
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="w1", owner_agent_id="worker")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "w1", "owner_agent_id": "backend"}],
@@ -9942,7 +9857,7 @@ def test_apply_agent_action_supervisor_reassigns_subordinate_task(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="worker-2",
         team_id="team",
         project_id="project",
@@ -9953,7 +9868,7 @@ def test_apply_agent_action_supervisor_reassigns_subordinate_task(
     )
     _seed_task(repo, task_id="w1", owner_agent_id="worker")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "w1", "owner_agent_id": "worker-2"}],
@@ -9969,7 +9884,7 @@ def test_apply_agent_action_supervisor_finishes_subordinate_task(tmp_path: Path)
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="w1", owner_agent_id="worker")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "w1", "state": "finished"}],
@@ -9986,7 +9901,7 @@ def test_apply_agent_action_task_reassignment_requires_target_project_assignment
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-2",
         team_id="team",
         name="Second Project",
@@ -9994,14 +9909,14 @@ def test_apply_agent_action_task_reassignment_requires_target_project_assignment
         lead_session_id="session-lead-2",
         expected_revision=repo.read().revision,
     )
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="project-2__worker",
         team_id="team",
         project_id="project-2",
         name="Second Project Worker",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="worker-2",
         team_id="team",
         project_id="project-2",
@@ -10012,7 +9927,7 @@ def test_apply_agent_action_task_reassignment_requires_target_project_assignment
     )
     _seed_task(repo, task_id="w1", owner_agent_id="worker")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
             "task_updates": [{"task_id": "w1", "owner_agent_id": "worker-2"}],
@@ -10030,7 +9945,7 @@ def test_apply_agent_action_task_reassignment_requires_superior(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="b1", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "task_updates": [{"task_id": "b1", "owner_agent_id": "worker"}],
@@ -10047,9 +9962,9 @@ def test_apply_agent_action_rejects_terminal_task_reassignment(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="w1", owner_agent_id="worker")
-    repo.update_task(task_id="w1", state=TeamTaskState.ACCEPTED)
+    _team_admin_service(repo).update_task(task_id="w1", state=TeamTaskState.ACCEPTED)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
             "task_updates": [{"task_id": "w1", "owner_agent_id": "backend"}],
@@ -10066,7 +9981,7 @@ def test_apply_agent_action_lead_and_manager_edit_dependencies(tmp_path: Path) -
     _seed_task(repo, task_id="t1", owner_agent_id="backend")
     _seed_task(repo, task_id="t2", owner_agent_id="backend")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_updates": [{"task_id": "t1", "dependency_task_ids": ["t2"]}],
@@ -10075,7 +9990,7 @@ def test_apply_agent_action_lead_and_manager_edit_dependencies(tmp_path: Path) -
     assert result["success"] is True
     assert state.tasks["t1"].dependency_task_ids == ["t2"]
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "manager",
             "task_updates": [{"task_id": "t1", "dependency_task_ids": []}],
@@ -10093,7 +10008,7 @@ def test_apply_agent_action_unrelated_agent_cannot_edit_dependencies(
     _seed_task(repo, task_id="b2", owner_agent_id="backend")
 
     # worker reports to backend; it does not supervise backend and is not a lead/manager.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "task_updates": [{"task_id": "b1", "dependency_task_ids": ["b2"]}],
@@ -10110,7 +10025,7 @@ def test_apply_agent_action_non_owner_state_change_still_rejected(tmp_path: Path
     _seed_task(repo, task_id="b1", owner_agent_id="backend")
 
     # lead supervises backend and leads the project, but state edits remain owner-only.
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "task_updates": [{"task_id": "b1", "state": "in_progress"}],
@@ -10130,7 +10045,7 @@ def _seed_review_profile(
     applicable_role_ids: list[str] | None = None,
     criteria: list[ReviewProfileCriterion] | None = None,
 ) -> None:
-    repo.create_review_profile(
+    _team_admin_service(repo).create_review_profile(
         profile_id=profile_id,
         team_id="team",
         project_id=project_id,
@@ -10163,7 +10078,7 @@ def test_create_update_archive_review_profile(tmp_path: Path) -> None:
     assert profile.applicable_role_ids == ["project__backend", "project__worker"]
     assert profile.archived is False
 
-    state = repo.update_review_profile(
+    state = _team_admin_service(repo).update_review_profile(
         profile_id="profile",
         name="Renamed review",
         criteria=[ReviewProfileCriterion(id="tests", label="Tests pass")],
@@ -10189,7 +10104,7 @@ def test_apply_agent_action_review_request_with_profile(tmp_path: Path) -> None:
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     _seed_review_profile(repo)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10229,9 +10144,9 @@ def test_apply_agent_action_review_request_archived_profile_errors(tmp_path: Pat
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     _seed_review_profile(repo)
-    repo.update_review_profile(profile_id="profile", archived=True)
+    _team_admin_service(repo).update_review_profile(profile_id="profile", archived=True)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10253,7 +10168,7 @@ def test_apply_agent_action_review_request_cross_project_profile_errors(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_project(
+    _team_admin_service(repo).create_project(
         project_id="project-2",
         team_id="team",
         name="Other project",
@@ -10266,7 +10181,7 @@ def test_apply_agent_action_review_request_cross_project_profile_errors(
     # Profile is scoped to a different project than the deliverable's task ("project").
     _seed_review_profile(repo, project_id="project-2", applicable_role_ids=[])
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10290,7 +10205,7 @@ def test_apply_agent_action_review_request_role_profile_errors(tmp_path: Path) -
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     _seed_review_profile(repo, applicable_role_ids=["project__backend"])
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10313,7 +10228,7 @@ def test_apply_agent_action_review_request_missing_profile_errors(tmp_path: Path
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10332,7 +10247,7 @@ def test_apply_agent_action_review_request_missing_profile_errors(tmp_path: Path
 
 
 def _request_review_with_profile(repo: TeamStateRepository) -> None:
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10355,7 +10270,7 @@ def test_apply_agent_action_review_decision_records_criteria(tmp_path: Path) -> 
     _seed_review_profile(repo)
     _request_review_with_profile(repo)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "review_decisions": [
@@ -10394,7 +10309,7 @@ def test_apply_agent_action_review_decision_unknown_criterion_errors(tmp_path: P
     _seed_review_profile(repo)
     _request_review_with_profile(repo)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "review_decisions": [
@@ -10420,7 +10335,7 @@ def test_apply_agent_action_review_decision_criteria_without_profile_errors(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    repo.apply_agent_action(
+    _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
             "review_requests": [
@@ -10433,7 +10348,7 @@ def test_apply_agent_action_review_decision_criteria_without_profile_errors(
         },
     )
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
             "review_decisions": [
@@ -10460,12 +10375,10 @@ def test_apply_agent_action_review_decision_without_criteria_still_works(
     _seed_review_profile(repo)
     _request_review_with_profile(repo)
 
-    state, result = repo.apply_agent_action(
+    state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": "review-1", "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": "review-1", "state": "accepted"}],
         },
     )
 
@@ -10480,7 +10393,7 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     _seed_review_profile(repo)
-    repo.record_review_request(
+    _team_admin_service(repo).record_review_request(
         review_request_id="review-1",
         deliverable_id="deliverable",
         reviewer_agent_id="worker",
@@ -10490,7 +10403,7 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
 
     from evander_team_addon.models import ReviewCriterionResult
 
-    state = repo.record_review_decision(
+    state = _team_admin_service(repo).record_review_decision(
         review_request_id="review-1",
         state=TeamRecordState.ACCEPTED,
         findings=["ok"],
@@ -10504,11 +10417,10 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
     assert [c.criterion_id for c in review.criteria] == ["tests"]
 
 
-
 def test_register_teamless_agent(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    state = repo.register_agent(
+    state = _team_admin_service(repo).register_agent(
         agent_id="unassigned",
         session_id="session-unassigned",
         display_name="Unassigned",
@@ -10526,7 +10438,7 @@ def test_remove_agent_from_team_blocks_structural_references(tmp_path: Path) -> 
     repo = _seed_hierarchy(tmp_path)
 
     with pytest.raises(ValueError, match="cannot be removed from team"):
-        repo.update_agent(
+        _team_admin_service(repo).update_agent(
             agent_id="manager",
             team_id=None,
             set_team_id=True,
@@ -10536,13 +10448,13 @@ def test_remove_agent_from_team_blocks_structural_references(tmp_path: Path) -> 
 
 def test_remove_unreferenced_agent_from_team(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="team__observer",
         team_id="team",
         name="Observer",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="observer",
         team_id="team",
         role_id="team__observer",
@@ -10550,7 +10462,7 @@ def test_remove_unreferenced_agent_from_team(tmp_path: Path) -> None:
         expected_revision=repo.read().revision,
     )
 
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="observer",
         team_id=None,
         set_team_id=True,
@@ -10562,23 +10474,22 @@ def test_remove_unreferenced_agent_from_team(tmp_path: Path) -> None:
     assert agent.role_id is None
 
 
-
 def test_remove_agent_from_team_preserves_terminal_task_history(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="team__observer",
         team_id="team",
         name="Observer",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="observer",
         team_id="team",
         role_id="team__observer",
         session_id="session-observer",
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="completed-history",
         owner_agent_id="observer",
         project_id="project",
@@ -10589,7 +10500,7 @@ def test_remove_agent_from_team_preserves_terminal_task_history(tmp_path: Path) 
     )
     repo.update(lambda state: _mark_task_state(state, "completed-history", TeamTaskState.ACCEPTED))
 
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="observer",
         team_id=None,
         set_team_id=True,
@@ -10602,20 +10513,20 @@ def test_remove_agent_from_team_preserves_terminal_task_history(tmp_path: Path) 
 
 def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="team__observer",
         team_id="team",
         name="Observer",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="observer",
         team_id="team",
         role_id="team__observer",
         session_id="session-observer",
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="active-task",
         owner_agent_id="lead",
         project_id="project",
@@ -10624,7 +10535,7 @@ def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_pat
         description="Observer produced an audit artifact for this work.",
         created_by_agent_id="lead",
     )
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id="audit-deliverable",
         task_id="active-task",
         producer_agent_id="observer",
@@ -10646,7 +10557,7 @@ def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_pat
         )
     )
 
-    state = repo.update_agent(
+    state = _team_admin_service(repo).update_agent(
         agent_id="observer",
         team_id=None,
         set_team_id=True,
@@ -10660,20 +10571,20 @@ def test_remove_agent_from_team_preserves_deliverable_and_sender_history(tmp_pat
 
 def test_remove_agent_from_team_blocks_active_deliverable_producer(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="team__observer",
         team_id="team",
         name="Observer",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="observer",
         team_id="team",
         role_id="team__observer",
         session_id="session-observer",
         expected_revision=repo.read().revision,
     )
-    repo.create_or_reprioritize_task(
+    _team_admin_service(repo).create_or_reprioritize_task(
         task_id="active-task",
         owner_agent_id="lead",
         project_id="project",
@@ -10682,7 +10593,7 @@ def test_remove_agent_from_team_blocks_active_deliverable_producer(tmp_path: Pat
         description="Observer produced an active audit artifact for this work.",
         created_by_agent_id="lead",
     )
-    repo.record_deliverable(
+    _team_admin_service(repo).record_deliverable(
         deliverable_id="audit-deliverable",
         task_id="active-task",
         producer_agent_id="observer",
@@ -10690,7 +10601,7 @@ def test_remove_agent_from_team_blocks_active_deliverable_producer(tmp_path: Pat
     )
 
     with pytest.raises(ValueError, match="produced deliverable audit-deliverable"):
-        repo.update_agent(
+        _team_admin_service(repo).update_agent(
             agent_id="observer",
             team_id=None,
             set_team_id=True,
@@ -10700,13 +10611,13 @@ def test_remove_agent_from_team_blocks_active_deliverable_producer(tmp_path: Pat
 
 def test_remove_agent_from_team_blocks_pending_inbox_recipient(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    repo.create_role(
+    _team_admin_service(repo).create_role(
         role_id="team__observer",
         team_id="team",
         name="Observer",
         expected_revision=repo.read().revision,
     )
-    repo.register_agent(
+    _team_admin_service(repo).register_agent(
         agent_id="observer",
         team_id="team",
         role_id="team__observer",
@@ -10723,7 +10634,7 @@ def test_remove_agent_from_team_blocks_pending_inbox_recipient(tmp_path: Path) -
     )
 
     with pytest.raises(ValueError, match="recipient of inbox item inbox-to-observer"):
-        repo.update_agent(
+        _team_admin_service(repo).update_agent(
             agent_id="observer",
             team_id=None,
             set_team_id=True,

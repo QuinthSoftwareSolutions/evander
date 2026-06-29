@@ -1226,6 +1226,58 @@ def test_runtime_attention_hides_failed_action_after_later_success() -> None:
     assert all(row["kind"] != "failed_action_record" for row in payload["attention"])
 
 
+def test_runtime_attention_hides_failed_action_from_older_dispatch() -> None:
+    state = _state_with_runtime_operations()
+    state.action_records["action-2"] = AgentActionRecord(
+        id="action-2",
+        agent_id="ui",
+        dispatch_id="dispatch-ui-follow-up",
+        action={"kind": "build"},
+        success=False,
+        error="newer build failed",
+        created_at=state.action_records["action-1"].created_at + timedelta(seconds=1),
+    )
+
+    payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    rows = [
+        row
+        for row in payload["attention"]
+        if row["kind"] == "failed_action_record"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["action_record_id"] == "action-2"
+    assert rows[0]["dispatch_id"] == "dispatch-ui-follow-up"
+    assert rows[0]["error"] == "newer build failed"
+
+
+def test_runtime_attention_keeps_undismissed_failure_from_current_dispatch() -> None:
+    state = _state_with_runtime_operations()
+    state.action_records["action-2"] = AgentActionRecord(
+        id="action-2",
+        agent_id="ui",
+        dispatch_id="dispatch-ui",
+        action={"kind": "test"},
+        success=False,
+        error="test failed",
+        created_at=state.action_records["action-1"].created_at + timedelta(seconds=1),
+        dismissed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        dismissed_by="operator",
+    )
+
+    payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    rows = [
+        row
+        for row in payload["attention"]
+        if row["kind"] == "failed_action_record"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["action_record_id"] == "action-1"
+    assert rows[0]["dispatch_id"] == "dispatch-ui"
+    assert rows[0]["error"] == "build failed"
+
+
 def test_runtime_attention_hides_dismissed_failed_action() -> None:
     state = _state_with_runtime_operations()
     state.action_records["action-1"].dismissed_at = datetime(2026, 1, 1, tzinfo=UTC)
