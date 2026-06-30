@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.session_expiry import (
+from evander.models import SessionManifest, ToolName
+from evander.session_expiry import (
     SessionExpiredError,
     ensure_session_not_expired,
     ensure_utc_datetime,

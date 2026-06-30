@@ -19,11 +19,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
-import agent_sandbox.admin.web.vms_issues as vms_issues_module
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.services.vm_agent.common_models import AgentCreateOperation
-from agent_sandbox.admin.payloads import (
+import evander.admin.services.workflow_reports_service as workflow_reports_service
+import evander.admin.web.vms_issues as vms_issues_module
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.services.vm_agent.common_models import AgentCreateOperation
+from evander.admin.payloads import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
     CapacityHealthPayload,
@@ -39,11 +39,11 @@ from agent_sandbox.admin.payloads import (
     WorkflowRunRecentNodeActivityPayload,
     WorkflowRunSnapshotPayload,
 )
-from agent_sandbox.admin import release_metadata as release_metadata_module
-from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
-from agent_sandbox.admin.web.app import _workflow_run_events, create_app
-from agent_sandbox.admin.web.shared import AdminWebConfig, request_has_privileged_operations
-from agent_sandbox.admin.web.rbac import (
+from evander.admin import release_metadata as release_metadata_module
+from evander.admin.web.cache import AdminWebJsonResponseCache
+from evander.admin.web.app import _workflow_run_events, create_app
+from evander.admin.web.shared import AdminWebConfig, request_has_privileged_operations
+from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
@@ -55,8 +55,8 @@ from agent_sandbox.admin.web.rbac import (
     WORKFLOW_RUNS_READ_PERMISSION,
     WORKFLOW_VIEWER_GROUP_ID,
 )
-from agent_sandbox.admin.web.user_store import AdminWebUserStore
-from agent_sandbox.capacity_health import (
+from evander.admin.web.user_store import AdminWebUserStore
+from evander.capacity_health import (
     DiskThresholds,
     DiskUsageTelemetry,
     DirectorySizeTelemetry,
@@ -65,8 +65,8 @@ from agent_sandbox.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import (
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
     JsonExecutionStore,
@@ -74,34 +74,34 @@ from agent_sandbox.daemons.effect_orchestrator import (
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
-from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
-from agent_sandbox.communication_artifact_links import (
+from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+from evander.communication_artifact_links import (
     issue_communication_artifact_download_link,
 )
-from agent_sandbox.communication_artifacts import CommunicationArtifactStore
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService
-from agent_sandbox.published_artifacts import PublishedArtifactStore
-from agent_sandbox.execution.container_worker_repository import (
+from evander.communication_artifacts import CommunicationArtifactStore
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService
+from evander.published_artifacts import PublishedArtifactStore
+from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from agent_sandbox.execution.models import (
+from evander.execution.models import (
     ExecutionBackendKind,
     ExecutionStatus,
     ExecutionStatusKind,
 )
-from agent_sandbox.messaging.targets import (
+from evander.messaging.targets import (
     COMMUNICATION_TARGETS_DOMAIN,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.model_usage.pricing import (
+from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
 )
-from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
-from agent_sandbox.models import (
+from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
     LocalIssueRecord,
@@ -112,13 +112,13 @@ from agent_sandbox.models import (
     VmSummary,
     WorkerSummary,
 )
-from agent_sandbox.events.internal import InternalEventBus
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
-from agent_sandbox.repositories.orchestration_db import connect_orchestration_db
-from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
-from agent_sandbox.triggers.queue import TriggerEventQueue
-from agent_sandbox.worker.models import WorkerSessionRecord
+from evander.events.internal import InternalEventBus
+from evander.events.models import TriggerEvent
+from evander.orchestration.host_polling import wake_socket_path_for_lock
+from evander.repositories.orchestration_db import connect_orchestration_db
+from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.triggers.queue import TriggerEventQueue
+from evander.worker.models import WorkerSessionRecord
 
 
 def write_config(
@@ -356,21 +356,21 @@ def _set_azure_sso_env(
     allowed_users: str | None = "operator@example.com",
     post_login_redirect: str | None = None,
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
     if allowed_users is None:
-        monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", raising=False)
     else:
-        monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", allowed_users)
+        monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", allowed_users)
     if post_login_redirect is not None:
-        monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", post_login_redirect)
+        monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", post_login_redirect)
 
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
@@ -509,7 +509,7 @@ def _signed_webhook_headers(body: bytes, *, secret: str) -> dict[str, str]:
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return {
         "Content-Type": "application/json",
-        "X-Agent-Sandbox-Signature-256": f"sha256={digest}",
+        "X-Evander-Signature-256": f"sha256={digest}",
     }
 
 
@@ -1094,6 +1094,49 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "comment_case_sensitive",
         "include_existing",
     ]
+    remote_issue = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:remote-issue-matching"
+    )
+    assert remote_issue["label"] == "Remote issue matching"
+    assert [field["key"] for field in remote_issue["fields"]] == [
+        "provider",
+        "directory_path",
+        "project",
+        "repo",
+        "wiql",
+        "current_iteration",
+        "team",
+        "iteration",
+        "area_path",
+        "states",
+        "types",
+        "tags_any",
+        "state",
+        "labels_any",
+        "labels_all",
+        "assignee",
+        "author",
+        "mentioned",
+        "milestone",
+        "since",
+        "text_search",
+        "top",
+    ]
+    remote_issue_comment = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:remote-issue-comment-created"
+    )
+    assert [field["key"] for field in remote_issue_comment["fields"]][-6:] == [
+        "comment_contains",
+        "comment_contains_any",
+        "comment_author_exclude_names",
+        "comment_author_exclude_ids",
+        "comment_case_sensitive",
+        "include_existing",
+    ]
     ado_comment_fields = {field["key"]: field for field in ado_comment["fields"]}
     assert ado_comment_fields["wiql"]["multiline"] is True
     assert ado_comment_fields["top"]["default_value"] == 50
@@ -1385,6 +1428,34 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "states",
         "types",
         "tags_any",
+        "text_search",
+        "top",
+        "skip",
+    ]
+    remote_issues = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:remote-issues"
+    )
+    assert [field["key"] for field in remote_issues["fields"]] == [
+        "provider",
+        "directory_path",
+        "project",
+        "repo",
+        "wiql",
+        "current_iteration",
+        "team",
+        "iteration",
+        "area_path",
+        "states",
+        "types",
+        "tags_any",
+        "state",
+        "labels_any",
+        "labels_all",
+        "assignee",
+        "author",
+        "mentioned",
+        "milestone",
+        "since",
         "text_search",
         "top",
         "skip",
@@ -2264,8 +2335,8 @@ def test_admin_web_exposes_deployment_status_from_runtime(tmp_path: Path) -> Non
 def test_admin_web_deployment_status_is_public_when_auth_required(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     (service.config.runtime_dir / "deployment-status.json").write_text(
         json.dumps({"active": True, "message": "Deploying", "ttl_seconds": 3600}),
@@ -2285,7 +2356,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     monkeypatch, tmp_path: Path
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
+    monkeypatch.setenv("EVANDER_REPO_VERSION", "build-abc123")
     monkeypatch.setattr(
         release_metadata_module.importlib_metadata,
         "version",
@@ -2294,7 +2365,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         ),
     )
     (service.project_dir / "pyproject.toml").write_text(
-        '[project]\nname = "agent-sandbox"\nversion = "9.8.7"\n',
+        '[project]\nname = "evander"\nversion = "9.8.7"\n',
         encoding="utf-8",
     )
     (service.project_dir / "CHANGELOG.md").write_text(
@@ -2341,7 +2412,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "version": "9.8.7",
         "version_source": str(service.project_dir / "pyproject.toml"),
         "build": "build-abc123",
-        "build_source": "env:AGENT_SANDBOX_REPO_VERSION",
+        "build_source": "env:EVANDER_REPO_VERSION",
         "changelog": {
             "source": "CHANGELOG.md",
             "path": str(service.project_dir / "CHANGELOG.md"),
@@ -2458,8 +2529,8 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
 def test_admin_web_release_info_is_protected_when_auth_required(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
     service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
@@ -2678,8 +2749,8 @@ def test_admin_web_exposes_capacity_health_endpoint(tmp_path: Path) -> None:
 
 
 def test_admin_web_capacity_health_requires_auth_when_enabled(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
     service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
@@ -2690,7 +2761,7 @@ def test_admin_web_capacity_health_requires_auth_when_enabled(monkeypatch, tmp_p
 
 def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
+    monkeypatch.setenv("EVANDER_REPO_VERSION", "build-abc123")
     monkeypatch.setattr(
         release_metadata_module.importlib_metadata,
         "version",
@@ -2699,7 +2770,7 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
         ),
     )
     (service.project_dir / "pyproject.toml").write_text(
-        '[project]\nname = "agent-sandbox"\nversion = "9.8.7"\n',
+        '[project]\nname = "evander"\nversion = "9.8.7"\n',
         encoding="utf-8",
     )
     (service.project_dir / "CHANGELOG.md").write_text(
@@ -2729,7 +2800,7 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
     assert release_info.version == "9.8.7"
     assert release_info.version_source == str(service.project_dir / "pyproject.toml")
     assert release_info.build == "build-abc123"
-    assert release_info.build_source == "env:AGENT_SANDBOX_REPO_VERSION"
+    assert release_info.build_source == "env:EVANDER_REPO_VERSION"
     assert release_info.missing_reasons == []
     assert release_info.changelog is not None
     assert release_info.changelog.source == "CHANGELOG.md"
@@ -2772,10 +2843,10 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
 
 def test_admin_web_release_info_reports_missing_sources(monkeypatch, tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    monkeypatch.delenv("AGENT_SANDBOX_REPO_VERSION", raising=False)
-    monkeypatch.delenv("agent_sandbox_repo_version", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_BUILD_VERSION", raising=False)
-    monkeypatch.delenv("agent_sandbox_build_version", raising=False)
+    monkeypatch.delenv("EVANDER_REPO_VERSION", raising=False)
+    monkeypatch.delenv("evander_repo_version", raising=False)
+    monkeypatch.delenv("EVANDER_BUILD_VERSION", raising=False)
+    monkeypatch.delenv("evander_build_version", raising=False)
     monkeypatch.setattr(
         release_metadata_module.importlib_metadata,
         "version",
@@ -6357,9 +6428,9 @@ def test_admin_web_public_communication_artifact_download_requires_signed_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "admin-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "admin-secret")
     monkeypatch.setenv("TEAM_LINK_SECRET", "link-secret")
     config_path = write_config(tmp_path)
     service = build_admin_runtime(config_path)
@@ -7747,21 +7818,21 @@ def test_admin_web_branding_reads_env_and_serves_assets_without_login(
     (asset_dir / "logos").mkdir(parents=True)
     logo_path = asset_dir / "logos" / "product-light.png"
     logo_path.write_bytes(b"brand-logo")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE", "Factory Alpha Admin")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE", "Factory Alpha")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE", "false")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE", "wordmark")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR", str(asset_dir))
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PAGE_TITLE", "Factory Alpha Admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_HEADER_TITLE", "Factory Alpha")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE", "false")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE", "wordmark")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR", str(asset_dir))
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL",
+        "EVANDER_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL",
         "logos/product-light.png",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_ALT", "Factory Alpha logo")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PRODUCT_LOGO_ALT", "Factory Alpha logo")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO_DARK_URL",
+        "EVANDER_ADMIN_WEB_COMPANY_LOGO_DARK_URL",
         "https://assets.example.test/company-dark.png",
     )
 
@@ -7800,9 +7871,9 @@ def test_admin_web_branding_reads_env_and_serves_assets_without_login(
 
 
 def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     unauthorized = client.get("/api/workflow-editor/document")
@@ -7823,9 +7894,9 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
 def test_admin_web_local_password_username_permissions_are_case_insensitive(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "Jonathan")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "Jonathan")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     login = client.post("/api/auth/login", json={"username": "jonathan", "password": "swordfish"})
@@ -7845,9 +7916,9 @@ def test_admin_web_local_password_username_permissions_are_case_insensitive(
 def test_admin_web_bootstraps_local_password_user_from_env(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "Operator")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "Operator")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     users = app.state.admin_user_store.list_users()
@@ -7863,9 +7934,9 @@ def test_admin_web_bootstraps_local_password_user_from_env(
 def test_admin_web_local_password_supports_multiple_users(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     admin_client = TestClient(app)
     regular_client = TestClient(app)
@@ -7906,9 +7977,9 @@ def test_admin_web_local_password_supports_multiple_users(
 def test_admin_web_local_password_user_create_requires_password(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
 
@@ -7924,9 +7995,9 @@ def test_admin_web_local_password_user_create_requires_password(
 def test_admin_web_local_password_reset_changes_user_password(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     admin_client = TestClient(app)
     regular_client = TestClient(app)
@@ -7965,9 +8036,9 @@ def test_admin_web_local_password_reset_changes_user_password(
 def test_admin_web_deleted_local_password_user_loses_existing_session(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     admin_client = TestClient(app)
     regular_client = TestClient(app)
@@ -8005,9 +8076,9 @@ def test_admin_web_deleted_local_password_user_loses_existing_session(
 def test_workflow_event_api_mints_token_and_publishes_external_event(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
@@ -8102,7 +8173,7 @@ def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv(
-        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
+        "EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS",
         "ado-pipeline:ado-secret, github-action:github-secret",
     )
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
@@ -8163,7 +8234,7 @@ def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
 def test_admin_web_config_rejects_invalid_workflow_event_machine_token_entries(
     monkeypatch, configured_tokens: str, expected_error: str
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS", configured_tokens)
+    monkeypatch.setenv("EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS", configured_tokens)
 
     with pytest.raises(ValueError, match=expected_error):
         AdminWebConfig.from_env()
@@ -8205,7 +8276,7 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
         wake_paths.append(wake_socket_path_for_lock(lock_path))
         return True
 
-    monkeypatch.setattr("agent_sandbox.admin.services.workflow_config_service.notify_wake_socket_for_lock", _fake_notify)
+    monkeypatch.setattr("evander.admin.services.workflow_config_service.notify_wake_socket_for_lock", _fake_notify)
     token = client.post("/api/workflow-events/token").json()["access_token"]
     publish_response = client.post(
         "/api/workflow-events",
@@ -8252,10 +8323,10 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
 def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path)
 
@@ -8300,14 +8371,14 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     }
     assert response.json()["payload"]["headers"]["content-type"] == "application/json"
     assert (
-        response.json()["payload"]["headers"]["x-agent-sandbox-signature-256"]
-        == headers["X-Agent-Sandbox-Signature-256"]
+        response.json()["payload"]["headers"]["x-evander-signature-256"]
+        == headers["X-Evander-Signature-256"]
     )
     assert response.json()["payload"]["slug"] == "build-notify"
     assert response.json()["payload"]["body"] == {"target": "demo", "options": {"dry_run": True}}
     assert response.json()["payload"]["query"] == {"source": "ci"}
     assert (
-        response.json()["payload"]["signature_header"] == headers["X-Agent-Sandbox-Signature-256"]
+        response.json()["payload"]["signature_header"] == headers["X-Evander-Signature-256"]
     )
     assert response.json()["payload"]["received_at"].endswith("Z")
     assert response.json()["payload"]["remote_addr"]
@@ -8408,7 +8479,7 @@ def test_workflow_webhook_ingress_rejects_missing_or_malformed_signature(
     body = b'{"target":"demo"}'
     headers = {"Content-Type": "application/json"}
     if header_value is not None:
-        headers["X-Agent-Sandbox-Signature-256"] = header_value
+        headers["X-Evander-Signature-256"] = header_value
 
     response = client.post("/api/workflow-webhooks/build-notify", content=body, headers=headers)
 
@@ -8427,7 +8498,7 @@ def test_workflow_webhook_ingress_rejects_bad_hmac(tmp_path: Path, monkeypatch) 
         content=body,
         headers={
             "Content-Type": "application/json",
-            "X-Agent-Sandbox-Signature-256": "sha256=" + ("0" * 64),
+            "X-Evander-Signature-256": "sha256=" + ("0" * 64),
         },
     )
 
@@ -8447,7 +8518,7 @@ def test_workflow_webhook_ingress_rejects_invalid_json_and_non_object_body(
         content=b"not-json",
         headers={
             "Content-Type": "application/json",
-            "X-Agent-Sandbox-Signature-256": "sha256=" + ("1" * 64),
+            "X-Evander-Signature-256": "sha256=" + ("1" * 64),
         },
     )
     non_object_json = client.post(
@@ -8455,7 +8526,7 @@ def test_workflow_webhook_ingress_rejects_invalid_json_and_non_object_body(
         content=b"[1,2,3]",
         headers={
             "Content-Type": "application/json",
-            "X-Agent-Sandbox-Signature-256": "sha256=" + ("1" * 64),
+            "X-Evander-Signature-256": "sha256=" + ("1" * 64),
         },
     )
 
@@ -8477,7 +8548,7 @@ def test_workflow_webhook_ingress_rejects_missing_secret_and_unknown_slug(
         content=body,
         headers={
             "Content-Type": "application/json",
-            "X-Agent-Sandbox-Signature-256": "sha256=" + ("1" * 64),
+            "X-Evander-Signature-256": "sha256=" + ("1" * 64),
         },
     )
 
@@ -8519,8 +8590,8 @@ def test_workflow_webhook_ingress_rejects_duplicate_active_slug(
 
 
 def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
 
     config = AdminWebConfig.from_env()
 
@@ -8529,8 +8600,8 @@ def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None
 
 
 def test_admin_web_config_maps_password_only_deployments_to_local_password(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
 
     config = AdminWebConfig.from_env()
 
@@ -8539,13 +8610,13 @@ def test_admin_web_config_maps_password_only_deployments_to_local_password(monke
 
 
 def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", raising=False)
 
     with pytest.raises(ValueError, match="Azure SSO admin auth is incomplete"):
         AdminWebConfig.from_env()
@@ -8562,8 +8633,8 @@ def test_admin_web_config_treats_azure_allowed_users_as_bootstrap_input(monkeypa
 
 
 def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/auth/session")
@@ -8579,16 +8650,16 @@ def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, m
 
 
 def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/auth/session")
@@ -8749,16 +8820,16 @@ def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
 
 
 def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -8768,16 +8839,16 @@ def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_admin_web_azure_start_login_redirects_and_sets_state(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -8787,20 +8858,20 @@ def test_admin_web_azure_start_login_redirects_and_sets_state(tmp_path: Path, mo
     assert response.headers["location"].startswith(
         "https://login.microsoftonline.com/tenant-123/oauth2/v2.0/authorize?"
     )
-    assert "agent_sandbox_admin_oidc=" in response.headers.get("set-cookie", "")
+    assert "evander_admin_oidc=" in response.headers.get("set-cookie", "")
 
 
 def test_admin_web_azure_callback_rejects_bad_state(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
@@ -8815,16 +8886,16 @@ def test_admin_web_azure_callback_rejects_bad_state(tmp_path: Path, monkeypatch)
 
 
 def test_admin_web_azure_callback_rejects_wrong_tenant(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
@@ -8854,16 +8925,16 @@ def test_admin_web_azure_callback_rejects_wrong_tenant(tmp_path: Path, monkeypat
 
 
 def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
@@ -8895,17 +8966,17 @@ def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, m
 def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_session(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/#workflow")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/#workflow")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
@@ -8934,7 +9005,7 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
 
     assert callback.status_code == 303
     assert callback.headers["location"] == "/#workflow"
-    assert "agent_sandbox_admin_session=" in callback.headers.get("set-cookie", "")
+    assert "evander_admin_session=" in callback.headers.get("set-cookie", "")
     assert session.status_code == 200
     assert session.json()["authenticated"] is True
     assert session.json()["auth_mode"] == "azure_sso"
@@ -8947,16 +9018,16 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
 
 
 def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
@@ -9311,8 +9382,8 @@ def test_admin_web_workflow_tutorial_preference_defaults_and_persists(
 def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
@@ -9769,7 +9840,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
             WorkerSummary(
                 worker_id="trigger",
                 name="Trigger",
-                unit="agent-sandbox-trigger-orchestrator.service",
+                unit="evander-trigger-orchestrator.service",
                 active_state=f"active-{calls}",
                 running=True,
                 failed=False,
@@ -10297,7 +10368,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
 def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("AGENT_SANDBOX_MODEL_PRICING_PATH", raising=False)
+    monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
@@ -10334,7 +10405,7 @@ def test_admin_web_model_pricing_catalog_status_reports_env_override(
         json.dumps(_pricing_catalog_payload()),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
@@ -10358,7 +10429,7 @@ def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
     catalog_path = tmp_path / "runtime" / "pricing.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text("not-json", encoding="utf-8")
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
@@ -10391,7 +10462,7 @@ def test_admin_web_model_pricing_catalog_write_requires_unlock_and_revision(
         json.dumps(_pricing_catalog_payload(version="initial-pricing", model="initial-model")),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     clear_model_pricing_catalog_cache()
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -10440,7 +10511,7 @@ def test_admin_web_model_pricing_catalog_write_rejects_invalid_catalog(
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     initial_catalog = _pricing_catalog_payload(version="initial-pricing", model="initial-model")
     catalog_path.write_text(json.dumps(initial_catalog), encoding="utf-8")
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     _unlock_privileged_operations(client)
     initial_revision = client.get("/api/configuration/model-pricing").json()["revision"]
@@ -10461,7 +10532,7 @@ def test_admin_web_model_pricing_catalog_write_creates_missing_env_catalog(
     tmp_path: Path, monkeypatch
 ) -> None:
     catalog_path = tmp_path / "runtime" / "pricing.json"
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     missing_response = client.get("/api/configuration/model-pricing")
     assert missing_response.status_code == 200
@@ -10487,7 +10558,7 @@ def test_admin_web_model_pricing_catalog_write_creates_missing_env_catalog(
 def test_admin_web_model_pricing_catalog_write_uses_default_catalog_path(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("AGENT_SANDBOX_MODEL_PRICING_PATH", raising=False)
+    monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
     catalog_path = tmp_path / "config" / "model-pricing.openai.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -10526,7 +10597,7 @@ def test_admin_web_model_pricing_catalog_write_invalidates_cached_default_catalo
         json.dumps(_pricing_catalog_payload(version="initial-pricing", model="initial-model")),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     clear_model_pricing_catalog_cache()
     assert default_model_pricing_catalog().version == "initial-pricing"
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
@@ -11049,10 +11120,10 @@ def test_admin_web_chat_settings_write_requires_privileged_unlock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
@@ -11317,7 +11388,7 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             metadata={
                 "libvirt_vm_template": {
-                    "image_ref": "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+                    "image_ref": "/var/lib/libvirt/images/evander/dotnet-agent.qcow2",
                     "template_alias": "dotnet",
                 }
             },
@@ -12200,7 +12271,7 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
     assert body["libvirt"]["templates"] == [
         {"alias": "default", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"}
     ]
-    assert body["container_worker"]["default_image"] == "agent-sandbox-runner:latest"
+    assert body["container_worker"]["default_image"] == "evander-runner:latest"
     assert body["container_worker"]["images"] == []
     assert body["communication_targets"] == []
 
@@ -12586,7 +12657,7 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
     assert create_response.json()["container_image"] == "runner-dotnet-playwright:2026-06-05"
     assert create_response.json()["container_image_alias"] == "dotnet-playwright"
     assert fake_backend.written
-    assert "/home/agent/.agent-sandbox/session.env" in fake_backend.written[0][1]
+    assert "/home/agent/.evander/session.env" in fake_backend.written[0][1]
     assert "/home/agent/.codex/config.toml" in fake_backend.written[0][1]
     manifest = service.runtime.session_repository.get_session("container-session")
     assert manifest is not None
@@ -12793,7 +12864,7 @@ def test_admin_web_agents_delete_vm_removes_unambiguous_session(
         calls.append(cmd)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
     client = TestClient(create_app(service))
 
     response = client.delete("/api/admin/agents/lab-vm?backend=libvirt_vm")

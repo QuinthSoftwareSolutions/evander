@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_sandbox.models import (
+from evander.models import (
     AdoBacklogCreateRequest,
     AdoBacklogDeleteRequest,
     AdoBacklogDeleteResponse,

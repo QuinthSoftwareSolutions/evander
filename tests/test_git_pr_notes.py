@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.git_pr_notes import (
+from evander.git_pr_notes import (
     AGENT_PR_NOTES_REF,
     agent_pr_notes_ref_for_session,
     is_agent_pr_notes_ref,

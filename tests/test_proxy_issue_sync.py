@@ -7,16 +7,16 @@ from typing import Any
 import yaml
 from pydantic import TypeAdapter
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.daemons.proxy_issue_sync import (
+from evander.config import GatewayConfig
+from evander.daemons.proxy_issue_sync import (
     sync_proxy_issues_once,
     upsert_ado_proxy_issue_from_remote_payload,
 )
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
-from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference
-from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
+from evander.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
+from evander.models import LocalIssueRecord, RemoteIssueReference
+from evander.storage import JsonStore
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 
 
 def _proxy_issue(

@@ -1,4 +1,26 @@
-## Unreleased
+# Changelog
+
+## 2026-06-30 - Refactoring, renaming and UI improvements
+
+- Replaced hand-crafted Admin Web action icons with Lucide icons and made edit
+  and delete actions use canonical shared glyphs across the workflow editor.
+
+- Added first-class Admin Web add-on management for restart-gated add-on
+  enablement, loaded/pending status, workflow-reference warnings, and aligned
+  host/trigger add-on loader config writes.
+
+- Renamed the operational project identity to Evander: the Python package is
+  now `evander`, console scripts and systemd units use the `evander-*` prefix,
+  environment variables use `EVANDER_*`, and guest state/config paths now use
+  `.evander` and `/etc/evander`.
+
+- Added an internal workflow event catalog so known stable event names can appear
+  as `trigger:event.event_type` suggestions in Admin Web, including Team Add-on
+  runtime events when the add-on is loaded.
+
+- Added provider-neutral remote issue workflow primitives for querying, matching,
+  and comment polling across Azure DevOps work items and GitHub issues, while
+  keeping the existing ADO node types as compatibility surfaces.
 
 - Added cursor-key navigation to the guided `evander-cli setup` checklist and
   interactive single/multi-select menus while preserving typed prompts for
@@ -176,17 +198,17 @@
 - Fixed MCP gateway refactor regressions that prevented server construction, miswired extracted
   communication and ADO helpers, and pointed the gateway CLI at `src/runtime`.
 
-- Moved approval MCP gateway tools into `agent_sandbox.gateway.approval_tools` while preserving behavior.
+- Moved approval MCP gateway tools into `evander.gateway.approval_tools` while preserving behavior.
 
-- Moved communication MCP gateway tools into `agent_sandbox.gateway.communication_tools` while preserving behavior.
+- Moved communication MCP gateway tools into `evander.gateway.communication_tools` while preserving behavior.
 
-- Moved PR/feedback MCP gateway tools into `agent_sandbox.gateway.pr_tools` while preserving behavior.
+- Moved PR/feedback MCP gateway tools into `evander.gateway.pr_tools` while preserving behavior.
 
-- Moved Azure DevOps backlog, work-item, report, identity, and activity MCP gateway tools into `agent_sandbox.gateway.ado_tools` while preserving behavior.
+- Moved Azure DevOps backlog, work-item, report, identity, and activity MCP gateway tools into `evander.gateway.ado_tools` while preserving behavior.
 
-- Moved agent status and log MCP gateway tools into `agent_sandbox.gateway.agent_tools` while preserving behavior.
+- Moved agent status and log MCP gateway tools into `evander.gateway.agent_tools` while preserving behavior.
 
-- Moved issue lifecycle MCP gateway tools into `agent_sandbox.gateway.issue_tools` while preserving behavior.
+- Moved issue lifecycle MCP gateway tools into `evander.gateway.issue_tools` while preserving behavior.
 
 - Kept gateway VM visibility, VM-oriented CLI commands, issue/approval CLI commands, and Admin
   Web Teams auth routes on the `AdminService` compatibility facade instead of extracted
@@ -195,17 +217,15 @@
 - Replaced dynamic workflow report helper imports with explicit imports and kept workflow
   Admin Web/gateway entry points on the `AdminService` compatibility facade.
 
-- Moved admin MCP gateway tools into `agent_sandbox.gateway.admin_tools` while preserving behavior.
+- Moved admin MCP gateway tools into `evander.gateway.admin_tools` while preserving behavior.
 
-- Moved chat and agent-prompt MCP gateway tools into `agent_sandbox.gateway.chat_tools` while preserving behavior.
-- Moved semantic MCP gateway tool registration into `agent_sandbox.gateway.semantic_tools` while preserving existing behavior.
-- Moved MSSQL MCP gateway tool registration into `agent_sandbox.gateway.mssql_tools` and added registration coverage while preserving existing tool names and request/response behavior.
+- Moved chat and agent-prompt MCP gateway tools into `evander.gateway.chat_tools` while preserving behavior.
+- Moved semantic MCP gateway tool registration into `evander.gateway.semantic_tools` while preserving existing behavior.
+- Moved MSSQL MCP gateway tool registration into `evander.gateway.mssql_tools` and added registration coverage while preserving existing tool names and request/response behavior.
 - Split the MCP gateway Starlette app and CLI bootstrap into canonical `gateway.app` and `gateway.cli` modules while retaining compatibility exports.
 - Added a shared MCP gateway dependency object for common admin, issue, chat, semantic, and communication artifact services.
 - Split MCP gateway request, session, tool audit, and approval diagnostic helpers into focused modules while preserving existing helper names.
 - Refactored the MCP gateway into a package with a `server` module and domain registration module placeholders while preserving existing public imports and tool names.
-
-# Changelog
 
 ## 2026-06-28 - First-Run Setup TUI
 
@@ -300,7 +320,7 @@
 
 ## 2026-06-27 - Admin Service Facade Guidance
 
-- Documented `AdminService` as the legacy/stable integration facade and clarified that new admin domain logic belongs in narrower services under `src/agent_sandbox/admin/services/`.
+- Documented `AdminService` as the legacy/stable integration facade and clarified that new admin domain logic belongs in narrower services under `src/evander/admin/services/`.
 
 ## 2026-06-27 - Admin Service Protocol Ports
 
@@ -436,7 +456,7 @@
 ## 2026-06-26 - Evander CLI Rename
 
 - Added `evander-cli` as the preferred host CLI entry point while keeping
-  `agent-sandbox-cli` as a compatibility alias.
+  `evander-cli` as a compatibility alias.
 - Updated service templates, helper scripts, operator notifications, tests, and
   docs to use `evander-cli` for new installs and examples.
 
@@ -1784,7 +1804,7 @@ material. Newer entries are added incrementally as changes land.
   prompt or response content.
 - Fixed Claude transcript backfill for libvirt Team agents by scanning
   VM-local transcripts via the session's last-known VM IP with the configured
-  VM SSH key and agent-sandbox known-hosts alias, and made transcript rows
+  VM SSH key and evander known-hosts alias, and made transcript rows
   supersede duplicate Anthropic relay rows only for the same provider request.
 - Made Team cost loading non-blocking so the Team page renders state and
   templates immediately while cost counters fill in asynchronously.
@@ -2487,7 +2507,7 @@ material. Newer entries are added incrementally as changes land.
 - Restored the checked-in Admin Web entrypoint to the bundled workflow-editor
   asset already present in `dist/assets`, and made approval notification deep
   links fall back to `config/admin-web.env` when non-admin services do not carry
-  `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL` in their process environment.
+  `EVANDER_ADMIN_WEB_PUBLIC_BASE_URL` in their process environment.
 
 ## 2026-06-10 - Agents Page Create Modal Immutable Configuration
 
@@ -3286,7 +3306,7 @@ material. Newer entries are added incrementally as changes land.
 ## 2026-05-31 - DIDWW Bridge ARI Registration
 
 - Opened the Asterisk ARI event stream before originating DIDWW call channels so
-  Asterisk registers the `agent_sandbox_didww` Stasis app before channels enter
+  Asterisk registers the `evander_didww` Stasis app before channels enter
   it.
 
 ## 2026-05-31 - Phone Config Labels
@@ -3697,7 +3717,7 @@ material. Newer entries are added incrementally as changes land.
 
 - Added a SQLite read index for Admin Web Tool Calls while keeping
   `runtime/audit.jsonl` as the canonical append-only audit journal.
-- Added `agent-sandbox-cli rebuild-audit-index` for rebuilding `runtime/audit.db`
+- Added `evander-cli rebuild-audit-index` for rebuilding `runtime/audit.db`
   from the JSONL audit log.
 - Fixed directory-filtered audit queries so incomplete indexes fall back to the
   canonical JSONL log and directory prefixes containing SQLite wildcard
@@ -3757,7 +3777,7 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-05-25 - DIDWW SIP Realtime Media Bridge
 
-- Added `agent-sandbox-didww-sip-bridge`, a host-side Asterisk ARI bridge that
+- Added `evander-didww-sip-bridge`, a host-side Asterisk ARI bridge that
   originates DIDWW trunk calls and streams RTP audio to OpenAI Realtime.
 - Added the bridge API, durable call state, RTP packet handling, Realtime event
   handling, systemd/config examples, and focused contract tests.
@@ -3966,7 +3986,7 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-05-23 - Cached Runner Archive Reuse
 
-- Added a sidecar manifest contract for `dist/agent-sandbox-runner.tar` so
+- Added a sidecar manifest contract for `dist/evander-runner.tar` so
   unchanged runner-image inputs reuse the cached archive instead of rebuilding
   Docker output.
 - Documented the `RUNNER_FORCE_REBUILD=1` and `--force` refresh paths for
@@ -4174,7 +4194,7 @@ material. Newer entries are added incrementally as changes land.
 ## 2026-05-21 - Container Git Mirror Concurrency
 
 - Serialized container-worker Git mirror creation and refresh through the same per-mirror
-  `agent-sandbox-sync.lock` used by the restricted SSH upload-pack wrapper, preventing concurrent
+  `evander-sync.lock` used by the restricted SSH upload-pack wrapper, preventing concurrent
   `effect:agent:clone-repo` executions from mutating a shared mirror while another worker clone is
   reading it.
 
@@ -4385,11 +4405,11 @@ VM/container bootstrap, docs, tests.
 - Standardized `/artifacts` as the agent-visible artifacts folder for both
   container workers and VM guests. Container workers expose a session artifact
   read endpoint; VM setup creates an agent-writable `/artifacts` directory and
-  exports `AGENT_SANDBOX_ARTIFACTS_DIR`.
+  exports `EVANDER_ARTIFACTS_DIR`.
 
 ## 2026-05-06 - Queued Prompt Thread ID Handling
 
-Touched areas: `src/agent_sandbox/effects/providers/lifecycle_hooks.py`,
+Touched areas: `src/evander/effects/providers/lifecycle_hooks.py`,
 effect orchestrator tests.
 
 - Stopped queued libvirt `effect:agent:enqueue-prompt` dispatch from publishing
@@ -4401,7 +4421,7 @@ effect orchestrator tests.
 
 ## 2026-05-06 - Azure PR Review Publish Failure Handling
 
-Touched areas: `src/agent_sandbox/services.py`, PR publish tests.
+Touched areas: `src/evander/services.py`, PR publish tests.
 
 - Changed Azure DevOps `submit_pr_review` publishing to post inline comments
   before the summary comment, so invalid inline anchors no longer leave behind a
@@ -4420,7 +4440,7 @@ Touched areas: `frontend/workflow-editor/`.
 
 ## 2026-05-06 - Agent Prompt Lifecycle Ports
 
-Touched areas: `src/agent_sandbox/effects/`, `src/agent_sandbox/workflow/`,
+Touched areas: `src/evander/effects/`, `src/evander/workflow/`,
 `frontend/workflow-editor/`, workflow pack config, orchestration tests.
 
 - Added named `started` and `completed` lifecycle ports to
@@ -4431,7 +4451,7 @@ Touched areas: `src/agent_sandbox/effects/`, `src/agent_sandbox/workflow/`,
 
 ## 2026-05-03 to 2026-05-04 - Worker Isolation, Package Cache, and Private Git
 
-Touched areas: `ansible/`, `src/agent_sandbox/worker/`,
+Touched areas: `ansible/`, `src/evander/worker/`,
 `docs/container-worker-backend.md`, worker deployment tests.
 
 - Added a control-plane apt relay and worker apt proxy path so worker hosts can
@@ -4451,7 +4471,7 @@ Touched areas: `ansible/`, `src/agent_sandbox/worker/`,
 
 ## 2026-05-01 to 2026-05-02 - Admin Chat Assistant and Relay Hardening
 
-Touched areas: `src/agent_sandbox/admin/`, `src/agent_sandbox/effects/`,
+Touched areas: `src/evander/admin/`, `src/evander/effects/`,
 `frontend/workflow-editor/`, `docs/execution-backends.md`, relay and policy
 tests.
 
@@ -4471,7 +4491,7 @@ tests.
 
 ## 2026-04-29 to 2026-04-30 - Container Agents, Workflow Packs, and Agents UI
 
-Touched areas: `src/agent_sandbox/execution/`, `src/agent_sandbox/worker/`,
+Touched areas: `src/evander/execution/`, `src/evander/worker/`,
 `frontend/workflow-editor/`, `config/workflow-packs/`, `ansible/`, container
 worker tests.
 
@@ -4495,7 +4515,7 @@ worker tests.
 
 ## 2026-04-25 to 2026-04-28 - Container Worker Backend and Deployment Hardening
 
-Touched areas: `src/agent_sandbox/execution/`, `src/agent_sandbox/worker/`,
+Touched areas: `src/evander/execution/`, `src/evander/worker/`,
 `ansible/`, `scripts/`, communication target config, container worker tests.
 
 - Added the execution backend abstraction and the first container worker daemon
@@ -4518,8 +4538,8 @@ Touched areas: `src/agent_sandbox/execution/`, `src/agent_sandbox/worker/`,
 
 ## 2026-04-21 to 2026-04-23 - Admin Deployment, VM Abstraction, and Repository Semantics
 
-Touched areas: `src/agent_sandbox/admin/`, `src/agent_sandbox/repositories/`,
-`src/agent_sandbox/vm/`, `frontend/workflow-editor/`, `ansible/`, admin tests.
+Touched areas: `src/evander/admin/`, `src/evander/repositories/`,
+`src/evander/vm/`, `frontend/workflow-editor/`, `ansible/`, admin tests.
 
 - Split issue VM repository bootstrap into discrete workflow steps (`c61b1764`).
 - Expanded and polished the Admin Web UI, issue views, wake worker support,
@@ -4542,8 +4562,8 @@ Touched areas: `src/agent_sandbox/admin/`, `src/agent_sandbox/repositories/`,
 
 ## 2026-04-19 to 2026-04-20 - Workflow Pack Architecture and Live Reload
 
-Touched areas: `src/agent_sandbox/workflow/`, `src/agent_sandbox/effects/`,
-`src/agent_sandbox/triggers/`, workflow pack config, orchestration tests.
+Touched areas: `src/evander/workflow/`, `src/evander/effects/`,
+`src/evander/triggers/`, workflow pack config, orchestration tests.
 
 - Switched workflow editor runtime updates to SSE and made workflow run updates
   event-driven (`1c3483ec`, `f82c258a`).
@@ -4570,8 +4590,8 @@ Touched areas: `src/agent_sandbox/workflow/`, `src/agent_sandbox/effects/`,
 
 ## 2026-04-11 to 2026-04-18 - Teams, ADO Backlog, Agent Prompts, and Reactions
 
-Touched areas: `src/agent_sandbox/gateway.py`, `src/agent_sandbox/services.py`,
-`src/agent_sandbox/models.py`, Teams/ADO tests, prompt store, frontend/admin
+Touched areas: `src/evander/gateway.py`, `src/evander/services.py`,
+`src/evander/models.py`, Teams/ADO tests, prompt store, frontend/admin
 integration.
 
 - Added Teams ingest workflow support, Teams chat support, Teams message limits,
@@ -4599,8 +4619,8 @@ integration.
 
 ## 2026-04-03 to 2026-04-09 - Trigger/Effect Orchestration and Workflow Editor
 
-Touched areas: `src/agent_sandbox/triggers/`, `src/agent_sandbox/effects/`,
-`src/agent_sandbox/workflow/`, `frontend/workflow-editor/`, orchestration docs
+Touched areas: `src/evander/triggers/`, `src/evander/effects/`,
+`src/evander/workflow/`, `frontend/workflow-editor/`, orchestration docs
 and conformance tests.
 
 - Added discriminated trigger models, event envelopes, trigger provider
@@ -4628,8 +4648,8 @@ and conformance tests.
 
 ## 2026-03-31 to 2026-04-02 - Scheduled Wake, Provider Models, and Copilot Provider
 
-Touched areas: `src/agent_sandbox/gateway.py`, `src/agent_sandbox/runtime.py`,
-`src/agent_sandbox/admin/`, `scripts/`, model and heartbeat tests.
+Touched areas: `src/evander/gateway.py`, `src/evander/runtime.py`,
+`src/evander/admin/`, `scripts/`, model and heartbeat tests.
 
 - Added scheduled resume gateway models, durable wake request storage, heartbeat
   dispatch, guardrail config, and wake schedule CRUD across CLI/AdminService
@@ -4652,8 +4672,8 @@ Touched areas: `src/agent_sandbox/gateway.py`, `src/agent_sandbox/runtime.py`,
 
 ## 2026-03-28 to 2026-03-30 - Directory Config, Local Issues, Approvals, and Ingest
 
-Touched areas: `src/agent_sandbox/admin/`, `src/agent_sandbox/runtime.py`,
-`src/agent_sandbox/gateway.py`, issue services, worker config, Teams/Discord
+Touched areas: `src/evander/admin/`, `src/evander/runtime.py`,
+`src/evander/gateway.py`, issue services, worker config, Teams/Discord
 ingest workers.
 
 - Added directory-scoped ADO worker and issue setup domains, worker config panels,
@@ -4686,8 +4706,8 @@ ingest workers.
 
 ## 2026-03-24 to 2026-03-27 - Heartbeat, Admin UI, and Directory Foundations
 
-Touched areas: `scripts/`, `src/agent_sandbox/admin/`,
-`src/agent_sandbox/cli.py`, `src/agent_sandbox/runtime.py`, `docs/`, `systemd/`.
+Touched areas: `scripts/`, `src/evander/admin/`,
+`src/evander/cli.py`, `src/evander/runtime.py`, `docs/`, `systemd/`.
 
 - Added the host heartbeat worker loop, systemd wiring, service env overrides,
   wake-idle-session behavior, audit/status summaries, observe mode, retry
@@ -4714,8 +4734,8 @@ Touched areas: `scripts/`, `src/agent_sandbox/admin/`,
 
 ## 2026-03-21 to 2026-03-23 - Issue VM Automation, ADO Worker, Email, and PR Feedback
 
-Touched areas: `scripts/`, `src/agent_sandbox/ado_issue_worker.py`,
-`src/agent_sandbox/email/`, `src/agent_sandbox/gateway.py`, Git automation docs,
+Touched areas: `scripts/`, `src/evander/ado_issue_worker.py`,
+`src/evander/email/`, `src/evander/gateway.py`, Git automation docs,
 ADO/PR feedback tests.
 
 - Refactored email into provider abstractions with mailbox routing, mailbox and
@@ -4750,10 +4770,10 @@ ADO/PR feedback tests.
 
 ## 2026-03-20 - Initial Platform, Discord, and Core Relays
 
-Touched areas: `src/agent_sandbox/`, `scripts/`, `config/`, `systemd/`,
+Touched areas: `src/evander/`, `scripts/`, `config/`, `systemd/`,
 `README.md`, `docs/`, bootstrap and relay tests.
 
-- Created the initial Agent Sandbox scaffold: config, runtime storage, audit,
+- Created the initial Evander scaffold: config, runtime storage, audit,
   policy, MCP gateway, OpenAI relay, firewall/systemd templates, VM lifecycle
   scripts, cloud-init, Git remote helpers, docs, and tests (`b53b28ed`).
 - Added VM bootstrap improvements, script help coverage, optional .NET and

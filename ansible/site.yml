@@ -1,17 +1,17 @@
 ---
-- name: Deploy agent-sandbox to Ubuntu 24.04 hosts
-  hosts: agent_sandbox_hosts
+- name: Deploy evander to Ubuntu 24.04 hosts
+  hosts: evander_hosts
   become: true
   vars:
-    agent_sandbox_repo_parent: "{{ agent_sandbox_deploy_path | dirname }}"
-    agent_sandbox_expected_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
+    evander_repo_parent: "{{ evander_deploy_path | dirname }}"
+    evander_expected_runtime_dir: "{{ evander_deploy_path }}/runtime"
   pre_tasks:
     - name: Assert the service profile is supported
       ansible.builtin.assert:
         that:
-          - agent_sandbox_service_profile in ['full', 'control_plane_only']
+          - evander_service_profile in ['full', 'control_plane_only']
         fail_msg: >-
-          agent_sandbox_service_profile must be either 'full' or 'control_plane_only'.
+          evander_service_profile must be either 'full' or 'control_plane_only'.
           The profile controls whether the deployment prepares local libvirt guests and
           the repo-native guest firewall.
         success_msg: Service profile is supported.
@@ -19,45 +19,45 @@
     - name: Assert control-plane-only hosts do not enable the guest firewall
       ansible.builtin.assert:
         that:
-          - not (agent_sandbox_services.firewall | bool)
+          - not (evander_services.firewall | bool)
         fail_msg: >-
-          agent_sandbox_services.firewall must be false for control_plane_only deployments.
+          evander_services.firewall must be false for control_plane_only deployments.
           The repo-native firewall manages the isolated libvirt guest network and should
           only run with the full profile.
         success_msg: Guest firewall is disabled for control-plane-only profile.
-      when: agent_sandbox_service_profile == 'control_plane_only'
+      when: evander_service_profile == 'control_plane_only'
 
     - name: Assert the runtime directory matches the repo-native service layout
       ansible.builtin.assert:
         that:
-          - agent_sandbox_runtime_dir == agent_sandbox_expected_runtime_dir
+          - evander_runtime_dir == evander_expected_runtime_dir
         fail_msg: >-
-          agent_sandbox_runtime_dir must currently be {{ agent_sandbox_expected_runtime_dir }}
+          evander_runtime_dir must currently be {{ evander_expected_runtime_dir }}
           because scripts/install_systemd_units.sh renders systemd units that hardcode
-          {{ agent_sandbox_deploy_path }}/runtime.
+          {{ evander_deploy_path }}/runtime.
         success_msg: Runtime directory matches the repo-native systemd layout.
 
     - name: Check whether an existing runtime directory is present
       ansible.builtin.stat:
-        path: "{{ agent_sandbox_runtime_dir }}"
-      register: agent_sandbox_existing_runtime_dir
+        path: "{{ evander_runtime_dir }}"
+      register: evander_existing_runtime_dir
 
     - name: Announce deployment in control-plane runtime
       ansible.builtin.copy:
-        dest: "{{ agent_sandbox_deployment_status_path }}"
+        dest: "{{ evander_deployment_status_path }}"
         mode: "0644"
         content: |
           {
             "active": true,
-            "message": {{ agent_sandbox_deployment_status_message | to_json }},
+            "message": {{ evander_deployment_status_message | to_json }},
             "source": "ansible",
             "started_at": {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') | to_json }},
             "updated_at": {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') | to_json }},
-            "ttl_seconds": {{ agent_sandbox_deployment_status_ttl_seconds | int }}
+            "ttl_seconds": {{ evander_deployment_status_ttl_seconds | int }}
           }
       when:
-        - agent_sandbox_existing_runtime_dir.stat.exists | default(false)
-        - agent_sandbox_existing_runtime_dir.stat.isdir | default(false)
+        - evander_existing_runtime_dir.stat.exists | default(false)
+        - evander_existing_runtime_dir.stat.isdir | default(false)
 
   roles:
     - role: host_prereqs
@@ -79,8 +79,8 @@
   post_tasks:
     - name: Clear deployment status runtime flag
       ansible.builtin.file:
-        path: "{{ agent_sandbox_deployment_status_path }}"
+        path: "{{ evander_deployment_status_path }}"
         state: absent
       when:
-        - agent_sandbox_existing_runtime_dir.stat.exists | default(false)
-        - agent_sandbox_existing_runtime_dir.stat.isdir | default(false)
+        - evander_existing_runtime_dir.stat.exists | default(false)
+        - evander_existing_runtime_dir.stat.isdir | default(false)

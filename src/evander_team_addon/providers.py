@@ -11,55 +11,56 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
-from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from agent_sandbox.effects.providers.artifacts import (
+from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
+from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+from evander.effects.providers.artifacts import (
     ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
 )
-from agent_sandbox.effects.providers.base import (
+from evander.effects.providers.base import (
     EffectLifecycleHookBase,
     EffectProviderBase,
     EffectRuntimeContext,
 )
-from agent_sandbox.artifact_spaces import (
+from evander.artifact_spaces import (
     ArtifactSpacePermissionError,
     ArtifactSpaceStore,
     normalize_space_path,
 )
-from agent_sandbox.events.internal import (
+from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
     internal_event_store_path,
 )
-from agent_sandbox.events.scheduled import (
+from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
-from agent_sandbox.events.provider_models import (
+from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
 )
-from agent_sandbox.events.models import TriggerEvent, WorkflowNodeEnvelope
-from agent_sandbox.models import tool_name_value
-from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
-from agent_sandbox.published_artifacts import PublishedArtifactStore
-from agent_sandbox.queries.providers.base import QueryProviderBase
-from agent_sandbox.triggers.delivery import (
+from evander.events.models import TriggerEvent, WorkflowNodeEnvelope
+from evander.models import tool_name_value
+from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.published_artifacts import PublishedArtifactStore
+from evander.queries.providers.base import QueryProviderBase
+from evander.triggers.delivery import (
     TriggerDeliveryRepository,
     TriggerDeliverySourceItem,
     TriggerDeliveryStore,
     TriggerDeliverySubscription,
 )
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
-from agent_sandbox.workflow.catalog import (
+from evander.triggers.providers.base import TriggerProviderBase
+from evander.workflow.catalog import (
     WorkflowEditorFieldDefinition,
     WorkflowEditorNodeCatalogEntry,
+    WorkflowInternalEventCatalogEntry,
 )
-from agent_sandbox.workflow.contracts import register_node_output_schema
-from agent_sandbox.workflow.plugins import ProviderPluginRegistration
+from evander.workflow.contracts import register_node_output_schema
+from evander.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
@@ -134,7 +135,16 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
+from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.ephemeral import (
+    EPHEMERAL_COMPLETED_EVENT_TYPE,
+    EPHEMERAL_REQUESTED_EVENT_TYPE,
+)
+from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
+from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.review import _apply_review_request, _review_request_was_created
+from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
 from .services.runtime_service import TeamRuntimeService
@@ -1217,7 +1227,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Bare repo name",
                 "string",
                 description=(
-                    "Optional dropbox bare repository name resolved under AGENT_SANDBOX_GIT_ROOT."
+                    "Optional dropbox bare repository name resolved under EVANDER_GIT_ROOT."
                 ),
             ),
         ],
@@ -1269,6 +1279,56 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _revision_field(),
         ],
+    ),
+)
+
+
+def _team_internal_event(
+    event_type: str, label: str, description: str
+) -> WorkflowInternalEventCatalogEntry:
+    return WorkflowInternalEventCatalogEntry(
+        event_type=event_type,
+        label=label,
+        description=description,
+        source="Team Add-on",
+    )
+
+
+_TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
+    _team_internal_event(
+        CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+        "Team chat message queued",
+        "Published when an operator chat message is queued for a Team agent.",
+    ),
+    _team_internal_event(
+        AGENT_WAKE_REQUESTED_EVENT_TYPE,
+        "Team agent wake requested",
+        "Published when a Team agent should be considered for an explicit wake.",
+    ),
+    _team_internal_event(
+        EPHEMERAL_REQUESTED_EVENT_TYPE,
+        "Team ephemeral assignment requested",
+        "Published when a persistent Team agent requests ephemeral execution work.",
+    ),
+    _team_internal_event(
+        EPHEMERAL_COMPLETED_EVENT_TYPE,
+        "Team ephemeral assignment completed",
+        "Published when an ephemeral Team assignment returns a result.",
+    ),
+    _team_internal_event(
+        OPERATOR_ESCALATION_EVENT_TYPE,
+        "Team operator escalation requested",
+        "Published when Team automation needs an operator escalation notification.",
+    ),
+    _team_internal_event(
+        GIT_PROMOTION_EVENT_TYPE,
+        "Team Git promotion requested",
+        "Published when Team release automation requests a Git branch promotion.",
+    ),
+    _team_internal_event(
+        GIT_RELEASE_RECOVERY_EVENT_TYPE,
+        "Team Git release recovery requested",
+        "Published when Team release automation requests release recovery promotion.",
     ),
 )
 
@@ -3448,6 +3508,7 @@ def register_providers() -> ProviderPluginRegistration:
             ),
         },
         workflow_editor_catalog_entries=_TEAM_WORKFLOW_EDITOR_CATALOG,
+        internal_event_catalog_entries=_TEAM_INTERNAL_EVENT_CATALOG,
     )
 
 
@@ -6067,7 +6128,7 @@ def _resolve_bare_repo_path(
     if not bare_repo_name:
         raise ValueError("bare_repo_path or bare_repo_name is required")
     normalized = bare_repo_name if bare_repo_name.endswith(".git") else f"{bare_repo_name}.git"
-    git_root = os.environ.get("AGENT_SANDBOX_GIT_ROOT")
+    git_root = os.environ.get("EVANDER_GIT_ROOT")
     root = Path(git_root) if git_root else Path(__file__).resolve().parents[2] / "git-remotes"
     return root / normalized
 
@@ -6104,7 +6165,7 @@ def _publish_review_branch(
         )
 
     source_ref = commit_sha if commit_sha is not None else f"refs/heads/{source_branch}"
-    temp_ref = f"refs/agent-sandbox/team-promotions/{target_branch}"
+    temp_ref = f"refs/evander/team-promotions/{target_branch}"
     target_ref = f"refs/heads/{target_branch}"
     fetch = _git(
         "fetch",
@@ -6199,7 +6260,7 @@ def _consolidate_git_branches(
                     f"bare repo not found: {bare_repo_path}",
                 )
             ref_hash = hashlib.sha256(f"{target_branch}\0{source}".encode("utf-8")).hexdigest()[:16]
-            temp_ref = f"refs/agent-sandbox/team-consolidations/{ref_hash}"
+            temp_ref = f"refs/evander/team-consolidations/{ref_hash}"
             fetch = _git(
                 "fetch",
                 "--no-tags",

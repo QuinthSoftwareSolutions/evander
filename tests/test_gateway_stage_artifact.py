@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox import gateway
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.agent_session import build_container_session_manifest
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.runtime import build_runtime
+from evander import gateway
+from evander.config import GatewayConfig
+from evander.effects.providers.agent_session import build_container_session_manifest
+from evander.gateway import create_server
+from evander.models import SessionManifest, ToolName
+from evander.runtime import build_runtime
 
 
 class FakeArtifactStageEffectProvider:

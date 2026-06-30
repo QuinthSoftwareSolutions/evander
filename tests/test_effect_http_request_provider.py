@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
-from agent_sandbox.events.provider_models import HttpRequestEffectDefinition
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.http_request import HttpRequestEffectProvider
+from evander.events.provider_models import HttpRequestEffectDefinition
 
 
 def _runtime_context(tmp_path: Path, *, timeout_seconds: float = 12.5) -> EffectRuntimeContext:
@@ -50,7 +50,7 @@ def _install_mock_client(
         kwargs["transport"] = transport
         return original_client(*args, **kwargs)
 
-    monkeypatch.setattr("agent_sandbox.effects.providers.http_request.httpx.Client", _client_factory)
+    monkeypatch.setattr("evander.effects.providers.http_request.httpx.Client", _client_factory)
 
 
 def test_http_request_provider_gets_json_response_without_payload(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.repositories.script_run_requests import ScriptRunRequestStore
+from evander.repositories.script_run_requests import ScriptRunRequestStore
 
 
 def test_enqueue_persists_expected_shape(tmp_path: Path) -> None:

@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.vm.defaults_config import VmDefaultsConfigResolver, render_vm_defaults_exports
+from evander.config import GatewayConfig
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.vm.defaults_config import VmDefaultsConfigResolver, render_vm_defaults_exports
 
 
 def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) -> None:

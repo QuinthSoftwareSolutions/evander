@@ -13,20 +13,20 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.execution import ExecutionStatusKind
-from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
-from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
-from agent_sandbox.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
-from agent_sandbox.effects.providers.base import (
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.execution import ExecutionStatusKind
+from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+from evander.effects.providers.base import (
     EffectProviderExecutionError,
     EffectRuntimeContext,
 )
-from agent_sandbox.effects.providers.session_renew_if_expired import (
+from evander.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
 )
-from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
-from agent_sandbox.daemons.effect_orchestrator import (
+from evander.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
+from evander.daemons.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
     ExecutionGraph,
@@ -43,17 +43,17 @@ from agent_sandbox.daemons.effect_orchestrator import (
     EffectOrchestratorCycleResult,
     main,
 )
-from agent_sandbox.events.scheduled import ScheduledInternalEventStore
-from agent_sandbox.messaging.agent_prompt_queue import (
+from evander.events.scheduled import ScheduledInternalEventStore
+from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
 )
-from agent_sandbox.model_usage.runtime import model_usage_store
-from agent_sandbox.orchestration.host_polling import HostFileLockManager
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.messaging.wake_store import WakeRequestStore
-from agent_sandbox.models import (
+from evander.model_usage.runtime import model_usage_store
+from evander.orchestration.host_polling import HostFileLockManager
+from evander.events.models import TriggerEvent
+from evander.messaging.wake_store import WakeRequestStore
+from evander.models import (
     SessionManifest,
     ToolName,
     VmSummary,
@@ -61,10 +61,10 @@ from agent_sandbox.models import (
     WakeResumePromptPayload,
     WakeScheduleDefinition,
 )
-from agent_sandbox.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.queries.registry import QueryProviderFactory
-from agent_sandbox.triggers.queue import TriggerQueueRecord
+from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.queries.registry import QueryProviderFactory
+from evander.triggers.queue import TriggerQueueRecord
 
 
 class _Provider:
@@ -773,7 +773,7 @@ def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
 
 
 def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["agent-sandbox-effect-orchestrator", "--help"])
+    monkeypatch.setattr(sys, "argv", ["evander-effect-orchestrator", "--help"])
 
     with pytest.raises(SystemExit) as excinfo:
         main()
@@ -4991,7 +4991,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
         _update_event_delivery_state=lambda event_id: None,
     )
 
-    caplog.set_level(logging.WARNING, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+    caplog.set_level(logging.WARNING, logger="evander.effects.providers.lifecycle_hooks")
 
     dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
 
@@ -5041,7 +5041,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
     )
     backend_calls: list[tuple[object, object]] = []
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend_calls.append((config, admin_service))
         or _ContainerDispatchBackendStub(),
     )
@@ -5060,7 +5060,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
         ),
     )
 
-    caplog.set_level(logging.WARNING, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+    caplog.set_level(logging.WARNING, logger="evander.effects.providers.lifecycle_hooks")
 
     dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
 
@@ -5609,7 +5609,7 @@ def test_agent_enqueue_prompt_queue_dispatch_skips_and_retries_when_inventory_fa
         _update_event_delivery_state=lambda event_id: None,
     )
 
-    caplog.set_level(logging.ERROR, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+    caplog.set_level(logging.ERROR, logger="evander.effects.providers.lifecycle_hooks")
 
     dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
 
@@ -5840,11 +5840,11 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     backend = _ContainerDispatchBackendStub()
     backend.logs = "prompt complete\nsession id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_prompt.build_execution_backend",
+        "evander.effects.providers.agent_prompt.build_execution_backend",
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
@@ -5973,7 +5973,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     )
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
@@ -6002,7 +6002,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     command = str(backend.started_specs[0].command)
     assert "codex exec resume --last" in command
     assert "resume scheduled work" in command
-    assert "mcp_servers.agent_sandbox.url" in command
+    assert "mcp_servers.evander.url" in command
     assert "workflow_run_id=run-1" in command
     assert "mcp_tool_approval_lease_id=lease-1" in command
     waiting_records = list(execution_store.read_all().values())
@@ -6109,7 +6109,7 @@ def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_qu
     )
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
@@ -6182,7 +6182,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
     )
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
@@ -6338,7 +6338,7 @@ def test_agent_prompt_container_reconciliation_times_out_running_job(
         "still waiting on dotnet test\n"
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_prompt.build_execution_backend",
+        "evander.effects.providers.agent_prompt.build_execution_backend",
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
@@ -8007,7 +8007,7 @@ def test_waiting_agent_prompt_reconciliation_skips_and_retries_when_inventory_fa
         agent_run_status_port=_FailingAgentRunStatusPortStub(),
     )
 
-    caplog.set_level(logging.ERROR, logger="agent_sandbox.effects.providers.agent_prompt")
+    caplog.set_level(logging.ERROR, logger="evander.effects.providers.agent_prompt")
 
     reconciled = AgentPromptEffectProvider.reconcile_waiting(worker=worker)
 
@@ -8490,7 +8490,7 @@ def test_await_agent_reconciliation_skips_and_retries_when_inventory_fails(
     _await_agent_store(worker).put(pending_key, pending)
     worker.agent_run_status_port = _FailingAgentRunStatusPortStub()
 
-    caplog.set_level(logging.ERROR, logger="agent_sandbox.gates.providers.await_agent")
+    caplog.set_level(logging.ERROR, logger="evander.gates.providers.await_agent")
 
     worker.run_once()
 
@@ -9667,7 +9667,7 @@ def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
         )
     )
 
-    caplog.set_level(logging.ERROR, logger="agent_sandbox.gates.providers.await_agent")
+    caplog.set_level(logging.ERROR, logger="evander.gates.providers.await_agent")
 
     result = worker.run_once()
 
@@ -9679,7 +9679,7 @@ def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
 
 
 def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> None:
-    from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+    from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

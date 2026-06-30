@@ -5,7 +5,7 @@ show_help() {
   cat <<'EOH'
 Usage: install_systemd_units.sh [--preflight] [--help]
 
-Render and install the agent-sandbox systemd unit files, then enable them.
+Render and install the evander systemd unit files, then enable them.
 
 Options:
   --preflight  Run validation checks only (non-destructive).
@@ -17,9 +17,9 @@ EOH
 }
 
 MODE="install"
-SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"
-SETUP_EXECUTION_BACKEND="${AGENT_SANDBOX_SETUP_EXECUTION_BACKEND:-}"
-SETUP_EXECUTION_MODEL="${AGENT_SANDBOX_SETUP_EXECUTION_MODEL:-}"
+SERVICE_PROFILE="${EVANDER_SERVICE_PROFILE:-full}"
+SETUP_EXECUTION_BACKEND="${EVANDER_SETUP_EXECUTION_BACKEND:-}"
+SETUP_EXECUTION_MODEL="${EVANDER_SETUP_EXECUTION_MODEL:-}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -392,111 +392,111 @@ render_unit() {
 }
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-gateway.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-gateway.service"
+  "${ROOT_DIR}/systemd/evander-gateway.service.template" \
+  "${SYSTEMD_DIR}/evander-gateway.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-admin-web.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-admin-web.service"
+  "${ROOT_DIR}/systemd/evander-admin-web.service.template" \
+  "${SYSTEMD_DIR}/evander-admin-web.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-openai-relay.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-openai-relay.service"
+  "${ROOT_DIR}/systemd/evander-openai-relay.service.template" \
+  "${SYSTEMD_DIR}/evander-openai-relay.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-didww-sip-bridge.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-didww-sip-bridge.service"
+  "${ROOT_DIR}/systemd/evander-didww-sip-bridge.service.template" \
+  "${SYSTEMD_DIR}/evander-didww-sip-bridge.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-firewall.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-firewall.service"
+  "${ROOT_DIR}/systemd/evander-firewall.service.template" \
+  "${SYSTEMD_DIR}/evander-firewall.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-nuget-relay.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-nuget-relay.service"
+  "${ROOT_DIR}/systemd/evander-nuget-relay.service.template" \
+  "${SYSTEMD_DIR}/evander-nuget-relay.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-npm-audit-facade.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-npm-audit-facade.service"
+  "${ROOT_DIR}/systemd/evander-npm-audit-facade.service.template" \
+  "${SYSTEMD_DIR}/evander-npm-audit-facade.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-http-target-relay.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-http-target-relay.service"
+  "${ROOT_DIR}/systemd/evander-http-target-relay.service.template" \
+  "${SYSTEMD_DIR}/evander-http-target-relay.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-ado-worker.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-ado-worker.service"
+  "${ROOT_DIR}/systemd/evander-ado-worker.service.template" \
+  "${SYSTEMD_DIR}/evander-ado-worker.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-proxy-issue-sync.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-proxy-issue-sync.service"
+  "${ROOT_DIR}/systemd/evander-proxy-issue-sync.service.template" \
+  "${SYSTEMD_DIR}/evander-proxy-issue-sync.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-discord-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-discord-ingest.service"
+  "${ROOT_DIR}/systemd/evander-discord-ingest.service.template" \
+  "${SYSTEMD_DIR}/evander-discord-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-discord-wake.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-discord-wake.service"
+  "${ROOT_DIR}/systemd/evander-discord-wake.service.template" \
+  "${SYSTEMD_DIR}/evander-discord-wake.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-scheduled-wake.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-scheduled-wake.service"
+  "${ROOT_DIR}/systemd/evander-scheduled-wake.service.template" \
+  "${SYSTEMD_DIR}/evander-scheduled-wake.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-teams-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-teams-ingest.service"
+  "${ROOT_DIR}/systemd/evander-teams-ingest.service.template" \
+  "${SYSTEMD_DIR}/evander-teams-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-teams-meeting-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-teams-meeting-ingest.service"
+  "${ROOT_DIR}/systemd/evander-teams-meeting-ingest.service.template" \
+  "${SYSTEMD_DIR}/evander-teams-meeting-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-effect-orchestrator.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-effect-orchestrator.service"
+  "${ROOT_DIR}/systemd/evander-effect-orchestrator.service.template" \
+  "${SYSTEMD_DIR}/evander-effect-orchestrator.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-trigger-orchestrator.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-trigger-orchestrator.service"
+  "${ROOT_DIR}/systemd/evander-trigger-orchestrator.service.template" \
+  "${SYSTEMD_DIR}/evander-trigger-orchestrator.service"
 
 systemctl daemon-reload
-systemctl enable agent-sandbox-gateway.service
-systemctl enable agent-sandbox-admin-web.service
-systemctl enable agent-sandbox-openai-relay.service
-systemctl enable agent-sandbox-didww-sip-bridge.service
-systemctl enable agent-sandbox-firewall.service
-systemctl enable agent-sandbox-nuget-relay.service
-systemctl enable agent-sandbox-npm-audit-facade.service
-systemctl enable agent-sandbox-http-target-relay.service
-systemctl enable agent-sandbox-ado-worker.service
-systemctl enable agent-sandbox-proxy-issue-sync.service
-systemctl enable agent-sandbox-discord-ingest.service
-systemctl enable agent-sandbox-discord-wake.service
-systemctl enable agent-sandbox-scheduled-wake.service
-systemctl enable agent-sandbox-teams-ingest.service
-systemctl enable agent-sandbox-teams-meeting-ingest.service
-systemctl enable agent-sandbox-effect-orchestrator.service
-systemctl enable agent-sandbox-trigger-orchestrator.service
+systemctl enable evander-gateway.service
+systemctl enable evander-admin-web.service
+systemctl enable evander-openai-relay.service
+systemctl enable evander-didww-sip-bridge.service
+systemctl enable evander-firewall.service
+systemctl enable evander-nuget-relay.service
+systemctl enable evander-npm-audit-facade.service
+systemctl enable evander-http-target-relay.service
+systemctl enable evander-ado-worker.service
+systemctl enable evander-proxy-issue-sync.service
+systemctl enable evander-discord-ingest.service
+systemctl enable evander-discord-wake.service
+systemctl enable evander-scheduled-wake.service
+systemctl enable evander-teams-ingest.service
+systemctl enable evander-teams-meeting-ingest.service
+systemctl enable evander-effect-orchestrator.service
+systemctl enable evander-trigger-orchestrator.service
 
 cat <<EOF
 Installed systemd units:
-  agent-sandbox-gateway.service
-  agent-sandbox-admin-web.service
-  agent-sandbox-openai-relay.service
-  agent-sandbox-didww-sip-bridge.service
-  agent-sandbox-firewall.service
-  agent-sandbox-nuget-relay.service
-  agent-sandbox-npm-audit-facade.service
-  agent-sandbox-http-target-relay.service
-  agent-sandbox-ado-worker.service
-  agent-sandbox-proxy-issue-sync.service
-  agent-sandbox-discord-ingest.service
-  agent-sandbox-discord-wake.service
-  agent-sandbox-scheduled-wake.service
-  agent-sandbox-teams-ingest.service
-  agent-sandbox-teams-meeting-ingest.service
-  agent-sandbox-effect-orchestrator.service
-  agent-sandbox-trigger-orchestrator.service
+  evander-gateway.service
+  evander-admin-web.service
+  evander-openai-relay.service
+  evander-didww-sip-bridge.service
+  evander-firewall.service
+  evander-nuget-relay.service
+  evander-npm-audit-facade.service
+  evander-http-target-relay.service
+  evander-ado-worker.service
+  evander-proxy-issue-sync.service
+  evander-discord-ingest.service
+  evander-discord-wake.service
+  evander-scheduled-wake.service
+  evander-teams-ingest.service
+  evander-teams-meeting-ingest.service
+  evander-effect-orchestrator.service
+  evander-trigger-orchestrator.service
 
 Next steps:
   1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
@@ -509,21 +509,21 @@ Next steps:
   8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and set host/auth settings for the admin UI.
   9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
   10. Start services:
-     sudo systemctl start agent-sandbox-admin-web.service
-     sudo systemctl start agent-sandbox-firewall.service
-     sudo systemctl start agent-sandbox-gateway.service
-     sudo systemctl start agent-sandbox-openai-relay.service
-     sudo systemctl start agent-sandbox-didww-sip-bridge.service
-     sudo systemctl start agent-sandbox-nuget-relay.service
-     sudo systemctl start agent-sandbox-npm-audit-facade.service
-     sudo systemctl start agent-sandbox-http-target-relay.service
-     sudo systemctl start agent-sandbox-ado-worker.service
-     sudo systemctl start agent-sandbox-proxy-issue-sync.service
-     sudo systemctl start agent-sandbox-discord-ingest.service
-     sudo systemctl start agent-sandbox-discord-wake.service
-     sudo systemctl start agent-sandbox-scheduled-wake.service
-     sudo systemctl start agent-sandbox-teams-ingest.service
-     sudo systemctl start agent-sandbox-teams-meeting-ingest.service
-     sudo systemctl start agent-sandbox-effect-orchestrator.service
-     sudo systemctl start agent-sandbox-trigger-orchestrator.service
+     sudo systemctl start evander-admin-web.service
+     sudo systemctl start evander-firewall.service
+     sudo systemctl start evander-gateway.service
+     sudo systemctl start evander-openai-relay.service
+     sudo systemctl start evander-didww-sip-bridge.service
+     sudo systemctl start evander-nuget-relay.service
+     sudo systemctl start evander-npm-audit-facade.service
+     sudo systemctl start evander-http-target-relay.service
+     sudo systemctl start evander-ado-worker.service
+     sudo systemctl start evander-proxy-issue-sync.service
+     sudo systemctl start evander-discord-ingest.service
+     sudo systemctl start evander-discord-wake.service
+     sudo systemctl start evander-scheduled-wake.service
+     sudo systemctl start evander-teams-ingest.service
+     sudo systemctl start evander-teams-meeting-ingest.service
+     sudo systemctl start evander-effect-orchestrator.service
+     sudo systemctl start evander-trigger-orchestrator.service
 EOF

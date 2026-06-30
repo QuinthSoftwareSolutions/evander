@@ -31,7 +31,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
         in script
     )
     assert "guest_ssh_resolve_vm_ip" in script
-    assert 'ip="${AGENT_SANDBOX_VM_IP:-}"' in guest_ssh_lib
+    assert 'ip="${EVANDER_VM_IP:-}"' in guest_ssh_lib
     assert "sudo -n virsh domifaddr" in guest_ssh_lib
     assert "pkexec virsh domifaddr" in guest_ssh_lib
     assert 'SSH_USER="${VM_SSH_USER:-agent-admin}"' in script
@@ -41,7 +41,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'ln -sfn /artifacts "${agent_home}/artifacts"' in script
     assert 'chown -R "${VM_USER}:${agent_group}" "${agent_home}"' in script
     assert "prepare_guest_home" in script
-    assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"' in script
+    assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"' in script
     assert (
         'for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do'
         in script
@@ -55,11 +55,11 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'personality = "pragmatic"' in script
     assert 'web_search = "disabled"' in script
     assert (
-        'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"'
+        'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"'
         in script
     )
     assert (
-        'CODEX_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"' in script
+        'CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"' in script
     )
     assert 'model_provider = "evander_openai_relay"' in script
     assert "[model_providers.evander_openai_relay]" in script
@@ -69,7 +69,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "requires_openai_auth = false" in script
     assert "supports_websockets = false" in script
     assert 'openai_base_url = "${CODEX_LLM_BASE_URL}"' not in script
-    assert "[mcp_servers.agent_sandbox]" in script
+    assert "[mcp_servers.evander]" in script
     assert 'url = "${CODEX_GATEWAY_URL}"' in script
     assert "enabled_tools = %s\\n" not in script
     assert "load_enabled_tools_toml" not in script
@@ -81,14 +81,14 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "deployment-gpt-5-4" not in script
     assert "enabled = true" in script
     assert "if [ -f ~/.agent/config.env ]; then" in script
-    assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
+    assert "if [ -f /etc/evander/session.env ]; then" in script
     assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script
-    assert 'if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then' in script
+    assert 'if [ -n "${EVANDER_SESSION_ID:-}" ]; then' in script
     assert (
-        'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"' in script
+        'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${EVANDER_SESSION_ID}"' in script
     )
     assert (
-        'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
+        'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"' in script
     )
     assert "if line.strip() not in {" in script
     assert "repair_missing_session_env_fi" in script
@@ -118,21 +118,21 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert "cat > ~/bin/gh <<SHIM" in script
     assert 'COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"' in script
     assert (
-        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${AGENT_SANDBOX_SESSION_ID:-}" <<\'PY\'' in script
+        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${EVANDER_SESSION_ID:-}" <<\'PY\'' in script
     )
     assert '"\\${COPILOT_HOST_AUTH_URL}"' not in script
-    assert '"X-Agent-Sandbox-Session-Id": session_id' in script
+    assert '"X-Evander-Session-Id": session_id' in script
     assert "gh auth token" in script
     assert '"mcpServers": {' in script
-    assert '"agent_sandbox": {' in script
+    assert '"evander": {' in script
     assert '"type": "http"' in script
     assert (
-        'COPILOT_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"'
+        'COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"'
         in script
     )
-    assert 'if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then' in script
+    assert 'if [ -n "${EVANDER_SESSION_ID:-}" ]; then' in script
     assert (
-        'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"'
+        'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"'
         in script
     )
     assert 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"' in script
@@ -215,15 +215,15 @@ def test_guest_heartbeat_assets_exist() -> None:
     timer = (root / "agent-heartbeat.timer").read_text(encoding="utf-8")
 
     assert (
-        'AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-'
+        'EVANDER_GUEST_HEARTBEAT_PROMPT="${EVANDER_GUEST_HEARTBEAT_PROMPT:-'
         in cycle_script
     )
-    assert 'HEARTBEAT_ENV_FILE="${HOME}/.config/agent-sandbox/guest-heartbeat.env"' in cycle_script
+    assert 'HEARTBEAT_ENV_FILE="${HOME}/.config/evander/guest-heartbeat.env"' in cycle_script
     assert '. "${HEARTBEAT_ENV_FILE}"' in cycle_script
     assert "agent_runner_resume_last" in cycle_script
     assert "agent-*.state" in cycle_script
     assert "codex-resume-last.state" in cycle_script
-    assert "EnvironmentFile=-%h/.config/agent-sandbox/guest-heartbeat.env" in service
+    assert "EnvironmentFile=-%h/.config/evander/guest-heartbeat.env" in service
     assert "ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh" in service
     assert "OnUnitActiveSec=5min" in timer
     assert "Unit=agent-heartbeat.service" in timer
@@ -246,7 +246,7 @@ def test_guest_ripgrep_is_seeded_by_provider_bootstraps() -> None:
     assert "guest_ripgrep_resolve_host_binary() {" in helper
     assert "HOST_RIPGREP_BIN" in helper
     assert "codex-path/rg" in helper
-    assert 'remote_temp_name=".rg.agent-sandbox-bootstrap-$$"' in helper
+    assert 'remote_temp_name=".rg.evander-bootstrap-$$"' in helper
     assert '"${vm_user}@${vm_ip}:~/bin/${remote_temp_name}"' in helper
     assert 'if "${rg_temp}" --version >/dev/null; then' in helper
     assert 'mv -f "${rg_temp}" "${HOME}/bin/rg"' in helper
@@ -290,7 +290,7 @@ def test_setup_vm_supports_codex_skills() -> None:
         "GATEWAY_URL=${GATEWAY_URL:-}",
         "HTTP_TARGET_RELAY_BASE_URL=${HTTP_TARGET_RELAY_BASE_URL:-}",
         "LLM_BASE_URL=${LLM_BASE_URL:-}",
-        "AGENT_SANDBOX_RUNTIME_DIR=${AGENT_SANDBOX_RUNTIME_DIR:-}",
+        "EVANDER_RUNTIME_DIR=${EVANDER_RUNTIME_DIR:-}",
         "VM_STORAGE_DIR=${VM_STORAGE_DIR:-}",
         "LIBVIRT_BASE_IMAGE=${LIBVIRT_BASE_IMAGE:-}",
         "BASE_IMAGE=${BASE_IMAGE:-}",

@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.runtime import build_runtime
+from evander.config import GatewayConfig
+from evander.gateway import create_server
+from evander.models import SessionManifest, ToolName
+from evander.runtime import build_runtime
 
 
 def test_mssql_tools_register_after_domain_extraction(tmp_path: Path) -> None:

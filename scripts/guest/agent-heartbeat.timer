@@ -1,5 +1,5 @@
 [Unit]
-Description=Agent Sandbox Guest Heartbeat Resume Timer
+Description=Evander Guest Heartbeat Resume Timer
 
 [Timer]
 OnBootSec=2min

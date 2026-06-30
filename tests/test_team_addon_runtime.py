@@ -8,18 +8,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.artifact_spaces import ArtifactSpaceStore
-from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
-from agent_sandbox.events.scheduled import scheduled_internal_event_store_path
-from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.published_artifacts import PublishedArtifactStore
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.workflow.packs import WorkflowPack
-from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.config import GatewayConfig
+from evander.artifact_spaces import ArtifactSpaceStore
+from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.scheduled import scheduled_internal_event_store_path
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.model_usage.store import ModelUsageStore
+from evander.published_artifacts import PublishedArtifactStore
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.workflow.packs import WorkflowPack
+from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -418,7 +418,7 @@ class FakeRepoCloner:
             message=self.message,
             target_dir="/home/agent/Truman",
             guest_repo_name="Truman",
-            remote_url="ssh://agent-sandbox-git-host/git-remotes/Truman.git",
+            remote_url="ssh://evander-git-host/git-remotes/Truman.git",
         )
 
 
@@ -3567,7 +3567,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
                 "session_id": "session-backend",
                 "target_dir": "/home/agent/Truman",
                 "guest_repo_name": "Truman",
-                "remote_url": "ssh://agent-sandbox-git-host/git-remotes/Truman.git",
+                "remote_url": "ssh://evander-git-host/git-remotes/Truman.git",
                 "pr_notes_ref": "refs/notes/agent-pr/test",
                 "execution_backend": "container_worker_vm",
                 "vm_name": None,

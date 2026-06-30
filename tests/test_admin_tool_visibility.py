@@ -4,14 +4,14 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.tool_visibility import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.tool_visibility import (
     ToolVisibilityBindingState,
     ToolVisibilityExecutionState,
     ToolVisibilityManifestState,
     ToolVisibilityState,
 )
-from agent_sandbox.models import SessionManifest, ToolName
+from evander.models import SessionManifest, ToolName
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = True) -> Path:

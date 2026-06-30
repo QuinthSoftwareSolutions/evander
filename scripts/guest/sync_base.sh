@@ -7,7 +7,7 @@ Usage:
   sync-base [branch]
 
 Fetch and merge the configured base branch into the current work branch.
-When [branch] is omitted, reads agent-sandbox.baseBranch from repo config.
+When [branch] is omitted, reads evander.baseBranch from repo config.
 EOF
 }
 
@@ -39,8 +39,8 @@ base_branch() {
     return
   fi
 
-  configured_branch="$(config_value agent-sandbox.baseBranch)"
-  [[ -n "${configured_branch}" ]] || die "No base branch configured. Set agent-sandbox.baseBranch or run: git sync-base <branch>"
+  configured_branch="$(config_value evander.baseBranch)"
+  [[ -n "${configured_branch}" ]] || die "No base branch configured. Set evander.baseBranch or run: git sync-base <branch>"
   printf '%s\n' "${configured_branch}"
 }
 

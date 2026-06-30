@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import Directory, DirectoryPath, SessionManifest, ToolName
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import Directory, DirectoryPath, SessionManifest, ToolName
 
 
 def test_directory_path_normalizes_and_validates() -> None:

@@ -673,7 +673,7 @@ Primary files:
 - `src/evander_team_addon/mcp.py`
 - new `src/evander_team_addon/mcp_context.py` or equivalent add-on-owned helper
 - `tests/test_team_addon_mcp.py`
-- optionally `src/agent_sandbox/addons.py` or `src/agent_sandbox/gateway.py` only
+- optionally `src/evander/addons.py` or `src/evander/gateway.py` only
   for a generic add-on ambient-session helper
 
 Implementation tasks:
@@ -1366,9 +1366,9 @@ Primary surfaces:
 Implementation tasks:
 
 - Stop relevant services:
-  - `agent-sandbox-trigger-orchestrator.service`
-  - `agent-sandbox-effect-orchestrator.service`
-  - `agent-sandbox-admin-web.service` if needed for a quiet UI
+  - `evander-trigger-orchestrator.service`
+  - `evander-effect-orchestrator.service`
+  - `evander-admin-web.service` if needed for a quiet UI
   - any Team wake/ingest services that could lease work during migration
 - Inspect active leases in `runtime/addons/team-addon/state.db`.
 - Decide whether to clear active leases or let the finalizer close them after

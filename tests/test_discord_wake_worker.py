@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.messaging.discord_wake import (
+from evander.config import GatewayConfig
+from evander.messaging.discord_wake import (
     DiscordWakeCycleResult,
     build_discord_wake_worker,
 )
-from agent_sandbox.orchestration.host_polling import HostFileLockManager
-from agent_sandbox.models import SessionManifest, ToolName
+from evander.orchestration.host_polling import HostFileLockManager
+from evander.models import SessionManifest, ToolName
 
 
 class _PolicyConfigStub:
@@ -178,7 +178,7 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(
 
     dispatched: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "agent_sandbox.messaging.discord_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.discord_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     monkeypatch.setattr(
         worker.dispatcher,

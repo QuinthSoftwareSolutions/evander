@@ -11,19 +11,19 @@ import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.communication_artifacts import CommunicationArtifactStore
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.email.http_utils import ProviderRequestError
-from agent_sandbox.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
-from agent_sandbox.gateway import create_server
-from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
-from agent_sandbox.messaging.targets import (
+from evander.communication_artifacts import CommunicationArtifactStore
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService, DirectoryStore
+from evander.email.http_utils import ProviderRequestError
+from evander.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
+from evander.gateway import create_server
+from evander.messaging.discord_inbox_store import DiscordInboxStore
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import (
+from evander.models import (
     ApprovalStatus,
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
@@ -34,7 +34,7 @@ from agent_sandbox.models import (
     WakeScheduleDefinition,
     ToolName,
 )
-from agent_sandbox.runtime import build_runtime
+from evander.runtime import build_runtime
 
 
 class FakeDiscordService:
@@ -95,7 +95,7 @@ def patch_gateway_admin_runtime(monkeypatch: pytest.MonkeyPatch, **service_facto
             **{name: factory(runtime_dir) for name, factory in service_factories.items()}
         )
 
-    monkeypatch.setattr("agent_sandbox.gateway.build_admin_runtime", fake_build_admin_runtime)
+    monkeypatch.setattr("evander.gateway.build_admin_runtime", fake_build_admin_runtime)
 
 
 def ensure_directories(context, *directory_paths: str) -> None:

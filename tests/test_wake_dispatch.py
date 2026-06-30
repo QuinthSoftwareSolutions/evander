@@ -7,19 +7,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.execution import ExecutionBackendKind, ExecutionStatusKind
-from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-from agent_sandbox.messaging.wake_dispatch import HostWakeDispatcher, SessionWakeBinding
-from agent_sandbox.messaging.wake_store import WakeRequestStore
-from agent_sandbox.models import (
+from evander.config import GatewayConfig
+from evander.execution import ExecutionBackendKind, ExecutionStatusKind
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+from evander.messaging.wake_dispatch import HostWakeDispatcher, SessionWakeBinding
+from evander.messaging.wake_store import WakeRequestStore
+from evander.models import (
     SessionManifest,
     ToolName,
     WakeDispatchRecord,
     WakeResumePromptPayload,
     WakeScheduleDefinition,
 )
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 class _ContainerBackendStub:
@@ -88,7 +88,7 @@ def _build_dispatcher(tmp_path: Path) -> tuple[
 @pytest.fixture(autouse=True)
 def _disable_completion_watcher_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.subprocess.Popen",
+        "evander.messaging.wake_dispatch.subprocess.Popen",
         lambda *args, **kwargs: SimpleNamespace(),
     )
 
@@ -177,7 +177,7 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
         captured["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.subprocess.run", fake_run)
     monkeypatch.setattr(
         dispatcher,
         "_spawn_agent_completion_watcher",
@@ -238,7 +238,7 @@ def test_resume_binding_uses_session_agent_provider_and_default_model_when_model
         captured["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.subprocess.run", fake_run)
 
     result = dispatcher.resume_binding(
         SessionWakeBinding(session_id="session-claude", vm_id="vm-claude", source="test"),
@@ -304,7 +304,7 @@ def test_resume_binding_records_failed_dispatch_for_expired_session_before_scrip
         )
     )
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.subprocess.run",
+        "evander.messaging.wake_dispatch.subprocess.run",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("resume script must not run for expired wake sessions")
         ),
@@ -355,7 +355,7 @@ def test_resume_binding_sanitizes_failure_stdout_stderr_and_exit_code(
             stderr="line two\nprivate=xyz789",
         )
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.subprocess.run", fake_run)
 
     result = dispatcher.resume_binding(
         SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
@@ -415,7 +415,7 @@ def test_resume_binding_classifies_model_unavailable_failure(
             stderr="does not have access to model gpt-5.4-mini",
         )
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.subprocess.run", fake_run)
 
     result = dispatcher.resume_binding(
         SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
@@ -482,7 +482,7 @@ def test_resume_binding_timeout_error_does_not_include_prompt_command(
     def fake_run(cmd: list[str], **kwargs: object):
         raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.subprocess.run", fake_run)
 
     result = dispatcher.resume_binding(
         SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
@@ -528,7 +528,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         captured["admin_service"] = admin_service
         return backend
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.build_execution_backend", build_backend)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.build_execution_backend", build_backend)
     monkeypatch.setattr(
         dispatcher,
         "_spawn_container_completion_monitor",
@@ -560,7 +560,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert "codex exec resume --last" in str(spec.command)
     assert "--model gpt-5.4-mini" in str(spec.command)
     assert 'web_search="live"' in str(spec.command)
-    assert "agent_sandbox_codex_json_to_log" in str(spec.command)
+    assert "evander_codex_json_to_log" in str(spec.command)
     assert spec.metadata["source"] == "scheduled_once"
     assert spec.metadata["resume_mode"] == "same_context"
 
@@ -605,7 +605,7 @@ def test_resume_container_binding_dispatches_idle_claude_session_and_records_suc
         captured["admin_service"] = admin_service
         return backend
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.build_execution_backend", build_backend)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.build_execution_backend", build_backend)
 
     result = dispatcher.resume_container_binding(
         session,
@@ -699,7 +699,7 @@ def test_monitor_container_execution_completion_marks_wake_request_completed(
         inspect=lambda execution_id: inspect_calls.append(execution_id) or statuses.pop(0),
         destroy=lambda execution_id: destroy_calls.append(execution_id) or SimpleNamespace(),
     )
-    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.time.sleep", lambda _: None)
+    monkeypatch.setattr("evander.messaging.wake_dispatch.time.sleep", lambda _: None)
 
     dispatcher._monitor_container_execution_completion(
         backend=backend,
@@ -732,13 +732,13 @@ def test_resume_container_binding_records_failed_dispatch_for_expired_session_be
         expires_at=datetime.now(UTC) - timedelta(minutes=5),
     )
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("container backend must not be built for expired wake sessions")
         ),
     )
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.enqueue_agent_prompt",
+        "evander.messaging.wake_dispatch.enqueue_agent_prompt",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("expired wake sessions must not be queued")
         ),
@@ -780,7 +780,7 @@ def test_resume_container_binding_queues_busy_session_and_records_queue_metadata
     backend = _ContainerBackendStub(active=True)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -838,7 +838,7 @@ def test_resume_container_binding_queues_busy_claude_session_with_provider_metad
     backend = _ContainerBackendStub(active=True)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -891,11 +891,11 @@ def test_resume_container_binding_records_failed_dispatch_when_queueing_busy_ses
     backend = _ContainerBackendStub(active=True)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.enqueue_agent_prompt",
+        "evander.messaging.wake_dispatch.enqueue_agent_prompt",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("queue write failed")),
     )
 
@@ -940,7 +940,7 @@ def test_resume_container_binding_records_failed_dispatch_when_backend_start_rai
     backend = _ContainerBackendStub(active=False, start_error=RuntimeError("boom"))
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -994,7 +994,7 @@ def test_resume_container_binding_classifies_model_unavailable_failure(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             RuntimeError("invalid_model: model gpt-5.4-mini does not exist")
         ),

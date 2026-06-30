@@ -1,10 +1,10 @@
-; Managed by agent-sandbox Ansible.
+; Managed by evander Ansible.
 [general]
 enabled=yes
 pretty=yes
-allowed_origins={{ agent_sandbox_asterisk_ari_allowed_origins | join(",") }}
+allowed_origins={{ evander_asterisk_ari_allowed_origins | join(",") }}
 
-[{{ agent_sandbox_asterisk_ari_user }}]
+[{{ evander_asterisk_ari_user }}]
 type=user
 read_only=no
-password={{ agent_sandbox_asterisk_ari_password }}
+password={{ evander_asterisk_ari_password }}

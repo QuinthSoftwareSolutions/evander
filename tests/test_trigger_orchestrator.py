@@ -7,33 +7,33 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.events.internal import InternalEventBus
-from agent_sandbox.events.scheduled import ScheduledInternalEventStore
-from agent_sandbox.orchestration.host_polling import HostFileLockManager
-from agent_sandbox.daemons.trigger_orchestrator import (
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.events.internal import InternalEventBus
+from evander.events.scheduled import ScheduledInternalEventStore
+from evander.orchestration.host_polling import HostFileLockManager
+from evander.daemons.trigger_orchestrator import (
     TriggerOrchestratorCycleResult,
     TriggerOrchestratorWorker,
     build_trigger_orchestrator_worker,
     main,
 )
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.events.provider_models import (
+from evander.events.models import TriggerEvent
+from evander.events.provider_models import (
     AgentPromptNewTriggerDefinition,
     EventTriggerDefinition,
     TeamsNewMessageTriggerDefinition,
     WebhookTriggerDefinition,
 )
-from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
-from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.event import EventTriggerProvider
-from agent_sandbox.triggers.providers.webhook import WebhookTriggerProvider
-from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
-from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from evander.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.event import EventTriggerProvider
+from evander.triggers.providers.webhook import WebhookTriggerProvider
+from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from evander.triggers.queue import SqliteTriggerEventQueue
 
 
 class _StaticProvider:
@@ -704,17 +704,17 @@ def test_trigger_orchestrator_main_once_uses_single_cycle(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.bootstrap.load_runtime_gateway_config",
+        "evander.bootstrap.load_runtime_gateway_config",
         lambda runtime_dir: GatewayConfig(runtime_dir=runtime_dir),
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.trigger_orchestrator.build_trigger_orchestrator_worker",
+        "evander.daemons.trigger_orchestrator.build_trigger_orchestrator_worker",
         lambda *_args, **_kwargs: _FakeWorker(),
     )
     monkeypatch.setattr(
         "sys.argv",
         [
-            "agent-sandbox-trigger-orchestrator",
+            "evander-trigger-orchestrator",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--once",
@@ -989,11 +989,11 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         )
 
     monkeypatch.setattr(
-        "agent_sandbox.daemons.trigger_orchestrator.build_trigger_provider_runtime_wiring",
+        "evander.daemons.trigger_orchestrator.build_trigger_provider_runtime_wiring",
         _build_runtime_wiring,
     )
     monkeypatch.setattr(
-        "agent_sandbox.orchestration.wiring.trigger.build_trigger_provider_runtime_wiring",
+        "evander.orchestration.wiring.trigger.build_trigger_provider_runtime_wiring",
         _build_runtime_wiring,
     )
 
@@ -1350,7 +1350,7 @@ def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
 
 
 def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Path) -> None:
-    from agent_sandbox.events.internal import InternalEventBus
+    from evander.events.internal import InternalEventBus
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -1396,7 +1396,7 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
 
 
 def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: Path) -> None:
-    from agent_sandbox.events.internal import InternalEventBus
+    from evander.events.internal import InternalEventBus
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -1438,7 +1438,7 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
 
 
 def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Path) -> None:
-    from agent_sandbox.events.internal import InternalEventBus
+    from evander.events.internal import InternalEventBus
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

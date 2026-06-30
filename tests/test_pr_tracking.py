@@ -4,8 +4,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.models import GetPullRequestResponse
-from agent_sandbox.pr_tracking import (
+from evander.models import GetPullRequestResponse
+from evander.pr_tracking import (
     PrMapStore,
     completion_event_id,
     completion_event_payload,

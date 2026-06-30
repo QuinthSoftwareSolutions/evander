@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.execution.container_worker_repository import (
+from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )

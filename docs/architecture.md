@@ -66,7 +66,7 @@ those flows short, explicit, and easy to run manually while debugging.
 
 ### Python-first responsibilities
 
-Use `src/agent_sandbox/*.py` when the main job is implementing product behavior rather than
+Use `src/evander/*.py` when the main job is implementing product behavior rather than
 invoking the operating system. Typical examples in this repo include:
 
 - MCP gateway behavior and relay request handling
@@ -106,11 +106,11 @@ The trigger/effect runtime is designed as two layers with explicit ownership bou
 
 - **Orchestration core (production-safe baseline)**
   - Owns queueing, graph traversal, lock/cursor/execution stores, and worker polling.
-  - Lives primarily in `src/agent_sandbox/workflow/engine/`, `src/agent_sandbox/orchestration/`, and `src/agent_sandbox/workflow/runtime_config.py`.
+  - Lives primarily in `src/evander/workflow/engine/`, `src/evander/orchestration/`, and `src/evander/workflow/runtime_config.py`.
   - Uses `profiles/core-minimal` to avoid loading domain provider packages by default.
 - **Domain packs (opt-in convenience layer)**
   - Own provider implementations and domain-specific default handlers used by built-in workflows.
-  - Lives under provider modules such as `src/agent_sandbox/providers/` and orchestration handler helpers in `src/agent_sandbox/orchestration/providers/`.
+  - Lives under provider modules such as `src/evander/providers/` and orchestration handler helpers in `src/evander/orchestration/providers/`.
   - Enabled by selecting `profiles/agent-default` or by adding explicit plugin modules.
 
 ### Ownership boundary rules
@@ -198,7 +198,7 @@ This sequence minimizes payload volume when there is no new feedback and support
 Trigger ingestion is intentionally split so queue ownership stays centralized while provider-specific
 logic remains isolated:
 
-- `agent-sandbox-trigger-orchestrator` owns:
+- `evander-trigger-orchestrator` owns:
   - loading/validating global trigger config (`config/trigger-orchestrator/config.json`)
   - provider polling cadence + single-instance locking
   - durable event queue persistence (`trigger-orchestrator-events.json`)

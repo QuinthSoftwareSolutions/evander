@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.storage import JsonObjectStore
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.storage import JsonObjectStore
 
 
 def _session_payload(*, session_id: str = "session-1") -> dict[str, object]:

@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
-from agent_sandbox.events.models import GateDedupeDefinition, TriggerEvent
-from agent_sandbox.triggers.queue import TriggerQueueRecord
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.events.models import GateDedupeDefinition, TriggerEvent
+from evander.triggers.queue import TriggerQueueRecord
 
 
 def _edge(

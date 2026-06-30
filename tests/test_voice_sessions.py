@@ -8,16 +8,16 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import ContactDirectoryConfig
-from agent_sandbox.messaging.wake_store import WakeRequestStore
-from agent_sandbox.models import (
+from evander.config import GatewayConfig
+from evander.directory_config import ContactDirectoryConfig
+from evander.messaging.wake_store import WakeRequestStore
+from evander.models import (
     SessionManifest,
     ToolName,
     WakeDispatchRecord,
 )
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.voice_sessions import (
+from evander.runtime import build_runtime
+from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
     OpenAIRealtimePhoneCallService,
     VoiceMediaBridgeClient,

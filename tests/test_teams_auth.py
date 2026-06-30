@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from agent_sandbox.messaging.teams_auth import (
+from evander.messaging.teams_auth import (
     AuthorizationPendingError,
     ConsentDeniedError,
     DeviceCodeExpiredError,

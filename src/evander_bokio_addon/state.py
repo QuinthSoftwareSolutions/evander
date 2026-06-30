@@ -7,7 +7,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.addons import addon_json_object_store, addon_storage_path
+from evander.addons import addon_json_object_store, addon_storage_path
 
 
 ADDON_ID = "bokio-addon"

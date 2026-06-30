@@ -186,6 +186,14 @@ export type WorkflowEditorFieldOption = {
   metadata?: Record<string, unknown>;
 };
 
+export type WorkflowInternalEventCatalogEntry = {
+  event_type: string;
+  label: string;
+  description?: string | null;
+  source?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 export type WorkflowEditorFieldDefinition = {
   key: string;
   label: string;
@@ -222,6 +230,7 @@ export type WorkflowEditorNodeCatalogEntry = {
 export type WorkflowEditorCatalog = {
   worker_id: string;
   nodes: WorkflowEditorNodeCatalogEntry[];
+  internal_events: WorkflowInternalEventCatalogEntry[];
 };
 
 export type WorkflowRunNodeActivity = {

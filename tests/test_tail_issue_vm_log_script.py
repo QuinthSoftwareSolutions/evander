@@ -36,7 +36,7 @@ exit 1
         """#!/usr/bin/env bash
 set -euo pipefail
 cat >&2 <<'EOF'
-No guest agent state or pid files found under /home/agent/.agent-sandbox
+No guest agent state or pid files found under /home/agent/.evander
 EOF
 exit 0
 """,
@@ -164,7 +164,7 @@ exit 1
 set -euo pipefail
 cat >/dev/null
 printf 'Repo: codex-heartbeat\\n'
-printf 'Log: /var/log/agent-sandbox/agent-runs/codex-heartbeat-run.log\\n'
+printf 'Log: /var/log/evander/agent-runs/codex-heartbeat-run.log\\n'
 """,
     )
 

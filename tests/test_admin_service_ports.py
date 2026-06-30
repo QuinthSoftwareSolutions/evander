@@ -4,9 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent_sandbox.admin.services.operations_service import OperationsAdminService
-import agent_sandbox.admin.services.vm_inventory_service as vm_inventory_service
-from agent_sandbox.admin.services.vm_inventory_service import (
+from evander.admin.services.operations_service import OperationsAdminService
+import evander.admin.services.vm_inventory_service as vm_inventory_service
+from evander.admin.services.vm_inventory_service import (
     VmInventoryAdminDependencies,
     VmInventoryAdminService,
 )

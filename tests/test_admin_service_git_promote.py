@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 
 
 def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_branch(
@@ -26,7 +26,7 @@ def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_br
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.promote_agent_branch(
         host_repo_path="/trusted/repo",
@@ -66,7 +66,7 @@ def test_admin_service_promote_agent_branch_passes_optional_flags(
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.promote_agent_branch(
         host_repo_path="/trusted/repo",
@@ -110,7 +110,7 @@ def test_admin_service_promote_agent_branch_accepts_target_branch(
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.promote_agent_branch(
         host_repo_path="/trusted/repo",
@@ -151,7 +151,7 @@ def test_admin_service_promote_agent_branch_surfaces_phase_specific_script_error
             stderr="Failed to resolve fetched commit for agents/session-1/topic\n",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     with pytest.raises(RuntimeError, match="Failed to resolve fetched commit for agents/session-1/topic"):
         service.issue_git_admin.promote_agent_branch(

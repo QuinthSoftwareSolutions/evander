@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.addons import addon_storage_path
+from evander.addons import addon_storage_path
 
 from .catalog import ADDON_ID, CATALOG_BY_NAME, STATE_DB, SUBMISSION_API_NAMES
 

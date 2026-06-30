@@ -34,7 +34,7 @@ EOF
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_WEB_SEARCH_MODE"] = "disabled"
-    env["AGENT_SANDBOX_MCP_GATEWAY_URL"] = "http://gateway.test:8000/mcp?session_id=session-1"
+    env["EVANDER_MCP_GATEWAY_URL"] = "http://gateway.test:8000/mcp?session_id=session-1"
     command = (
         f"source '{ROOT / 'scripts' / 'lib' / 'agent_runner_codex.sh'}'; "
         "agent_runner_codex_exec --model gpt-test 'Continue'"
@@ -52,7 +52,7 @@ EOF
     args = args_log.read_text(encoding="utf-8").splitlines()
     assert args[:2] == ["exec", "-c"]
     assert "web_search=\"disabled\"" in args
-    assert "mcp_servers.agent_sandbox.url=\"http://gateway.test:8000/mcp?session_id=session-1\"" in args
+    assert "mcp_servers.evander.url=\"http://gateway.test:8000/mcp?session_id=session-1\"" in args
     assert "--enable" in args
     assert "non_prefixed_mcp_tool_names" in args
     assert "--json" in args

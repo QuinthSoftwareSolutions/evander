@@ -9,8 +9,8 @@ import time
 import uuid
 from pathlib import Path
 
-from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
-from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.triggers.queue import SqliteTriggerEventQueue
 
 
 def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
             capture_output=True,
             env={
                 **os.environ,
-                "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
             },
             cwd=root,
             check=False,
@@ -118,7 +118,7 @@ def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> N
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -170,7 +170,7 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -194,20 +194,20 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
             "git",
             f"--git-dir={repo_path}",
             "config",
-            "agent-sandbox.trustedRepoPath",
+            "evander.trustedRepoPath",
             "/trusted/repo",
         ],
         check=True,
     )
     subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True
+        ["git", f"--git-dir={repo_path}", "config", "evander.baseBranch", "main"], check=True
     )
     subprocess.run(
         [
             "git",
             f"--git-dir={repo_path}",
             "config",
-            "agent-sandbox.canonicalOriginUrl",
+            "evander.canonicalOriginUrl",
             "https://example.com/org/repo.git",
         ],
         check=True,
@@ -239,7 +239,7 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -280,13 +280,13 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
             "git",
             f"--git-dir={repo_path}",
             "config",
-            "agent-sandbox.trustedRepoPath",
+            "evander.trustedRepoPath",
             "/trusted/repo",
         ],
         check=True,
     )
     subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True
+        ["git", f"--git-dir={repo_path}", "config", "evander.baseBranch", "main"], check=True
     )
 
     (worktree / "hello.txt").write_text("Hello World", encoding="utf-8")
@@ -354,7 +354,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -451,7 +451,7 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -498,7 +498,7 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -510,7 +510,7 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -561,7 +561,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=bare_repo_cwd,
         check=False,
@@ -618,7 +618,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
             capture_output=True,
             env={
                 **os.environ,
-                "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
             },
             cwd=root,
             check=False,
@@ -713,7 +713,7 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
             capture_output=True,
             env={
                 **os.environ,
-                "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
             },
             cwd=root,
             check=False,
@@ -771,8 +771,8 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
         text=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
-            "AGENT_SANDBOX_TRIGGER_QUEUE_LOCK_HOLD_SECONDS": "0.2",
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_QUEUE_LOCK_HOLD_SECONDS": "0.2",
         },
         cwd=root,
     )
@@ -789,7 +789,7 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
         capture_output=True,
         env={
             **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
         },
         cwd=root,
         check=False,
@@ -807,8 +807,8 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
 
 
 def test_importing_config_does_not_require_trigger_registry() -> None:
-    from agent_sandbox.config import GatewayConfig
+    from evander.config import GatewayConfig
 
     config = GatewayConfig()
 
-    assert config.runtime_dir == Path("/var/lib/agent-sandbox")
+    assert config.runtime_dir == Path("/var/lib/evander")

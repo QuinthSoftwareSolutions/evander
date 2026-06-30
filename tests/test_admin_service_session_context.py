@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.models import SessionManifest, ToolName
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.models import SessionManifest, ToolName
 
 
 def test_admin_service_session_update_metadata_merges_into_manifest(tmp_path: Path) -> None:

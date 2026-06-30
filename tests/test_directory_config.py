@@ -3,18 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import (
+from evander.config import GatewayConfig
+from evander.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.policy_config import PolicyConfigResolver
-from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.vm.templates import (
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import SessionManifest
+from evander.policy_config import PolicyConfigResolver
+from evander.provider_config import ProviderConfigResolver
+from evander.vm.templates import (
     DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
     DEFAULT_LIBVIRT_VM_TEMPLATES,
 )

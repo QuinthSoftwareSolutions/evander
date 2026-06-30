@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
-name = "agent-sandbox"
+name = "evander"
 version = "0.3.1"
 source = { editable = "." }
 dependencies = [

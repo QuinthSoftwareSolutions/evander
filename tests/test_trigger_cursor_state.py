@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.triggers.providers._cursor_state import (
+from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
     merge_cursor_ids,

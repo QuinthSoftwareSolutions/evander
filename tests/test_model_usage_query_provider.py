@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.events.provider_models import ModelUsageListQueryDefinition
-from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.provider_runtime.adapters import AdminRuntimeProviderAdapter
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.model_usage_list import ModelUsageListQueryProvider
+from evander.events.provider_models import ModelUsageListQueryDefinition
+from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.model_usage.store import ModelUsageStore
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.model_usage_list import ModelUsageListQueryProvider
 
 
 def _event(

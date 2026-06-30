@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.reviews.request_service import ReviewRequestMetadata, ReviewRequestService
-from agent_sandbox.reviews.request_store import ReviewRequestStore
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.models import SessionManifest
+from evander.reviews.request_service import ReviewRequestMetadata, ReviewRequestService
+from evander.reviews.request_store import ReviewRequestStore
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 class _StubReviewRequestProvider:
@@ -43,7 +43,7 @@ def test_enqueue_request_uses_session_repository_directory_when_directory_not_pr
     response = service.enqueue_request(
         session_id="session-1",
         provider="github",
-        repo="QuinthSoftwareSolutions/agent-orchestrator",
+        repo="QuinthSoftwareSolutions/evander",
         pr_id="42",
         requested_by="alice",
     )
@@ -51,7 +51,7 @@ def test_enqueue_request_uses_session_repository_directory_when_directory_not_pr
     assert response.directory_path == "root/team-a"
     assert (
         response.canonical_url
-        == "https://example.test/QuinthSoftwareSolutions/agent-orchestrator/pull/42"
+        == "https://example.test/QuinthSoftwareSolutions/evander/pull/42"
     )
     stored = ReviewRequestStore(Path(tmp_path / "review-request-store.json")).get_request(
         response.request_id

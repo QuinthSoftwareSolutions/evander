@@ -4,8 +4,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.admin.services.process_helpers import resolve_path_setting
-from agent_sandbox.admin.services.workflow_config_service import (
+from evander.admin.services.process_helpers import resolve_path_setting
+from evander.admin.services.workflow_config_service import (
     WorkflowConfigAdminDependencies,
     WorkflowConfigAdminService,
 )

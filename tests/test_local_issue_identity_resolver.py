@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.admin.services import session_helpers as admin_service
-from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
-from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference
+from evander.admin.services import session_helpers as admin_service
+from evander.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from evander.models import LocalIssueRecord, RemoteIssueReference
 
 
 class FakeStore:

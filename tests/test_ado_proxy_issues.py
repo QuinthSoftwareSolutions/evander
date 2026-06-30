@@ -4,9 +4,9 @@ from pathlib import Path
 
 import yaml
 
-from agent_sandbox.ado_proxy_issues import upsert_ado_proxy_issue_items
-from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.storage import JsonStore
+from evander.ado_proxy_issues import upsert_ado_proxy_issue_items
+from evander.models import LocalIssueRecord
+from evander.storage import JsonStore
 
 
 def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_legacy_yaml(

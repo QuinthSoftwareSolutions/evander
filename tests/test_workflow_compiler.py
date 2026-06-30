@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.config import TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.workflow.compiler import (
+from evander.config import TriggerOrchestratorWorkerGlobalConfig
+from evander.workflow.compiler import (
     collect_domain_validation_diagnostics,
     compile_trigger_orchestrator_config,
     compile_trigger_orchestrator_config_with_diagnostics,
 )
-from agent_sandbox.workflow.transforms.await_agent import augment_await_agent_completion
+from evander.workflow.transforms.await_agent import augment_await_agent_completion
 
 
 def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_transform(

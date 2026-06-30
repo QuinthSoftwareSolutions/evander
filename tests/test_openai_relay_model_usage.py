@@ -10,15 +10,15 @@ from pathlib import Path
 import httpx
 from starlette.testclient import TestClient
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.operator_steering import operator_steering_note_store
-from agent_sandbox.relays.openai import OpenAIRelay, create_app
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService, DirectoryStore
+from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.model_usage.store import ModelUsageStore
+from evander.models import SessionManifest
+from evander.operator_steering import operator_steering_note_store
+from evander.relays.openai import OpenAIRelay, create_app
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 class _UsageStream(httpx.AsyncByteStream):
@@ -633,7 +633,7 @@ def test_openai_relay_returns_non_streaming_response_when_usage_recording_fails(
 
     monkeypatch.setattr(OpenAIRelay, "_record_model_usage_event", fail_record_usage)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    caplog.set_level("WARNING", logger="agent_sandbox.relays.openai")
+    caplog.set_level("WARNING", logger="evander.relays.openai")
     app = create_app(config, transport=httpx.MockTransport(handler))
     client = TestClient(app)
 
@@ -671,7 +671,7 @@ def test_openai_relay_returns_streaming_response_when_usage_recording_fails(
 
     monkeypatch.setattr(OpenAIRelay, "_record_stream_model_usage_event", fail_record_usage)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    caplog.set_level("WARNING", logger="agent_sandbox.relays.openai")
+    caplog.set_level("WARNING", logger="evander.relays.openai")
     app = create_app(config, transport=httpx.MockTransport(handler))
     client = TestClient(app)
 

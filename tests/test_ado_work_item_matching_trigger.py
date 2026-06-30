@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.events.provider_models import AdoWorkItemMatchingTriggerDefinition
-from agent_sandbox.triggers.providers.ado_work_item_matching import (
+from evander.events.provider_models import AdoWorkItemMatchingTriggerDefinition
+from evander.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.base import TriggerRuntimeContext
 
 
 class _IssueServiceStub:
@@ -51,7 +51,7 @@ def test_ado_work_item_matching_trigger_fires_first_match_then_changed_date(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.ado_work_item_matching.IssueService",
+        "evander.triggers.providers.ado_work_item_matching.IssueService",
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []
@@ -97,7 +97,7 @@ def test_ado_work_item_matching_trigger_supports_current_iteration_query(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.ado_work_item_matching.IssueService",
+        "evander.triggers.providers.ado_work_item_matching.IssueService",
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []

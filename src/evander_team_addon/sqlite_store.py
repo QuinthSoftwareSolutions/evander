@@ -11,9 +11,9 @@ from threading import RLock
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
-from agent_sandbox.addons import addon_storage_path
-from agent_sandbox.models import utc_now
-from agent_sandbox.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
+from evander.addons import addon_storage_path
+from evander.models import utc_now
+from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
 
 from .models import (
     SCHEMA_VERSION,

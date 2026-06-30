@@ -18,7 +18,7 @@ Arguments:
 Options:
   --vm-user USER      Guest user to configure. Default: agent
   --venv PATH         Guest virtualenv path to create/reuse. Default:
-                      /home/<user>/.agent-sandbox/python-tools-venv
+                      /home/<user>/.evander/python-tools-venv
   -h, --help          Show this help text.
 
 Environment:
@@ -28,7 +28,7 @@ Environment:
   GUEST_PYTHON_BIN     Guest Python interpreter used for the virtualenv.
                        Default: python3
   GUEST_WHEELHOUSE_DIR Guest wheelhouse destination. Default:
-                       /home/<user>/.agent-sandbox/python-wheelhouse/tools
+                       /home/<user>/.evander/python-wheelhouse/tools
 EOF
 }
 
@@ -99,8 +99,8 @@ fi
 
 HOST_PYTHON_BIN="${HOST_PYTHON_BIN:-python3}"
 GUEST_PYTHON_BIN="${GUEST_PYTHON_BIN:-python3}"
-GUEST_VENV_PATH="${GUEST_VENV_PATH:-/home/${VM_USER}/.agent-sandbox/python-tools-venv}"
-GUEST_WHEELHOUSE_DIR="${GUEST_WHEELHOUSE_DIR:-/home/${VM_USER}/.agent-sandbox/python-wheelhouse/tools}"
+GUEST_VENV_PATH="${GUEST_VENV_PATH:-/home/${VM_USER}/.evander/python-tools-venv}"
+GUEST_WHEELHOUSE_DIR="${GUEST_WHEELHOUSE_DIR:-/home/${VM_USER}/.evander/python-wheelhouse/tools}"
 
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2

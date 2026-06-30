@@ -1,153 +1,153 @@
 ---
 - name: Resolve worker Node toolchain source mode
   ansible.builtin.set_fact:
-    agent_sandbox_worker_node_toolchain_uses_archive: >-
+    evander_worker_node_toolchain_uses_archive: >-
       {{
-        (agent_sandbox_worker_node_toolchain_archive_path | default('') | string | trim | length) > 0
+        (evander_worker_node_toolchain_archive_path | default('') | string | trim | length) > 0
       }}
 
 - name: Check local Node toolchain archive
   ansible.builtin.stat:
-    path: "{{ agent_sandbox_worker_node_toolchain_archive_path }}"
+    path: "{{ evander_worker_node_toolchain_archive_path }}"
   delegate_to: localhost
   become: false
-  register: agent_sandbox_worker_node_archive_stat
+  register: evander_worker_node_archive_stat
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - agent_sandbox_worker_node_toolchain_uses_archive | bool
+    - evander_worker_node_toolchain_enabled | bool
+    - evander_worker_node_toolchain_uses_archive | bool
 
 - name: Assert local Node toolchain archive exists
   ansible.builtin.assert:
     that:
-      - agent_sandbox_worker_node_archive_stat.stat.exists
-      - agent_sandbox_worker_node_archive_stat.stat.isreg
+      - evander_worker_node_archive_stat.stat.exists
+      - evander_worker_node_archive_stat.stat.isreg
     fail_msg: >-
       Missing local Node toolchain archive:
-      {{ agent_sandbox_worker_node_toolchain_archive_path }}. Set
-      agent_sandbox_worker_node_toolchain_archive_path to a tar.gz containing
-      the contents of a Node {{ agent_sandbox_worker_node_version }} runtime, or
-      unset it and set HOST_NODE_ROOT/agent_sandbox_worker_node_toolchain_local_path.
+      {{ evander_worker_node_toolchain_archive_path }}. Set
+      evander_worker_node_toolchain_archive_path to a tar.gz containing
+      the contents of a Node {{ evander_worker_node_version }} runtime, or
+      unset it and set HOST_NODE_ROOT/evander_worker_node_toolchain_local_path.
     success_msg: Local Node toolchain archive is present.
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - agent_sandbox_worker_node_toolchain_uses_archive | bool
+    - evander_worker_node_toolchain_enabled | bool
+    - evander_worker_node_toolchain_uses_archive | bool
 
 - name: Check local Node toolchain directory
   ansible.builtin.stat:
-    path: "{{ agent_sandbox_worker_node_toolchain_local_path }}"
+    path: "{{ evander_worker_node_toolchain_local_path }}"
   delegate_to: localhost
   become: false
-  register: agent_sandbox_worker_node_local_stat
+  register: evander_worker_node_local_stat
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - not (agent_sandbox_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
 
 - name: Check local Node/npm/npx binaries
   ansible.builtin.stat:
-    path: "{{ agent_sandbox_worker_node_toolchain_local_path }}/bin/{{ item }}"
+    path: "{{ evander_worker_node_toolchain_local_path }}/bin/{{ item }}"
   delegate_to: localhost
   become: false
   loop:
     - node
     - npm
     - npx
-  register: agent_sandbox_worker_node_local_binary_stats
+  register: evander_worker_node_local_binary_stats
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - not (agent_sandbox_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
 
 - name: Assert local Node toolchain directory includes node npm and npx
   ansible.builtin.assert:
     that:
-      - agent_sandbox_worker_node_local_stat.stat.exists
-      - agent_sandbox_worker_node_local_stat.stat.isdir
+      - evander_worker_node_local_stat.stat.exists
+      - evander_worker_node_local_stat.stat.isdir
       - >-
         {{
-          agent_sandbox_worker_node_local_binary_stats.results
+          evander_worker_node_local_binary_stats.results
           | selectattr('stat.exists')
           | list
           | length == 3
         }}
     fail_msg: >-
       Missing local Node toolchain at
-      {{ agent_sandbox_worker_node_toolchain_local_path }}. Expected bin/node,
-      bin/npm, and bin/npx. Install Node {{ agent_sandbox_worker_node_version }}
+      {{ evander_worker_node_toolchain_local_path }}. Expected bin/node,
+      bin/npm, and bin/npx. Install Node {{ evander_worker_node_version }}
       locally, set HOST_NODE_ROOT, or provide
-      agent_sandbox_worker_node_toolchain_archive_path.
+      evander_worker_node_toolchain_archive_path.
     success_msg: Local Node toolchain includes node, npm, and npx.
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - not (agent_sandbox_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
 
 - name: Create local temporary Node toolchain archive directory
   ansible.builtin.tempfile:
     state: directory
-    suffix: agent-sandbox-node-toolchain
+    suffix: evander-node-toolchain
   delegate_to: localhost
   become: false
-  register: agent_sandbox_worker_node_archive_tmp
+  register: evander_worker_node_archive_tmp
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - not (agent_sandbox_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
 
 - name: Pack local Node toolchain directory
   ansible.builtin.command:
     argv:
       - tar
       - -C
-      - "{{ agent_sandbox_worker_node_toolchain_local_path }}"
+      - "{{ evander_worker_node_toolchain_local_path }}"
       - -czf
-      - "{{ agent_sandbox_worker_node_archive_tmp.path }}/node-toolchain.tar.gz"
+      - "{{ evander_worker_node_archive_tmp.path }}/node-toolchain.tar.gz"
       - .
   delegate_to: localhost
   become: false
   changed_when: false
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - not (agent_sandbox_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
 
 - name: Resolve Node toolchain archive to copy
   ansible.builtin.set_fact:
-    agent_sandbox_worker_node_toolchain_archive_to_copy: >-
+    evander_worker_node_toolchain_archive_to_copy: >-
       {{
-        agent_sandbox_worker_node_toolchain_archive_path
-        if (agent_sandbox_worker_node_toolchain_uses_archive | bool)
-        else agent_sandbox_worker_node_archive_tmp.path ~ '/node-toolchain.tar.gz'
+        evander_worker_node_toolchain_archive_path
+        if (evander_worker_node_toolchain_uses_archive | bool)
+        else evander_worker_node_archive_tmp.path ~ '/node-toolchain.tar.gz'
       }}
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Copy Node toolchain archive to worker
   ansible.builtin.copy:
-    src: "{{ agent_sandbox_worker_node_toolchain_archive_to_copy }}"
-    dest: "{{ agent_sandbox_worker_node_toolchain_remote_archive_path }}"
-    owner: "{{ agent_sandbox_run_user }}"
-    group: "{{ agent_sandbox_run_user }}"
+    src: "{{ evander_worker_node_toolchain_archive_to_copy }}"
+    dest: "{{ evander_worker_node_toolchain_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
     mode: "0640"
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Reset worker Node toolchain cache
   ansible.builtin.file:
-    path: "{{ agent_sandbox_worker_node_cache_path }}"
+    path: "{{ evander_worker_node_cache_path }}"
     state: absent
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Recreate worker Node toolchain cache
   ansible.builtin.file:
-    path: "{{ agent_sandbox_worker_node_cache_path }}"
+    path: "{{ evander_worker_node_cache_path }}"
     state: directory
-    owner: "{{ agent_sandbox_run_user }}"
-    group: "{{ agent_sandbox_run_user }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
     mode: "0755"
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Unpack Node toolchain into worker cache
   ansible.builtin.unarchive:
-    src: "{{ agent_sandbox_worker_node_toolchain_remote_archive_path }}"
-    dest: "{{ agent_sandbox_worker_node_cache_path }}"
+    src: "{{ evander_worker_node_toolchain_remote_archive_path }}"
+    dest: "{{ evander_worker_node_cache_path }}"
     remote_src: true
-    owner: "{{ agent_sandbox_run_user }}"
-    group: "{{ agent_sandbox_run_user }}"
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Verify worker Node toolchain binaries on host cache
   ansible.builtin.command:
@@ -155,10 +155,10 @@
       - bash
       - -lc
       - >-
-        export PATH="{{ agent_sandbox_worker_node_cache_path }}/bin:$PATH";
+        export PATH="{{ evander_worker_node_cache_path }}/bin:$PATH";
         node --version && npm --version && npx --version
   changed_when: false
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Verify Node toolchain is available inside runner container
   ansible.builtin.command:
@@ -169,24 +169,24 @@
       - --network
       - none
       - -v
-      - "{{ agent_sandbox_worker_node_cache_path }}:/opt/agent-sandbox/toolchains/node-v24.14.0:ro"
-      - "{{ agent_sandbox_runner_image_name }}"
+      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.14.0:ro"
+      - "{{ evander_runner_image_name }}"
       - bash
       - -lc
       - >-
-        export PATH="/opt/agent-sandbox/toolchains/node-v24.14.0/bin:$PATH";
+        export PATH="/opt/evander/toolchains/node-v24.14.0/bin:$PATH";
         node --version && npm --version && npx --version
   changed_when: false
-  when: agent_sandbox_worker_node_toolchain_enabled | bool
+  when: evander_worker_node_toolchain_enabled | bool
 
 - name: Remove temporary local Node toolchain archive directory
   ansible.builtin.file:
-    path: "{{ agent_sandbox_worker_node_archive_tmp.path }}"
+    path: "{{ evander_worker_node_archive_tmp.path }}"
     state: absent
   delegate_to: localhost
   become: false
   changed_when: false
   when:
-    - agent_sandbox_worker_node_toolchain_enabled | bool
-    - not (agent_sandbox_worker_node_toolchain_uses_archive | bool)
-    - agent_sandbox_worker_node_archive_tmp.path is defined
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_archive_tmp.path is defined

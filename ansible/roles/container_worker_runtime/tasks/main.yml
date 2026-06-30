@@ -9,33 +9,33 @@
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
-    owner: "{{ item.owner | default(agent_sandbox_run_user) }}"
-    group: "{{ item.group | default(agent_sandbox_run_user) }}"
+    owner: "{{ item.owner | default(evander_run_user) }}"
+    group: "{{ item.group | default(evander_run_user) }}"
     mode: "{{ item.mode }}"
   loop:
-    - path: "{{ agent_sandbox_deploy_path }}/config"
+    - path: "{{ evander_deploy_path }}/config"
       mode: "0750"
-    - path: "{{ agent_sandbox_worker_root }}"
+    - path: "{{ evander_worker_root }}"
       mode: "0750"
-    - path: "{{ agent_sandbox_worker_root }}/sessions"
+    - path: "{{ evander_worker_root }}/sessions"
       mode: "0750"
-    - path: "{{ agent_sandbox_worker_runtime_dir }}"
+    - path: "{{ evander_worker_runtime_dir }}"
       mode: "0750"
-    - path: "{{ agent_sandbox_worker_root }}/images"
+    - path: "{{ evander_worker_root }}/images"
       mode: "0750"
-    - path: "{{ agent_sandbox_worker_toolchain_cache_root }}"
+    - path: "{{ evander_worker_toolchain_cache_root }}"
       mode: "0755"
-    - path: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+    - path: "{{ evander_worker_dotnet_cache_path }}"
       mode: "0755"
-    - path: "{{ agent_sandbox_worker_dotnet_tools_cache_path }}"
+    - path: "{{ evander_worker_dotnet_tools_cache_path }}"
       mode: "0755"
-    - path: "{{ agent_sandbox_worker_node_cache_path }}"
+    - path: "{{ evander_worker_node_cache_path }}"
       mode: "0755"
-    - path: "{{ agent_sandbox_worker_playwright_runtime_cache_path }}"
+    - path: "{{ evander_worker_playwright_runtime_cache_path }}"
       mode: "0755"
-    - path: "{{ agent_sandbox_worker_playwright_browsers_cache_path }}"
+    - path: "{{ evander_worker_playwright_browsers_cache_path }}"
       mode: "0755"
-    - path: "{{ agent_sandbox_worker_nuget_fallback_cache_path }}"
+    - path: "{{ evander_worker_nuget_fallback_cache_path }}"
       mode: "0755"
 
 - name: Resolve worker service user uid
@@ -43,8 +43,8 @@
     argv:
       - id
       - -u
-      - "{{ agent_sandbox_run_user }}"
-  register: agent_sandbox_worker_user_uid_result
+      - "{{ evander_run_user }}"
+  register: evander_worker_user_uid_result
   changed_when: false
 
 - name: Resolve worker service user gid
@@ -52,20 +52,20 @@
     argv:
       - id
       - -g
-      - "{{ agent_sandbox_run_user }}"
-  register: agent_sandbox_worker_user_gid_result
+      - "{{ evander_run_user }}"
+  register: evander_worker_user_gid_result
   changed_when: false
 
 - name: Resolve effective worker container user
   ansible.builtin.set_fact:
-    agent_sandbox_effective_worker_container_user: >-
+    evander_effective_worker_container_user: >-
       {{
-        agent_sandbox_worker_container_user
-        if (agent_sandbox_worker_container_user | default('') | string | trim | length) > 0
+        evander_worker_container_user
+        if (evander_worker_container_user | default('') | string | trim | length) > 0
         else (
-          agent_sandbox_worker_user_uid_result.stdout
+          evander_worker_user_uid_result.stdout
           ~ ':'
-          ~ agent_sandbox_worker_user_gid_result.stdout
+          ~ evander_worker_user_gid_result.stdout
         )
       }}
 
@@ -74,10 +74,10 @@
     path: "{{ item.archive_path }}"
   delegate_to: localhost
   become: false
-  loop: "{{ agent_sandbox_runner_image_archives }}"
+  loop: "{{ evander_runner_image_archives }}"
   loop_control:
     label: "{{ item.image_name }}"
-  register: agent_sandbox_runner_image_archive_stats
+  register: evander_runner_image_archive_stats
 
 - name: Assert local runner image archives exist
   ansible.builtin.assert:
@@ -86,12 +86,12 @@
       - item.stat.isreg | default(false)
     fail_msg: >-
       Build the runner image archive first with
-      {{ item.item.build_command | default('scripts/build_agent_sandbox_runner_image.sh') }}. Expected archive:
+      {{ item.item.build_command | default('scripts/build_evander_runner_image.sh') }}. Expected archive:
       {{ item.item.archive_path }}
     success_msg: >-
       Runner image archive for {{ item.item.image_name }} is present on the
       Ansible control machine.
-  loop: "{{ agent_sandbox_runner_image_archive_stats.results }}"
+  loop: "{{ evander_runner_image_archive_stats.results }}"
   loop_control:
     label: "{{ item.item.image_name }}"
 
@@ -99,13 +99,13 @@
   ansible.builtin.copy:
     src: "{{ item.archive_path }}"
     dest: "{{ item.remote_archive_path }}"
-    owner: "{{ agent_sandbox_run_user }}"
-    group: "{{ agent_sandbox_run_user }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
     mode: "0640"
-  loop: "{{ agent_sandbox_runner_image_archives }}"
+  loop: "{{ evander_runner_image_archives }}"
   loop_control:
     label: "{{ item.image_name }}"
-  register: agent_sandbox_runner_image_archive_copies
+  register: evander_runner_image_archive_copies
 
 - name: Load runner image archives into Docker
   ansible.builtin.command:
@@ -114,10 +114,10 @@
       - load
       - --input
       - "{{ item.item.remote_archive_path }}"
-  loop: "{{ agent_sandbox_runner_image_archive_copies.results }}"
+  loop: "{{ evander_runner_image_archive_copies.results }}"
   loop_control:
     label: "{{ item.item.image_name }}"
-  register: agent_sandbox_runner_image_load
+  register: evander_runner_image_load
   changed_when: item.changed
 
 - name: Verify runner images exist locally
@@ -127,7 +127,7 @@
       - image
       - inspect
       - "{{ item.image_name }}"
-  loop: "{{ agent_sandbox_runner_image_archives }}"
+  loop: "{{ evander_runner_image_archives }}"
   loop_control:
     label: "{{ item.image_name }}"
   changed_when: false
@@ -138,7 +138,7 @@
       - docker
       - pull
       - "{{ item }}"
-  loop: "{{ agent_sandbox_worker_preload_images }}"
-  register: agent_sandbox_worker_image_pull
-  changed_when: "'Image is up to date' not in agent_sandbox_worker_image_pull.stdout"
-  when: (agent_sandbox_worker_preload_images | length) > 0
+  loop: "{{ evander_worker_preload_images }}"
+  register: evander_worker_image_pull
+  changed_when: "'Image is up to date' not in evander_worker_image_pull.stdout"
+  when: (evander_worker_preload_images | length) > 0

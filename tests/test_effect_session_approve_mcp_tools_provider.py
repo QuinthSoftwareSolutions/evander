@@ -6,21 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.session_approve_mcp_tools import (
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryStore
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.session_approve_mcp_tools import (
     SessionApproveMcpToolsForRunEffectProvider,
 )
-from agent_sandbox.events.provider_models import SessionApproveMcpToolsForRunEffectDefinition
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.messaging.targets import (
+from evander.events.provider_models import SessionApproveMcpToolsForRunEffectDefinition
+from evander.models import SessionManifest, ToolName
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.repositories.session_tool_approval_leases import (
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
 

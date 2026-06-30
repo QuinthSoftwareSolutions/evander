@@ -3,9 +3,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
-from agent_sandbox.events.models import WorkflowNodeEnvelope
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.models import WorkflowNodeEnvelope
 from evander_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
@@ -624,7 +624,7 @@ def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
         trusted,
         "for-each-ref",
         "--format=%(refname)",
-        "refs/agent-sandbox/team-consolidations",
+        "refs/evander/team-consolidations",
     )
     assert temp_refs.stdout.strip() == ""
     assert _git(trusted, "branch", "--show-current").stdout.strip() == (

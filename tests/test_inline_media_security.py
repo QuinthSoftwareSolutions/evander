@@ -1,6 +1,6 @@
 import pytest
 
-from agent_sandbox.inline_media import (
+from evander.inline_media import (
     download_url_with_limit,
     require_provider_media_url,
     sanitize_inline_media_metadata,
@@ -115,7 +115,7 @@ def test_download_inline_media_follows_validated_redirect(monkeypatch: pytest.Mo
             calls.append({"method": method, "url": url, **kwargs})
             return responses.pop(0)
 
-    monkeypatch.setattr("agent_sandbox.inline_media.httpx.Client", FakeClient)
+    monkeypatch.setattr("evander.inline_media.httpx.Client", FakeClient)
 
     content, mime_type = download_url_with_limit(
         url="https://github.com/user-attachments/assets/abc",
@@ -163,7 +163,7 @@ def test_download_inline_media_rejects_unvalidated_redirect(
         def stream(self, method: str, url: str, **kwargs: object) -> FakeResponse:
             return FakeResponse()
 
-    monkeypatch.setattr("agent_sandbox.inline_media.httpx.Client", FakeClient)
+    monkeypatch.setattr("evander.inline_media.httpx.Client", FakeClient)
 
     with pytest.raises(ValueError, match="not allowlisted"):
         download_url_with_limit(

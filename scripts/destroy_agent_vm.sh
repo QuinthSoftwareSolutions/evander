@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/guest_ssh.sh
 source "${SCRIPT_DIR}/lib/guest_ssh.sh"
-VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"
+VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/evander}"
 HOST_AGENT_CONTROL_STATE_PATH="${HOST_AGENT_CONTROL_STATE_PATH:-${ROOT_DIR}/runtime/host-agent-control-state.json}"
 VM_DIR="${VM_STORAGE_DIR}/vms/${VM_NAME}"
 STATE_DIR="${ROOT_DIR}/runtime/vms/${VM_NAME}"

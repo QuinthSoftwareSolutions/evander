@@ -5,8 +5,8 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.addons import AddonContext
-from agent_sandbox.models import digest_payload
+from evander.addons import AddonContext
+from evander.models import digest_payload
 
 from .catalog import catalog_payload
 from .client import SkatteverketClient

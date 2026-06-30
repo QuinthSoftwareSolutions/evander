@@ -15,6 +15,7 @@ import {
 import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
+import { AddonsPage } from "./features/addons/AddonsPage";
 import { AgentsPage } from "./features/agents/AgentsPage";
 import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
@@ -31,6 +32,7 @@ import { UsersPage } from "./features/users/UsersPage";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
+import { DirectoryAddIcon, DirectoryDeleteIcon, NotificationBellIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 import {
   addonTabsFromPayload,
@@ -731,44 +733,6 @@ function findDirectoryNode(root: DirectoryTreeNode | null, path: string): Direct
     }
   }
   return null;
-}
-
-function DirectoryActionIcon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {
-  return (
-    <svg aria-hidden="true" viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      {children}
-    </svg>
-  );
-}
-
-function DirectoryAddIcon() {
-  return (
-    <DirectoryActionIcon>
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </DirectoryActionIcon>
-  );
-}
-
-function DirectoryDeleteIcon() {
-  return (
-    <DirectoryActionIcon>
-      <path d="M4.5 7.5h15" />
-      <path d="M9.5 4.5h5" />
-      <path d="M8.5 7.5v10" />
-      <path d="M15.5 7.5v10" />
-      <path d="M6.5 7.5l.8 11a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4l.8-11" />
-    </DirectoryActionIcon>
-  );
-}
-
-function NotificationBellIcon() {
-  return (
-    <DirectoryActionIcon>
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </DirectoryActionIcon>
-  );
 }
 
 function formatNotificationTimestamp(value: string | null | undefined): string {
@@ -2109,6 +2073,8 @@ export default function AdminRoot() {
               <ApprovalsScreen />
             ) : renderedTab === "artifacts" ? (
               <ArtifactsPage />
+            ) : renderedTab === "addons" ? (
+              <AddonsPage />
             ) : renderedTab === "tool-calls" ? (
               <ToolCallsPage />
             ) : activeTab.key.startsWith("addon:") ? (

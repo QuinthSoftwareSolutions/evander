@@ -309,9 +309,9 @@
         "config": {
           "files": [
             {
-              "destination_path": "${{effect-agent-clone-repo-2.target_dir}}/.agent-sandbox/bin/setup_review_repo.sh",
+              "destination_path": "${{effect-agent-clone-repo-2.target_dir}}/.evander/bin/setup_review_repo.sh",
               "mode": "0755",
-              "source_path": "/opt/agent-sandbox/scripts/guest/setup_review_repo.sh"
+              "source_path": "/opt/evander/scripts/guest/setup_review_repo.sh"
             }
           ],
           "target": "${{effect-agent-clone-repo-2.session_id}}"
@@ -321,7 +321,7 @@
       },
       {
         "config": {
-          "command": "bash .agent-sandbox/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
+          "command": "bash .evander/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
           "target": "${{effect-agent-clone-repo-2.session_id}}",
           "working_directory": "${{effect-agent-clone-repo-2.target_dir}}"
         },

@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander_team_addon.models import TeamOutboxRecord, TeamOutboxStatus
 from evander_team_addon.provider_schemas import TeamPublishOutboxEventsEffectDefinition
 from evander_team_addon.providers import TeamPublishOutboxEventsEffectProvider

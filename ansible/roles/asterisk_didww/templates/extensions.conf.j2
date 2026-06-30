@@ -1,4 +1,4 @@
-; Managed by agent-sandbox Ansible.
+; Managed by evander Ansible.
 [general]
 static=yes
 writeprotect=yes
@@ -6,16 +6,16 @@ clearglobalvars=no
 
 [globals]
 
-[{{ agent_sandbox_asterisk_didww_context }}]
+[{{ evander_asterisk_didww_context }}]
 exten => _X.,1,NoOp(Inbound DIDWW call ${EXTEN})
  same => n,Set(INBOUND_PHONE_CALL=1)
  same => n,Set(DID=${EXTEN})
  same => n,Set(CALLER_NUMBER=${CALLERID(num)})
-{% if agent_sandbox_asterisk_didww_inbound_route_id | length > 0 %}
- same => n,Set(INBOUND_ROUTE_ID={{ agent_sandbox_asterisk_didww_inbound_route_id }})
- same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN}:{{ agent_sandbox_asterisk_didww_inbound_route_id }})
+{% if evander_asterisk_didww_inbound_route_id | length > 0 %}
+ same => n,Set(INBOUND_ROUTE_ID={{ evander_asterisk_didww_inbound_route_id }})
+ same => n,Stasis({{ evander_asterisk_ari_app }},inbound:${EXTEN}:{{ evander_asterisk_didww_inbound_route_id }})
 {% else %}
- same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN})
+ same => n,Stasis({{ evander_asterisk_ari_app }},inbound:${EXTEN})
 {% endif %}
  same => n,Hangup()
 
@@ -23,10 +23,10 @@ exten => s,1,NoOp(Inbound DIDWW call ${EXTEN})
  same => n,Set(INBOUND_PHONE_CALL=1)
  same => n,Set(DID=${EXTEN})
  same => n,Set(CALLER_NUMBER=${CALLERID(num)})
-{% if agent_sandbox_asterisk_didww_inbound_route_id | length > 0 %}
- same => n,Set(INBOUND_ROUTE_ID={{ agent_sandbox_asterisk_didww_inbound_route_id }})
- same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:{{ agent_sandbox_asterisk_didww_inbound_route_id }})
+{% if evander_asterisk_didww_inbound_route_id | length > 0 %}
+ same => n,Set(INBOUND_ROUTE_ID={{ evander_asterisk_didww_inbound_route_id }})
+ same => n,Stasis({{ evander_asterisk_ari_app }},inbound:{{ evander_asterisk_didww_inbound_route_id }})
 {% else %}
- same => n,Stasis({{ agent_sandbox_asterisk_ari_app }},inbound:${EXTEN})
+ same => n,Stasis({{ evander_asterisk_ari_app }},inbound:${EXTEN})
 {% endif %}
  same => n,Hangup()

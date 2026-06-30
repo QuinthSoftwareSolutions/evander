@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
+from evander.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 
 
 def test_migrate_agent_prompt_output_mode_to_lifecycle_ports() -> None:

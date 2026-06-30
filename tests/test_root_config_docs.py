@@ -9,7 +9,7 @@ def test_root_only_config_docs_describe_root_as_live_baseline() -> None:
 
     assert "is the live top-level baseline" in readme
     assert "Legacy gateway YAML is only a migration/import source" in readme
-    assert "Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)" in readme
+    assert "Stasis(evander_didww,inbound:<did-or-route-id>)" in readme
     assert "Configure `root` directory overlays directly" in operations
     assert "is the live top-level layer" in operations
     assert "/voice-sessions/inbound-phone-calls" in operations

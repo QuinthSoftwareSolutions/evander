@@ -103,7 +103,7 @@ check_remote() {
 ssh \
   "${SSH_OPTS[@]}" \
   "${ssh_user}@${VM_IP}" \
-  "sudo -n env AGENT_USER='${VM_USER}' REPO_NAME='${REPO_NAME}' AGENT_RUN_LOG_DIR=/var/log/agent-sandbox/agent-runs bash -s" <<'EOF'
+  "sudo -n env AGENT_USER='${VM_USER}' REPO_NAME='${REPO_NAME}' AGENT_RUN_LOG_DIR=/var/log/evander/agent-runs bash -s" <<'EOF'
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
@@ -112,8 +112,8 @@ if [[ -z "${AGENT_HOME}" ]]; then
   echo "agent: unavailable (unknown agent user ${AGENT_USER})"
   exit 0
 fi
-LOG_DIR="${AGENT_HOME}/.agent-sandbox"
-RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
+LOG_DIR="${AGENT_HOME}/.evander"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
 RESOLVED_REPO_NAME="${REPO_NAME:-}"
 
 if [[ -z "${RESOLVED_REPO_NAME}" ]]; then

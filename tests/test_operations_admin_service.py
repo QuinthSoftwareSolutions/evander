@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin.services.operations_service import OperationsAdminService
+from evander.admin.services.operations_service import OperationsAdminService
 
 
 class RecordingDomain:

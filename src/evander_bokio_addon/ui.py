@@ -5,7 +5,7 @@ from pathlib import Path
 from starlette.responses import FileResponse, Response
 from starlette.routing import Route
 
-from agent_sandbox.addons import AddonContext
+from evander.addons import AddonContext
 
 
 _STATIC_DIR = Path(__file__).resolve().parent / "ui_static"

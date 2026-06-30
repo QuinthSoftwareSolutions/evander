@@ -6,9 +6,9 @@ import subprocess
 import pytest
 from typer.testing import CliRunner
 
-from agent_sandbox.cli import app
-from agent_sandbox.setup import tui as setup_tui
-from agent_sandbox.setup.engine import (
+from evander.cli import app
+from evander.setup import tui as setup_tui
+from evander.setup.engine import (
     SetupDependencyInstallRejected,
     SetupManager,
     SetupPreflightError,
@@ -69,8 +69,8 @@ def test_setup_admin_web_can_use_no_auth_without_password(tmp_path: Path) -> Non
     assert checklist["admin_web"].summary == "127.0.0.1:8100, no authentication"
     assert state.admin_web["auth_mode"] == "none"
     assert state.admin_web["password_configured"] is False
-    assert "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET" in secret_text
-    assert "AGENT_SANDBOX_ADMIN_WEB_PASSWORD" not in secret_text
+    assert "EVANDER_ADMIN_WEB_SESSION_SECRET" in secret_text
+    assert "EVANDER_ADMIN_WEB_PASSWORD" not in secret_text
 
 
 def test_setup_plan_is_ready_after_required_items_and_preflight(tmp_path: Path) -> None:
@@ -121,16 +121,16 @@ def test_setup_install_preflight_uses_setup_profile_and_clears_failed_pass(
         calls.append({"args": args, "cwd": cwd, "env": env, "check": check})
         return subprocess.CompletedProcess(args, 1)
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.setup.engine.subprocess.run", fake_run)
 
     with pytest.raises(SetupPreflightError) as exc_info:
         manager.run_install_preflight(state)
 
     assert exc_info.value.returncode == 1
     assert calls[0]["check"] is False
-    assert calls[0]["env"]["AGENT_SANDBOX_SERVICE_PROFILE"] == "setup"
-    assert calls[0]["env"]["AGENT_SANDBOX_SETUP_EXECUTION_BACKEND"] == "libvirt_vm"
-    assert calls[0]["env"]["AGENT_SANDBOX_SETUP_EXECUTION_MODEL"] == "libvirt_vm"
+    assert calls[0]["env"]["EVANDER_SERVICE_PROFILE"] == "setup"
+    assert calls[0]["env"]["EVANDER_SETUP_EXECUTION_BACKEND"] == "libvirt_vm"
+    assert calls[0]["env"]["EVANDER_SETUP_EXECUTION_MODEL"] == "libvirt_vm"
     assert manager.load_state().install_preflight_passed_at == ""
 
 
@@ -227,10 +227,10 @@ def test_setup_writes_admin_web_no_auth_config_without_placeholder_password(
     manager._write_config_files(state)
 
     admin_env = (config_dir / "admin-web.env").read_text(encoding="utf-8")
-    assert 'AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE="none"' in admin_env
-    assert 'AGENT_SANDBOX_ADMIN_WEB_USERNAME="operator"' in admin_env
-    assert 'AGENT_SANDBOX_ADMIN_WEB_PASSWORD=""' in admin_env
-    assert 'AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET=""' in admin_env
+    assert 'EVANDER_ADMIN_WEB_AUTH_MODE="none"' in admin_env
+    assert 'EVANDER_ADMIN_WEB_USERNAME="operator"' in admin_env
+    assert 'EVANDER_ADMIN_WEB_PASSWORD=""' in admin_env
+    assert 'EVANDER_ADMIN_WEB_SESSION_SECRET=""' in admin_env
     assert "replace-with-real-password" not in admin_env
 
 
@@ -239,7 +239,7 @@ def test_setup_writes_container_worker_token_secret_without_state_leak(
 ) -> None:
     monkeypatch.delenv("TEST_WORKER_TOKEN", raising=False)
     monkeypatch.setattr(
-        "agent_sandbox.setup.engine.secrets.token_urlsafe",
+        "evander.setup.engine.secrets.token_urlsafe",
         lambda length: "worker-token",
     )
     project_dir = tmp_path / "project"
@@ -277,7 +277,7 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "User=operator" in unit
     assert "SupplementaryGroups=docker" in unit
     assert f"EnvironmentFile=-{tmp_path / 'local-secrets.env'}" in unit
-    assert "agent-sandbox-worker-daemon --host 127.0.0.1 --port 11888" in unit
+    assert "evander-worker-daemon --host 127.0.0.1 --port 11888" in unit
     assert "--runtime-dir /var/lib/agent-worker/runtime" in unit
     assert "--worker-root /var/lib/agent-worker" in unit
     assert "Requires=docker.service" in unit
@@ -300,7 +300,7 @@ def test_setup_builds_admin_frontend_assets_when_references_are_missing(
     manager = SetupManager(project_dir=project_dir, runtime_dir=tmp_path / "runtime")
     run_calls = []
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.shutil.which", lambda command: "/bin/npm")
+    monkeypatch.setattr("evander.setup.engine.shutil.which", lambda command: "/bin/npm")
 
     def fake_run(args, *, cwd, check, **kwargs):
         run_calls.append({"args": args, "cwd": cwd, "check": check, **kwargs})
@@ -311,7 +311,7 @@ def test_setup_builds_admin_frontend_assets_when_references_are_missing(
             (assets_dir / "index-missing.css").write_text("body{}", encoding="utf-8")
         return subprocess.CompletedProcess(args, 0)
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.setup.engine.subprocess.run", fake_run)
 
     manager._ensure_admin_frontend_assets()
 
@@ -363,9 +363,9 @@ def test_setup_admin_frontend_asset_build_installs_approved_nodejs_npm(
             (assets_dir / "index-missing.js").write_text("console.log('ok')", encoding="utf-8")
         return subprocess.CompletedProcess(args, 0)
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.shutil.which", fake_which)
-    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
-    monkeypatch.setattr("agent_sandbox.setup.engine.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("evander.setup.engine.shutil.which", fake_which)
+    monkeypatch.setattr("evander.setup.engine.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.setup.engine.os.geteuid", lambda: 1000)
 
     manager._ensure_admin_frontend_assets(
         approve_nodejs_npm_install=lambda versions: approvals.append(versions) or True
@@ -403,7 +403,7 @@ def test_setup_admin_frontend_asset_build_stops_when_nodejs_npm_is_rejected(
     manager = SetupManager(project_dir=project_dir, runtime_dir=tmp_path / "runtime")
 
     monkeypatch.setattr(
-        "agent_sandbox.setup.engine.shutil.which",
+        "evander.setup.engine.shutil.which",
         lambda command: {
             "apt-cache": "/usr/bin/apt-cache",
             "apt-get": "/usr/bin/apt-get",
@@ -470,19 +470,19 @@ def test_setup_launch_starts_local_worker_for_same_host_container(
         run_calls.append(args)
         return subprocess.CompletedProcess(args, 0)
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.setup.engine.subprocess.run", fake_run)
 
     manager.launch(state)
 
     assert local_worker_installs == [state]
-    assert ["sudo", "systemctl", "restart", "agent-sandbox-worker-daemon.service"] in run_calls
+    assert ["sudo", "systemctl", "restart", "evander-worker-daemon.service"] in run_calls
 
 
 def test_setup_tui_omits_nonfunctional_setup_profile_choice(
     tmp_path: Path, monkeypatch
 ) -> None:
     clear_calls = []
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: clear_calls.append(True))
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: clear_calls.append(True))
     runner = CliRunner()
     result = runner.invoke(
         app,
@@ -506,7 +506,7 @@ def test_setup_tui_omits_nonfunctional_setup_profile_choice(
 def test_setup_tui_supports_discouraged_no_auth_admin_web(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
     state.secret_file = str(tmp_path / "local-secrets.env")
@@ -538,7 +538,7 @@ def _patch_tui_keys(monkeypatch, *keys: str) -> None:
 
 
 def test_setup_tui_checklist_enter_opens_highlighted_item(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     _patch_tui_keys(monkeypatch, "enter")
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -551,7 +551,7 @@ def test_setup_tui_checklist_enter_opens_highlighted_item(tmp_path: Path, monkey
 
 
 def test_setup_tui_checklist_arrow_navigation_wraps(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
 
@@ -591,7 +591,7 @@ def test_setup_tui_normalizes_arrow_escape_sequence() -> None:
 def test_setup_tui_checklist_hotkeys_route(
     tmp_path: Path, monkeypatch, key: str, kind: str
 ) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     _patch_tui_keys(monkeypatch, key)
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -605,7 +605,7 @@ def test_setup_tui_checklist_hotkeys_route(
 def test_setup_tui_interactive_admin_no_auth_requires_confirmation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     monkeypatch.setattr(setup_tui, "_is_interactive_terminal", lambda: True)
     _patch_tui_keys(monkeypatch, "down", "enter", "down", "enter", "q")
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
@@ -637,7 +637,7 @@ def test_setup_tui_interactive_admin_no_auth_requires_confirmation(
 def test_setup_tui_interactive_execution_model_single_select(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     _patch_tui_keys(monkeypatch, "down", "enter")
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -651,7 +651,7 @@ def test_setup_tui_interactive_execution_model_single_select(
 def test_setup_tui_interactive_ai_provider_multiselect_requires_one_and_toggles(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     monkeypatch.setattr(setup_tui, "_is_interactive_terminal", lambda: True)
     _patch_tui_keys(
         monkeypatch,
@@ -717,7 +717,7 @@ def test_setup_admin_assistant_verification_queues_smoke_message(
             return {"event_id": f"chat:{kwargs['user_message_id']}"}
 
     monkeypatch.setattr(
-        "agent_sandbox.setup.engine.build_admin_runtime",
+        "evander.setup.engine.build_admin_runtime",
         lambda runtime_dir: FakeAdminService(runtime_dir),
     )
 

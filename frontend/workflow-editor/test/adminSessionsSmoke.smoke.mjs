@@ -1046,7 +1046,7 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
     created_at: "2026-05-17T12:00:00Z",
     metadata: {
       libvirt_vm_template: {
-        image_ref: "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+        image_ref: "/var/lib/libvirt/images/evander/dotnet-agent.qcow2",
         template_alias: "dotnet",
       },
     },

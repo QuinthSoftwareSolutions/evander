@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.contact_allowlists import (
+from evander.contact_allowlists import (
     require_allowed_contact_id,
     resolve_effective_contact_directory,
     validate_allowed_contact_ids_for_directory,
 )
-from agent_sandbox.directory_config import ContactDirectoryConfig
+from evander.directory_config import ContactDirectoryConfig
 
 
 def _contacts() -> ContactDirectoryConfig:

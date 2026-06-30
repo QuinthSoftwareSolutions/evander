@@ -3,22 +3,22 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.config import GatewayConfig, MailboxConfig
-from agent_sandbox.email.gmail_provider import GmailEmailProvider
-from agent_sandbox.email.providers import MultiMailboxEmailProvider
-from agent_sandbox.messaging.targets import (
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService, DirectoryStore
+from evander.config import GatewayConfig, MailboxConfig
+from evander.email.gmail_provider import GmailEmailProvider
+from evander.email.providers import MultiMailboxEmailProvider
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.repositories.records import (
+from evander.models import SessionManifest, ToolName
+from evander.repositories.records import (
     SqliteTeamsRecordsRepository,
     teams_records_db_path,
 )
-from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_runtime
-from agent_sandbox.services import (
+from evander.runtime import _resolve_allowed_discord_channel_ids, build_runtime
+from evander.services import (
     AzureDevOpsPrReplyProvider,
     AzureDevOpsPrQueryProvider,
     AzureDevOpsPrPublishProvider,
@@ -30,7 +30,7 @@ from agent_sandbox.services import (
     StubDiscordService,
     StubTeamsService,
 )
-from agent_sandbox.messaging.teams_auth import (
+from evander.messaging.teams_auth import (
     JsonTeamsIdentityCredentialStore,
     TeamsAuthCredentials,
 )
@@ -129,11 +129,11 @@ def test_build_runtime_reads_bot_token_from_configured_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
-    monkeypatch.setenv("AGENT_SANDBOX_DISCORD_TOKEN", "token-value")
+    monkeypatch.setenv("EVANDER_DISCORD_TOKEN", "token-value")
     config = make_config(
         tmp_path,
         discord_backend="bot_api",
-        discord_bot_token_env="AGENT_SANDBOX_DISCORD_TOKEN",
+        discord_bot_token_env="EVANDER_DISCORD_TOKEN",
     )
 
     runtime = build_runtime(config)

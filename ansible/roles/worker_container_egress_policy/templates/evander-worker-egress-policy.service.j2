@@ -1,0 +1,14 @@
+[Unit]
+Description=Evander Worker Container Egress Policy
+After=docker.service
+Requires=docker.service
+Before=evander-worker-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart={{ evander_worker_egress_policy_script_path }} apply
+ExecStop={{ evander_worker_egress_policy_script_path }} clear
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

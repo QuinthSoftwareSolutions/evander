@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import json
 
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.events.models import TriggerEvent
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 
 
 def _event(*, event_id: str, trigger_id: str = "discord", offset_seconds: int = 0) -> TriggerEvent:

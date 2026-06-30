@@ -52,13 +52,13 @@ redact_snapshot() {
 
   printf '## Selected service warnings and errors\n'
   for unit in \
-    agent-sandbox-admin-web.service \
-    agent-sandbox-trigger-orchestrator.service \
-    agent-sandbox-effect-orchestrator.service \
-    agent-sandbox-gateway.service \
-    agent-sandbox-worker-daemon.service \
-    agent-sandbox-ado-worker.service \
-    agent-sandbox-teams-ingest.service; do
+    evander-admin-web.service \
+    evander-trigger-orchestrator.service \
+    evander-effect-orchestrator.service \
+    evander-gateway.service \
+    evander-worker-daemon.service \
+    evander-ado-worker.service \
+    evander-teams-ingest.service; do
     printf '\n### %s\n' "$unit"
     journalctl --no-pager -u "$unit" --since "$SINCE" -p warning..alert -n 200 2>&1 || true
   done

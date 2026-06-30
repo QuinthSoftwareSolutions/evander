@@ -6,26 +6,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectExecutionRecord, JsonExecutionStore
-from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
-from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
-from agent_sandbox.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
-from agent_sandbox.events.provider_models import (
+from evander.config import GatewayConfig
+from evander.daemons.effect_orchestrator import EffectExecutionRecord, JsonExecutionStore
+from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+from evander.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptEffectDefinition,
 )
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.messaging.agent_prompt_queue import (
+from evander.model_usage.store import ModelUsageStore
+from evander.models import SessionManifest, ToolName
+from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
-from agent_sandbox.triggers.queue import TriggerQueueRecord
+from evander.triggers.queue import TriggerQueueRecord
 
 
 def _session_repository(config: GatewayConfig, *, vm_provider: str = "libvirt_vm") -> object:
-    from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
 
     repository = JsonSessionManifestRepository(config.session_store_path)
     repository.upsert_session(
@@ -260,7 +260,7 @@ def test_direct_container_prompt_registers_and_clears_correlation_context(
     session_repository = _session_repository(config, vm_provider="container_worker_vm")
     backend = _BackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_session.build_execution_backend",
+        "evander.effects.providers.agent_session.build_execution_backend",
         lambda config, admin_service: backend,
     )
     provider = AgentPromptEffectProvider()
@@ -492,7 +492,7 @@ def test_queued_container_prompt_dispatch_registers_and_clears_correlation_conte
     )
     backend = _BackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")

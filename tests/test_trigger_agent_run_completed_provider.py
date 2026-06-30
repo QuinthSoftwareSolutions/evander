@@ -6,10 +6,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.models import VmSummary
-from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.config import GatewayConfig
+from evander.models import VmSummary
+from evander.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
+from evander.triggers.providers.base import TriggerRuntimeContext
 
 
 @dataclass

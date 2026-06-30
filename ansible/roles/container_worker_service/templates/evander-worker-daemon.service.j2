@@ -1,0 +1,20 @@
+[Unit]
+Description=Evander Container Worker Daemon
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User={{ evander_run_user }}
+{% if (evander_run_user_supplementary_groups | default([]) | length) > 0 %}
+SupplementaryGroups={{ evander_run_user_supplementary_groups | join(' ') }}
+{% endif %}
+WorkingDirectory={{ evander_deploy_path }}
+EnvironmentFile={{ evander_deploy_path }}/config/worker-daemon.env
+ExecStart={{ evander_deploy_path }}/.venv/bin/evander-worker-daemon --host {{ evander_worker_host }} --port {{ evander_worker_port }} --runtime-dir {{ evander_worker_runtime_dir }} --worker-root {{ evander_worker_root }} --sandbox-profile {{ evander_worker_sandbox_profile }}{% if (evander_worker_docker_network | default('') | string | trim | length) > 0 %} --docker-network {{ evander_worker_docker_network }}{% endif %}{% if evander_worker_read_only_rootfs | bool %} --read-only-rootfs{% endif %}{% for tmpfs in evander_worker_tmpfs %} --tmpfs {{ tmpfs }}{% endfor %}{% if (evander_effective_worker_container_user | default('') | string | trim | length) > 0 %} --container-user {{ evander_effective_worker_container_user }}{% endif %}{% for prefix in evander_worker_allowed_git_source_prefixes %} --allowed-git-source-prefix {{ prefix }}{% endfor %}{% if (evander_worker_git_ssh_source_dir | default('') | string | trim | length) > 0 %} --git-ssh-source-dir {{ evander_worker_git_ssh_source_dir }}{% endif %}{% if evander_worker_mssql_enabled | bool %} --mssql-enabled --mssql-admin-user {{ evander_worker_mssql_admin_user }} --mssql-admin-password-env {{ evander_worker_mssql_admin_password_env }} --mssql-admin-host {{ evander_worker_mssql_admin_host }} --mssql-port {{ evander_worker_mssql_port }} --mssql-container-host {{ evander_worker_mssql_container_host }} --mssql-sqlcmd-path {{ evander_worker_mssql_sqlcmd_path }}{% endif %}{% for mount in evander_worker_readonly_mounts %} --readonly-mount {{ mount }}{% endfor %}{{ "" }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

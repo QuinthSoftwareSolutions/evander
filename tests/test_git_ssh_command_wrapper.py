@@ -59,7 +59,7 @@ def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Pat
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -161,7 +161,7 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -216,11 +216,11 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     initial_main_sha = _git(source_repo, "rev-parse", "main").stdout.strip()
@@ -294,7 +294,7 @@ def test_git_ssh_wrapper_preserves_local_output_refs_during_shared_mirror_refres
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -339,11 +339,11 @@ def test_git_ssh_wrapper_preserves_local_output_refs_during_shared_mirror_refres
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     output_clone = tmp_path / "output-clone"
@@ -431,7 +431,7 @@ def test_git_ssh_wrapper_can_disable_shared_mirror_auto_refresh(tmp_path: Path) 
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -454,10 +454,10 @@ def test_git_ssh_wrapper_can_disable_shared_mirror_auto_refresh(tmp_path: Path) 
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(bare_repo, "fetch", str(source_repo), "refs/heads/main:refs/heads/main")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorAutoRefresh", "0")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorAutoRefresh", "0")
     initial_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
 
     (source_repo / "README.md").write_text("v2\n", encoding="utf-8")
@@ -517,7 +517,7 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -568,11 +568,11 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
         str(canonical_worktree),
         "+refs/heads/main:refs/heads/main",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", canonical_bare.as_uri())
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", canonical_bare.as_uri())
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     refs_before = _git_dir(
@@ -635,7 +635,7 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -679,17 +679,17 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "0")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "0")
     _git_dir(
         bare_repo,
         "config",
         "--add",
-        "agent-sandbox.mirrorRefspec",
+        "evander.mirrorRefspec",
         "+refs/heads/does-not-exist:refs/heads/does-not-exist",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     initial_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
@@ -740,7 +740,7 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -785,11 +785,11 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     notes_clone = tmp_path / "notes-clone"
@@ -858,7 +858,7 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -914,18 +914,18 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
     _git_dir(
         bare_repo,
         "config",
         "--add",
-        "agent-sandbox.mirrorRefspec",
+        "evander.mirrorRefspec",
         "refs/heads/main:refs/heads/main",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     upstream_worktree = tmp_path / "upstream-worktree"
@@ -989,7 +989,7 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
         }
     )
 
@@ -1031,11 +1031,11 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "upstream")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
-    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "upstream")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     (source_repo / "README.md").write_text("v2\n", encoding="utf-8")

@@ -4,18 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryScopeResolver
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.policy_config import PolicyConfigResolver
-from agent_sandbox.provider_config import (
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryScopeResolver
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService, DirectoryStore
+from evander.policy_config import PolicyConfigResolver
+from evander.provider_config import (
     ProviderConfigResolver,
     ProviderSessionManifest,
 )
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.storage import JsonStore
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.models import SessionManifest, ToolName
+from evander.storage import JsonStore
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:

@@ -11,13 +11,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from agent_sandbox.addons import AddonContext, AddonLoaderConfig, addon_runtime_dir, load_addons
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import ApprovalStatus, SessionManifest
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.workflow.plugins import load_provider_plugins
+from evander.addons import AddonContext, AddonLoaderConfig, addon_runtime_dir, load_addons
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.gateway import create_server
+from evander.models import ApprovalStatus, SessionManifest
+from evander.runtime import build_runtime
+from evander.workflow.plugins import load_provider_plugins
 from evander_skatteverket_addon.api import admin_api_routes
 from evander_skatteverket_addon.catalog import ADDON_ID, catalog_payload
 from evander_skatteverket_addon.mcp import (
@@ -101,7 +101,7 @@ def _effect_context(context) -> EffectRuntimeContext:
 def test_bundled_skatteverket_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
+    addon_entry_points = pyproject["project"]["entry-points"]["evander.addons"]
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert addon_entry_points["skatteverket"] == "evander_skatteverket_addon:register_addon"

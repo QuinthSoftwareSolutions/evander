@@ -27,7 +27,7 @@ load_root_secrets_env
 load_provider_config
 load_issue_setup_config
 
-GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
 ORIGINAL_COMMAND="${SSH_ORIGINAL_COMMAND:-}"
 MIRROR_SCRIPT="${SCRIPT_DIR}/mirror_issue_repo.sh"
@@ -359,7 +359,7 @@ auto_refresh_mirror() {
   local stored_base_branch preferred_base_branch default_base_branch local_default_ref remote_default_ref
   local local_ahead remote_ahead
   local sync_failed=0
-  local stage_namespace="refs/agent-sandbox/staged-mirror"
+  local stage_namespace="refs/evander/staged-mirror"
   local -a mirror_args=()
   local -a mirror_refspecs=()
   local -a fetch_refspecs=()
@@ -373,23 +373,23 @@ auto_refresh_mirror() {
       ;;
   esac
 
-  mirror_source="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorSource || true)"
+  mirror_source="$(git --git-dir="${repo_real}" config --get evander.mirrorSource || true)"
   if [[ -z "${mirror_source}" ]]; then
     return 0
   fi
 
-  mirror_auto_refresh="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorAutoRefresh || true)"
+  mirror_auto_refresh="$(git --git-dir="${repo_real}" config --get evander.mirrorAutoRefresh || true)"
   case "${mirror_auto_refresh}" in
     0|false|no|off)
       return 0
       ;;
   esac
 
-  mirror_remote_name="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorRemoteName || true)"
-  mirror_sync_remote="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorSyncRemote || true)"
-  mirror_force_local="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorForceLocal || true)"
-  stored_base_branch="$(git --git-dir="${repo_real}" config --get agent-sandbox.baseBranch || true)"
-  mapfile -t mirror_refspecs < <(git --git-dir="${repo_real}" config --get-all agent-sandbox.mirrorRefspec || true)
+  mirror_remote_name="$(git --git-dir="${repo_real}" config --get evander.mirrorRemoteName || true)"
+  mirror_sync_remote="$(git --git-dir="${repo_real}" config --get evander.mirrorSyncRemote || true)"
+  mirror_force_local="$(git --git-dir="${repo_real}" config --get evander.mirrorForceLocal || true)"
+  stored_base_branch="$(git --git-dir="${repo_real}" config --get evander.baseBranch || true)"
+  mapfile -t mirror_refspecs < <(git --git-dir="${repo_real}" config --get-all evander.mirrorRefspec || true)
   preferred_base_branch="$(preferred_branch_from_refspecs "${mirror_refspecs[@]}")"
   if [[ -z "${preferred_base_branch}" ]]; then
     preferred_base_branch="${stored_base_branch}"
@@ -421,7 +421,7 @@ auto_refresh_mirror() {
     source_mode="remote"
   fi
 
-  exec 9>"${repo_real}/agent-sandbox-sync.lock"
+  exec 9>"${repo_real}/evander-sync.lock"
   flock 9
 
   if [[ "${repo_real}" == *_repo.git ]]; then
@@ -516,7 +516,7 @@ auto_refresh_mirror() {
   clear_staged_mirror_refs "${repo_real}" "${stage_namespace}"
 
   if [[ -n "${default_base_branch}" ]]; then
-    git --git-dir="${repo_real}" config agent-sandbox.baseBranch "${default_base_branch}"
+    git --git-dir="${repo_real}" config evander.baseBranch "${default_base_branch}"
     git --git-dir="${repo_real}" symbolic-ref HEAD "refs/heads/${default_base_branch}" >/dev/null
   fi
 }

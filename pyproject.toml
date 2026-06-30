@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-sandbox"
+name = "evander"
 version = "0.3.1"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
@@ -29,32 +29,31 @@ dev = [
   "ruff>=0.6.8",
 ]
 
-[project.entry-points."agent_sandbox.providers"]
-builtin = "agent_sandbox.providers.builtin:register_providers"
+[project.entry-points."evander.providers"]
+builtin = "evander.providers.builtin:register_providers"
 
-[project.entry-points."agent_sandbox.addons"]
+[project.entry-points."evander.addons"]
 team = "evander_team_addon:register_addon"
 bokio = "evander_bokio_addon:register_addon"
 skatteverket = "evander_skatteverket_addon:register_addon"
 
 [project.scripts]
-agent-sandbox-gateway = "agent_sandbox.gateway:main"
-agent-sandbox-openai-relay = "agent_sandbox.relays.openai:main"
-agent-sandbox-http-target-relay = "agent_sandbox.relays.http_target:main"
-agent-sandbox-nuget-relay = "agent_sandbox.relays.nuget:main"
-agent-sandbox-didww-sip-bridge = "agent_sandbox.didww_sip_bridge:main"
-agent-sandbox-npm-audit-facade = "agent_sandbox.relays.npm_audit_facade:main"
-agent-sandbox-ado-worker = "agent_sandbox.daemons.ado_issue_worker:main"
-agent-sandbox-proxy-issue-sync = "agent_sandbox.daemons.proxy_issue_sync:main"
-agent-sandbox-discord-ingest = "agent_sandbox.messaging.discord_ingest:main"
-agent-sandbox-teams-meeting-ingest = "agent_sandbox.messaging.teams_meeting_ingest:main"
-agent-sandbox-discord-wake = "agent_sandbox.messaging.discord_wake:main"
-agent-sandbox-effect-orchestrator = "agent_sandbox.daemons.effect_orchestrator:main"
-agent-sandbox-scheduled-wake = "agent_sandbox.messaging.scheduled_wake:main"
-agent-sandbox-worker-daemon = "agent_sandbox.worker_daemon:main"
-evander-cli = "agent_sandbox.cli:app"
-agent-sandbox-cli = "agent_sandbox.cli:app"
-agent-sandbox-admin-web = "agent_sandbox.admin.web.app:main"
+evander-gateway = "evander.gateway:main"
+evander-openai-relay = "evander.relays.openai:main"
+evander-http-target-relay = "evander.relays.http_target:main"
+evander-nuget-relay = "evander.relays.nuget:main"
+evander-didww-sip-bridge = "evander.didww_sip_bridge:main"
+evander-npm-audit-facade = "evander.relays.npm_audit_facade:main"
+evander-ado-worker = "evander.daemons.ado_issue_worker:main"
+evander-proxy-issue-sync = "evander.daemons.proxy_issue_sync:main"
+evander-discord-ingest = "evander.messaging.discord_ingest:main"
+evander-teams-meeting-ingest = "evander.messaging.teams_meeting_ingest:main"
+evander-discord-wake = "evander.messaging.discord_wake:main"
+evander-effect-orchestrator = "evander.daemons.effect_orchestrator:main"
+evander-scheduled-wake = "evander.messaging.scheduled_wake:main"
+evander-worker-daemon = "evander.worker_daemon:main"
+evander-cli = "evander.cli:app"
+evander-admin-web = "evander.admin.web.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -63,7 +62,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_sandbox = ["templates/*.md", "workflow/builtin_packs/*.json"]
+evander = ["templates/*.md", "workflow/builtin_packs/*.json"]
 evander_team_addon = ["ui_static/*"]
 evander_bokio_addon = ["ui_static/*"]
 evander_skatteverket_addon = ["ui_static/*"]

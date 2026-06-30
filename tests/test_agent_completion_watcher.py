@@ -4,10 +4,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import agent_sandbox.daemons.agent_completion_watcher as watcher
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.messaging.wake_store import WakeRequestStore
-from agent_sandbox.models import (
+import evander.daemons.agent_completion_watcher as watcher
+from evander.events.models import TriggerEvent
+from evander.messaging.wake_store import WakeRequestStore
+from evander.models import (
     VmSummary,
     WakeDispatchRecord,
     WakeResumePromptPayload,

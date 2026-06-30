@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.repositories.skills_library import SkillLibraryRepository
+from evander.repositories.skills_library import SkillLibraryRepository
 
 
 def test_skill_library_create_list_read_replace_delete(tmp_path: Path) -> None:

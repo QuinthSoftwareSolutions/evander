@@ -6,21 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.email.providers import EmailMessageSummary
-from agent_sandbox.events.provider_models import CommunicationMessagesQueryDefinition
-from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig
+from evander.email.providers import EmailMessageSummary
+from evander.events.provider_models import CommunicationMessagesQueryDefinition
+from evander.messaging.discord_inbox_store import DiscordInboxStore
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.communication_messages import (
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.models import DiscordMessageEnvelope, EmailMessage
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.communication_messages import (
     CommunicationMessagesQueryProvider,
 )
-from agent_sandbox.runtime import build_runtime
+from evander.runtime import build_runtime
 
 
 def _runtime(project_dir: Path):
@@ -609,7 +609,7 @@ def test_query_communication_messages_uses_read_only_email_provider(
         return FakeEmailProvider()
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.communication_messages._build_email_provider",
+        "evander.queries.providers.communication_messages._build_email_provider",
         fake_build_email_provider,
     )
 

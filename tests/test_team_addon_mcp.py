@@ -9,12 +9,12 @@ from types import SimpleNamespace
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.addons import AddonLoaderConfig
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.scheduled import scheduled_internal_event_store_path
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import SessionManifest, ToolName, tool_name_value
-from agent_sandbox.runtime import build_runtime
+from evander.addons import AddonLoaderConfig
+from evander.config import GatewayConfig
+from evander.events.scheduled import scheduled_internal_event_store_path
+from evander.gateway import create_server
+from evander.models import SessionManifest, ToolName, tool_name_value
+from evander.runtime import build_runtime
 from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,

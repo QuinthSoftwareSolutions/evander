@@ -2,13 +2,13 @@
 
 guest_ssh_known_hosts_path() {
   local caller_home="${1:-${HOME:-}}"
-  local default_path="${caller_home}/.ssh/agent-sandbox-known_hosts"
+  local default_path="${caller_home}/.ssh/evander-known_hosts"
   local default_parent
   local fallback_user
   local fallback_path
 
-  if [[ -n "${AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE:-}" ]]; then
-    printf '%s\n' "${AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE}"
+  if [[ -n "${EVANDER_GUEST_KNOWN_HOSTS_FILE:-}" ]]; then
+    printf '%s\n' "${EVANDER_GUEST_KNOWN_HOSTS_FILE}"
     return 0
   fi
 
@@ -24,7 +24,7 @@ guest_ssh_known_hosts_path() {
   fi
 
   fallback_user="${SUDO_USER:-${USER:-agent}}"
-  fallback_path="/tmp/agent-sandbox-known_hosts-${fallback_user}"
+  fallback_path="/tmp/evander-known_hosts-${fallback_user}"
   printf '%s\n' "${fallback_path}"
 }
 
@@ -72,7 +72,7 @@ guest_ssh_prepare_known_host() {
     return "${found_existing}"
   fi
 
-  scan_timeout_seconds="${AGENT_SANDBOX_GUEST_KEYSCAN_TIMEOUT_SECONDS:-5}"
+  scan_timeout_seconds="${EVANDER_GUEST_KEYSCAN_TIMEOUT_SECONDS:-5}"
   scan_output="$(
     ssh-keyscan -T "${scan_timeout_seconds}" "${vm_ip}" 2>/dev/null \
       | sed "s/^[^ ,][^ ]*/${vm_name}/"
@@ -148,7 +148,7 @@ guest_ssh_resolve_vm_ip() {
   local vm_name="$1"
   local ip
 
-  ip="${AGENT_SANDBOX_VM_IP:-}"
+  ip="${EVANDER_VM_IP:-}"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"
     return 0
@@ -172,7 +172,7 @@ guest_ssh_resolve_vm_ip() {
     return 0
   fi
 
-  if [[ "${AGENT_SANDBOX_ALLOW_PKEXEC_VIRSH:-0}" == "1" ]]; then
+  if [[ "${EVANDER_ALLOW_PKEXEC_VIRSH:-0}" == "1" ]]; then
     ip="$(
       pkexec virsh domifaddr "${vm_name}" 2>/dev/null \
         | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true

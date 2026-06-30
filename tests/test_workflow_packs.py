@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import OrchestrationCoreConfig
-from agent_sandbox.workflow import packs as workflow_packs
-from agent_sandbox.workflow.packs import (
+from evander.config import OrchestrationCoreConfig
+from evander.workflow import packs as workflow_packs
+from evander.workflow.packs import (
     BUILTIN_HIDDEN_WORKFLOW_PACKS,
     WorkflowPack,
     compose_workflow_ir,
@@ -351,7 +351,7 @@ def test_hidden_system_workflow_pack_is_declared_as_package_data() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
 
-    package_data = payload["tool"]["setuptools"]["package-data"]["agent_sandbox"]
+    package_data = payload["tool"]["setuptools"]["package-data"]["evander"]
     assert "workflow/builtin_packs/*.json" in package_data
 
 
@@ -359,7 +359,7 @@ def test_packaged_hidden_system_workflow_pack_matches_repo_config() -> None:
     project_dir = Path(__file__).resolve().parents[1]
     repo_pack = project_dir / "config" / "workflow-packs" / "system.v1.json"
     packaged_pack = (
-        project_dir / "src" / "agent_sandbox" / "workflow" / "builtin_packs" / "system.v1.json"
+        project_dir / "src" / "evander" / "workflow" / "builtin_packs" / "system.v1.json"
     )
 
     assert json.loads(packaged_pack.read_text(encoding="utf-8")) == json.loads(

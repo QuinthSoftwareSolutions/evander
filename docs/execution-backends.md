@@ -10,7 +10,7 @@ the existing VM services.
 
 `libvirt_vm` is the default backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
 
-`container_worker_vm` has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run
+`container_worker_vm` has a worker-side HTTP daemon, `evander-worker-daemon`, that can run
 jobs in disposable Docker containers while preserving durable per-session state on the worker VM.
 It is wired for one configured worker URL, the single-worker Phase 5 deployment slice, explicit
 manual/operator use through `evander-cli execution ...`, and backend-aware
@@ -18,7 +18,7 @@ manual/operator use through `evander-cli execution ...`, and backend-aware
 unchanged.
 
 For that single-worker slice, non-`none` Docker networking is only valid when
-`agent_sandbox_worker_egress_policy_enabled: true` is set on the worker VM and the allowlist is
+`evander_worker_egress_policy_enabled: true` is set on the worker VM and the allowlist is
 explicit.
 
 ## Current Scope
@@ -57,12 +57,12 @@ The default is `libvirt_vm`. `container_worker_vm` also requires a worker daemon
 ```yaml
 execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
-container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
-container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_token_env: "EVANDER_WORKER_TOKEN"
+container_worker_default_image: "evander-runner:latest"
 container_worker_images:
-  default: "agent-sandbox-runner:latest"
-  claude: "agent-sandbox-runner-claude:latest"
-  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+  default: "evander-runner:latest"
+  claude: "evander-runner-claude:latest"
+  dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
@@ -100,7 +100,7 @@ For the operator prep and verification flow, see
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before
 `host_prereqs` runs; Nexus remains only the PyPI/npm path.
-The control plane also exposes `agent-sandbox-npm-audit-facade` on `11881` for npm audit POSTs;
+The control plane also exposes `evander-npm-audit-facade` on `11881` for npm audit POSTs;
 it is separate from the worker registry setting and routes package metadata/tarballs through
 Nexus while sending audit requests to public npm.
 

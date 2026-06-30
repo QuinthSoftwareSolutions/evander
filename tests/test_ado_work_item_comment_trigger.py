@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_sandbox.events.provider_models import (
+from evander.events.provider_models import (
     AdoWorkItemCommentCreatedTriggerDefinition,
 )
-from agent_sandbox.triggers.providers.ado_work_item_comment_created import (
+from evander.triggers.providers.ado_work_item_comment_created import (
     AdoWorkItemCommentCreatedTriggerProvider,
 )
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.base import TriggerRuntimeContext
 
 
 class _IssueServiceStub:
@@ -79,7 +79,7 @@ def test_ado_work_item_comment_trigger_baselines_existing_comments(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.ado_work_item_comment_created.IssueService",
+        "evander.triggers.providers.ado_work_item_comment_created.IssueService",
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []
@@ -152,7 +152,7 @@ def test_ado_work_item_comment_trigger_uses_workflow_configured_filters(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.ado_work_item_comment_created.IssueService",
+        "evander.triggers.providers.ado_work_item_comment_created.IssueService",
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []
@@ -203,7 +203,7 @@ def test_ado_work_item_comment_trigger_supports_current_iteration_query(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.ado_work_item_comment_created.IssueService",
+        "evander.triggers.providers.ado_work_item_comment_created.IssueService",
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []

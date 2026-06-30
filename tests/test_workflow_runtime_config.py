@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig
+from evander.directories import DirectoryService, DirectoryStore
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.workflow.runtime_config import (
+from evander.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )

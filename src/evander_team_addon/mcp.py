@@ -7,17 +7,17 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.addons import AddonContext
-from agent_sandbox.events.internal import (
+from evander.addons import AddonContext
+from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
     internal_event_store_path,
 )
-from agent_sandbox.events.scheduled import (
+from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.base import EffectRuntimeContext
 
 from .mcp_context import (
     TeamMcpContextResolver,

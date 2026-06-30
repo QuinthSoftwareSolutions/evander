@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.web.app import create_app
 
 
 def _write_config(tmp_path: Path, *, module_name: str) -> Path:
@@ -99,14 +100,59 @@ def test_admin_web_exposes_enabled_addon_routes_and_navigation(tmp_path: Path, m
     assert "Team Add-on" in ui.text
 
 
+def test_admin_web_addon_management_disables_addon_after_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = _write_admin_addon_module(tmp_path)
+    monkeypatch.syspath_prepend(module_root)
+    importlib.invalidate_caches()
+    sys.modules.pop("admin_addon", None)
+
+    client = TestClient(
+        create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon")))
+    )
+
+    state_response = client.get("/api/admin/addons")
+    assert state_response.status_code == 200
+    state = state_response.json()
+    assert state["explicit_enabled_addon_ids"] == ["team-addon"]
+    assert state["addons"][0]["loaded"] is True
+    assert state["addons"][0]["enabled"] is True
+
+    unlock_response = client.post("/api/admin/privileged/unlock")
+    assert unlock_response.status_code == 200
+    save_response = client.put(
+        "/api/admin/addons/enabled",
+        json={
+            "enabled_addon_ids": [],
+            "expected_revision": state["revision"],
+        },
+    )
+
+    assert save_response.status_code == 200
+    saved = save_response.json()
+    assert saved["explicit_enabled_addon_ids"] == []
+    assert saved["addons"][0]["loaded"] is True
+    assert saved["addons"][0]["enabled"] is False
+    assert saved["addons"][0]["pending_disable"] is True
+    assert "evander-admin-web" in saved["required_restart_services"]
+
+    host_config = json.loads((tmp_path / "runtime" / "host-config.json").read_text())
+    assert host_config["addon_loader"]["enabled_addon_ids"] == []
+    trigger_config = json.loads(
+        (tmp_path / "config" / "trigger-orchestrator" / "config.json").read_text()
+    )
+    assert trigger_config["addon_loader"]["enabled_addon_ids"] == []
+
+
 def test_admin_web_addon_api_routes_follow_admin_auth(
     tmp_path: Path, monkeypatch
 ) -> None:
     module_root = _write_admin_addon_module(tmp_path)
     monkeypatch.syspath_prepend(module_root)
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
@@ -123,9 +169,9 @@ def test_admin_web_addon_ui_routes_follow_admin_auth(
 ) -> None:
     module_root = _write_admin_addon_module(tmp_path)
     monkeypatch.syspath_prepend(module_root)
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 

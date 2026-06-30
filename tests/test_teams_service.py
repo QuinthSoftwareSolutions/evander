@@ -8,9 +8,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.models import TeamsMessageEnvelope
-from agent_sandbox.services import GraphTeamsService, StubTeamsService, TeamsAuthenticationError
-from agent_sandbox.storage import JsonStore
+from evander.models import TeamsMessageEnvelope
+from evander.services import GraphTeamsService, StubTeamsService, TeamsAuthenticationError
+from evander.storage import JsonStore
 
 
 def patch_httpx_client(
@@ -19,7 +19,7 @@ def patch_httpx_client(
 ) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 
@@ -551,7 +551,7 @@ def test_graph_teams_service_stops_pagination_when_history_deadline_expires(
 
     transport = httpx.MockTransport(handler)
     patch_httpx_client(monkeypatch, transport)
-    monkeypatch.setattr("agent_sandbox.services.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("evander.services.time.monotonic", fake_monotonic)
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     service = GraphTeamsService(
         store,

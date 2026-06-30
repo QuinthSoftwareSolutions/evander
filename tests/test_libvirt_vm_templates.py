@@ -1,7 +1,7 @@
 import pytest
 
-from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
-from agent_sandbox.vm.templates import (
+from evander.vm.defaults_config import EffectiveVmDefaultsConfig
+from evander.vm.templates import (
     normalize_libvirt_vm_templates,
     resolve_libvirt_vm_template_selector,
 )

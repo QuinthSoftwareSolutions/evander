@@ -32,10 +32,10 @@ Options:
 
 Configuration:
   Azure DevOps PR creation requires AZURE_DEVOPS_PR_PAT (or the value configured in
-  AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV).
+  EVANDER_AZURE_DEVOPS_PR_PAT_ENV).
   Directory-scoped ado_worker config may set create_prs_as_draft=true so new Azure DevOps
   PRs open as drafts for that session's directory.
-  AGENT_SANDBOX_CREATE_PRS_AS_DRAFT can force draft behavior globally for this invocation.
+  EVANDER_CREATE_PRS_AS_DRAFT can force draft behavior globally for this invocation.
   If a PR is created and a session id is available, the script also attaches the
   PR feedback stream to that session through evander-cli.
 EOF
@@ -161,12 +161,12 @@ done
 
 set -- "${POSITIONAL[@]}"
 
-if [[ -n "${AGENT_SANDBOX_PR_BODY_ARTIFACT_IDS:-}" ]]; then
+if [[ -n "${EVANDER_PR_BODY_ARTIFACT_IDS:-}" ]]; then
   while IFS= read -r artifact_id; do
     if [[ -n "${artifact_id}" ]]; then
       BODY_ARTIFACT_IDS+=("${artifact_id}")
     fi
-  done < <(printf '%s\n' "${AGENT_SANDBOX_PR_BODY_ARTIFACT_IDS}" | tr ',;' '\n')
+  done < <(printf '%s\n' "${EVANDER_PR_BODY_ARTIFACT_IDS}" | tr ',;' '\n')
 fi
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
@@ -193,7 +193,7 @@ if [[ -z "${HOME:-}" ]]; then
   fi
 fi
 
-AZURE_PR_PAT_ENV="${AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV:-AZURE_DEVOPS_PR_PAT}"
+AZURE_PR_PAT_ENV="${EVANDER_AZURE_DEVOPS_PR_PAT_ENV:-AZURE_DEVOPS_PR_PAT}"
 
 if [[ ! -d "${HOST_REPO_PATH}/.git" ]]; then
   echo "Host repo path is not a Git working tree: ${HOST_REPO_PATH}" >&2
@@ -457,8 +457,8 @@ preflight_destination_branch() {
 resolve_create_prs_as_draft() {
   local session_id="$1"
   local draft_override="${2:-}"
-  local runtime_dir="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
-  local env_override="${AGENT_SANDBOX_CREATE_PRS_AS_DRAFT:-}"
+  local runtime_dir="${EVANDER_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+  local env_override="${EVANDER_CREATE_PRS_AS_DRAFT:-}"
 
   RUNTIME_DIR_PATH="${runtime_dir}" \
   SESSION_ID_VALUE="${session_id}" \
@@ -661,7 +661,7 @@ PY
 }
 
 attach_pr_feedback_stream() {
-  local cli_path="${EVANDER_CLI_BIN:-${AGENT_SANDBOX_CLI_BIN:-}}"
+  local cli_path="${EVANDER_CLI_BIN:-${EVANDER_CLI_BIN:-}}"
   local session_id="$1"
   local provider="$2"
   local repo_slug="$3"
@@ -674,8 +674,8 @@ attach_pr_feedback_stream() {
   if [[ -z "${cli_path}" ]]; then
     if [[ -x "${ROOT_DIR}/.venv/bin/evander-cli" ]]; then
       cli_path="${ROOT_DIR}/.venv/bin/evander-cli"
-    elif [[ -x "${ROOT_DIR}/.venv/bin/agent-sandbox-cli" ]]; then
-      cli_path="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
+    elif [[ -x "${ROOT_DIR}/.venv/bin/evander-cli" ]]; then
+      cli_path="${ROOT_DIR}/.venv/bin/evander-cli"
     else
       cli_path="evander-cli"
     fi
@@ -816,9 +816,9 @@ fi
 
 git -C "${HOST_REPO_PATH}" rev-parse --verify "${LOCAL_BRANCH}^{commit}" >/dev/null
 PR_REMOTE_NAME="origin"
-ORIGIN_URL="${AGENT_SANDBOX_CANONICAL_ORIGIN_URL:-}"
+ORIGIN_URL="${EVANDER_CANONICAL_ORIGIN_URL:-}"
 if [[ -n "${ORIGIN_URL}" ]]; then
-  PR_REMOTE_NAME="agent-sandbox-pr-origin"
+  PR_REMOTE_NAME="evander-pr-origin"
 else
   ORIGIN_URL="$(git -C "${HOST_REPO_PATH}" remote get-url origin)"
 fi
@@ -838,9 +838,9 @@ if [[ "${PUSH_PROVIDER}" == "azure_devops" ]]; then
     if [[ -n "${HTTPS_ORIGIN_URL}" ]]; then
       PUSH_REMOTE_URL="${HTTPS_ORIGIN_URL}"
       if [[ "${PR_REMOTE_NAME}" == "origin" ]]; then
-        EXISTING_PR_REMOTE_URL="$(remote_url_or_empty "${HOST_REPO_PATH}" "agent-sandbox-pr-origin")"
+        EXISTING_PR_REMOTE_URL="$(remote_url_or_empty "${HOST_REPO_PATH}" "evander-pr-origin")"
         if [[ "${EXISTING_PR_REMOTE_URL}" == "${HTTPS_ORIGIN_URL}" ]]; then
-          PR_REMOTE_NAME="agent-sandbox-pr-origin"
+          PR_REMOTE_NAME="evander-pr-origin"
         fi
       fi
     fi
@@ -906,7 +906,7 @@ else
   BODY_CONTENT="Automated review branch promotion for ${ORIGIN_BRANCH}."
 fi
 
-PR_MAP_PATH="${AGENT_SANDBOX_PR_MAP_PATH:-${ROOT_DIR}/runtime/pr-map.json}"
+PR_MAP_PATH="${EVANDER_PR_MAP_PATH:-${ROOT_DIR}/runtime/pr-map.json}"
 
 if [[ "${PROVIDER}" == "auto" ]]; then
   PROVIDER="$(infer_provider_from_url "${ORIGIN_URL}")"
@@ -999,7 +999,7 @@ case "${PROVIDER}" in
     TITLE_EXPLICIT="${TITLE_EXPLICIT}" \
     BODY_CONTENT="${BODY_CONTENT}" \
     PR_BODY_ARTIFACT_IDS="${BODY_ARTIFACT_IDS_TEXT}" \
-    RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}" \
+    RUNTIME_DIR="${EVANDER_RUNTIME_DIR:-${ROOT_DIR}/runtime}" \
     SESSION_ID="${SESSION_ID}" \
     WORK_ITEM_ID="${WORK_ITEM_ID}" \
     CREATE_PRS_AS_DRAFT="${CREATE_PRS_AS_DRAFT}" \

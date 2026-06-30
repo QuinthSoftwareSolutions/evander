@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.workflow.graph import (
+from evander.workflow.graph import (
     WorkflowGraphCycleError,
     build_downstream_index,
     build_inbound_edge_index,

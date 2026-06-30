@@ -1,25 +1,25 @@
 ---
 - name: Remove managed worker apt proxy when disabled
   ansible.builtin.file:
-    path: "{{ agent_sandbox_worker_apt_proxy_config_path }}"
+    path: "{{ evander_worker_apt_proxy_config_path }}"
     state: absent
-  when: not (agent_sandbox_worker_use_apt_proxy | bool)
+  when: not (evander_worker_use_apt_proxy | bool)
 
 - name: Configure worker apt proxy
-  when: agent_sandbox_worker_use_apt_proxy | bool
+  when: evander_worker_use_apt_proxy | bool
   block:
     - name: Assert worker apt proxy URL is configured
       ansible.builtin.assert:
         that:
-          - (agent_sandbox_worker_apt_proxy_url | default('') | string | length) > 0
+          - (evander_worker_apt_proxy_url | default('') | string | length) > 0
         fail_msg: >-
-          agent_sandbox_worker_apt_proxy_url must be configured when
-          agent_sandbox_worker_use_apt_proxy is true.
+          evander_worker_apt_proxy_url must be configured when
+          evander_worker_use_apt_proxy is true.
         success_msg: Worker apt proxy URL is configured.
 
     - name: Ensure worker apt proxy config directory exists
       ansible.builtin.file:
-        path: "{{ agent_sandbox_worker_apt_proxy_config_path | dirname }}"
+        path: "{{ evander_worker_apt_proxy_config_path | dirname }}"
         state: directory
         owner: root
         group: root
@@ -27,8 +27,8 @@
 
     - name: Render worker apt proxy config
       ansible.builtin.template:
-        src: 01agent-sandbox-proxy.j2
-        dest: "{{ agent_sandbox_worker_apt_proxy_config_path }}"
+        src: 01evander-proxy.j2
+        dest: "{{ evander_worker_apt_proxy_config_path }}"
         owner: root
         group: root
         mode: "0644"

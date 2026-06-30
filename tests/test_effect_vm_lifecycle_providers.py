@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.vm_start import VmStartEffectProvider
-from agent_sandbox.effects.providers.vm_stop import VmStopEffectProvider
-from agent_sandbox.models import VmActionResult
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.vm_start import VmStartEffectProvider
+from evander.effects.providers.vm_stop import VmStopEffectProvider
+from evander.models import VmActionResult
 
 
 class _AdminServiceStub:

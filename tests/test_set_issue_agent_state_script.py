@@ -104,7 +104,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > "{ssh_stdin}"
-printf 'state=disabled path=/home/agent/.agent-sandbox/agent-control.state\\n'
+printf 'state=disabled path=/home/agent/.evander/agent-control.state\\n'
 """,
     )
 
@@ -123,7 +123,7 @@ printf 'state=disabled path=/home/agent/.agent-sandbox/agent-control.state\\n'
 
     assert (
         result.stdout.strip()
-        == "state=disabled path=/home/agent/.agent-sandbox/agent-control.state"
+        == "state=disabled path=/home/agent/.evander/agent-control.state"
     )
     assert "CALLER_HOME: unbound variable" not in result.stderr
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
@@ -306,7 +306,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'state=disabled path=/home/root/.agent-sandbox/agent-control.state\\n'
+printf 'state=disabled path=/home/root/.evander/agent-control.state\\n'
 """,
     )
 
@@ -324,7 +324,7 @@ printf 'state=disabled path=/home/root/.agent-sandbox/agent-control.state\\n'
     )
 
     assert (
-        result.stdout.strip() == "state=disabled path=/home/root/.agent-sandbox/agent-control.state"
+        result.stdout.strip() == "state=disabled path=/home/root/.evander/agent-control.state"
     )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("root@192.168.122.11 true" in call for call in ssh_calls)

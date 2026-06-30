@@ -350,7 +350,7 @@
       },
       {
         "config": {
-          "path_glob": "/home/jonathan/agent-sandbox/git-remotes/*.git"
+          "path_glob": "/home/jonathan/evander/git-remotes/*.git"
         },
         "display_name": "Git push",
         "id": "trigger-git-push-1",
@@ -700,7 +700,7 @@
         "config": {
           "template": {
             "ado_project": "Example Industry APP",
-            "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
+            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
             "branch": "main",
             "directory_path": "root/example/truman",
             "directory_slug": "root-example-truman",
@@ -997,7 +997,7 @@
         "config": {
           "template": {
             "ado_project": "Example Industry APP",
-            "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
+            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
             "branch": "main",
             "directory_path": "root/example-industry/app",
             "directory_slug": "root-example-industry-app",
@@ -1072,7 +1072,7 @@
         "config": {
           "template": {
             "ado_project": "Example Industry Scanspac",
-            "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
+            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
             "branch": "Scanspac",
             "directory_path": "root/example-industry/scanspac",
             "directory_slug": "root-example-industry-scanspac",
@@ -1612,7 +1612,7 @@
               "destination_path": "/home/agent/PLANS.md",
               "overwrite": true,
               "source_format": "file",
-              "source_path": "/home/jonathan/agent-sandbox/templates/PLANS.md"
+              "source_path": "/home/jonathan/evander/templates/PLANS.md"
             }
           ],
           "target": "${{effect-agent-clone-repo-1.session_id}}",
@@ -1928,10 +1928,10 @@
         "config": {
           "files": [
             {
-              "destination_path": "${{effect-agent-clone-repo-2.target_dir}}/.agent-sandbox/bin/setup_review_repo.sh",
+              "destination_path": "${{effect-agent-clone-repo-2.target_dir}}/.evander/bin/setup_review_repo.sh",
               "mode": "0755",
               "overwrite": true,
-              "source_path": "/home/jonathan/agent-sandbox/scripts/guest/setup_review_repo.sh"
+              "source_path": "/home/jonathan/evander/scripts/guest/setup_review_repo.sh"
             }
           ],
           "target": "${{effect-agent-clone-repo-2.session_id}}",
@@ -1944,7 +1944,7 @@
       {
         "config": {
           "check": true,
-          "command": "bash .agent-sandbox/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
+          "command": "bash .evander/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
           "target": "${{effect-agent-clone-repo-2.session_id}}",
           "vm_user": "agent",
           "working_directory": "${{effect-agent-clone-repo-2.target_dir}}"
@@ -1973,7 +1973,7 @@
               "destination_path": "/home/agent/AGENTS.md",
               "overwrite": true,
               "source_format": "template",
-              "source_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-review.md.tmpl"
+              "source_path": "/home/jonathan/evander/templates/guest-AGENTS-review.md.tmpl"
             },
             {
               "content": "${{trigger-review-new-request-1.review_request}}",

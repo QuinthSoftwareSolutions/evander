@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.operator_steering import (
+from evander.operator_steering import (
     OPERATOR_STEERING_NOTE_MAX_LENGTH,
     OperatorSteeringNoteStore,
 )

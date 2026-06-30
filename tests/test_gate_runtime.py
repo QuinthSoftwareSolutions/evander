@@ -1,7 +1,7 @@
 import pytest
 
-from agent_sandbox.gate_runtime import GateRuntimeError, filter_when_matches
-from agent_sandbox.workflow.contracts import validate_filter_when_expression
+from evander.gate_runtime import GateRuntimeError, filter_when_matches
+from evander.workflow.contracts import validate_filter_when_expression
 
 
 def test_filter_when_supports_numeric_comparison_operators() -> None:

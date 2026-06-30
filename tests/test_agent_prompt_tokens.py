@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agent_sandbox.messaging.agent_prompt_tokens import (
+from evander.messaging.agent_prompt_tokens import (
     AgentPromptTokenError,
     issue_agent_prompt_response_token,
     verify_agent_prompt_response_token,

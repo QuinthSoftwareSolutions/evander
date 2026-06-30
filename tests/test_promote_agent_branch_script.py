@@ -8,7 +8,7 @@ from pathlib import Path
 
 AGENT_BRANCH = "agents/session-1/topic"
 REVIEW_BRANCH = "review/session-1/topic"
-PROMOTION_REF = f"refs/agent-sandbox/promotions/{AGENT_BRANCH}"
+PROMOTION_REF = f"refs/evander/promotions/{AGENT_BRANCH}"
 RESOLVED_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 

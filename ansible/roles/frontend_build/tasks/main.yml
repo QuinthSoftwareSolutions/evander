@@ -1,25 +1,25 @@
 ---
 - name: Check whether the Admin Web frontend exists
   ansible.builtin.stat:
-    path: "{{ agent_sandbox_admin_web_frontend_dir }}/package.json"
-  register: agent_sandbox_admin_web_frontend_package
+    path: "{{ evander_admin_web_frontend_dir }}/package.json"
+  register: evander_admin_web_frontend_package
 
 - name: Install Admin Web frontend dependencies
   ansible.builtin.command:
     cmd: npm ci
   args:
-    chdir: "{{ agent_sandbox_admin_web_frontend_dir }}"
-  become_user: "{{ agent_sandbox_run_user }}"
+    chdir: "{{ evander_admin_web_frontend_dir }}"
+  become_user: "{{ evander_run_user }}"
   when:
-    - agent_sandbox_admin_web_frontend_build_enabled | bool
-    - agent_sandbox_admin_web_frontend_package.stat.exists
+    - evander_admin_web_frontend_build_enabled | bool
+    - evander_admin_web_frontend_package.stat.exists
 
 - name: Build Admin Web frontend assets
   ansible.builtin.command:
     cmd: npm run build
   args:
-    chdir: "{{ agent_sandbox_admin_web_frontend_dir }}"
-  become_user: "{{ agent_sandbox_run_user }}"
+    chdir: "{{ evander_admin_web_frontend_dir }}"
+  become_user: "{{ evander_run_user }}"
   when:
-    - agent_sandbox_admin_web_frontend_build_enabled | bool
-    - agent_sandbox_admin_web_frontend_package.stat.exists
+    - evander_admin_web_frontend_build_enabled | bool
+    - evander_admin_web_frontend_package.stat.exists

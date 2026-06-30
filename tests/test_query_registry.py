@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import materialize_node_definition
-from agent_sandbox.events.provider_models import (
+from evander.config import GatewayConfig
+from evander.events.models import materialize_node_definition
+from evander.events.provider_models import (
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
@@ -16,17 +16,18 @@ from agent_sandbox.events.provider_models import (
     ModelUsageListQueryDefinition,
     PullRequestGetQueryDefinition,
     PullRequestListQueryDefinition,
+    RemoteIssuesQueryDefinition,
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
 )
-from agent_sandbox.models import ListPullRequestsResponse, PullRequestItem, VmSummary
-from agent_sandbox.queries.providers.base import QueryProviderBase
-from agent_sandbox.queries.registry import (
+from evander.models import ListPullRequestsResponse, PullRequestItem, VmSummary
+from evander.queries.providers.base import QueryProviderBase
+from evander.queries.registry import (
     DEFAULT_QUERY_PROVIDER_REGISTRY,
     QueryProviderFactory,
     QueryProviderRegistry,
 )
-from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope
+from evander.workflow.contracts import WorkflowNodeEnvelope
 
 
 class _ResolverStub:
@@ -96,6 +97,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:issue:get",
         "query:issue:list",
         "query:ado:work-items",
+        "query:remote-issues",
         "query:pull-request:list",
         "query:pull-request:feedback",
         "query:communication:messages",
@@ -454,7 +456,7 @@ def test_ado_work_items_query_provider_uses_wiql_and_directory_path(
             }
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.ado_work_items.IssueService", StubIssueService
+        "evander.queries.providers.ado_work_items.IssueService", StubIssueService
     )
     resolver = _ResolverStub()
     factory = QueryProviderFactory(
@@ -514,7 +516,7 @@ def test_ado_work_items_query_provider_can_query_current_iteration(
             }
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.ado_work_items.IssueService", StubIssueService
+        "evander.queries.providers.ado_work_items.IssueService", StubIssueService
     )
     factory = QueryProviderFactory(
         provider_config_resolver=_ResolverStub(),
@@ -537,6 +539,78 @@ def test_ado_work_items_query_provider_can_query_current_iteration(
         "skip": 0,
     }
     assert output["iteration_path"] == "Project\\Sprint 12"
+
+
+def test_remote_issues_query_provider_passes_github_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = RemoteIssuesQueryDefinition(
+        id="query-remote",
+        display_name="Remote issues",
+        type="query:remote-issues",
+        provider="github",
+        directory_path="root/github",
+        repo="owner/repo",
+        state="all",
+        labels_any=["bug", "triage"],
+        assignee="octocat",
+        text_search="crash",
+        top=20,
+        skip=5,
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config_resolver: object) -> None:
+            captured["provider_config_resolver"] = provider_config_resolver
+
+        def query_remote_issues(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {
+                "provider": "github",
+                "repo": "owner/repo",
+                "items": [{"remote_issue_id": "42", "title": "Crash"}],
+                "count": 1,
+            }
+
+    monkeypatch.setattr(
+        "evander.queries.providers.remote_issues.IssueService", StubIssueService
+    )
+    resolver = _ResolverStub()
+    factory = QueryProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert captured["provider_config_resolver"] is resolver
+    assert captured["request"] == {
+        "provider": "github",
+        "directory_path": "root/github",
+        "project": None,
+        "repo": "owner/repo",
+        "wiql": None,
+        "current_iteration": False,
+        "team": None,
+        "iteration": None,
+        "area_path": None,
+        "states": [],
+        "types": [],
+        "tags_any": [],
+        "text_search": "crash",
+        "state": "all",
+        "labels_any": ["bug", "triage"],
+        "labels_all": [],
+        "assignee": "octocat",
+        "author": None,
+        "mentioned": None,
+        "milestone": None,
+        "since": None,
+        "top": 20,
+        "skip": 5,
+    }
+    assert output["items"][0]["remote_issue_id"] == "42"
 
 
 def test_pull_request_list_query_provider_resolves_ado_config_and_filters(
@@ -585,7 +659,7 @@ def test_pull_request_list_query_provider_resolves_ado_config_and_filters(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+        "evander.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
     )
     factory = QueryProviderFactory(
         provider_config_resolver=_ResolverStub(),

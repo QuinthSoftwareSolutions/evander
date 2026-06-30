@@ -53,7 +53,7 @@ exit 0
         fake_bin / "rm",
         """#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == *"/var/lib/libvirt/images/agent-sandbox/vms/vm-1234"* ]]; then
+if [[ "$*" == *"/var/lib/libvirt/images/evander/vms/vm-1234"* ]]; then
   echo "rm: permission denied" >&2
   exit 1
 fi

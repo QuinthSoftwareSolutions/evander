@@ -1,37 +1,37 @@
 ---
 - name: Stop Nexus package cache when disabled
   ansible.builtin.systemd:
-    name: agent-sandbox-nexus.service
+    name: evander-nexus.service
     enabled: false
     state: stopped
   failed_when: false
-  when: not (agent_sandbox_services.package_cache | default(false) | bool)
+  when: not (evander_services.package_cache | default(false) | bool)
 
 - name: Configure Nexus package cache
-  when: agent_sandbox_services.package_cache | default(false) | bool
+  when: evander_services.package_cache | default(false) | bool
   block:
     - name: Assert Nexus admin password is configured
       ansible.builtin.assert:
         that:
-          - (agent_sandbox_nexus_admin_password | default('') | string | length) > 0
+          - (evander_nexus_admin_password | default('') | string | length) > 0
         fail_msg: >-
-          agent_sandbox_nexus_admin_password must be set from Vault when
-          agent_sandbox_services.package_cache is enabled.
+          evander_nexus_admin_password must be set from Vault when
+          evander_services.package_cache is enabled.
         success_msg: Nexus admin password is configured.
         quiet: true
 
     - name: Ensure Nexus service group exists
       ansible.builtin.group:
-        name: "{{ agent_sandbox_nexus_group }}"
+        name: "{{ evander_nexus_group }}"
         system: true
         state: present
 
     - name: Ensure Nexus service account exists
       ansible.builtin.user:
-        name: "{{ agent_sandbox_nexus_user }}"
-        group: "{{ agent_sandbox_nexus_group }}"
+        name: "{{ evander_nexus_user }}"
+        group: "{{ evander_nexus_group }}"
         shell: /usr/sbin/nologin
-        home: "{{ agent_sandbox_nexus_data_dir }}"
+        home: "{{ evander_nexus_data_dir }}"
         create_home: false
         system: true
         state: present
@@ -40,111 +40,111 @@
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: directory
-        owner: "{{ item.owner | default(agent_sandbox_nexus_user) }}"
-        group: "{{ item.group | default(agent_sandbox_nexus_group) }}"
+        owner: "{{ item.owner | default(evander_nexus_user) }}"
+        group: "{{ item.group | default(evander_nexus_group) }}"
         mode: "{{ item.mode }}"
       loop:
-        - path: "{{ agent_sandbox_nexus_install_parent }}"
+        - path: "{{ evander_nexus_install_parent }}"
           owner: root
           group: root
           mode: "0755"
-        - path: "{{ agent_sandbox_nexus_cache_dir }}"
+        - path: "{{ evander_nexus_cache_dir }}"
           owner: root
           group: root
           mode: "0755"
-        - path: "{{ agent_sandbox_nexus_data_dir }}"
+        - path: "{{ evander_nexus_data_dir }}"
           mode: "0750"
-        - path: "{{ agent_sandbox_nexus_data_dir }}/etc"
+        - path: "{{ evander_nexus_data_dir }}/etc"
           mode: "0750"
-        - path: "{{ agent_sandbox_nexus_data_dir }}/log"
+        - path: "{{ evander_nexus_data_dir }}/log"
           mode: "0750"
-        - path: "{{ agent_sandbox_nexus_data_dir }}/tmp"
+        - path: "{{ evander_nexus_data_dir }}/tmp"
           mode: "0750"
 
     - name: Download pinned Nexus archive with checksum
       ansible.builtin.get_url:
-        url: "{{ agent_sandbox_nexus_archive_url }}"
-        dest: "{{ agent_sandbox_nexus_cache_dir }}/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
-        checksum: "{{ agent_sandbox_nexus_archive_checksum }}"
+        url: "{{ evander_nexus_archive_url }}"
+        dest: "{{ evander_nexus_cache_dir }}/nexus-{{ evander_nexus_version }}-linux-x86_64.tar.gz"
+        checksum: "{{ evander_nexus_archive_checksum }}"
         owner: root
         group: root
         mode: "0644"
-      when: (agent_sandbox_nexus_archive_checksum | string | length) > 0
+      when: (evander_nexus_archive_checksum | string | length) > 0
 
     - name: Download pinned Nexus archive
       ansible.builtin.get_url:
-        url: "{{ agent_sandbox_nexus_archive_url }}"
-        dest: "{{ agent_sandbox_nexus_cache_dir }}/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
+        url: "{{ evander_nexus_archive_url }}"
+        dest: "{{ evander_nexus_cache_dir }}/nexus-{{ evander_nexus_version }}-linux-x86_64.tar.gz"
         owner: root
         group: root
         mode: "0644"
-      when: (agent_sandbox_nexus_archive_checksum | string | length) == 0
+      when: (evander_nexus_archive_checksum | string | length) == 0
 
     - name: Unpack Nexus archive
       ansible.builtin.unarchive:
-        src: "{{ agent_sandbox_nexus_cache_dir }}/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
-        dest: "{{ agent_sandbox_nexus_install_parent }}"
+        src: "{{ evander_nexus_cache_dir }}/nexus-{{ evander_nexus_version }}-linux-x86_64.tar.gz"
+        dest: "{{ evander_nexus_install_parent }}"
         remote_src: true
-        owner: "{{ agent_sandbox_nexus_user }}"
-        group: "{{ agent_sandbox_nexus_group }}"
-        creates: "{{ agent_sandbox_nexus_install_dir }}/bin/nexus"
+        owner: "{{ evander_nexus_user }}"
+        group: "{{ evander_nexus_group }}"
+        creates: "{{ evander_nexus_install_dir }}/bin/nexus"
 
     - name: Point current Nexus symlink at pinned install
       ansible.builtin.file:
-        src: "{{ agent_sandbox_nexus_install_dir }}"
-        dest: "{{ agent_sandbox_nexus_current_link }}"
+        src: "{{ evander_nexus_install_dir }}"
+        dest: "{{ evander_nexus_current_link }}"
         state: link
-        owner: "{{ agent_sandbox_nexus_user }}"
-        group: "{{ agent_sandbox_nexus_group }}"
+        owner: "{{ evander_nexus_user }}"
+        group: "{{ evander_nexus_group }}"
 
     - name: Persist Nexus runtime properties in the data directory
       ansible.builtin.copy:
-        dest: "{{ agent_sandbox_nexus_data_dir }}/etc/nexus.properties"
-        owner: "{{ agent_sandbox_nexus_user }}"
-        group: "{{ agent_sandbox_nexus_group }}"
+        dest: "{{ evander_nexus_data_dir }}/etc/nexus.properties"
+        owner: "{{ evander_nexus_user }}"
+        group: "{{ evander_nexus_group }}"
         mode: "0640"
         content: |
-          application-host={{ agent_sandbox_nexus_bind_host }}
-          application-port={{ agent_sandbox_nexus_port }}
+          application-host={{ evander_nexus_bind_host }}
+          application-port={{ evander_nexus_port }}
           nexus-context-path=/
-      register: agent_sandbox_nexus_properties
+      register: evander_nexus_properties
 
     - name: Point Nexus JVM paths at the persistent data directory
       ansible.builtin.lineinfile:
-        path: "{{ agent_sandbox_nexus_install_dir }}/bin/nexus.vmoptions"
+        path: "{{ evander_nexus_install_dir }}/bin/nexus.vmoptions"
         regexp: "{{ item.regexp }}"
         line: "{{ item.line }}"
       loop:
         - regexp: "^-Dkaraf.data=.*"
-          line: "-Dkaraf.data={{ agent_sandbox_nexus_data_dir }}"
+          line: "-Dkaraf.data={{ evander_nexus_data_dir }}"
         - regexp: "^-Dkaraf.log=.*"
-          line: "-Dkaraf.log={{ agent_sandbox_nexus_data_dir }}/log"
+          line: "-Dkaraf.log={{ evander_nexus_data_dir }}/log"
         - regexp: "^-Djava.io.tmpdir=.*"
-          line: "-Djava.io.tmpdir={{ agent_sandbox_nexus_data_dir }}/tmp"
+          line: "-Djava.io.tmpdir={{ evander_nexus_data_dir }}/tmp"
         - regexp: "^-XX:LogFile=.*"
-          line: "-XX:LogFile={{ agent_sandbox_nexus_data_dir }}/log/jvm.log"
-      register: agent_sandbox_nexus_vmoptions
+          line: "-XX:LogFile={{ evander_nexus_data_dir }}/log/jvm.log"
+      register: evander_nexus_vmoptions
 
     - name: Install Nexus package cache systemd unit
       ansible.builtin.template:
-        src: agent-sandbox-nexus.service.j2
-        dest: /etc/systemd/system/agent-sandbox-nexus.service
+        src: evander-nexus.service.j2
+        dest: /etc/systemd/system/evander-nexus.service
         owner: root
         group: root
         mode: "0644"
-      register: agent_sandbox_nexus_unit
+      register: evander_nexus_unit
 
     - name: Reconcile Nexus package cache service
       ansible.builtin.systemd:
-        name: agent-sandbox-nexus.service
+        name: evander-nexus.service
         enabled: true
         state: >-
           {{
             'restarted'
             if (
-              agent_sandbox_nexus_properties.changed
-              or agent_sandbox_nexus_vmoptions.changed
-              or agent_sandbox_nexus_unit.changed
+              evander_nexus_properties.changed
+              or evander_nexus_vmoptions.changed
+              or evander_nexus_unit.changed
             )
             else 'started'
           }}
@@ -153,86 +153,86 @@
     - name: Wait for Nexus package cache listener
       ansible.builtin.wait_for:
         host: "127.0.0.1"
-        port: "{{ agent_sandbox_nexus_port }}"
+        port: "{{ evander_nexus_port }}"
         timeout: 300
 
     - name: Wait for Nexus package cache status endpoint
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/status"
         method: GET
         return_content: true
         status_code: 200
-      register: agent_sandbox_nexus_status
+      register: evander_nexus_status
       retries: 30
       delay: 10
-      until: agent_sandbox_nexus_status.status == 200
+      until: evander_nexus_status.status == 200
 
     - name: Check configured Nexus admin credentials
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/users"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/users"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code:
           - 200
           - 401
           - 403
-      register: agent_sandbox_nexus_configured_admin
+      register: evander_nexus_configured_admin
       no_log: true
 
     - name: Read initial Nexus admin password
       ansible.builtin.slurp:
-        src: "{{ agent_sandbox_nexus_data_dir }}/admin.password"
-      register: agent_sandbox_nexus_initial_admin_password
-      when: agent_sandbox_nexus_configured_admin.status != 200
+        src: "{{ evander_nexus_data_dir }}/admin.password"
+      register: evander_nexus_initial_admin_password
+      when: evander_nexus_configured_admin.status != 200
       no_log: true
 
     - name: Change initial Nexus admin password
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/users/{{ agent_sandbox_nexus_admin_user }}/change-password"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/users/{{ evander_nexus_admin_user }}/change-password"
         method: PUT
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_initial_admin_password.content | b64decode | trim }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_initial_admin_password.content | b64decode | trim }}"
         force_basic_auth: true
         headers:
           Content-Type: text/plain
-        body: "{{ agent_sandbox_nexus_admin_password }}"
+        body: "{{ evander_nexus_admin_password }}"
         body_format: raw
         status_code:
           - 200
           - 204
-      when: agent_sandbox_nexus_configured_admin.status != 200
+      when: evander_nexus_configured_admin.status != 200
       no_log: true
 
     - name: Read Nexus Community Edition EULA status
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/system/eula"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/system/eula"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code: 200
-      register: agent_sandbox_nexus_community_eula_status
+      register: evander_nexus_community_eula_status
       no_log: true
 
     - name: Assert Nexus Community Edition EULA can be accepted
       ansible.builtin.assert:
         that:
           - >-
-            (agent_sandbox_nexus_community_eula_status.json.accepted | default(false) | bool)
-            or (agent_sandbox_nexus_accept_community_eula | bool)
+            (evander_nexus_community_eula_status.json.accepted | default(false) | bool)
+            or (evander_nexus_accept_community_eula | bool)
           - >-
-            (agent_sandbox_nexus_community_eula_status.json.accepted | default(false) | bool)
+            (evander_nexus_community_eula_status.json.accepted | default(false) | bool)
             or (
-              agent_sandbox_nexus_community_eula_status.json.disclaimer
+              evander_nexus_community_eula_status.json.disclaimer
               | default('')
               | string
               | length
             ) > 0
         fail_msg: >-
           Nexus Community Edition requires EULA acceptance before repository package
-          assets can be downloaded. Set agent_sandbox_nexus_accept_community_eula=true
+          assets can be downloaded. Set evander_nexus_accept_community_eula=true
           after reviewing https://links.sonatype.com/products/nxrm/ce-eula, or accept it
           manually in Nexus before running this playbook.
         success_msg: Nexus Community Edition EULA acceptance is allowed.
@@ -240,25 +240,25 @@
 
     - name: Accept Nexus Community Edition EULA
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/system/eula"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/system/eula"
         method: POST
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         body_format: json
         body:
           accepted: true
-          disclaimer: "{{ agent_sandbox_nexus_community_eula_status.json.disclaimer }}"
+          disclaimer: "{{ evander_nexus_community_eula_status.json.disclaimer }}"
         status_code: 204
-      when: not (agent_sandbox_nexus_community_eula_status.json.accepted | default(false) | bool)
+      when: not (evander_nexus_community_eula_status.json.accepted | default(false) | bool)
       no_log: true
 
     - name: Enable anonymous read access in Nexus
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/anonymous"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/anonymous"
         method: PUT
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         body_format: json
         body:
@@ -272,38 +272,38 @@
 
     - name: Check Nexus PyPI proxy repository
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_pypi_proxy_repository }}"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/{{ evander_nexus_pypi_proxy_repository }}"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code:
           - 200
           - 404
-      register: agent_sandbox_nexus_pypi_proxy_check
+      register: evander_nexus_pypi_proxy_check
       no_log: true
 
     - name: Reconcile Nexus PyPI proxy repository
       ansible.builtin.uri:
         url: >-
-          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/pypi/proxy{{
-            '/' ~ agent_sandbox_nexus_pypi_proxy_repository
-            if agent_sandbox_nexus_pypi_proxy_check.status == 200
+          http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/pypi/proxy{{
+            '/' ~ evander_nexus_pypi_proxy_repository
+            if evander_nexus_pypi_proxy_check.status == 200
             else ''
           }}
-        method: "{{ 'PUT' if agent_sandbox_nexus_pypi_proxy_check.status == 200 else 'POST' }}"
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        method: "{{ 'PUT' if evander_nexus_pypi_proxy_check.status == 200 else 'POST' }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         body_format: json
         body:
-          name: "{{ agent_sandbox_nexus_pypi_proxy_repository }}"
+          name: "{{ evander_nexus_pypi_proxy_repository }}"
           online: true
           storage:
-            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            blobStoreName: "{{ evander_nexus_blob_store }}"
             strictContentTypeValidation: true
           proxy:
-            remoteUrl: "{{ agent_sandbox_nexus_pypi_remote_url }}"
+            remoteUrl: "{{ evander_nexus_pypi_remote_url }}"
             contentMaxAge: 1440
             metadataMaxAge: 1440
           negativeCache:
@@ -316,85 +316,85 @@
           - 200
           - 201
           - 204
-      changed_when: agent_sandbox_nexus_pypi_proxy_check.status == 404
+      changed_when: evander_nexus_pypi_proxy_check.status == 404
       no_log: true
 
     - name: Check Nexus PyPI group repository
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_pypi_group_repository }}"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/{{ evander_nexus_pypi_group_repository }}"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code:
           - 200
           - 404
-      register: agent_sandbox_nexus_pypi_group_check
+      register: evander_nexus_pypi_group_check
       no_log: true
 
     - name: Reconcile Nexus PyPI group repository
       ansible.builtin.uri:
         url: >-
-          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/pypi/group{{
-            '/' ~ agent_sandbox_nexus_pypi_group_repository
-            if agent_sandbox_nexus_pypi_group_check.status == 200
+          http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/pypi/group{{
+            '/' ~ evander_nexus_pypi_group_repository
+            if evander_nexus_pypi_group_check.status == 200
             else ''
           }}
-        method: "{{ 'PUT' if agent_sandbox_nexus_pypi_group_check.status == 200 else 'POST' }}"
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        method: "{{ 'PUT' if evander_nexus_pypi_group_check.status == 200 else 'POST' }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         body_format: json
         body:
-          name: "{{ agent_sandbox_nexus_pypi_group_repository }}"
+          name: "{{ evander_nexus_pypi_group_repository }}"
           online: true
           storage:
-            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            blobStoreName: "{{ evander_nexus_blob_store }}"
             strictContentTypeValidation: true
           group:
             memberNames:
-              - "{{ agent_sandbox_nexus_pypi_proxy_repository }}"
+              - "{{ evander_nexus_pypi_proxy_repository }}"
         status_code:
           - 200
           - 201
           - 204
-      changed_when: agent_sandbox_nexus_pypi_group_check.status == 404
+      changed_when: evander_nexus_pypi_group_check.status == 404
       no_log: true
 
     - name: Check Nexus npm proxy repository
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_npm_proxy_repository }}"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/{{ evander_nexus_npm_proxy_repository }}"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code:
           - 200
           - 404
-      register: agent_sandbox_nexus_npm_proxy_check
+      register: evander_nexus_npm_proxy_check
       no_log: true
 
     - name: Reconcile Nexus npm proxy repository
       ansible.builtin.uri:
         url: >-
-          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/npm/proxy{{
-            '/' ~ agent_sandbox_nexus_npm_proxy_repository
-            if agent_sandbox_nexus_npm_proxy_check.status == 200
+          http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/npm/proxy{{
+            '/' ~ evander_nexus_npm_proxy_repository
+            if evander_nexus_npm_proxy_check.status == 200
             else ''
           }}
-        method: "{{ 'PUT' if agent_sandbox_nexus_npm_proxy_check.status == 200 else 'POST' }}"
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        method: "{{ 'PUT' if evander_nexus_npm_proxy_check.status == 200 else 'POST' }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         body_format: json
         body:
-          name: "{{ agent_sandbox_nexus_npm_proxy_repository }}"
+          name: "{{ evander_nexus_npm_proxy_repository }}"
           online: true
           storage:
-            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            blobStoreName: "{{ evander_nexus_blob_store }}"
             strictContentTypeValidation: true
           proxy:
-            remoteUrl: "{{ agent_sandbox_nexus_npm_remote_url }}"
+            remoteUrl: "{{ evander_nexus_npm_remote_url }}"
             contentMaxAge: 1440
             metadataMaxAge: 1440
           negativeCache:
@@ -407,88 +407,88 @@
           - 200
           - 201
           - 204
-      changed_when: agent_sandbox_nexus_npm_proxy_check.status == 404
+      changed_when: evander_nexus_npm_proxy_check.status == 404
       no_log: true
 
     - name: Check Nexus npm group repository
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_npm_group_repository }}"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/{{ evander_nexus_npm_group_repository }}"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code:
           - 200
           - 404
-      register: agent_sandbox_nexus_npm_group_check
+      register: evander_nexus_npm_group_check
       no_log: true
 
     - name: Reconcile Nexus npm group repository
       ansible.builtin.uri:
         url: >-
-          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/npm/group{{
-            '/' ~ agent_sandbox_nexus_npm_group_repository
-            if agent_sandbox_nexus_npm_group_check.status == 200
+          http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/repositories/npm/group{{
+            '/' ~ evander_nexus_npm_group_repository
+            if evander_nexus_npm_group_check.status == 200
             else ''
           }}
-        method: "{{ 'PUT' if agent_sandbox_nexus_npm_group_check.status == 200 else 'POST' }}"
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        method: "{{ 'PUT' if evander_nexus_npm_group_check.status == 200 else 'POST' }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         body_format: json
         body:
-          name: "{{ agent_sandbox_nexus_npm_group_repository }}"
+          name: "{{ evander_nexus_npm_group_repository }}"
           online: true
           storage:
-            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            blobStoreName: "{{ evander_nexus_blob_store }}"
             strictContentTypeValidation: true
           group:
             memberNames:
-              - "{{ agent_sandbox_nexus_npm_proxy_repository }}"
+              - "{{ evander_nexus_npm_proxy_repository }}"
         status_code:
           - 200
           - 201
           - 204
-      changed_when: agent_sandbox_nexus_npm_group_check.status == 404
+      changed_when: evander_nexus_npm_group_check.status == 404
       no_log: true
 
     - name: Define Nexus anonymous package-cache read privileges
       ansible.builtin.set_fact:
-        agent_sandbox_nexus_anonymous_reader_privileges:
-          - "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_proxy_repository }}-browse"
-          - "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_proxy_repository }}-read"
-          - "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_group_repository }}-browse"
-          - "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_group_repository }}-read"
-          - "nx-repository-view-npm-{{ agent_sandbox_nexus_npm_proxy_repository }}-browse"
-          - "nx-repository-view-npm-{{ agent_sandbox_nexus_npm_proxy_repository }}-read"
-          - "nx-repository-view-npm-{{ agent_sandbox_nexus_npm_group_repository }}-browse"
-          - "nx-repository-view-npm-{{ agent_sandbox_nexus_npm_group_repository }}-read"
+        evander_nexus_anonymous_reader_privileges:
+          - "nx-repository-view-pypi-{{ evander_nexus_pypi_proxy_repository }}-browse"
+          - "nx-repository-view-pypi-{{ evander_nexus_pypi_proxy_repository }}-read"
+          - "nx-repository-view-pypi-{{ evander_nexus_pypi_group_repository }}-browse"
+          - "nx-repository-view-pypi-{{ evander_nexus_pypi_group_repository }}-read"
+          - "nx-repository-view-npm-{{ evander_nexus_npm_proxy_repository }}-browse"
+          - "nx-repository-view-npm-{{ evander_nexus_npm_proxy_repository }}-read"
+          - "nx-repository-view-npm-{{ evander_nexus_npm_group_repository }}-browse"
+          - "nx-repository-view-npm-{{ evander_nexus_npm_group_repository }}-read"
       changed_when: false
 
     - name: Check Nexus anonymous package-cache reader role
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/roles/{{ agent_sandbox_nexus_anonymous_reader_role }}"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/roles/{{ evander_nexus_anonymous_reader_role }}"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code:
           - 200
           - 404
-      register: agent_sandbox_nexus_anonymous_reader_role_check
+      register: evander_nexus_anonymous_reader_role_check
       no_log: true
 
     - name: Reconcile Nexus anonymous package-cache reader role
       ansible.builtin.uri:
         url: >-
-          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/roles{{
-            '/' ~ agent_sandbox_nexus_anonymous_reader_role
-            if agent_sandbox_nexus_anonymous_reader_role_check.status == 200
+          http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/roles{{
+            '/' ~ evander_nexus_anonymous_reader_role
+            if evander_nexus_anonymous_reader_role_check.status == 200
             else ''
           }}
-        method: "{{ 'PUT' if agent_sandbox_nexus_anonymous_reader_role_check.status == 200 else 'POST' }}"
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        method: "{{ 'PUT' if evander_nexus_anonymous_reader_role_check.status == 200 else 'POST' }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         headers:
           Content-Type: application/json
@@ -496,10 +496,10 @@
         body: >-
           {{
             {
-              "id": agent_sandbox_nexus_anonymous_reader_role,
-              "name": "Agent Sandbox package cache reader",
-              "description": "Read-only access to the Agent Sandbox PyPI and npm proxy/group repositories.",
-              "privileges": agent_sandbox_nexus_anonymous_reader_privileges,
+              "id": evander_nexus_anonymous_reader_role,
+              "name": "Evander package cache reader",
+              "description": "Read-only access to the Evander PyPI and npm proxy/group repositories.",
+              "privileges": evander_nexus_anonymous_reader_privileges,
               "roles": []
             }
             | to_json
@@ -509,34 +509,34 @@
           - 201
           - 204
       changed_when: >-
-        agent_sandbox_nexus_anonymous_reader_role_check.status == 404
+        evander_nexus_anonymous_reader_role_check.status == 404
         or (
           (
-            agent_sandbox_nexus_anonymous_reader_role_check.json.privileges
+            evander_nexus_anonymous_reader_role_check.json.privileges
             | default([])
             | sort
           )
-          != (agent_sandbox_nexus_anonymous_reader_privileges | sort)
+          != (evander_nexus_anonymous_reader_privileges | sort)
         )
       no_log: true
 
     - name: Read Nexus anonymous user roles
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/users?userId=anonymous&source=default"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/users?userId=anonymous&source=default"
         method: GET
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         status_code: 200
-      register: agent_sandbox_nexus_anonymous_user_lookup
+      register: evander_nexus_anonymous_user_lookup
       no_log: true
 
     - name: Select Nexus anonymous user
       ansible.builtin.set_fact:
-        agent_sandbox_nexus_anonymous_user: >-
+        evander_nexus_anonymous_user: >-
           {{
             (
-              agent_sandbox_nexus_anonymous_user_lookup.json
+              evander_nexus_anonymous_user_lookup.json
               | selectattr('userId', 'equalto', 'anonymous')
               | selectattr('source', 'equalto', 'default')
               | list
@@ -549,10 +549,10 @@
 
     - name: Assign Nexus package-cache reader role to anonymous user
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/users/anonymous"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/users/anonymous"
         method: PUT
-        user: "{{ agent_sandbox_nexus_admin_user }}"
-        password: "{{ agent_sandbox_nexus_admin_password }}"
+        user: "{{ evander_nexus_admin_user }}"
+        password: "{{ evander_nexus_admin_password }}"
         force_basic_auth: true
         headers:
           Content-Type: application/json
@@ -561,14 +561,14 @@
           {{
             {
               "userId": "anonymous",
-              "firstName": agent_sandbox_nexus_anonymous_user.firstName | default("Anonymous"),
-              "lastName": agent_sandbox_nexus_anonymous_user.lastName | default("User"),
-              "emailAddress": agent_sandbox_nexus_anonymous_user.emailAddress | default("anonymous@example.org"),
-              "source": agent_sandbox_nexus_anonymous_user.source | default("default"),
-              "status": agent_sandbox_nexus_anonymous_user.status | default("active"),
+              "firstName": evander_nexus_anonymous_user.firstName | default("Anonymous"),
+              "lastName": evander_nexus_anonymous_user.lastName | default("User"),
+              "emailAddress": evander_nexus_anonymous_user.emailAddress | default("anonymous@example.org"),
+              "source": evander_nexus_anonymous_user.source | default("default"),
+              "status": evander_nexus_anonymous_user.status | default("active"),
               "roles": (
-                (agent_sandbox_nexus_anonymous_user.roles | default(["nx-anonymous"]))
-                + [agent_sandbox_nexus_anonymous_reader_role]
+                (evander_nexus_anonymous_user.roles | default(["nx-anonymous"]))
+                + [evander_nexus_anonymous_reader_role]
               )
               | unique
               | list
@@ -578,12 +578,12 @@
         status_code:
           - 200
           - 204
-      changed_when: agent_sandbox_nexus_anonymous_reader_role not in (agent_sandbox_nexus_anonymous_user.roles | default([]))
+      changed_when: evander_nexus_anonymous_reader_role not in (evander_nexus_anonymous_user.roles | default([]))
       no_log: true
 
     - name: Probe anonymous Nexus PyPI asset access
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_pypi_group_repository }}/{{ agent_sandbox_nexus_pypi_probe_asset_path }}"
+        url: "http://127.0.0.1:{{ evander_nexus_port }}/repository/{{ evander_nexus_pypi_group_repository }}/{{ evander_nexus_pypi_probe_asset_path }}"
         method: GET
         return_content: false
         timeout: 30
@@ -595,19 +595,19 @@
           - 500
           - 502
           - 503
-      register: agent_sandbox_nexus_anonymous_pypi_asset_probe
+      register: evander_nexus_anonymous_pypi_asset_probe
       changed_when: false
       failed_when: false
 
     - name: Assert anonymous Nexus PyPI asset access works
       ansible.builtin.assert:
         that:
-          - agent_sandbox_nexus_anonymous_pypi_asset_probe.status == 200
+          - evander_nexus_anonymous_pypi_asset_probe.status == 200
         fail_msg: >-
           Nexus package cache is reachable, but anonymous users cannot download
-          PyPI package assets from repository {{ agent_sandbox_nexus_pypi_group_repository }}.
-          Probe path={{ agent_sandbox_nexus_pypi_probe_asset_path }};
-          HTTP status={{ agent_sandbox_nexus_anonymous_pypi_asset_probe.status | default('unreachable') }}.
+          PyPI package assets from repository {{ evander_nexus_pypi_group_repository }}.
+          Probe path={{ evander_nexus_pypi_probe_asset_path }};
+          HTTP status={{ evander_nexus_anonymous_pypi_asset_probe.status | default('unreachable') }}.
           The worker playbook will fail during uv pip install until this control-plane
           package-cache permission check passes.
         success_msg: Nexus anonymous PyPI asset access is working.

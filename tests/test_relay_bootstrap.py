@@ -3,8 +3,8 @@ from types import ModuleType
 
 import pytest
 
-from agent_sandbox.gateway import cli as gateway_cli
-from agent_sandbox.relays import http_target, nuget, openai
+from evander.gateway import cli as gateway_cli
+from evander.relays import http_target, nuget, openai
 
 
 ROOT = Path(__file__).resolve().parents[1]

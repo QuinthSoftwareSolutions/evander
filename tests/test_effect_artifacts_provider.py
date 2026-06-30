@@ -10,25 +10,25 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
-from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from agent_sandbox.effects.providers.artifacts import (
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+from evander.effects.providers.artifacts import (
     ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
     ArtifactStageEffectProvider,
     _IMPORT_SCRIPT,
     _PUBLISH_SCRIPT,
 )
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.provider_models import (
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.provider_models import (
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
 )
-from agent_sandbox.published_artifacts import PublishedArtifactStore
+from evander.published_artifacts import PublishedArtifactStore
 
-_BEGIN = "__AGENT_SANDBOX_ARTIFACT_EFFECT_JSON_BEGIN__"
-_END = "__AGENT_SANDBOX_ARTIFACT_EFFECT_JSON_END__"
+_BEGIN = "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__"
+_END = "__EVANDER_ARTIFACT_EFFECT_JSON_END__"
 
 
 def _context(tmp_path: Path) -> EffectRuntimeContext:
@@ -222,7 +222,7 @@ def test_artifact_publish_script_publishes_only_selected_paths(tmp_path: Path) -
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts)},
+        env={**os.environ, "EVANDER_ARTIFACTS_DIR": str(artifacts)},
     )
 
     assert result.returncode == 0, result.stderr
@@ -247,7 +247,7 @@ def test_artifact_publish_script_rejects_unsafe_source_paths(tmp_path: Path) -> 
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts)},
+        env={**os.environ, "EVANDER_ARTIFACTS_DIR": str(artifacts)},
     )
 
     assert result.returncode == 2
@@ -349,7 +349,7 @@ def test_artifact_import_script_extracts_regular_files_and_rejects_collisions(
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts_root)},
+        env={**os.environ, "EVANDER_ARTIFACTS_DIR": str(artifacts_root)},
     )
     second = subprocess.run(
         [sys.executable, "-", str(archive_path), "", "0"],
@@ -357,7 +357,7 @@ def test_artifact_import_script_extracts_regular_files_and_rejects_collisions(
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts_root)},
+        env={**os.environ, "EVANDER_ARTIFACTS_DIR": str(artifacts_root)},
     )
 
     assert first.returncode == 0

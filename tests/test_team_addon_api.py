@@ -12,14 +12,14 @@ import httpx
 from PIL import Image
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
-from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.web.app import create_app
+from evander.directory_config import DirectoryConfigStore
+from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.model_usage.store import ModelUsageStore
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon import api as team_addon_api
 from evander_team_addon.api import (
     _bootstrap_payload_for_request,
@@ -3190,7 +3190,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
             "git_root": str(git_root),
             "git_host": "192.168.250.1",
             "git_user": "agent",
-            "git_ssh_alias": "agent-sandbox-git-host",
+            "git_ssh_alias": "evander-git-host",
         },
     )
     client = TestClient(create_app(service))
@@ -3218,10 +3218,10 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
     }
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == source_commit
     assert _git_dir(
-        bare_repo, "config", "--get", "agent-sandbox.trustedRepoPath"
+        bare_repo, "config", "--get", "evander.trustedRepoPath"
     ).stdout.strip() == str(source_repo.resolve())
     assert _git_dir(
-        bare_repo, "config", "--get", "agent-sandbox.mirrorSource"
+        bare_repo, "config", "--get", "evander.mirrorSource"
     ).stdout.strip() == str(source_repo)
     (source_repo / "README.md").write_text("# Source\n\nRefresh\n", encoding="utf-8")
     _git(source_repo, "add", "README.md")

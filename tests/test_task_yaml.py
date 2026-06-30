@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_sandbox.task_yaml import TaskYamlSerializer, WorkItemSource, WorkItemTask
+from evander.task_yaml import TaskYamlSerializer, WorkItemSource, WorkItemTask
 
 
 def test_serialize_writes_expected_yaml_with_optional_fields(tmp_path: Path) -> None:

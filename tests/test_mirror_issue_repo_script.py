@@ -64,7 +64,7 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
             "USER": os.environ.get("USER", "test-user"),
         }
     )
@@ -164,7 +164,7 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
             "USER": os.environ.get("USER", "test-user"),
         }
     )
@@ -190,22 +190,22 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
 
     bare_repo = git_root / "14357_repo.git"
     assert _git_dir(
-        bare_repo, "config", "--get", "agent-sandbox.mirrorSource"
+        bare_repo, "config", "--get", "evander.mirrorSource"
     ).stdout.strip() == str(source_repo)
     assert (
-        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorRemoteName").stdout.strip()
+        _git_dir(bare_repo, "config", "--get", "evander.mirrorRemoteName").stdout.strip()
         == "origin"
     )
     assert (
-        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip()
+        _git_dir(bare_repo, "config", "--get", "evander.mirrorSyncRemote").stdout.strip()
         == "1"
     )
     assert (
-        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorForceLocal").stdout.strip()
+        _git_dir(bare_repo, "config", "--get", "evander.mirrorForceLocal").stdout.strip()
         == "0"
     )
     assert (
-        _git_dir(bare_repo, "config", "--get-all", "agent-sandbox.mirrorRefspec").stdout.strip()
+        _git_dir(bare_repo, "config", "--get-all", "evander.mirrorRefspec").stdout.strip()
         == "refs/heads/main:refs/heads/main"
     )
 
@@ -253,7 +253,7 @@ def test_mirror_issue_repo_fast_forwards_stale_local_default_branch(tmp_path: Pa
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
             "USER": os.environ.get("USER", "test-user"),
         }
     )
@@ -347,7 +347,7 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
             "USER": os.environ.get("USER", "test-user"),
         }
     )
@@ -382,7 +382,7 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
 
     bare_repo = git_root / "14357_repo.git"
     assert _git_dir(
-        bare_repo, "config", "--get", "agent-sandbox.canonicalOriginUrl"
+        bare_repo, "config", "--get", "evander.canonicalOriginUrl"
     ).stdout.strip() == str(canonical_origin)
 
 
@@ -429,7 +429,7 @@ def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_pa
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
             "USER": os.environ.get("USER", "test-user"),
         }
     )
@@ -448,7 +448,7 @@ def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_pa
 
     bare_repo = git_root / "14357_repo.git"
     assert (
-        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip()
+        _git_dir(bare_repo, "config", "--get", "evander.mirrorSyncRemote").stdout.strip()
         == "0"
     )
 
@@ -500,7 +500,7 @@ def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+            "EVANDER_GIT_ROOT": str(git_root),
             "USER": os.environ.get("USER", "test-user"),
         }
     )

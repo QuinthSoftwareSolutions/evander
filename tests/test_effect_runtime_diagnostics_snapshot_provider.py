@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
-from agent_sandbox.events.provider_models import RuntimeDiagnosticsSnapshotEffectDefinition
-from agent_sandbox.worker.models import WorkerJobRecord
-from agent_sandbox.worker.store import WorkerJobStore
+from evander.events.provider_models import RuntimeDiagnosticsSnapshotEffectDefinition
+from evander.worker.models import WorkerJobRecord
+from evander.worker.store import WorkerJobStore
 
 
 def _runtime_context(tmp_path: Path) -> EffectRuntimeContext:
@@ -101,14 +101,14 @@ def test_runtime_diagnostics_snapshot_reads_bounded_sources_and_redacts(
         )
 
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.runtime_diagnostics_snapshot.subprocess.run",
+        "evander.effects.providers.runtime_diagnostics_snapshot.subprocess.run",
         fake_run,
     )
 
     provider = RuntimeDiagnosticsSnapshotEffectProvider()
     provider.initialize(
         _effect_definition(
-            units=["agent-sandbox-admin-web.service"],
+            units=["evander-admin-web.service"],
             command_timeout_seconds=3,
         ),
         context,
@@ -122,10 +122,10 @@ def test_runtime_diagnostics_snapshot_reads_bounded_sources_and_redacts(
     assert result["stdout"] == snapshot
     assert result["message"] == snapshot
     assert result["redaction"] == "enabled"
-    assert result["units"] == ["agent-sandbox-admin-web.service"]
+    assert result["units"] == ["evander-admin-web.service"]
     assert "# Runtime diagnostics snapshot" in snapshot
     assert "## Failed systemd units" in snapshot
-    assert "### agent-sandbox-admin-web.service" in snapshot
+    assert "### evander-admin-web.service" in snapshot
     assert "## Runtime audit errors and denials" in snapshot
     assert "## Recent worker job failures" in snapshot
     assert "worker-jobs.db" in snapshot
@@ -145,7 +145,7 @@ def test_runtime_diagnostics_snapshot_reads_bounded_sources_and_redacts(
             "journalctl",
             "--no-pager",
             "-u",
-            "agent-sandbox-admin-web.service",
+            "evander-admin-web.service",
             "--since",
             "24 hours ago",
             "-p",

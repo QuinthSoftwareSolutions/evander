@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from evander.orchestration.host_polling import HostFileLockManager, HostSleeper
 
 
 def test_host_file_lock_manager_releases_and_reacquires(tmp_path: Path) -> None:

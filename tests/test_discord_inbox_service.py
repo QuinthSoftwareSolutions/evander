@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
-from agent_sandbox.models import DiscordMessageEnvelope
-from agent_sandbox.services import DiscordInboxService
+from evander.messaging.discord_inbox_store import DiscordInboxStore
+from evander.models import DiscordMessageEnvelope
+from evander.services import DiscordInboxService
 
 
 def _message(

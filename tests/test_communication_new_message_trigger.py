@@ -6,22 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig, MailboxConfig
-from agent_sandbox.email.providers import EmailMessageSummary
-from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
-from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
-from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig, MailboxConfig
+from evander.email.providers import EmailMessageSummary
+from evander.events.provider_models import CommunicationNewMessageTriggerDefinition
+from evander.messaging.discord_inbox_store import DiscordInboxStore
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage
-from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.provider_runtime.adapters import trigger_provider_config_blob
-from agent_sandbox.triggers.providers.communication_new_message import (
+from evander.models import DiscordMessageEnvelope, EmailMessage
+from evander.provider_config import ProviderConfigResolver
+from evander.provider_runtime.adapters import trigger_provider_config_blob
+from evander.triggers.providers.communication_new_message import (
     CommunicationNewMessageTriggerProvider,
 )
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.base import TriggerRuntimeContext
 
 
 def _runtime_context(tmp_path: Path) -> TriggerRuntimeContext:
@@ -328,7 +328,7 @@ def test_communication_trigger_resolves_full_email_config_without_provider_curso
         return FakeEmailProvider()
 
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.communication_new_message._build_email_provider",
+        "evander.triggers.providers.communication_new_message._build_email_provider",
         fake_build_email_provider,
     )
     provider = CommunicationNewMessageTriggerProvider()

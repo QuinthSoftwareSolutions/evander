@@ -12,12 +12,12 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.relays.openai import OpenAIRelay, create_app
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import SessionManifest
+from evander.relays.openai import OpenAIRelay, create_app
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -868,7 +868,7 @@ def test_relay_logs_resolved_api_key_env_name(tmp_path: Path, caplog) -> None:
     client = TestClient(app)
     os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
     os.environ.pop("OPENAI_API_KEY", None)
-    caplog.set_level("INFO", logger="agent_sandbox.relays.openai")
+    caplog.set_level("INFO", logger="evander.relays.openai")
 
     response = client.post(
         "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
@@ -967,7 +967,7 @@ def test_relay_stream_transport_errors_are_suppressed_with_warning(tmp_path: Pat
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    caplog.set_level("INFO", logger="agent_sandbox.relays.openai")
+    caplog.set_level("INFO", logger="evander.relays.openai")
 
     with client.stream(
         "POST",
@@ -1002,7 +1002,7 @@ def test_relay_stream_clean_end_logs_completion(tmp_path: Path, caplog) -> None:
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    caplog.set_level("INFO", logger="agent_sandbox.relays.openai")
+    caplog.set_level("INFO", logger="evander.relays.openai")
 
     with client.stream(
         "POST",

@@ -1,17 +1,17 @@
 ---
 - name: Create the repo virtualenv with uv
   ansible.builtin.command:
-    cmd: "uv venv {{ agent_sandbox_deploy_path }}/.venv"
-    creates: "{{ agent_sandbox_deploy_path }}/.venv/bin/python"
+    cmd: "uv venv {{ evander_deploy_path }}/.venv"
+    creates: "{{ evander_deploy_path }}/.venv/bin/python"
   args:
-    chdir: "{{ agent_sandbox_deploy_path }}"
-  become_user: "{{ agent_sandbox_run_user }}"
+    chdir: "{{ evander_deploy_path }}"
+  become_user: "{{ evander_run_user }}"
 
 - name: Install the repo into the virtualenv
   ansible.builtin.command:
-    cmd: "uv pip install --python {{ agent_sandbox_deploy_path }}/.venv/bin/python -e .{{ agent_sandbox_python_install_extras }}"
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e .{{ evander_python_install_extras }}"
   args:
-    chdir: "{{ agent_sandbox_deploy_path }}"
-  environment: "{{ agent_sandbox_python_install_env | default({}) }}"
-  become_user: "{{ agent_sandbox_run_user }}"
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
   changed_when: false

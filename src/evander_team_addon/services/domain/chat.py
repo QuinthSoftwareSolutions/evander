@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.admin.user_notifications import AdminUserNotificationStore
+from evander.admin.user_notifications import AdminUserNotificationStore
 from collections.abc import (
     Mapping,
     Sequence,

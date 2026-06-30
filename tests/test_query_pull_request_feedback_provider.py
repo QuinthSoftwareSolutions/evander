@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import PullRequestFeedbackQueryDefinition
-from agent_sandbox.pr_feedback import FeedbackEnvelope, ProviderPollResult
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.pull_request_feedback import (
+from evander.config import GatewayConfig
+from evander.events.provider_models import PullRequestFeedbackQueryDefinition
+from evander.pr_feedback import FeedbackEnvelope, ProviderPollResult
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
 
@@ -83,7 +83,7 @@ def test_pull_request_feedback_query_fetches_ado_feedback_with_cursor(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        "evander.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
         StubAdapter,
     )
     resolver = _Resolver(
@@ -138,7 +138,7 @@ def test_pull_request_feedback_query_uses_explicit_ado_project(
             return ProviderPollResult(feedback=[], next_cursor=kwargs["cursor"])
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        "evander.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
         StubAdapter,
     )
     resolver = _Resolver(
@@ -183,7 +183,7 @@ def test_pull_request_feedback_query_prefers_configured_project_for_ado_clone_ur
             return ProviderPollResult(feedback=[], next_cursor=None)
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        "evander.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
         StubAdapter,
     )
     resolver = _Resolver(
@@ -225,7 +225,7 @@ def test_pull_request_feedback_query_infers_ado_project_from_shorthand_without_c
             return ProviderPollResult(feedback=[], next_cursor=None)
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        "evander.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
         StubAdapter,
     )
     resolver = _Resolver(
@@ -266,7 +266,7 @@ def test_pull_request_feedback_query_resolves_github_token(tmp_path: Path, monke
             return ProviderPollResult(feedback=[], next_cursor=None)
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_feedback.GitHubFeedbackAdapter",
+        "evander.queries.providers.pull_request_feedback.GitHubFeedbackAdapter",
         StubAdapter,
     )
     resolver = _Resolver(

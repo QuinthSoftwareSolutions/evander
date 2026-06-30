@@ -30,7 +30,7 @@ If you want the files somewhere else, pass `--runtime-dir` explicitly.
 Run Admin Web against the demo runtime:
 
 ```bash
-./.venv/bin/agent-sandbox-admin-web \
+./.venv/bin/evander-admin-web \
   --runtime-dir runtime/workflow-run-inspector-demo \
   --host 127.0.0.1 \
   --port 8100

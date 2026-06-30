@@ -5,10 +5,10 @@ set -euo pipefail
 
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
 AGENT_MODEL="${AGENT_MODEL:-}"
-AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
-HEARTBEAT_ENV_FILE="${HOME}/.config/agent-sandbox/guest-heartbeat.env"
+EVANDER_GUEST_HEARTBEAT_PROMPT="${EVANDER_GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
+HEARTBEAT_ENV_FILE="${HOME}/.config/evander/guest-heartbeat.env"
 
-LIB_DIR="${HOME}/.config/agent-sandbox/agent-runner-lib"
+LIB_DIR="${HOME}/.config/evander/agent-runner-lib"
 
 if [[ ! -f "${LIB_DIR}/agent_runner.sh" ]]; then
   echo "Missing agent runner library: ${LIB_DIR}/agent_runner.sh" >&2
@@ -26,7 +26,7 @@ if [[ -z "${AGENT_MODEL:-}" && -f "${HEARTBEAT_ENV_FILE}" ]]; then
   AGENT_MODEL="${AGENT_MODEL:-}"
 fi
 
-LOG_DIR="${HOME}/.agent-sandbox"
+LOG_DIR="${HOME}/.evander"
 RUN_LOG_FILE="${AGENT_RUN_LOG_FILE:-/dev/null}"
 PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
 RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
@@ -84,7 +84,7 @@ nohup agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${AGENT_MODEL}" \
-  "${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT}" \
+  "${EVANDER_GUEST_HEARTBEAT_PROMPT}" \
   >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 
 AGENT_PID=$!

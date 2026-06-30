@@ -203,18 +203,18 @@ guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  mkdir -p ~/bin ~/.claude ~/.config/agent-sandbox/agent-runner-lib ~/.agent-sandbox/lib
-  chmod 700 ~/.claude ~/.agent-sandbox
+  mkdir -p ~/bin ~/.claude ~/.config/evander/agent-runner-lib ~/.evander/lib
+  chmod 700 ~/.claude ~/.evander
 "
 scp "${SSH_OPTS[@]}" "${HOST_CLAUDE_BIN}" "${VM_USER}@${VM_IP}:~/bin/claude"
 scp "${SSH_OPTS[@]}" \
   "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
   "${PROVIDER_RUNNER_LIB_PATH}" \
-  "${VM_USER}@${VM_IP}:~/.config/agent-sandbox/agent-runner-lib/"
+  "${VM_USER}@${VM_IP}:~/.config/evander/agent-runner-lib/"
 scp "${SSH_OPTS[@]}" \
   "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
   "${PROVIDER_RUNNER_LIB_PATH}" \
-  "${VM_USER}@${VM_IP}:~/.agent-sandbox/lib/"
+  "${VM_USER}@${VM_IP}:~/.evander/lib/"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
   "ANTHROPIC_BASE_URL='${ANTHROPIC_BASE_URL}' GATEWAY_URL='${GATEWAY_URL}' bash -s" <<'EOF'
@@ -225,16 +225,16 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
-if [ -f /etc/agent-sandbox/session.env ]; then
+if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
-  . /etc/agent-sandbox/session.env
+  . /etc/evander/session.env
 fi
 
-CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${AGENT_SANDBOX_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}"
-CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
-if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then
-  CLAUDE_ANTHROPIC_BASE_URL="${CLAUDE_ANTHROPIC_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"
-  CLAUDE_GATEWAY_URL="${CLAUDE_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"
+CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}"
+CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
+if [ -n "${EVANDER_SESSION_ID:-}" ]; then
+  CLAUDE_ANTHROPIC_BASE_URL="${CLAUDE_ANTHROPIC_BASE_URL%/}/session/${EVANDER_SESSION_ID}"
+  CLAUDE_GATEWAY_URL="${CLAUDE_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"
 fi
 
 cat > ~/.claude/settings.json <<CONFIG
@@ -254,7 +254,7 @@ CONFIG
 cat > ~/.claude/mcp-config.json <<CONFIG
 {
   "mcpServers": {
-    "agent_sandbox": {
+    "evander": {
       "type": "http",
       "url": "${CLAUDE_GATEWAY_URL}",
       "tools": ["*"]
@@ -288,7 +288,7 @@ def repair_missing_profile_fi(profile_lines):
             in_managed_block = False
         out.append(line)
         if stripped in {
-            "if [ -f /etc/agent-sandbox/session.env ]; then",
+            "if [ -f /etc/evander/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_managed_block = True

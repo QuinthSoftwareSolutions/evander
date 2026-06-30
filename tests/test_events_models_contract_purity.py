@@ -6,14 +6,14 @@ from pathlib import Path
 
 def test_events_models_contract_module_does_not_import_provider_packages() -> None:
     module_path = (
-        Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "events" / "models.py"
+        Path(__file__).resolve().parents[1] / "src" / "evander" / "events" / "models.py"
     )
     tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
 
     forbidden_prefixes = (
-        "agent_sandbox.effects.providers",
-        "agent_sandbox.triggers.providers",
-        "agent_sandbox.queries.providers",
+        "evander.effects.providers",
+        "evander.triggers.providers",
+        "evander.queries.providers",
     )
 
     imported_modules: set[str] = set()

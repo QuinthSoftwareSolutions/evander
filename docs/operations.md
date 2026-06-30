@@ -17,13 +17,13 @@ For reproducible fresh-host Ubuntu 24.04 deployment paths that wrap the same rep
 sequence with Ansible, including the dedicated container-worker VM playbook, see
 `ansible/README.md`.
 
-If Admin Web is part of the deployed surface, treat `agent-sandbox-admin-web` as a managed host
+If Admin Web is part of the deployed surface, treat `evander-admin-web` as a managed host
 service and configure `config/admin-web.env` before exposing it beyond localhost.
 Use the Admin Web branding variables in that env file when a deployment needs a different browser
 title, shell header title, or logo set; relative logo paths can be served from
-`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied `/api/admin/branding/assets/...`
-route. For full wordmark logos, set `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE=wordmark` and
-`AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE=false` to avoid duplicating the title in the header.
+`EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied `/api/admin/branding/assets/...`
+route. For full wordmark logos, set `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE=wordmark` and
+`EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE=false` to avoid duplicating the title in the header.
 
 ## Bootstrap Flow
 
@@ -50,7 +50,7 @@ route. For full wordmark logos, set `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE=wo
 20. Use [libvirt-vm-template-operations.md](libvirt-vm-template-operations.md) when you need to prepare or register a non-default libvirt base image.
 
 - The launch script resizes each overlay disk to `20G` by default.
-- The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
+- The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/evander/nuget-cache-ro` inside the guest.
 - Override per VM with `DISK_SIZE_GB=40 sudo ./scripts/launch_agent_vm.sh ...`.
 
 ## First Troubleshooting Step
@@ -85,7 +85,7 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
   worker job instead of waiting for the next model request.
 - `config/model-pricing.openai.json`: versioned local OpenAI pricing snapshot
   used by `query:model-usage:list` for query-time cost estimates. Override with
-  `AGENT_SANDBOX_MODEL_PRICING_PATH` when operating from a different rate card.
+  `EVANDER_MODEL_PRICING_PATH` when operating from a different rate card.
   Admin Web exposes the loaded catalog status and structured editor on the
   Configuration page and saves changes back to the active catalog path.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
@@ -148,11 +148,11 @@ tools are the only Team action path.
    state is being inspected:
 
    ```bash
-   sudo systemctl stop agent-sandbox-trigger-orchestrator.service
-   sudo systemctl stop agent-sandbox-effect-orchestrator.service
-   sudo systemctl stop agent-sandbox-admin-web.service
-   sudo systemctl stop agent-sandbox-discord-wake.service agent-sandbox-scheduled-wake.service
-   sudo systemctl stop agent-sandbox-discord-ingest.service agent-sandbox-teams-ingest.service agent-sandbox-teams-meeting-ingest.service
+   sudo systemctl stop evander-trigger-orchestrator.service
+   sudo systemctl stop evander-effect-orchestrator.service
+   sudo systemctl stop evander-admin-web.service
+   sudo systemctl stop evander-discord-wake.service evander-scheduled-wake.service
+   sudo systemctl stop evander-discord-ingest.service evander-teams-ingest.service evander-teams-meeting-ingest.service
    ```
 
    Stop only the wake/ingest services enabled on the host. If Admin Web must
@@ -192,12 +192,12 @@ tools are the only Team action path.
 6. Restart services with Team MCP tools as the only action path:
 
    ```bash
-   sudo systemctl start agent-sandbox-effect-orchestrator.service
-   sudo systemctl start agent-sandbox-trigger-orchestrator.service
-   sudo systemctl start agent-sandbox-admin-web.service
-   sudo systemctl start agent-sandbox-discord-ingest.service agent-sandbox-discord-wake.service
-   sudo systemctl start agent-sandbox-scheduled-wake.service
-   sudo systemctl start agent-sandbox-teams-ingest.service agent-sandbox-teams-meeting-ingest.service
+   sudo systemctl start evander-effect-orchestrator.service
+   sudo systemctl start evander-trigger-orchestrator.service
+   sudo systemctl start evander-admin-web.service
+   sudo systemctl start evander-discord-ingest.service evander-discord-wake.service
+   sudo systemctl start evander-scheduled-wake.service
+   sudo systemctl start evander-teams-ingest.service evander-teams-meeting-ingest.service
    ```
 
    Start only services that are configured on the host. The Team runtime workflow
@@ -277,7 +277,7 @@ pricing rules in the structured panel after unlocking privileged operations.
 Saves include the catalog revision and fail on stale revisions, so concurrent
 operator edits require a reload before retrying. The backend validates the
 catalog before writing and writes atomically to either
-`AGENT_SANDBOX_MODEL_PRICING_PATH` or the default
+`EVANDER_MODEL_PRICING_PATH` or the default
 `config/model-pricing.openai.json` path.
 
 The store intentionally excludes request and response text, so it is safe to
@@ -430,49 +430,49 @@ evander-cli list-local-issues --json
 The browser admin surface supports three auth modes:
 
 - `none`: no sign-in required. This remains the default when
-  `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is also unset.
+  `EVANDER_ADMIN_WEB_AUTH_MODE` is unset and `EVANDER_ADMIN_WEB_PASSWORD` is also unset.
 - `local_password`: local username/password sign-in with one or more Admin Web users. If
-  `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset but `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, this mode is selected automatically for backward compatibility.
+  `EVANDER_ADMIN_WEB_AUTH_MODE` is unset but `EVANDER_ADMIN_WEB_PASSWORD` is set, this mode is selected automatically for backward compatibility.
 - `azure_sso`: Microsoft Entra browser sign-in through OIDC Authorization Code + PKCE.
 
 Required local session settings:
 
-- `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET`
-- optional `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS`
-- optional `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true`
+- `EVANDER_ADMIN_WEB_SESSION_SECRET`
+- optional `EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS`
+- optional `EVANDER_ADMIN_WEB_COOKIE_SECURE=true`
 
 `local_password` settings:
 
-- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=local_password`
-- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for bootstrap/break-glass access
-- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for bootstrap/break-glass access
+- `EVANDER_ADMIN_WEB_AUTH_MODE=local_password`
+- `EVANDER_ADMIN_WEB_USERNAME` for bootstrap/break-glass access
+- `EVANDER_ADMIN_WEB_PASSWORD` for bootstrap/break-glass access
 
 `azure_sso` settings:
 
-- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=azure_sso`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
-  or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`
-- optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
-- optional first-run `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
-- optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
+- `EVANDER_ADMIN_WEB_AUTH_MODE=azure_sso`
+- `EVANDER_ADMIN_WEB_AZURE_TENANT_ID`
+- `EVANDER_ADMIN_WEB_AZURE_CLIENT_ID`
+- `EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET`
+- `EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI`
+  or `EVANDER_ADMIN_WEB_PUBLIC_BASE_URL`
+- optional `EVANDER_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
+- optional first-run `EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS`
+- optional `EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
 
 Azure SSO enabling sequence:
 
 1. Register a confidential Microsoft Entra web application for the admin web.
 2. Add the exact admin callback URI to the app registration.
 3. Allow OpenID scopes `openid profile email`.
-4. Set the trusted tenant id in `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
+4. Set the trusted tenant id in `EVANDER_ADMIN_WEB_AZURE_TENANT_ID`.
 5. On first startup, add initial admin UPN/email-style logins to
-   `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
-6. Restart `agent-sandbox-admin-web`.
+   `EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS`.
+6. Restart `evander-admin-web`.
 
 Admin Web users are stored in `runtime/admin-web.db`, keyed by normalized login/email. In
 `local_password` mode, the configured username/password seeds the first local owner when the user
 table is empty, and Users & Groups can set or reset per-user local passwords. In `azure_sso` mode,
-`AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds initial users with the Owner group when the
+`EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds initial users with the Owner group when the
 SQLite user table is empty. A legacy `runtime/admin-web-users.json` file is imported once when the
 SQLite table is empty; legacy `admin` and `regular` roles are retained for compatibility and mapped
 to Owner and Operator group assignments. After that first bootstrap, the SQLite runtime store is the source of
@@ -541,28 +541,28 @@ Storage layout for directory config:
 - The launch script injects the caller's `~/.ssh/id_ed25519.pub` by default, falling back to `~/.ssh/id_rsa.pub`.
 - Override the key with `SSH_PUBLIC_KEY_FILE=/path/to/key.pub`, or point `SSH_PRIVATE_KEY_PATH` at the matching private key so the script can derive a temporary public key when needed.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.
-- Host-side guest SSH commands store guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name. `destroy_agent_vm.sh` removes the stale alias for a destroyed VM so a replacement VM can be learned cleanly.
+- Host-side guest SSH commands store guest host keys in `~/.ssh/evander-known_hosts` keyed by VM name. `destroy_agent_vm.sh` removes the stale alias for a destroyed VM so a replacement VM can be learned cleanly.
 - To list all currently running VMs with live guest agent status from the host, run `evander-cli list-vms`.
 
 ## VM Agent Runtime Baseline
 
-- Cloud-init writes provider-neutral baseline config files: `/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`.
-- Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports placeholder `OPENAI_API_KEY` and `ANTHROPIC_AUTH_TOKEN` values if none are already set.
+- Cloud-init writes provider-neutral baseline config files: `/etc/evander/session.env` and `/home/agent/.agent/config.env`.
+- Cloud-init also appends a shell profile hook that loads `/etc/evander/session.env` and exports placeholder `OPENAI_API_KEY` and `ANTHROPIC_AUTH_TOKEN` values if none are already set.
 - Cloud-init creates `agent` as the unprivileged runtime user and `agent-admin` as the host-control SSH user with passwordless sudo. Host resume/log tooling uses `agent-admin` to append root-owned logs while running the actual agent process as `agent`.
-- Generic orchestration status is provider-neutral and read from `/home/agent/.agent-sandbox/agent-*.state`, with companion `agent-*.pid` files. Transcript logs are written through the privileged host-control path to root-owned files under `/var/log/agent-sandbox/agent-runs/`.
+- Generic orchestration status is provider-neutral and read from `/home/agent/.evander/agent-*.state`, with companion `agent-*.pid` files. Transcript logs are written through the privileged host-control path to root-owned files under `/var/log/evander/agent-runs/`.
 - New VMs pick this up automatically; existing VMs need to be recreated or migrated if they predate baseline config changes. For one-off maintenance against an old sudo-enabled runtime user, set `VM_SSH_USER=agent` explicitly.
 
 ### Codex provider bootstrap
 
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, seeds `~/bin/rg`, and verifies Codex.
-- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
+- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `EVANDER_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as `[mcp_servers.evander]` using `EVANDER_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
 
 ### Claude Code provider bootstrap
 
 - `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user, seeds `~/bin/rg`, and verifies `claude --version`.
-- The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, telemetry disabled, and Claude Code commit-message attribution disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
+- The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, telemetry disabled, and Claude Code commit-message attribution disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `evander`, including the active `session_id` query string when present.
 - The bootstrap script appends `~/bin`, `AGENT_PROVIDER=claude`, placeholder Anthropic auth, and the configured Anthropic base URL to both `~/.profile` and `~/.bashrc`.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Claude bootstrap.
 - Host-side routing is selected with `model_provider_mode: "anthropic"` in the effective provider config. The relay keeps the real Anthropic API key on the host and injects it as `x-api-key` upstream.
@@ -570,7 +570,7 @@ Storage layout for directory config:
 ### GitHub Copilot CLI provider bootstrap
 
 - `./scripts/bootstrap_copilot_vm.sh <vm-name>` copies the host `copilot` binary into `~/bin/copilot` for the guest user, seeds `~/bin/rg`, and verifies `copilot version`.
-- The bootstrap script writes `~/.copilot/config.json` with provider-local defaults and `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
+- The bootstrap script writes `~/.copilot/config.json` with provider-local defaults and `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `evander`, including the active `session_id` query string when present.
 - The bootstrap script also installs a guest `gh` shim in `~/bin/gh`. Copilot CLI uses GitHub CLI as its lowest-priority auth fallback, so the shim answers `gh auth token` by calling the host gateway at `/copilot-auth/token` with the guest session id. That keeps the long-lived GitHub token on the host while avoiding permanent guest-side token storage.
 - The bootstrap script appends `~/bin` and `COPILOT_HOME=~/.copilot` to both `~/.profile` and `~/.bashrc`.
 - Host-mediated auth reads the effective provider `github_token_env` on the host. That environment variable must contain a GitHub token that can satisfy Copilot CLI requests. Guest-side `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `copilot login` still override the host-mediated `gh` fallback if you set them intentionally.
@@ -653,7 +653,7 @@ Storage layout for directory config:
 - The bootstrap validates that the guest Python interpreter satisfies the repo's `requires-python` lower bound before it creates the virtualenv.
 - The guest install path uses `pip install --no-index --find-links ... --no-build-isolation -e ".[dev]"` so later guest edits still run against the cloned checkout rather than a prebuilt wheel.
 - `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]` is the lower-level generic variant for guest-local Python tools that are not tied to a repo checkout.
-- The generic package bootstrap builds a temporary host wheelhouse for the requested package specs plus `setuptools`, `wheel`, and `virtualenv`, copies that wheelhouse into the guest under `~/.agent-sandbox/python-wheelhouse/tools`, creates or reuses a guest tools virtualenv under `~/.agent-sandbox/python-tools-venv`, and installs the requested packages offline with `pip install --no-index --find-links ...`.
+- The generic package bootstrap builds a temporary host wheelhouse for the requested package specs plus `setuptools`, `wheel`, and `virtualenv`, copies that wheelhouse into the guest under `~/.evander/python-wheelhouse/tools`, creates or reuses a guest tools virtualenv under `~/.evander/python-tools-venv`, and installs the requested packages offline with `pip install --no-index --find-links ...`.
 - Override host/guest interpreter paths with `HOST_PYTHON_BIN` and `GUEST_PYTHON_BIN`, or override guest destinations with `GUEST_WHEELHOUSE_DIR` and `--venv` when needed.
 
 ## VM Playwright Bootstrap
@@ -688,7 +688,7 @@ Storage layout for directory config:
 - The generated config uses:
   - guest-local writable `globalPackagesFolder` at `/home/agent/.nuget/packages-local`
   - guest-local writable `httpCacheFolder` at `/home/agent/.nuget/http-cache`
-  - read-only `fallbackPackageFolders` at `/opt/agent-sandbox/nuget-cache-ro`
+  - read-only `fallbackPackageFolders` at `/opt/evander/nuget-cache-ro`
 - It runs `dotnet nuget list source` when `dotnet` is available in the guest.
 
 ## VM Microsoft SQL Server Bootstrap
@@ -701,8 +701,8 @@ Storage layout for directory config:
 
 ## Host Shared NuGet Cache
 
-- Default host cache path: `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages`
-- Guests see that cache read-only at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
+- Default host cache path: `/var/lib/libvirt/images/evander/nuget-cache/global-packages`
+- Guests see that cache read-only at `/opt/evander/nuget-cache-ro` via `virtiofs`.
 - Guests still use guest-local writable caches for cache misses and new downloads.
 - Prewarm the shared cache explicitly from the host with:
 
@@ -747,8 +747,8 @@ Storage layout for directory config:
   sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142 4000" ./scripts/apply_firewall.sh
   ```
 
-- The guest receives `AGENT_SANDBOX_LLM_BASE_URL`, `OPENAI_BASE_URL`, `AGENT_SANDBOX_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/agent-sandbox/session.env`.
-- The scaffold includes `agent-sandbox-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
+- The guest receives `EVANDER_LLM_BASE_URL`, `OPENAI_BASE_URL`, `EVANDER_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/evander/session.env`.
+- The scaffold includes `evander-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
 - The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, a host-local OpenAI-compatible endpoint, Azure OpenAI, or Anthropic.
 - For Azure OpenAI Codex routing, set `model_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
@@ -796,7 +796,7 @@ Storage layout for directory config:
   Admin Web Create Agent dialog exposes this as **Model relay** for Codex or
   directory-default agents, and CLI-created agents can pass
   `--model-provider-mode local_openai`.
-- Restart `agent-sandbox-openai-relay.service` after changing provider config that the relay process has already loaded.
+- Restart `evander-openai-relay.service` after changing provider config that the relay process has already loaded.
 - Public OpenAI remains the default when `model_provider_mode` is omitted.
 - For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and
@@ -1102,7 +1102,7 @@ raw phone numbers or phone-provider credentials.
   that session. Unknown ids are rejected against the session directory's effective contacts.
 - Required host secret:
   - Set the configured `retell_api_key_env` value in the gateway host environment. For systemd,
-    repo-root `secrets.env` is already loaded by `agent-sandbox-gateway.service`.
+    repo-root `secrets.env` is already loaded by `evander-gateway.service`.
 - Required Retell agent prompt:
   - The Retell agent/LLM referenced by `retell_default_agent_id` must include
     `{{agent_question}}` in its Retell prompt or begin message.
@@ -1194,7 +1194,7 @@ DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV=VOICE_MEDIA_CONTROLLER_TOKEN
 ```
 
 The bridge routes fixed inbound calls from Asterisk by sending the DID to
-`Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)`. When the bridge accepts an inbound
+`Stasis(evander_didww,inbound:<did-or-route-id>)`. When the bridge accepts an inbound
 `StasisStart`, it POSTs to `POST /voice-sessions/inbound-phone-calls` using the token named by
 `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` (default `VOICE_MEDIA_CONTROLLER_TOKEN`).
 After the call ends, the bridge POSTs the sanitized terminal bridge result to
@@ -1239,12 +1239,12 @@ existing caller-speech cancellation path interrupts playback.
 
 ### DIDWW SIP/OpenAI Realtime bridge
 
-The built-in bridge service is `agent-sandbox-didww-sip-bridge`. It runs on the control-plane host
+The built-in bridge service is `evander-didww-sip-bridge`. It runs on the control-plane host
 and exposes the bridge API consumed by `didww_sip_bridge_url`:
 
 - `POST /phone-calls` starts a projected outbound call.
 - `POST /voice-sessions/inbound-phone-calls` provisions a fixed inbound route when the bridge is
-  configured to listen for inbound `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)` events.
+  configured to listen for inbound `Stasis(evander_didww,inbound:<did-or-route-id>)` events.
 - `GET /voice-sessions/{voice_session_id}` returns status, transcript events, summary, decisions,
   action items, and any captured audio-quality diagnostics.
 - `GET /voice-sessions/{voice_session_id}/audio-quality` and
@@ -1290,9 +1290,9 @@ Minimum host setup:
 5. Set `didww_sip_bridge_url` to the bridge listener, for example `http://127.0.0.1:11888`.
 
 For reproducible deployments, the Ansible bundle can own the Asterisk side as well. Set
-`agent_sandbox_asterisk_didww_enabled: true` in the operator deployment config, provide the DIDWW
+`evander_asterisk_didww_enabled: true` in the operator deployment config, provide the DIDWW
 SIP username/password and Asterisk ARI password from Vault, and set
-`agent_sandbox_asterisk_public_address` to the public SIP/RTP address advertised by the control
+`evander_asterisk_public_address` to the public SIP/RTP address advertised by the control
 plane. The role renders the same ARI user/app and PJSIP endpoint names consumed by
 `config/didww-sip-bridge.env`, then verifies the local ARI endpoint before the bridge service is
 checked.
@@ -1408,7 +1408,7 @@ Audit/result behavior:
 
 - Set `discord_backend: "bot_api"` in the effective `root` provider config to enable the provider-backed Discord adapter.
 - Set `discord_bot_token_env` in the effective `root` provider config (default `DISCORD_BOT_TOKEN`).
-- Export the matching host environment variable before launching `agent-sandbox-gateway`:
+- Export the matching host environment variable before launching `evander-gateway`:
 
   ```bash
   export DISCORD_BOT_TOKEN=...
@@ -1432,7 +1432,7 @@ Audit/result behavior:
   - It does **not** treat prior Discord history as an open-ended source universe.
   - Polling additional channels requires explicitly seeding those channel IDs into the command
     store.
-- `agent-sandbox-discord-ingest` is the host-side inbox poller. It discovers Discord channels from
+- `evander-discord-ingest` is the host-side inbox poller. It discovers Discord channels from
   active sessions that have `discord_get_commands` and read-capable `discord_channel_allowlist`
   entries, plus enabled `trigger:communication:new-message` nodes that name read-capable Discord
   communication targets. It writes normalized messages into the Discord inbox store used by
@@ -1756,7 +1756,7 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
    Teams image artifacts are sent inline through Graph. Teams non-image artifacts are posted as
    signed control-plane download links; configure `communication_artifact_public_base_url` in
    Admin Web under Configuration -> Provider Integrations -> Communication artifacts, via provider
-   config, or with `AGENT_SANDBOX_COMMUNICATION_ARTIFACT_PUBLIC_BASE_URL`. Set the secret named by
+   config, or with `EVANDER_COMMUNICATION_ARTIFACT_PUBLIC_BASE_URL`. Set the secret named by
    `communication_artifact_link_secret_env` in an environment loaded by both gateway and Admin Web,
    usually repo-root `secrets.env`.
    For Azure DevOps PR/backlog tools, approve the exact comment/text payload, `mentions`, and
@@ -1798,7 +1798,7 @@ expired artifacts on demand from the host, run:
 ```bash
 python - <<'PY'
 from pathlib import Path
-from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from evander.communication_artifacts import CommunicationArtifactStore
 removed = CommunicationArtifactStore(Path("runtime")).cleanup_expired()
 print(f"removed_expired_artifacts={removed}")
 PY
@@ -2018,7 +2018,7 @@ live provider APIs.
 - `evander-cli discord-wake` owns Discord inbox wakeups and resumes.
 - `evander-cli scheduled-wake` owns scheduled resume dispatch.
 - Existing Azure DevOps PR feedback ingestion and PR completion polling are
-  still owned by `agent-sandbox-ado-worker`. Legacy trigger mode writes
+  still owned by `evander-ado-worker`. Legacy trigger mode writes
   `runtime/pr-feedback-store.json`, updates `runtime/pr-map.json` PR status
   fields, and publishes `trigger:pull-request:new-feedback` plus
   `trigger:pull-request:completed` events directly. Explicit trigger mode is
@@ -2034,12 +2034,12 @@ live provider APIs.
   events.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
-  - `sudo systemctl start agent-sandbox-discord-wake.service`
-  - `sudo systemctl stop agent-sandbox-discord-wake.service`
-  - `sudo systemctl status agent-sandbox-discord-wake.service`
-  - `sudo systemctl start agent-sandbox-scheduled-wake.service`
-  - `sudo systemctl stop agent-sandbox-scheduled-wake.service`
-  - `sudo systemctl status agent-sandbox-scheduled-wake.service`
+  - `sudo systemctl start evander-discord-wake.service`
+  - `sudo systemctl stop evander-discord-wake.service`
+  - `sudo systemctl status evander-discord-wake.service`
+  - `sudo systemctl start evander-scheduled-wake.service`
+  - `sudo systemctl stop evander-scheduled-wake.service`
+  - `sudo systemctl status evander-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
   When no explicit directory list is configured, the worker derives its scan scope from active
   session directories. It wakes sessions from unread Discord inbox messages only for channels
@@ -2048,7 +2048,7 @@ live provider APIs.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
   The scheduled-wake worker reloads that file between cycles, so saved changes
   such as `scheduled_wake_prefix_text` apply without restarting
-  `agent-sandbox-scheduled-wake.service`.
+  `evander-scheduled-wake.service`.
 - Scheduled wakes are recorded in the durable wake request store with current
   ledger status, latest dispatch evidence, sanitized failure reason, scheduled
   time, source, and redacted prompt summary. Admin Web exposes these entries on
@@ -2221,12 +2221,12 @@ reviewing whatever the default branch clone happens to contain:
 
 The helper:
 
-- resolves explicit target/head refs to local refs under `refs/agent-sandbox/review/*`
+- resolves explicit target/head refs to local refs under `refs/evander/review/*`
 - computes `REVIEW_DIFF_BASE_COMMIT` with `git merge-base` so normal review findings use
   `REVIEW_DIFF_BASE_COMMIT..REVIEW_HEAD_COMMIT` rather than target/head drift
 - detaches the worktree onto the head commit
 - hard-resets and cleans the worktree
-- writes `.agent-sandbox/review-context.env` for downstream prompt or shell steps
+- writes `.evander/review-context.env` for downstream prompt or shell steps
 - fails fast when an explicit `--base-commit` or `--head-commit` cannot be materialized
 
 ### Failure handling
@@ -2293,14 +2293,14 @@ evander-cli create-session real-session --runtime-dir runtime
 
 ## Host-Side NuGet Access
 
-- The scaffold includes `agent-sandbox-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
+- The scaffold includes `evander-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
 - The relay reads Azure feed credentials from host environment (`AZURE_ARTIFACTS_PAT`) and does not require guest-side private feed credentials.
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
 
 ## Host-Side npm Audit Facade
 
-- The scaffold includes `agent-sandbox-npm-audit-facade`, a host-side relay that forwards npm audit POSTs to `https://registry.npmjs.org` while routing package metadata and tarballs through the control-plane Nexus npm group.
+- The scaffold includes `evander-npm-audit-facade`, a host-side relay that forwards npm audit POSTs to `https://registry.npmjs.org` while routing package metadata and tarballs through the control-plane Nexus npm group.
 - The facade listens on `11881` and exposes `/healthz` for host-side and guest-side smoke checks.
 - Configure any optional host-local overrides in `config/npm-audit-facade.env`. The runtime bind and upstream settings still come from the directory/runtime config surface.
 - Manual smoke commands:
@@ -2315,7 +2315,7 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
 
 ## Host-Side Azure DevOps PR Worker And Work-Item Workflow Intake
 
-- The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
+- The scaffold includes `evander-ado-worker` and the equivalent foreground CLI command
   `evander-cli poll-ado-backlog`.
 - The worker owns Azure DevOps PR feedback ingestion and PR completion polling for configured PR
   streams. Legacy triggers without `repo` use `runtime/pr-map.json`, update
@@ -2334,6 +2334,13 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   trigger owns `runtime/trigger-cursors-ado-work-item-comments.json`, baselines existing comments
   by default, and leaves mention text, bot author exclusion, tags, and state filters to workflow
   config.
+- For new remote issue workflows, prefer the provider-neutral primitives
+  `trigger:remote-issue-matching`, `trigger:remote-issue-comment-created`, and
+  `query:remote-issues`. Set `provider=azure_devops` or `provider=ado` for ADO work-item filters
+  including WIQL/current iteration, or `provider=github` for GitHub issue filters such as
+  `repo`, `state`, labels, assignee, author, mentions, milestone, and `since`. GitHub reads use
+  the directory-scoped `github_token_env` when configured and may read public issues without a
+  token when GitHub allows it.
 - For terminal-PR cleanup workflows using legacy PR-map mode, wire
   `trigger:pull-request:completed.session_id` into `effect:agent:destroy.session_id`. For explicit
   PR trigger mode, route with `query:session:list` against session metadata and pass the selected
@@ -2343,7 +2350,7 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
 - Re-polling the same remote issue updates the existing local proxy record/cache instead of
   creating duplicates, so Desktop and CLI views remain stable across workflow runs.
-- `agent-sandbox-proxy-issue-sync` keeps all Azure DevOps proxy issues fresh independently of the
+- `evander-proxy-issue-sync` keeps all Azure DevOps proxy issues fresh independently of the
   intake workflow. It defaults to a five-minute interval/freshness window, uses batched
   `workitemsbatch` summary reads, leaves comments to on-demand detail reads, and writes missing or
   inaccessible item diagnostics into `metadata.proxy_sync` without deleting local issues.
@@ -2379,19 +2386,20 @@ Systemd runbook:
 5. Start/inspect:
 
 ```bash
-sudo systemctl start agent-sandbox-ado-worker.service
-sudo systemctl start agent-sandbox-proxy-issue-sync.service
-sudo systemctl status agent-sandbox-ado-worker.service
-sudo systemctl status agent-sandbox-proxy-issue-sync.service
-sudo journalctl -u agent-sandbox-ado-worker.service -f
+sudo systemctl start evander-ado-worker.service
+sudo systemctl start evander-proxy-issue-sync.service
+sudo systemctl status evander-ado-worker.service
+sudo systemctl status evander-proxy-issue-sync.service
+sudo journalctl -u evander-ado-worker.service -f
 ```
 
 Workflow work-item intake example:
 
 ```json
 {
-  "type": "trigger:ado:work-item-matching",
+  "type": "trigger:remote-issue-matching",
   "config": {
+    "provider": "azure_devops",
     "directory_path": "root/team-a",
     "states": ["Committed"],
     "tags_any": ["truman"],
@@ -2411,18 +2419,36 @@ Workflow work-item intake example:
 }
 ```
 
+GitHub issue intake example:
+
+```json
+{
+  "type": "trigger:remote-issue-comment-created",
+  "config": {
+    "provider": "github",
+    "directory_path": "root/team-a",
+    "repo": "owner/repo",
+    "state": "open",
+    "labels_any": ["truman"],
+    "comment_contains": "@WorkflowBot",
+    "top": 50
+  }
+}
+```
+
 Failure recovery:
 
 - `--reprocess` and `--list-unprocessed` are deprecated with workflow-owned work-item intake.
 - `--forget` remains available only for removing legacy processed-store entries during migration.
-- To backfill, run `query:ado:work-items` and feed its `items` array into
+- To backfill ADO proxy issues, run `query:remote-issues` with `provider=azure_devops`
+  or the compatibility `query:ado:work-items`, then feed its `items` array into
   `effect:issue:upsert-ado-proxy.items`.
 
 - If the service is crash-looping, validate config and PAT availability with a foreground run,
   then restart the unit:
 
   ```bash
-  sudo systemctl restart agent-sandbox-ado-worker.service
+  sudo systemctl restart evander-ado-worker.service
   ```
 
 
@@ -2442,7 +2468,7 @@ Failure recovery:
 
 ## Host-Side Trigger Orchestrator
 
-- The scaffold includes `agent-sandbox-trigger-orchestrator`, a singleton host worker that polls
+- The scaffold includes `evander-trigger-orchestrator`, a singleton host worker that polls
   configured triggers and persists trigger events to a durable queue.
 - Global worker config lives at `config/trigger-orchestrator/config.json`.
 - For orchestration-only production deployments, start from `config/trigger-orchestrator/orchestration-core.config.json.example` (uses `runtime/orchestration-core` + `profiles/core-minimal`).
@@ -2459,15 +2485,15 @@ Failure recovery:
 Run one cycle for validation/debug:
 
 ```bash
-agent-sandbox-trigger-orchestrator --runtime-dir runtime --once --log-level DEBUG
+evander-trigger-orchestrator --runtime-dir runtime --once --log-level DEBUG
 ```
 
 Run continuously under systemd:
 
 ```bash
-sudo systemctl start agent-sandbox-trigger-orchestrator.service
-sudo systemctl status agent-sandbox-trigger-orchestrator.service
-sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
+sudo systemctl start evander-trigger-orchestrator.service
+sudo systemctl status evander-trigger-orchestrator.service
+sudo journalctl -u evander-trigger-orchestrator.service -f
 ```
 
 ### APP demo provisioning workflow
@@ -2519,8 +2545,8 @@ compatibility with older live workflow packs and should not be used for new prov
 - Direct-message triggers require `sender_user_ids`, which accepts Graph user IDs, UPNs, or mail
   addresses so only configured one-on-one senders can wake workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
-  `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
-  `agent-sandbox-ado-worker`.
+  `evander-discord-wake` and `evander-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
+  `evander-ado-worker`.
 
 Git hook ingestion path:
 
@@ -2549,22 +2575,22 @@ runtime config files, and required env vars for enabled services without writing
 
 This creates:
 
-- `agent-sandbox-firewall.service`
-- `agent-sandbox-gateway.service`
-- `agent-sandbox-openai-relay.service`
-- `agent-sandbox-didww-sip-bridge.service`
-- `agent-sandbox-nuget-relay.service`
-- `agent-sandbox-npm-audit-facade.service`
-- `agent-sandbox-http-target-relay.service`
-- `agent-sandbox-ado-worker.service`
-- `agent-sandbox-proxy-issue-sync.service`
-- `agent-sandbox-discord-ingest.service`
-- `agent-sandbox-discord-wake.service`
-- `agent-sandbox-scheduled-wake.service`
-- `agent-sandbox-teams-ingest.service`
-- `agent-sandbox-teams-meeting-ingest.service`
-- `agent-sandbox-effect-orchestrator.service`
-- `agent-sandbox-trigger-orchestrator.service`
+- `evander-firewall.service`
+- `evander-gateway.service`
+- `evander-openai-relay.service`
+- `evander-didww-sip-bridge.service`
+- `evander-nuget-relay.service`
+- `evander-npm-audit-facade.service`
+- `evander-http-target-relay.service`
+- `evander-ado-worker.service`
+- `evander-proxy-issue-sync.service`
+- `evander-discord-ingest.service`
+- `evander-discord-wake.service`
+- `evander-scheduled-wake.service`
+- `evander-teams-ingest.service`
+- `evander-teams-meeting-ingest.service`
+- `evander-effect-orchestrator.service`
+- `evander-trigger-orchestrator.service`
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
@@ -2589,38 +2615,38 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 6. Start and inspect services:
 
 ```bash
-sudo systemctl start agent-sandbox-firewall.service
-sudo systemctl start agent-sandbox-gateway.service
-sudo systemctl start agent-sandbox-openai-relay.service
-sudo systemctl start agent-sandbox-didww-sip-bridge.service
-sudo systemctl start agent-sandbox-nuget-relay.service
-sudo systemctl start agent-sandbox-npm-audit-facade.service
-sudo systemctl start agent-sandbox-http-target-relay.service
-sudo systemctl start agent-sandbox-ado-worker.service
-sudo systemctl start agent-sandbox-proxy-issue-sync.service
-sudo systemctl start agent-sandbox-discord-ingest.service
-sudo systemctl start agent-sandbox-discord-wake.service
-sudo systemctl start agent-sandbox-scheduled-wake.service
-sudo systemctl start agent-sandbox-teams-ingest.service
-sudo systemctl start agent-sandbox-teams-meeting-ingest.service
-sudo systemctl start agent-sandbox-effect-orchestrator.service
-sudo systemctl start agent-sandbox-trigger-orchestrator.service
-sudo systemctl status agent-sandbox-firewall.service
-sudo systemctl status agent-sandbox-gateway.service
-sudo systemctl status agent-sandbox-openai-relay.service
-sudo systemctl status agent-sandbox-didww-sip-bridge.service
-sudo systemctl status agent-sandbox-nuget-relay.service
-sudo systemctl status agent-sandbox-npm-audit-facade.service
-sudo systemctl status agent-sandbox-http-target-relay.service
-sudo systemctl status agent-sandbox-ado-worker.service
-sudo systemctl status agent-sandbox-proxy-issue-sync.service
-sudo systemctl status agent-sandbox-discord-ingest.service
-sudo systemctl status agent-sandbox-discord-wake.service
-sudo systemctl status agent-sandbox-scheduled-wake.service
-sudo systemctl status agent-sandbox-teams-ingest.service
-sudo systemctl status agent-sandbox-teams-meeting-ingest.service
-sudo systemctl status agent-sandbox-effect-orchestrator.service
-sudo systemctl status agent-sandbox-trigger-orchestrator.service
+sudo systemctl start evander-firewall.service
+sudo systemctl start evander-gateway.service
+sudo systemctl start evander-openai-relay.service
+sudo systemctl start evander-didww-sip-bridge.service
+sudo systemctl start evander-nuget-relay.service
+sudo systemctl start evander-npm-audit-facade.service
+sudo systemctl start evander-http-target-relay.service
+sudo systemctl start evander-ado-worker.service
+sudo systemctl start evander-proxy-issue-sync.service
+sudo systemctl start evander-discord-ingest.service
+sudo systemctl start evander-discord-wake.service
+sudo systemctl start evander-scheduled-wake.service
+sudo systemctl start evander-teams-ingest.service
+sudo systemctl start evander-teams-meeting-ingest.service
+sudo systemctl start evander-effect-orchestrator.service
+sudo systemctl start evander-trigger-orchestrator.service
+sudo systemctl status evander-firewall.service
+sudo systemctl status evander-gateway.service
+sudo systemctl status evander-openai-relay.service
+sudo systemctl status evander-didww-sip-bridge.service
+sudo systemctl status evander-nuget-relay.service
+sudo systemctl status evander-npm-audit-facade.service
+sudo systemctl status evander-http-target-relay.service
+sudo systemctl status evander-ado-worker.service
+sudo systemctl status evander-proxy-issue-sync.service
+sudo systemctl status evander-discord-ingest.service
+sudo systemctl status evander-discord-wake.service
+sudo systemctl status evander-scheduled-wake.service
+sudo systemctl status evander-teams-ingest.service
+sudo systemctl status evander-teams-meeting-ingest.service
+sudo systemctl status evander-effect-orchestrator.service
+sudo systemctl status evander-trigger-orchestrator.service
 ```
 
 The Discord wake and scheduled wake units must run as the same operator user as the
@@ -2629,8 +2655,8 @@ write operator-owned wake state. After installing units, verify the rendered ser
 users:
 
 ```bash
-systemctl show -p User agent-sandbox-discord-wake.service
-systemctl show -p User agent-sandbox-scheduled-wake.service
+systemctl show -p User evander-discord-wake.service
+systemctl show -p User evander-scheduled-wake.service
 ```
 
 Both commands should report the operator account used for deployment, not an empty
@@ -2653,7 +2679,7 @@ Then clone the repo and apply repo-specific bootstraps as needed:
 ```
 
 `create-issue-vm` still resolves issue-scoped Git settings from the `root` issue setup config,
-including `AGENT_SANDBOX_GIT_ROOT` and `AGENT_SANDBOX_GIT_SSH_ALIAS`, so later repo clone steps
+including `EVANDER_GIT_ROOT` and `EVANDER_GIT_SSH_ALIAS`, so later repo clone steps
 can use the issue-numbered host mirror.
 The CLI path wraps `scripts/setup_vm.sh`; that setup script remains a standalone operator/CLI
 surface and is not invoked by the ADO worker.
@@ -2677,7 +2703,7 @@ host-side libvirt, firewall, or systemd verification for this scaffold.
 
 VM and container agents share `/artifacts` as the workflow-readable artifacts
 folder. Container workers mount it from durable session storage; VM setup creates
-it as an agent-writable guest directory and exports `AGENT_SANDBOX_ARTIFACTS_DIR`.
+it as an agent-writable guest directory and exports `EVANDER_ARTIFACTS_DIR`.
 Use `query:agent:artifact-text` with a session id and relative path to read a
 UTF-8 text file from that folder.
 Agents can call the `stage_artifact` MCP tool with a file or directory path
@@ -2721,7 +2747,7 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 Create a host-local bare repository:
 
 ```bash
-evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
+evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"evander-git-host\"}"
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
@@ -2757,18 +2783,18 @@ push the review branch to `origin`, create or reuse the upstream PR, and append 
 PR body composition for automated `open_agent_pr.sh --create-pr` runs is controlled by host
 environment variables:
 
-- `AGENT_SANDBOX_PR_FIXED_BODY_FILE` (optional): absolute path to operator-maintained markdown
+- `EVANDER_PR_FIXED_BODY_FILE` (optional): absolute path to operator-maintained markdown
   boilerplate that should always appear at the top of auto-created PR descriptions. This is a
   host-wide override; the directory-scoped `pr_template` domain is the primary per-directory
   surface for PR boilerplate.
-- `AGENT_SANDBOX_PR_NOTES_REF` (optional): host-wide override for the notes ref used to read
+- `EVANDER_PR_NOTES_REF` (optional): host-wide override for the notes ref used to read
   agent summary markdown from the promoted commit. New repo clones configure
-  `agent-sandbox.prNotesRef` as `refs/notes/agent-pr/<session-hash>`, where
+  `evander.prNotesRef` as `refs/notes/agent-pr/<session-hash>`, where
   `<session-hash>` is the first 12 hex characters of `sha256(session_id)`. Older checkouts
   still default to the legacy `refs/notes/agent-pr` ref.
-- `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
+- `EVANDER_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
   composed PR body before creating/updating the PR.
-- `AGENT_SANDBOX_PR_BODY_ARTIFACT_IDS` (optional): comma-, semicolon-, or newline-separated staged
+- `EVANDER_PR_BODY_ARTIFACT_IDS` (optional): comma-, semicolon-, or newline-separated staged
   artifact IDs to append to the Azure DevOps PR description. The same behavior is available with
   repeated `open_agent_pr.sh --body-artifact-id <artifact-id>` options.
 
@@ -2780,8 +2806,8 @@ PR creation behavior is also directory-scoped via `ado-worker.json` overlays:
 
 Optional host-wide runtime overrides are available:
 
-- `AGENT_SANDBOX_AUTO_CREATE_PRS` to force-enable/disable PR creation across all directories.
-- `AGENT_SANDBOX_CREATE_PRS_AS_DRAFT` to force draft vs ready-for-review for Azure DevOps PRs.
+- `EVANDER_AUTO_CREATE_PRS` to force-enable/disable PR creation across all directories.
+- `EVANDER_CREATE_PRS_AS_DRAFT` to force draft vs ready-for-review for Azure DevOps PRs.
 
 Per-session overrides are supported through session metadata in `runtime/sessions.json`:
 
@@ -2802,7 +2828,7 @@ their local coding branch is `work`. `git push-agent` fetches the configured des
 branches through the guest-visible mirror before pushing. If either branch has commits missing from
 `HEAD`, `git push-agent` refuses the push and prints the merge command the agent should run. Once
 those branches are contained, it reattaches the full summary to the current `HEAD` before it pushes
-the configured `agent-sandbox.prNotesRef` notes ref.
+the configured `evander.prNotesRef` notes ref.
 
 Expected resulting PR body shape when both fixed boilerplate and note summary are present:
 
@@ -2821,7 +2847,7 @@ Expected resulting PR body shape when both fixed boilerplate and note summary ar
 
 If the note is missing or unreadable, automation still proceeds:
 
-- with fixed boilerplate only when `AGENT_SANDBOX_PR_FIXED_BODY_FILE` is set
+- with fixed boilerplate only when `EVANDER_PR_FIXED_BODY_FILE` is set
 - otherwise with the default PR body behavior from `open_agent_pr.sh`
 
 Security reminder: git note content is untrusted agent-authored text. Treat it as markdown only;
@@ -2863,7 +2889,7 @@ sudo ./scripts/apply_firewall.sh
 
 `bootstrap_git_vm.sh` creates a dedicated guest SSH key, installs a forced-command
 `authorized_keys` entry on the host, and configures the guest-side alias
-`agent-sandbox-git-host` so the VM does not need your host password.
+`evander-git-host` so the VM does not need your host password.
 
 Then in the VM, add the printed SSH remote URL and push into a session-specific namespace such as:
 
@@ -2927,7 +2953,7 @@ decision-complete runbook covering:
   `runtime/audit.db` view of the configured `audit_log_path` (`runtime/audit.jsonl`
   by default), shows redacted payloads, and falls back to the JSONL journal if the
   index is unavailable.
-- Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
+- Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/evander`.
 
 
 ## Observability Markers Runbook

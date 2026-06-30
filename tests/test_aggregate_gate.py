@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.gate_runtime import GateRuntimeError
-from agent_sandbox.gates.providers.aggregate_gate import AggregateGateProvider
+from evander.gate_runtime import GateRuntimeError
+from evander.gates.providers.aggregate_gate import AggregateGateProvider
 
 
 class _Worker:

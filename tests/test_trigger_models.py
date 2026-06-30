@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import TypeAdapter
 
-from agent_sandbox.events.models import (
+from evander.events.models import (
     ConfigValue,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
@@ -11,7 +11,7 @@ from agent_sandbox.events.models import (
     TriggerEvent,
     materialize_node_definition,
 )
-from agent_sandbox.events.provider_models import (
+from evander.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
@@ -32,6 +32,8 @@ from agent_sandbox.events.provider_models import (
     PrCreateEffectDefinition,
     PullRequestCompletedTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
+    RemoteIssueCommentCreatedTriggerDefinition,
+    RemoteIssueMatchingTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
@@ -41,7 +43,7 @@ from agent_sandbox.events.provider_models import (
     SessionUpdateMetadataEffectDefinition,
     WebhookTriggerDefinition,
 )
-from agent_sandbox.workflow.contracts import effective_node_output_schema
+from evander.workflow.contracts import effective_node_output_schema
 
 
 def test_ticket_created_trigger_normalizes_directories() -> None:
@@ -115,6 +117,86 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
     assert trigger.comment_contains == "@SpecAssistant"
     assert trigger.comment_contains_any == ["@SpecAssistant"]
     assert trigger.comment_author_exclude_names == ["SpecAssistant"]
+
+
+def test_remote_issue_matching_trigger_normalizes_github_config() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-remote-issue",
+                "display_name": "Remote issue",
+                "type": "trigger:remote-issue-matching",
+                "config": {
+                    "provider": "github",
+                    "directory_path": " root/github ",
+                    "repo": " owner/repo ",
+                    "state": " all ",
+                    "labels_any": [" bug ", ""],
+                    "labels_all": [" triage "],
+                    "assignee": " octocat ",
+                },
+            }
+        )
+    )
+
+    assert isinstance(trigger, RemoteIssueMatchingTriggerDefinition)
+    assert trigger.provider == "github"
+    assert trigger.directory_path == "root/github"
+    assert trigger.repo == "owner/repo"
+    assert trigger.state == "all"
+    assert trigger.labels_any == ["bug"]
+    assert trigger.labels_all == ["triage"]
+    assert trigger.assignee == "octocat"
+
+
+def test_remote_issue_comment_trigger_rejects_github_wiql() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="wiql is only valid for Azure DevOps"):
+        materialize_node_definition(
+            adapter.validate_python(
+                {
+                    "id": "t-remote-comment",
+                    "display_name": "Remote issue comment",
+                    "type": "trigger:remote-issue-comment-created",
+                    "config": {
+                        "provider": "github",
+                        "repo": "owner/repo",
+                        "wiql": "SELECT [System.Id] FROM WorkItems",
+                    },
+                }
+            )
+        )
+
+
+def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-remote-comment",
+                "display_name": "Remote issue comment",
+                "type": "trigger:remote-issue-comment-created",
+                "config": {
+                    "provider": "ado",
+                    "project": " APP ",
+                    "comment_contains": " @Assistant ",
+                    "comment_contains_any": [" fix ", ""],
+                    "comment_author_exclude_ids": [" bot-id "],
+                },
+            }
+        )
+    )
+
+    assert isinstance(trigger, RemoteIssueCommentCreatedTriggerDefinition)
+    assert trigger.provider == "azure_devops"
+    assert trigger.project == "APP"
+    assert trigger.comment_contains == "@Assistant"
+    assert trigger.comment_contains_any == ["fix"]
+    assert trigger.comment_author_exclude_ids == ["bot-id"]
 
 
 def test_webhook_trigger_defaults_event_type_from_slug() -> None:

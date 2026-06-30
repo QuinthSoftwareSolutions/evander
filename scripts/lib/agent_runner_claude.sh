@@ -108,15 +108,15 @@ _agent_runner_claude_json_string() {
 }
 
 _agent_runner_claude_mcp_config_path() {
-  if [[ -n "${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" ]]; then
-    local config_path="${HOME}/.claude/agent-sandbox-mcp-config.json"
+  if [[ -n "${EVANDER_MCP_GATEWAY_URL:-}" ]]; then
+    local config_path="${HOME}/.claude/evander-mcp-config.json"
     local escaped_url
-    escaped_url="$(_agent_runner_claude_json_string "${AGENT_SANDBOX_MCP_GATEWAY_URL}")" || return 1
+    escaped_url="$(_agent_runner_claude_json_string "${EVANDER_MCP_GATEWAY_URL}")" || return 1
     mkdir -p "${HOME}/.claude"
     cat > "${config_path}" <<CONFIG
 {
   "mcpServers": {
-    "agent_sandbox": {
+    "evander": {
       "tools": ["*"],
       "type": "http",
       "url": ${escaped_url}

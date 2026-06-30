@@ -1,4 +1,4 @@
-from agent_sandbox.admin.user_notifications import AdminUserNotificationStore
+from evander.admin.user_notifications import AdminUserNotificationStore
 
 
 def test_admin_user_notifications_dedupe_and_mark_read(tmp_path):

@@ -4,10 +4,10 @@ from pathlib import Path
 import httpx
 from starlette.testclient import TestClient
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.relays.nuget import create_app
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryStore
+from evander.relays.nuget import create_app
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:

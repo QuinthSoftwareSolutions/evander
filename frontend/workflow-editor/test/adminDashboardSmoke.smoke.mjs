@@ -205,7 +205,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       {
         worker_id: "worker-1",
         name: "Workflow worker",
-        unit: "agent-sandbox-worker@1.service",
+        unit: "evander-worker@1.service",
         active_state: "active",
         sub_state: "running",
         result: null,
@@ -219,7 +219,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       {
         worker_id: "worker-2",
         name: "Approval worker",
-        unit: "agent-sandbox-worker@2.service",
+        unit: "evander-worker@2.service",
         active_state: "failed",
         sub_state: "failed",
         result: "exit-code",
@@ -233,7 +233,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       {
         worker_id: "worker-3",
         name: "Scheduled wake worker",
-        unit: "agent-sandbox-scheduled-wake.service",
+        unit: "evander-scheduled-wake.service",
         active_state: "active",
         sub_state: "running",
         result: null,
@@ -247,7 +247,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       {
         worker_id: "worker-4",
         name: "Teams ingest worker",
-        unit: "agent-sandbox-teams-ingest.service",
+        unit: "evander-teams-ingest.service",
         active_state: "inactive",
         sub_state: "dead",
         result: null,
@@ -664,8 +664,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const releaseInfoResponse = {
     version: "0.2.2",
     version_source: "pyproject.toml",
-    build: "agent-sandbox-build-20260521",
-    build_source: "AGENT_SANDBOX_REPO_VERSION",
+    build: "evander-build-20260521",
+    build_source: "EVANDER_REPO_VERSION",
     changelog: {
       source: "CHANGELOG.md",
       path: "CHANGELOG.md",
@@ -1362,7 +1362,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(deniedToolCallStateClass?.includes("state-fail"), `expected denied tool call to use failure tone, got ${deniedToolCallStateClass}`);
   assert.equal((await pendingApprovalPill.textContent())?.trim(), "1 pending");
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.2\.2/);
-  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
+  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build evander-build-20260521/);
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Download changelog" }).waitFor({ state: "visible" }));
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
   assert.equal(await releasePanel.getByText("News: Safer workflows, clearer operations", { exact: true }).count(), 0);

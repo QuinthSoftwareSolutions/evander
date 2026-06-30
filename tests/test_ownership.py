@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
 
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.ownership import DirectoryOwnershipQueries
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import SessionManifest, ToolName
+from evander.ownership import DirectoryOwnershipQueries
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_path: Path) -> None:

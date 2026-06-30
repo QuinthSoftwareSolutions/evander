@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.worker_daemon import (
+from evander.worker_daemon import (
     DockerContainerRuntime,
     WorkerJobRecord,
     WorkerJobRequest,
@@ -109,16 +109,16 @@ def test_docker_runtime_adds_worker_read_only_mounts(tmp_path: Path) -> None:
     runtime = DockerContainerRuntime(
         docker_network="none",
         read_only_mounts=[
-            "/cache/dotnet:/opt/agent-sandbox/toolchains/dotnet",
-            "/cache/node:/opt/agent-sandbox/toolchains/node-v24.14.0:ro",
+            "/cache/dotnet:/opt/evander/toolchains/dotnet",
+            "/cache/node:/opt/evander/toolchains/node-v24.14.0:ro",
         ],
     )
 
     args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
 
     assert "-v" in args
-    assert "/cache/dotnet:/opt/agent-sandbox/toolchains/dotnet:ro" in args
-    assert "/cache/node:/opt/agent-sandbox/toolchains/node-v24.14.0:ro" in args
+    assert "/cache/dotnet:/opt/evander/toolchains/dotnet:ro" in args
+    assert "/cache/node:/opt/evander/toolchains/node-v24.14.0:ro" in args
 
 
 def test_docker_runtime_mounts_passwd_for_numeric_container_user(tmp_path: Path) -> None:
@@ -134,7 +134,7 @@ def test_docker_runtime_mounts_passwd_for_numeric_container_user(tmp_path: Path)
     group_path = paths.root / "container-identity" / "group"
     assert f"{passwd_path}:/etc/passwd:ro" in args
     assert f"{group_path}:/etc/group:ro" in args
-    assert "agent:x:1001:1001:Agent Sandbox:/home/agent:/bin/bash" in passwd_path.read_text(
+    assert "agent:x:1001:1001:Evander:/home/agent:/bin/bash" in passwd_path.read_text(
         encoding="utf-8"
     )
     assert "agent:x:1001:" in group_path.read_text(encoding="utf-8")

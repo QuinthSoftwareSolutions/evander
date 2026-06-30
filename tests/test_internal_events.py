@@ -7,9 +7,9 @@ from threading import Barrier, Thread
 
 from pytest import MonkeyPatch
 
-from agent_sandbox.events.internal import InternalEventBus
-from agent_sandbox.events.scheduled import ScheduledInternalEventStore
-from agent_sandbox.storage import JsonStore
+from evander.events.internal import InternalEventBus
+from evander.events.scheduled import ScheduledInternalEventStore
+from evander.storage import JsonStore
 
 
 def test_internal_event_publish_uses_single_store_update(

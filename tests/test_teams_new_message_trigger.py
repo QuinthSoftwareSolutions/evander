@@ -4,12 +4,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import TeamsNewMessageTriggerDefinition
-from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.repositories.cursors import JsonTeamsInboxCursorRepository
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from evander.config import GatewayConfig
+from evander.events.provider_models import TeamsNewMessageTriggerDefinition
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.repositories.cursors import JsonTeamsInboxCursorRepository
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 
 
 def _runtime_context(tmp_path: Path) -> TriggerRuntimeContext:

@@ -19,8 +19,8 @@ Configuration:
     - create_prs_as_draft (default false)
   Per-session metadata may also override both settings.
   Optional host-wide overrides:
-    - AGENT_SANDBOX_AUTO_CREATE_PRS
-    - AGENT_SANDBOX_CREATE_PRS_AS_DRAFT
+    - EVANDER_AUTO_CREATE_PRS
+    - EVANDER_CREATE_PRS_AS_DRAFT
 EOF
 }
 
@@ -42,12 +42,12 @@ source "${SCRIPT_DIR}/lib/runtime_config.sh"
 load_root_secrets_env
 load_provider_config
 
-EVENT_LOG="${AGENT_SANDBOX_EVENT_LOG:-${ROOT_DIR}/runtime/agent-events.log}"
-NOTIFY_COMMAND="${AGENT_SANDBOX_NOTIFY_COMMAND:-}"
-AUTO_REMOTE_NAME="${AGENT_SANDBOX_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
-PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-}"
+EVENT_LOG="${EVANDER_EVENT_LOG:-${ROOT_DIR}/runtime/agent-events.log}"
+NOTIFY_COMMAND="${EVANDER_NOTIFY_COMMAND:-}"
+AUTO_REMOTE_NAME="${EVANDER_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
+PR_NOTES_REF="${EVANDER_PR_NOTES_REF:-}"
 PR_NOTES_REF_OVERRIDE_SET=0
-if [[ -v AGENT_SANDBOX_PR_NOTES_REF ]]; then
+if [[ -v EVANDER_PR_NOTES_REF ]]; then
   PR_NOTES_REF_OVERRIDE_SET=1
   if [[ -z "${PR_NOTES_REF}" ]]; then
     PR_NOTES_REF="refs/notes/agent-pr"
@@ -55,21 +55,21 @@ if [[ -v AGENT_SANDBOX_PR_NOTES_REF ]]; then
 fi
 PUSHED_AGENT_NOTES_REFS=()
 LOCAL_PR_NOTES_REF=""
-RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
-PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
-PR_FIXED_BODY_FILE="${AGENT_SANDBOX_PR_FIXED_BODY_FILE:-}"
-PR_BODY_MAX_BYTES="${AGENT_SANDBOX_PR_BODY_MAX_BYTES:-60000}"
+RUNTIME_DIR="${EVANDER_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+PR_BODY_DIR="${EVANDER_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
+PR_FIXED_BODY_FILE="${EVANDER_PR_FIXED_BODY_FILE:-}"
+PR_BODY_MAX_BYTES="${EVANDER_PR_BODY_MAX_BYTES:-60000}"
 PR_TEMPLATE_LEGACY_FILE="${ROOT_DIR}/config/pr-template.md"
 AUTO_CREATE_PRS_OVERRIDE=""
 AUTO_CREATE_PRS_OVERRIDE_SET=0
-if [[ -v AGENT_SANDBOX_AUTO_CREATE_PRS ]]; then
-  AUTO_CREATE_PRS_OVERRIDE="${AGENT_SANDBOX_AUTO_CREATE_PRS}"
+if [[ -v EVANDER_AUTO_CREATE_PRS ]]; then
+  AUTO_CREATE_PRS_OVERRIDE="${EVANDER_AUTO_CREATE_PRS}"
   AUTO_CREATE_PRS_OVERRIDE_SET=1
 fi
 DRAFT_PRS_OVERRIDE=""
 DRAFT_PRS_OVERRIDE_SET=0
-if [[ -v AGENT_SANDBOX_CREATE_PRS_AS_DRAFT ]]; then
-  DRAFT_PRS_OVERRIDE="${AGENT_SANDBOX_CREATE_PRS_AS_DRAFT}"
+if [[ -v EVANDER_CREATE_PRS_AS_DRAFT ]]; then
+  DRAFT_PRS_OVERRIDE="${EVANDER_CREATE_PRS_AS_DRAFT}"
   DRAFT_PRS_OVERRIDE_SET=1
 fi
 
@@ -396,7 +396,7 @@ derive_pr_notes_ref_for_session() {
   fi
   PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" python3 - "${session_id}" <<'PY'
 try:
-    from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
+    from evander.git_pr_notes import agent_pr_notes_ref_for_session
 except Exception:
     import hashlib
 
@@ -585,7 +585,7 @@ process_agent_branch() {
   fi
   PR_ARGS+=("${TRUSTED_REPO_PATH}" "${review_branch}")
 
-  if pr_output="$(AGENT_SANDBOX_CANONICAL_ORIGIN_URL="${CANONICAL_ORIGIN_URL}" "${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
+  if pr_output="$(EVANDER_CANONICAL_ORIGIN_URL="${CANONICAL_ORIGIN_URL}" "${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
     if [[ "${create_prs_automatically}" == "1" ]]; then
       notify_event \
         "Agent branch promoted and PR prepared" \
@@ -614,9 +614,9 @@ while IFS= read -r git_env_var; do
   unset "${git_env_var}"
 done < <(git --git-dir="${BARE_REPO_PATH}" rev-parse --local-env-vars)
 
-TRUSTED_REPO_PATH="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.trustedRepoPath || true)"
-BASE_BRANCH="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.baseBranch || true)"
-CANONICAL_ORIGIN_URL="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.canonicalOriginUrl || true)"
+TRUSTED_REPO_PATH="$(git --git-dir="${BARE_REPO_PATH}" config --get evander.trustedRepoPath || true)"
+BASE_BRANCH="$(git --git-dir="${BARE_REPO_PATH}" config --get evander.baseBranch || true)"
+CANONICAL_ORIGIN_URL="$(git --git-dir="${BARE_REPO_PATH}" config --get evander.canonicalOriginUrl || true)"
 LOCAL_PR_NOTES_REF="$(derive_local_notes_ref "${BARE_REPO_PATH}")"
 
 if [[ -z "${TRUSTED_REPO_PATH}" || ! -d "${TRUSTED_REPO_PATH}/.git" ]]; then

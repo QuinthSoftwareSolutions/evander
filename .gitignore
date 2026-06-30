@@ -20,6 +20,9 @@ runtime/
 .codex
 .worktrees/
 AGENT_TASK.yaml
+/.evander/
+/.evander/review-context.env
+# Legacy local state/review context from the retired operational name.
 /.agent-sandbox/
 /.agent-sandbox/review-context.env
 git-remotes/

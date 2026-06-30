@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.effects.binding import BindingResolutionError, resolve_effect_config_bindings
-from agent_sandbox.workflow.binding import (
+from evander.effects.binding import BindingResolutionError, resolve_effect_config_bindings
+from evander.workflow.binding import (
     binding_trace_to_payload,
     resolve_gate_map_bindings,
     resolve_workflow_bindings,

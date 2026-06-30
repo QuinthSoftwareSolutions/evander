@@ -13,7 +13,7 @@ convention:
 Options:
   --sync-remote       Refresh local repo from its upstream before mirroring.
                       Default: on for remote URL input, and on for local path input
-                      unless AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT=0.
+                      unless EVANDER_MIRROR_SYNC_REMOTE_DEFAULT=0.
   --no-sync-remote    Disable sync for local path input.
   --remote-name NAME  Upstream remote name for fetch/divergence checks. Default: origin
   --refspec SPEC      Mirror only the provided refspec (repeatable). Optional.
@@ -24,10 +24,10 @@ Options:
 Arguments:
   issue-number  Issue identifier used to derive the repo/remote names.
   repo-source   Working tree path or remote URL to mirror.
-                Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE
+                Default: $EVANDER_DEFAULT_REPO_SOURCE
 
 Environment:
-  AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT
+  EVANDER_MIRROR_SYNC_REMOTE_DEFAULT
                 Default local-source sync mode when no explicit flag is passed.
                 Set to 1 (default) to sync local sources; set to 0 to opt out.
 USAGE
@@ -297,9 +297,9 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 ISSUE_NUMBER="$1"
-REPO_SOURCE="${2:-${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-}}"
+REPO_SOURCE="${2:-${EVANDER_DEFAULT_REPO_SOURCE:-}}"
 if [[ -z "${REPO_SOURCE}" ]]; then
-  echo "Missing repo-source: pass [repo-source] or set AGENT_SANDBOX_DEFAULT_REPO_SOURCE." >&2
+  echo "Missing repo-source: pass [repo-source] or set EVANDER_DEFAULT_REPO_SOURCE." >&2
   exit 1
 fi
 SOURCE_MODE="local"
@@ -307,9 +307,9 @@ if is_remote_source "${REPO_SOURCE}"; then
   SOURCE_MODE="remote"
 fi
 
-LOCAL_SYNC_REMOTE_DEFAULT="${AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT:-1}"
+LOCAL_SYNC_REMOTE_DEFAULT="${EVANDER_MIRROR_SYNC_REMOTE_DEFAULT:-1}"
 if [[ "${LOCAL_SYNC_REMOTE_DEFAULT}" != "0" && "${LOCAL_SYNC_REMOTE_DEFAULT}" != "1" ]]; then
-  echo "Invalid AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT='${LOCAL_SYNC_REMOTE_DEFAULT}'; expected 0 or 1." >&2
+  echo "Invalid EVANDER_MIRROR_SYNC_REMOTE_DEFAULT='${LOCAL_SYNC_REMOTE_DEFAULT}'; expected 0 or 1." >&2
   exit 1
 fi
 
@@ -379,12 +379,12 @@ if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
 fi
 
 "${SCRIPT_DIR}/create_git_remote.sh" "${BARE_REPO_NAME}"
-git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.trustedRepoPath "${RESOLVED_REPO_PATH}"
-git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorSource "${REPO_SOURCE}"
-git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorRemoteName "${REMOTE_NAME}"
-git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorSyncRemote "${SYNC_REMOTE}"
-git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorForceLocal "${FORCE_LOCAL}"
-git --git-dir="${BARE_REPO_PATH}" config --unset-all agent-sandbox.mirrorRefspec >/dev/null 2>&1 || true
+git --git-dir="${BARE_REPO_PATH}" config evander.trustedRepoPath "${RESOLVED_REPO_PATH}"
+git --git-dir="${BARE_REPO_PATH}" config evander.mirrorSource "${REPO_SOURCE}"
+git --git-dir="${BARE_REPO_PATH}" config evander.mirrorRemoteName "${REMOTE_NAME}"
+git --git-dir="${BARE_REPO_PATH}" config evander.mirrorSyncRemote "${SYNC_REMOTE}"
+git --git-dir="${BARE_REPO_PATH}" config evander.mirrorForceLocal "${FORCE_LOCAL}"
+git --git-dir="${BARE_REPO_PATH}" config --unset-all evander.mirrorRefspec >/dev/null 2>&1 || true
 
 CANONICAL_ORIGIN_URL=""
 if [[ "${SOURCE_MODE}" == "remote" ]]; then
@@ -393,12 +393,12 @@ elif CANONICAL_ORIGIN_URL="$(resolve_canonical_origin_url "${RESOLVED_REPO_PATH}
   :
 fi
 if [[ -n "${CANONICAL_ORIGIN_URL}" ]]; then
-  git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.canonicalOriginUrl "${CANONICAL_ORIGIN_URL}"
+  git --git-dir="${BARE_REPO_PATH}" config evander.canonicalOriginUrl "${CANONICAL_ORIGIN_URL}"
 fi
 
 if (( ${#REFSPECS[@]} > 0 )); then
   for refspec in "${REFSPECS[@]}"; do
-    git --git-dir="${BARE_REPO_PATH}" config --add agent-sandbox.mirrorRefspec "${refspec}"
+    git --git-dir="${BARE_REPO_PATH}" config --add evander.mirrorRefspec "${refspec}"
   done
 fi
 
@@ -406,7 +406,7 @@ DEFAULT_BASE_BRANCH="$(
   default_base_branch_for_remote "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}" "${PREFERRED_BASE_BRANCH}"
 )"
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
-  git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
+  git --git-dir="${BARE_REPO_PATH}" config evander.baseBranch "${DEFAULT_BASE_BRANCH}"
   git --git-dir="${BARE_REPO_PATH}" symbolic-ref HEAD "refs/heads/${DEFAULT_BASE_BRANCH}"
 fi
 

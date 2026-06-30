@@ -4,16 +4,16 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.events.models import WorkflowNodeEnvelope
-from agent_sandbox.models import digest_payload
-from agent_sandbox.queries.providers.base import QueryProviderBase
-from agent_sandbox.workflow.catalog import (
+from evander.effects.providers.base import EffectProviderBase
+from evander.events.models import WorkflowNodeEnvelope
+from evander.models import digest_payload
+from evander.queries.providers.base import QueryProviderBase
+from evander.workflow.catalog import (
     WorkflowEditorFieldDefinition,
     WorkflowEditorNodeCatalogEntry,
 )
-from agent_sandbox.workflow.contracts import register_node_output_schema
-from agent_sandbox.workflow.plugins import ProviderPluginRegistration
+from evander.workflow.contracts import register_node_output_schema
+from evander.workflow.plugins import ProviderPluginRegistration
 
 from .catalog import catalog_payload
 from .client import SkatteverketClient

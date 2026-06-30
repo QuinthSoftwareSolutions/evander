@@ -4,47 +4,47 @@
 
 - name: Define verification targets
   ansible.builtin.set_fact:
-    agent_sandbox_verification_units:
+    evander_verification_units:
       - key: admin_web
-        unit: agent-sandbox-admin-web.service
+        unit: evander-admin-web.service
       - key: gateway
-        unit: agent-sandbox-gateway.service
+        unit: evander-gateway.service
       - key: firewall
-        unit: agent-sandbox-firewall.service
+        unit: evander-firewall.service
       - key: openai_relay
-        unit: agent-sandbox-openai-relay.service
+        unit: evander-openai-relay.service
       - key: didww_sip_bridge
-        unit: agent-sandbox-didww-sip-bridge.service
+        unit: evander-didww-sip-bridge.service
       - key: nuget_relay
-        unit: agent-sandbox-nuget-relay.service
+        unit: evander-nuget-relay.service
       - key: npm_audit_facade
-        unit: agent-sandbox-npm-audit-facade.service
+        unit: evander-npm-audit-facade.service
       - key: package_cache
-        unit: agent-sandbox-nexus.service
+        unit: evander-nexus.service
       - key: semantic_store
-        unit: agent-sandbox-qdrant.service
+        unit: evander-qdrant.service
       - key: apt_cache
         unit: apt-cacher-ng.service
       - key: http_target_relay
-        unit: agent-sandbox-http-target-relay.service
+        unit: evander-http-target-relay.service
       - key: ado_worker
-        unit: agent-sandbox-ado-worker.service
+        unit: evander-ado-worker.service
       - key: proxy_issue_sync
-        unit: agent-sandbox-proxy-issue-sync.service
+        unit: evander-proxy-issue-sync.service
       - key: discord_ingest
-        unit: agent-sandbox-discord-ingest.service
+        unit: evander-discord-ingest.service
       - key: discord_wake
-        unit: agent-sandbox-discord-wake.service
+        unit: evander-discord-wake.service
       - key: scheduled_wake
-        unit: agent-sandbox-scheduled-wake.service
+        unit: evander-scheduled-wake.service
       - key: teams_ingest
-        unit: agent-sandbox-teams-ingest.service
+        unit: evander-teams-ingest.service
       - key: teams_meeting_ingest
-        unit: agent-sandbox-teams-meeting-ingest.service
+        unit: evander-teams-meeting-ingest.service
       - key: effect_orchestrator
-        unit: agent-sandbox-effect-orchestrator.service
+        unit: evander-effect-orchestrator.service
       - key: trigger_orchestrator
-        unit: agent-sandbox-trigger-orchestrator.service
+        unit: evander-trigger-orchestrator.service
 
 - name: Verify enabled services are active
   ansible.builtin.assert:
@@ -53,8 +53,8 @@
       - "ansible_facts.services.get(item.unit, {}).get('state') == 'running'"
     fail_msg: "{{ item.unit }} should be enabled and running."
     success_msg: "{{ item.unit }} is enabled and running."
-  loop: "{{ agent_sandbox_verification_units }}"
-  when: agent_sandbox_services.get(item.key, false) | bool
+  loop: "{{ evander_verification_units }}"
+  when: evander_services.get(item.key, false) | bool
 
 - name: Verify disabled services are not enabled
   ansible.builtin.assert:
@@ -63,8 +63,8 @@
       - "ansible_facts.services.get(item.unit, {}).get('state') != 'running'"
     fail_msg: "{{ item.unit }} should remain installed but not enabled/running."
     success_msg: "{{ item.unit }} remains installed without being enabled/running."
-  loop: "{{ agent_sandbox_verification_units }}"
-  when: not (agent_sandbox_services.get(item.key, false) | bool)
+  loop: "{{ evander_verification_units }}"
+  when: not (evander_services.get(item.key, false) | bool)
 
 - name: Verify managed Admin Web Caddy is active
   ansible.builtin.assert:
@@ -73,7 +73,7 @@
       - "ansible_facts.services.get('caddy.service', {}).get('state') == 'running'"
     fail_msg: "caddy.service should be enabled and running for managed Admin Web public access."
     success_msg: "caddy.service is enabled and running for managed Admin Web public access."
-  when: agent_sandbox_admin_web_caddy_enabled | bool
+  when: evander_admin_web_caddy_enabled | bool
 
 - name: Verify managed Asterisk is active
   ansible.builtin.assert:
@@ -82,56 +82,56 @@
       - "ansible_facts.services.get('asterisk.service', {}).get('state') == 'running'"
     fail_msg: "asterisk.service should be enabled and running for managed DIDWW SIP bridge access."
     success_msg: "asterisk.service is enabled and running for managed DIDWW SIP bridge access."
-  when: agent_sandbox_asterisk_didww_enabled | bool
+  when: evander_asterisk_didww_enabled | bool
 
 - name: Verify managed Asterisk ARI endpoint
   ansible.builtin.uri:
     url: >-
-      http://{{ agent_sandbox_asterisk_http_bind_host }}:{{ agent_sandbox_asterisk_http_bind_port }}/ari/asterisk/info
+      http://{{ evander_asterisk_http_bind_host }}:{{ evander_asterisk_http_bind_port }}/ari/asterisk/info
     method: GET
-    url_username: "{{ agent_sandbox_asterisk_ari_user }}"
-    url_password: "{{ agent_sandbox_asterisk_ari_password }}"
+    url_username: "{{ evander_asterisk_ari_user }}"
+    url_password: "{{ evander_asterisk_ari_password }}"
     force_basic_auth: true
     status_code: 200
   no_log: true
-  when: agent_sandbox_asterisk_didww_enabled | bool
+  when: evander_asterisk_didww_enabled | bool
 
 - name: Verify the libvirt network exists
   ansible.builtin.command:
-    cmd: "virsh net-info agent-sandbox"
+    cmd: "virsh net-info evander"
   changed_when: false
-  register: agent_sandbox_libvirt_network
-  when: agent_sandbox_service_profile == "full"
+  register: evander_libvirt_network
+  when: evander_service_profile == "full"
 
 - name: Verify the nftables table exists
   ansible.builtin.command:
-    cmd: "nft list table inet agent_sandbox"
+    cmd: "nft list table inet evander"
   changed_when: false
-  register: agent_sandbox_firewall_table
-  when: agent_sandbox_services.firewall | bool
+  register: evander_firewall_table
+  when: evander_services.firewall | bool
 
 - name: Verify the base image exists
   ansible.builtin.stat:
-    path: "{{ agent_sandbox_base_image_path }}"
-  register: agent_sandbox_base_image
-  when: agent_sandbox_service_profile == "full"
+    path: "{{ evander_base_image_path }}"
+  register: evander_base_image
+  when: evander_service_profile == "full"
 
 - name: Assert the base image is present
   ansible.builtin.assert:
     that:
-      - agent_sandbox_base_image.stat.exists
-    fail_msg: "Expected base image at {{ agent_sandbox_base_image_path }}."
-    success_msg: "Base image present at {{ agent_sandbox_base_image_path }}."
-  when: agent_sandbox_service_profile == "full"
+      - evander_base_image.stat.exists
+    fail_msg: "Expected base image at {{ evander_base_image_path }}."
+    success_msg: "Base image present at {{ evander_base_image_path }}."
+  when: evander_service_profile == "full"
 
 - name: Run repo-aware status verification
   ansible.builtin.command:
     cmd: "./.venv/bin/evander-cli status --runtime-dir runtime"
   args:
-    chdir: "{{ agent_sandbox_deploy_path }}"
-  become_user: "{{ agent_sandbox_run_user }}"
+    chdir: "{{ evander_deploy_path }}"
+  become_user: "{{ evander_run_user }}"
   changed_when: false
-  register: agent_sandbox_status
+  register: evander_status
 
 - name: Wait for enabled TCP listeners
   ansible.builtin.wait_for:
@@ -148,17 +148,17 @@
     - key: nuget_relay
       port: 11666
     - key: npm_audit_facade
-      port: "{{ agent_sandbox_npm_audit_facade_port }}"
+      port: "{{ evander_npm_audit_facade_port }}"
     - key: package_cache
-      port: "{{ agent_sandbox_nexus_port }}"
+      port: "{{ evander_nexus_port }}"
     - key: semantic_store
-      port: "{{ agent_sandbox_qdrant_port }}"
-      host: "{{ agent_sandbox_qdrant_bind_host }}"
+      port: "{{ evander_qdrant_port }}"
+      host: "{{ evander_qdrant_bind_host }}"
     - key: apt_cache
-      port: "{{ agent_sandbox_apt_cache_port }}"
+      port: "{{ evander_apt_cache_port }}"
     - key: http_target_relay
       port: 11777
-  when: agent_sandbox_services.get(item.key, false) | bool
+  when: evander_services.get(item.key, false) | bool
 
 - name: Verify enabled relay health endpoints
   ansible.builtin.uri:
@@ -174,22 +174,22 @@
     - key: nuget_relay
       url: "http://127.0.0.1:11666/healthz"
     - key: npm_audit_facade
-      url: "http://127.0.0.1:{{ agent_sandbox_npm_audit_facade_port }}/healthz"
+      url: "http://127.0.0.1:{{ evander_npm_audit_facade_port }}/healthz"
     - key: package_cache
-      url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status"
+      url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/status"
     - key: semantic_store
-      url: "http://{{ agent_sandbox_qdrant_bind_host }}:{{ agent_sandbox_qdrant_port }}/healthz"
+      url: "http://{{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}/healthz"
     - key: apt_cache
-      url: "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html"
+      url: "http://127.0.0.1:{{ evander_apt_cache_port }}/acng-report.html"
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
-  when: agent_sandbox_services.get(item.key, false) | bool
+  when: evander_services.get(item.key, false) | bool
 
 - name: Verify managed Admin Web Caddy serves frontend and proxies health
   ansible.builtin.shell: |
     set -euo pipefail
-    host="{{ agent_sandbox_admin_web_caddy_hostname }}"
-    dist_dir="{{ agent_sandbox_admin_web_frontend_dist_dir }}"
+    host="{{ evander_admin_web_caddy_hostname }}"
+    dist_dir="{{ evander_admin_web_frontend_dist_dir }}"
     curl_common=(
       curl
       --fail
@@ -197,9 +197,9 @@
       --show-error
       --insecure
       --connect-timeout
-      "{{ agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds }}"
+      "{{ evander_admin_web_caddy_verification_connect_timeout_seconds }}"
       --max-time
-      "{{ agent_sandbox_admin_web_caddy_verification_max_time_seconds }}"
+      "{{ evander_admin_web_caddy_verification_max_time_seconds }}"
       --resolve
       "${host}:443:127.0.0.1"
     )
@@ -225,20 +225,20 @@
     done
   args:
     executable: /bin/bash
-  register: agent_sandbox_admin_web_caddy_frontend_probe
-  retries: "{{ agent_sandbox_admin_web_caddy_verification_retries | int }}"
-  delay: "{{ agent_sandbox_admin_web_caddy_verification_delay_seconds | int }}"
-  until: agent_sandbox_admin_web_caddy_frontend_probe.rc == 0
+  register: evander_admin_web_caddy_frontend_probe
+  retries: "{{ evander_admin_web_caddy_verification_retries | int }}"
+  delay: "{{ evander_admin_web_caddy_verification_delay_seconds | int }}"
+  until: evander_admin_web_caddy_frontend_probe.rc == 0
   changed_when: false
   when:
-    - agent_sandbox_admin_web_caddy_enabled | bool
-    - agent_sandbox_services.admin_web | bool
+    - evander_admin_web_caddy_enabled | bool
+    - evander_services.admin_web | bool
 
 - name: Emit deployment verification summary
   ansible.builtin.debug:
     msg:
-      - "service profile: {{ agent_sandbox_service_profile }}"
-      - "libvirt network: {{ agent_sandbox_libvirt_network.stdout_lines | default(['skipped']) }}"
-      - "firewall table verified: {{ (agent_sandbox_firewall_table.rc == 0) if (agent_sandbox_services.firewall | bool) else 'skipped' }}"
-      - "base image: {{ agent_sandbox_base_image_path if agent_sandbox_service_profile == 'full' else 'skipped' }}"
-      - "status command: {{ agent_sandbox_status.stdout_lines | default([]) }}"
+      - "service profile: {{ evander_service_profile }}"
+      - "libvirt network: {{ evander_libvirt_network.stdout_lines | default(['skipped']) }}"
+      - "firewall table verified: {{ (evander_firewall_table.rc == 0) if (evander_services.firewall | bool) else 'skipped' }}"
+      - "base image: {{ evander_base_image_path if evander_service_profile == 'full' else 'skipped' }}"
+      - "status command: {{ evander_status.stdout_lines | default([]) }}"

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.worker.models import WorkerJobRecord
-from agent_sandbox.worker.store import WorkerJobStore
+from evander.worker.models import WorkerJobRecord
+from evander.worker.store import WorkerJobStore
 
 _CREATED_AT = datetime(2026, 5, 26, 8, 0, tzinfo=UTC)
 _STARTED_AT = datetime(2026, 5, 26, 9, 0, tzinfo=UTC)

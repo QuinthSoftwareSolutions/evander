@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.admin.services.session_helpers import deep_merge_mapping as _deep_merge_mapping
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.session_update_metadata import (
+from evander.admin.services.session_helpers import deep_merge_mapping as _deep_merge_mapping
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
 

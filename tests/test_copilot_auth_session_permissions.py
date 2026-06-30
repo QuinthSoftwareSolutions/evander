@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from agent_sandbox.admin.services.session_helpers import (
+from evander.admin.services.session_helpers import (
     build_issue_session_manifest as build_admin_issue_session_manifest,
 )
-from agent_sandbox.cli import _build_issue_session_manifest as build_cli_issue_session_manifest
-from agent_sandbox.models import ToolName
-from agent_sandbox.policy_config import EffectivePolicyConfig
+from evander.cli import _build_issue_session_manifest as build_cli_issue_session_manifest
+from evander.models import ToolName
+from evander.policy_config import EffectivePolicyConfig
 
 
 def test_admin_issue_session_manifest_only_adds_copilot_auth_for_copilot_provider(

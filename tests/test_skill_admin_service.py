@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.admin.services import SkillAdminService
-from agent_sandbox.repositories.skills_library import SkillLibraryRepository
+from evander.admin.services import SkillAdminService
+from evander.repositories.skills_library import SkillLibraryRepository
 
 
 def test_skill_admin_service_manages_skill_library(tmp_path: Path) -> None:
@@ -19,7 +19,7 @@ def test_skill_admin_service_manages_skill_library(tmp_path: Path) -> None:
     assert service.validate_managed_codex_skills(["skill-a", "skill-a"]) == ["skill-a"]
     assert service.resolve_container_codex_skill_files(["skill-a"]) == [
         {
-            "destination_path": "/home/agent/.config/agent-sandbox/codex/skills/skill-a/SKILL.md",
+            "destination_path": "/home/agent/.config/evander/codex/skills/skill-a/SKILL.md",
             "mode": "0644",
             "content": "# Skill A",
         }

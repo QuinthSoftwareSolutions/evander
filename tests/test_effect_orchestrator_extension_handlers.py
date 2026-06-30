@@ -4,10 +4,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.orchestration.wiring import build_effect_worker_wiring
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.events.models import TriggerEvent
+from evander.orchestration.wiring import build_effect_worker_wiring
 
 
 def _worker_config(runtime_dir: Path) -> TriggerOrchestratorWorkerGlobalConfig:

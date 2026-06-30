@@ -20,7 +20,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"
+VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/evander}"
 IMAGES_DIR="${VM_STORAGE_DIR}/images"
 BASE_IMAGE="${IMAGES_DIR}/ubuntu-24.04-server-cloudimg-amd64.img"
 DOWNLOAD_URL="${DOWNLOAD_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"

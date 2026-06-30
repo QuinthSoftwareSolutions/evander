@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.published_artifacts import (
+from evander.published_artifacts import (
     PublishedArtifactStore,
     filename_for_key,
     validate_artifact_key,

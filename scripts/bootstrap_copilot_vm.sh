@@ -97,8 +97,8 @@ guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  mkdir -p ~/bin ~/.copilot ~/.config/systemd/user ~/.config/agent-sandbox ~/.agent-sandbox
-  chmod 700 ~/.agent-sandbox
+  mkdir -p ~/bin ~/.copilot ~/.config/systemd/user ~/.config/evander ~/.evander
+  chmod 700 ~/.evander
 "
 scp "${SSH_OPTS[@]}" "${HOST_COPILOT_BIN}" "${VM_USER}@${VM_IP}:~/bin/copilot"
 
@@ -111,15 +111,15 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
-if [ -f /etc/agent-sandbox/session.env ]; then
+if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
-  . /etc/agent-sandbox/session.env
+  . /etc/evander/session.env
 fi
-COPILOT_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
-if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then
-  COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"
+COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+if [ -n "${EVANDER_SESSION_ID:-}" ]; then
+  COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"
 fi
-COPILOT_GATEWAY_BASE_URL="$(python3 -c 'import os; from urllib.parse import urlsplit, urlunsplit; raw = os.environ.get("AGENT_SANDBOX_GATEWAY_URL", "http://192.168.250.1:8000/mcp"); parts = urlsplit(raw); print(urlunsplit((parts.scheme, parts.netloc, "", "", "")))')"
+COPILOT_GATEWAY_BASE_URL="$(python3 -c 'import os; from urllib.parse import urlsplit, urlunsplit; raw = os.environ.get("EVANDER_GATEWAY_URL", "http://192.168.250.1:8000/mcp"); parts = urlsplit(raw); print(urlunsplit((parts.scheme, parts.netloc, "", "", "")))')"
 COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"
 cat > ~/.copilot/config.json <<CONFIG
 {
@@ -129,7 +129,7 @@ CONFIG
 cat > ~/.copilot/mcp-config.json <<CONFIG
 {
   "mcpServers": {
-    "agent_sandbox": {
+    "evander": {
       "type": "http",
       "url": "${COPILOT_GATEWAY_URL}",
       "tools": ["*"]
@@ -142,7 +142,7 @@ cat > ~/bin/gh <<SHIM
 set -euo pipefail
 
 copilot_host_auth_token() {
-  python3 - "${COPILOT_HOST_AUTH_URL}" "\${AGENT_SANDBOX_SESSION_ID:-}" <<'PY'
+  python3 - "${COPILOT_HOST_AUTH_URL}" "\${EVANDER_SESSION_ID:-}" <<'PY'
 import sys
 import urllib.error
 import urllib.request
@@ -150,13 +150,13 @@ import urllib.request
 url = sys.argv[1]
 session_id = sys.argv[2].strip()
 if not session_id:
-    print("AGENT_SANDBOX_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
+    print("EVANDER_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
     raise SystemExit(1)
 request = urllib.request.Request(
     url,
     headers={
         "Accept": "text/plain",
-        "X-Agent-Sandbox-Session-Id": session_id,
+        "X-Evander-Session-Id": session_id,
     },
 )
 try:
@@ -180,7 +180,7 @@ fi
 if [[ "\${1:-}" == "auth" && "\${2:-}" == "status" ]]; then
   if copilot_host_auth_token >/dev/null; then
     printf 'github.com\\n'
-    printf '  ✓ Logged in to github.com via agent-sandbox host auth\\n'
+    printf '  ✓ Logged in to github.com via evander host auth\\n'
     exit 0
   fi
   exit 1
@@ -232,19 +232,19 @@ if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
       "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
       "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
       "${PROVIDER_RUNNER_LIB_PATH}" \
-      "${VM_USER}@${VM_IP}:~/.config/agent-sandbox/"
+      "${VM_USER}@${VM_IP}:~/.config/evander/"
 
     ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' PROVIDER_RUNNER_LIB_NAME='${PROVIDER_RUNNER_LIB_NAME}' bash -s" <<'EOF'
       set -euo pipefail
-      mkdir -p ~/.config/systemd/user ~/.config/agent-sandbox/agent-runner-lib
-      mv ~/.config/agent-sandbox/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
-      mv ~/.config/agent-sandbox/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
-      mv ~/.config/agent-sandbox/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
-      mv ~/.config/agent-sandbox/agent_runner.sh ~/.config/agent-sandbox/agent-runner-lib/agent_runner.sh
-      mv ~/.config/agent-sandbox/"${PROVIDER_RUNNER_LIB_NAME}" ~/.config/agent-sandbox/agent-runner-lib/"${PROVIDER_RUNNER_LIB_NAME}"
+      mkdir -p ~/.config/systemd/user ~/.config/evander/agent-runner-lib
+      mv ~/.config/evander/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
+      mv ~/.config/evander/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
+      mv ~/.config/evander/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
+      mv ~/.config/evander/agent_runner.sh ~/.config/evander/agent-runner-lib/agent_runner.sh
+      mv ~/.config/evander/"${PROVIDER_RUNNER_LIB_NAME}" ~/.config/evander/agent-runner-lib/"${PROVIDER_RUNNER_LIB_NAME}"
       chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
-      cat > ~/.config/agent-sandbox/guest-heartbeat.env <<HEARTBEAT_ENV
-AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
+      cat > ~/.config/evander/guest-heartbeat.env <<HEARTBEAT_ENV
+EVANDER_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
 HEARTBEAT_ENV
       systemctl --user daemon-reload
       systemctl --user enable --now agent-heartbeat.timer

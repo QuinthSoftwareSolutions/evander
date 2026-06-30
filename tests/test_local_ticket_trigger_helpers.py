@@ -4,9 +4,9 @@ import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
-from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.providers._local_tickets import (
+from evander.models import LocalIssueRecord
+from evander.storage import JsonStore
+from evander.triggers.providers._local_tickets import (
     LOCAL_ISSUES_FILENAME,
     RECENT_ISSUE_IDS_FIELD,
     RECENT_ISSUE_LIMIT,

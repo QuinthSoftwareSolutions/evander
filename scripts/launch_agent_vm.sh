@@ -25,7 +25,7 @@ Environment:
   LLM_BASE_URL         Host OpenAI-compatible base URL exposed to the guest.
   ANTHROPIC_BASE_URL   Host Anthropic-compatible base URL exposed to the guest.
   SHARED_NUGET_CACHE_DIR  Host read-only NuGet package cache directory mounted into the guest.
-  SHARED_NUGET_CACHE_TAG  Guest mount tag/path name for the shared NuGet cache. Default: agent-sandbox-nuget-cache
+  SHARED_NUGET_CACHE_TAG  Guest mount tag/path name for the shared NuGet cache. Default: evander-nuget-cache
   SHARED_NUGET_CACHE_MODE Filesystem sharing mode: auto, virtiofs, or 9p. Default: auto
   RAM_MB               Guest memory in MB. Default: 4096
   VCPUS                Guest vCPU count. Default: 4
@@ -49,8 +49,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/runtime_config.sh
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
-RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
-VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"
+RUNTIME_DIR="${EVANDER_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/evander}"
 IMAGES_DIR="${VM_STORAGE_DIR}/images"
 VM_DIR="${VM_STORAGE_DIR}/vms/${VM_NAME}"
 STATE_DIR="${RUNTIME_DIR}/vms/${VM_NAME}"
@@ -79,9 +79,9 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-${VM_STORAGE_DIR}/nuget-cache/global-packages}"
-SHARED_NUGET_CACHE_TAG="${SHARED_NUGET_CACHE_TAG:-agent-sandbox-nuget-cache}"
+SHARED_NUGET_CACHE_TAG="${SHARED_NUGET_CACHE_TAG:-evander-nuget-cache}"
 SHARED_NUGET_CACHE_MODE="${SHARED_NUGET_CACHE_MODE:-auto}"
-GUEST_NUGET_FALLBACK_PACKAGES="/opt/agent-sandbox/nuget-cache-ro"
+GUEST_NUGET_FALLBACK_PACKAGES="/opt/evander/nuget-cache-ro"
 GUEST_NUGET_PACKAGES="/home/agent/.nuget/packages-local"
 GUEST_NUGET_HTTP_CACHE_PATH="/home/agent/.nuget/http-cache"
 RAM_MB="${RAM_MB:-4096}"
@@ -220,7 +220,7 @@ virt-install \
   --disk "path=${OVERLAY_IMAGE},format=qcow2,bus=virtio" \
   --disk "path=${SEED_IMAGE},device=cdrom" \
   --os-variant ubuntu24.04 \
-  --network network=agent-sandbox,model=virtio \
+  --network network=evander,model=virtio \
   --filesystem "${VIRT_INSTALL_FILESYSTEM_ARG}" \
   --graphics none \
   --noautoconsole \

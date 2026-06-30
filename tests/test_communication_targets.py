@@ -4,18 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.approval_notification_targets import (
+from evander.approval_notification_targets import (
     resolve_approval_notification_target_ids_for_directory,
 )
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.messaging.targets import (
+from evander.directories import DirectoryService, DirectoryStore
+from evander.messaging.targets import (
     CommunicationTargetsDirectoryResolver,
     CommunicationTargetsConfig,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
     validate_communication_new_message_trigger_targets,
 )
-from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
+from evander.events.provider_models import CommunicationNewMessageTriggerDefinition
 
 
 def test_communication_targets_reject_duplicate_ids() -> None:

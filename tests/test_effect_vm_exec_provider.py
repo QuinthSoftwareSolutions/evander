@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.admin.services import vm_helpers as admin_vm_helpers
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.vm_exec import VmExecEffectProvider
-from agent_sandbox.models import SessionManifest
+from evander.admin.services import vm_helpers as admin_vm_helpers
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.vm_exec import VmExecEffectProvider
+from evander.models import SessionManifest
 
 
 @dataclass

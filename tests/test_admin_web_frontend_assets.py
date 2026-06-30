@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from agent_sandbox.admin.web.app import _index_html
-from agent_sandbox.admin.web.frontend_assets import admin_frontend_assets_ready
+from evander.admin.web.app import _index_html
+from evander.admin.web.frontend_assets import admin_frontend_assets_ready
 
 
 def test_admin_frontend_assets_ready_requires_referenced_files(tmp_path: Path) -> None:

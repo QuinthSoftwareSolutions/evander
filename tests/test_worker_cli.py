@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.worker import cli
+from evander.worker import cli
 
 
 def _run_cli(monkeypatch, argv: list[str]) -> dict[str, Any]:
@@ -29,7 +29,7 @@ def test_worker_cli_uses_default_sandbox_profile(monkeypatch, tmp_path: Path) ->
     captured = _run_cli(
         monkeypatch,
         [
-            "agent-sandbox-worker-daemon",
+            "evander-worker-daemon",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--worker-root",
@@ -52,7 +52,7 @@ def test_worker_cli_accepts_strict_profile_network_and_container_tuning(
     captured = _run_cli(
         monkeypatch,
         [
-            "agent-sandbox-worker-daemon",
+            "evander-worker-daemon",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--worker-root",
@@ -83,7 +83,7 @@ def test_worker_cli_requires_explicit_unsafe_flag_for_host_network(
     captured = _run_cli(
         monkeypatch,
         [
-            "agent-sandbox-worker-daemon",
+            "evander-worker-daemon",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--worker-root",
@@ -104,13 +104,13 @@ def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: 
     captured = _run_cli(
         monkeypatch,
         [
-            "agent-sandbox-worker-daemon",
+            "evander-worker-daemon",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--worker-root",
             str(tmp_path / "worker-root"),
             "--allowed-git-source-prefix",
-            "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/",
+            "ssh://evander-git-host/opt/evander/git-remotes/",
             "--allowed-git-source-prefix",
             "file:///tmp/test-mirrors/",
             "--git-ssh-source-dir",
@@ -119,7 +119,7 @@ def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: 
     )
 
     assert captured["create_app"]["allowed_git_source_prefixes"] == [
-        "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/",
+        "ssh://evander-git-host/opt/evander/git-remotes/",
         "file:///tmp/test-mirrors/",
     ]
     assert captured["create_app"]["git_ssh_source_dir"] == ssh_dir
@@ -129,7 +129,7 @@ def test_worker_cli_accepts_mssql_flags(monkeypatch, tmp_path: Path) -> None:
     captured = _run_cli(
         monkeypatch,
         [
-            "agent-sandbox-worker-daemon",
+            "evander-worker-daemon",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--worker-root",
@@ -160,11 +160,11 @@ def test_worker_cli_accepts_mssql_flags(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_worker_cli_reads_sandbox_profile_from_environment(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_WORKER_SANDBOX_PROFILE", "strict")
+    monkeypatch.setenv("EVANDER_WORKER_SANDBOX_PROFILE", "strict")
     captured = _run_cli(
         monkeypatch,
         [
-            "agent-sandbox-worker-daemon",
+            "evander-worker-daemon",
             "--runtime-dir",
             str(tmp_path / "runtime"),
             "--worker-root",

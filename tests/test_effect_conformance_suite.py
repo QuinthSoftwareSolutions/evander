@@ -9,16 +9,16 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
-from agent_sandbox.events.models import EffectDefinitionDiscriminated, TriggerEvent
-from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.directories import DirectoryService, DirectoryStore
+from evander.effects.providers.base import EffectProviderBase
+from evander.effects.registry import EffectProviderFactory, EffectProviderRegistry
+from evander.events.models import EffectDefinitionDiscriminated, TriggerEvent
+from evander.provider_config import ProviderConfigResolver
+from evander.triggers.queue import TriggerEventQueue
 
-REPORT_ENV_VAR = "AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT"
+REPORT_ENV_VAR = "EVANDER_EFFECT_CONFORMANCE_REPORT"
 
 
 @pytest.fixture(scope="module")
@@ -217,7 +217,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Runtime diagnostics snapshot",
             "type": "effect:runtime:diagnostics-snapshot",
             "since": "24 hours ago",
-            "units": ["agent-sandbox-effect-orchestrator.service"],
+            "units": ["evander-effect-orchestrator.service"],
         }
     )
     vm_exec = adapter.validate_python(
@@ -393,7 +393,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert http_request.type == "effect:http:request"
     assert http_request.allowed_url_patterns == ["https://example.test/*"]
     assert diagnostics_snapshot.type == "effect:runtime:diagnostics-snapshot"
-    assert diagnostics_snapshot.units == ["agent-sandbox-effect-orchestrator.service"]
+    assert diagnostics_snapshot.units == ["evander-effect-orchestrator.service"]
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"

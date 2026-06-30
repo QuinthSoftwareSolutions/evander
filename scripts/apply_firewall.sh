@@ -5,7 +5,7 @@ show_help() {
   cat <<'EOF'
 Usage: apply_firewall.sh [--help]
 
-Apply the nftables forward policy for the agent sandbox network.
+Apply the nftables forward policy for the Evander network.
 
 Environment:
   ALLOWED_TCP_PORTS  Space-separated host TCP ports reachable from guests.
@@ -18,7 +18,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-TABLE="inet agent_sandbox"
+TABLE="inet evander"
 INPUT_CHAIN="input"
 FORWARD_CHAIN="forward"
 BRIDGE_IF="virbr250"
@@ -43,4 +43,4 @@ for port in ${ALLOWED_TCP_PORTS}; do
 done
 nft add rule ${TABLE} ${FORWARD_CHAIN} ct state established,related accept
 
-echo "Applied agent sandbox forward policy for host ports: ${ALLOWED_TCP_PORTS}"
+echo "Applied Evander forward policy for host ports: ${ALLOWED_TCP_PORTS}"

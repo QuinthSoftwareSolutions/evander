@@ -17,7 +17,7 @@ Options:
   --base-commit SHA     Explicit base commit SHA. Overrides --base-ref lookup.
   --head-commit SHA     Explicit head commit SHA. Overrides --head-ref lookup.
   --context-file PATH   Path to write shell-safe review context. Default:
-                        .agent-sandbox/review-context.env in the repo root.
+                        .evander/review-context.env in the repo root.
   -h, --help            Show this help output.
 EOF
 }
@@ -131,7 +131,7 @@ BASE_REF=""
 HEAD_REF=""
 BASE_COMMIT=""
 HEAD_COMMIT=""
-CONTEXT_FILE=".agent-sandbox/review-context.env"
+CONTEXT_FILE=".evander/review-context.env"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -180,8 +180,8 @@ done
 
 require_repo
 
-BASE_LOCAL_REF="refs/agent-sandbox/review/base"
-HEAD_LOCAL_REF="refs/agent-sandbox/review/head"
+BASE_LOCAL_REF="refs/evander/review/base"
+HEAD_LOCAL_REF="refs/evander/review/head"
 FETCH_REMOTE="$(resolve_fetch_remote)"
 
 BASE_COMMIT="$(resolve_commit "${BASE_REF}" "${BASE_COMMIT}" "${BASE_LOCAL_REF}" "${FETCH_REMOTE}")"

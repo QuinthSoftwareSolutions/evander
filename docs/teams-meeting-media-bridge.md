@@ -68,7 +68,7 @@ as the originating Truman agent instead of an unrelated meeting-only hand-off.
 Required bridge process configuration for Graph mode:
 
 ```bash
-TEAMS_BRIDGE_TOKEN="shared bearer token used by agent-sandbox"
+TEAMS_BRIDGE_TOKEN="shared bearer token used by evander"
 BRIDGE_ADAPTER_MODE="Graph"
 TEAMS_BOT_APP_ID="00000000-0000-0000-0000-000000000000"
 TEAMS_BOT_APP_SECRET="..."
@@ -121,7 +121,7 @@ into 20 ms PCM frames, and signals Graph recording status before finalized media
 text is emitted. Azure Speech mode sends that PCM to Azure Speech for STT/TTS. OpenAI Realtime mode
 resamples Teams PCM to Realtime's 24 kHz PCM WebSocket input, resamples Realtime output back to
 Teams 16 kHz PCM, and does not require Azure Speech credentials. Raw audio is streamed through the
-bridge process and is not persisted by `agent-sandbox`.
+bridge process and is not persisted by `evander`.
 
 Projected OpenAI Realtime meeting sessions keep the same Graph/application-hosted media boundary:
 Teams is still joined by the bridge, while the control plane stores the projection and

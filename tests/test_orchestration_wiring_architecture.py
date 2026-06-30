@@ -18,8 +18,8 @@ def _import_names(source_path: str) -> set[str]:
 
 def test_orchestration_wiring_modules_do_not_import_admin_service_directly() -> None:
     forbidden_suffix = "admin_service"
-    effect_imports = _import_names("src/agent_sandbox/orchestration/wiring/effect.py")
-    trigger_imports = _import_names("src/agent_sandbox/orchestration/wiring/trigger.py")
+    effect_imports = _import_names("src/evander/orchestration/wiring/effect.py")
+    trigger_imports = _import_names("src/evander/orchestration/wiring/trigger.py")
 
     assert all(not name.endswith(forbidden_suffix) for name in effect_imports)
     assert all(not name.endswith(forbidden_suffix) for name in trigger_imports)

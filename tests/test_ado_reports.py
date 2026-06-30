@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.ado_reports import build_ado_daily_status_report_data
+from evander.ado_reports import build_ado_daily_status_report_data
 
 
 def test_build_ado_daily_status_report_data_returns_template_block() -> None:

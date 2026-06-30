@@ -11,8 +11,8 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-import agent_sandbox.admin.web.chat as chat_module
-from agent_sandbox.admin.web.chat import ChatStore, chat_routes
+import evander.admin.web.chat as chat_module
+from evander.admin.web.chat import ChatStore, chat_routes
 
 
 class FakeAuth:

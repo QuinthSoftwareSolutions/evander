@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.git_promote_agent_branch import (
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
 

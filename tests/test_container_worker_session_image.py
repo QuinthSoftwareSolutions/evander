@@ -6,21 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
+from evander.config import GatewayConfig
+from evander.effects.providers.agent_bootstrap_frontend import (
     AgentBootstrapFrontendEffectProvider,
 )
-from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
-from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.provider_models import (
+from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.provider_models import (
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
     AgentExecEffectDefinition,
 )
-from agent_sandbox.execution import ExecutionStatusKind
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.execution import ExecutionStatusKind
+from evander.models import SessionManifest, ToolName
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 class _ContainerDispatchBackendStub:
@@ -126,7 +126,7 @@ def test_agent_exec_uses_session_container_image(
     )
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        "evander.effects.providers.agent_exec.container_backend",
         lambda context, config: backend,
     )
     provider = AgentExecEffectProvider()
@@ -158,14 +158,14 @@ def test_agent_clone_repo_uses_session_container_image(
     )
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
         lambda context, directory_path: SimpleNamespace(
             resolve=lambda **kwargs: SimpleNamespace(
-                worker_repo_source="ssh://agent-sandbox-git-host/agents/repo.git",
+                worker_repo_source="ssh://evander-git-host/agents/repo.git",
                 canonical_repo_source="git@example.test/repo.git",
                 repo_name="repo",
             )
@@ -196,7 +196,7 @@ def test_agent_bootstrap_frontend_falls_back_to_default_container_image_for_lega
     _session(session_repository, session_id="session-1")
     backend = _ContainerDispatchBackendStub()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_bootstrap_frontend.container_backend",
+        "evander.effects.providers.agent_bootstrap_frontend.container_backend",
         lambda context, config: backend,
     )
     provider = AgentBootstrapFrontendEffectProvider()

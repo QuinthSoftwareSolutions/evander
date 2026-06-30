@@ -73,7 +73,7 @@ vm_network_resolve_ip() {
     return 0
   fi
 
-  if [[ "${AGENT_SANDBOX_ALLOW_PKEXEC_VIRSH:-0}" == "1" ]]; then
+  if [[ "${EVANDER_ALLOW_PKEXEC_VIRSH:-0}" == "1" ]]; then
     ip="$(
       pkexec virsh domifaddr "${vm_name}" 2>/dev/null \
         | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true

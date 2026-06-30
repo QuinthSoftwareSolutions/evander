@@ -23,12 +23,12 @@ if ! command -v virsh >/dev/null 2>&1; then
   exit 1
 fi
 
-if virsh net-info agent-sandbox >/dev/null 2>&1; then
-  echo "libvirt network 'agent-sandbox' already exists"
+if virsh net-info evander >/dev/null 2>&1; then
+  echo "libvirt network 'evander' already exists"
   exit 0
 fi
 
 virsh net-define "${NETWORK_XML}"
-virsh net-autostart agent-sandbox
-virsh net-start agent-sandbox
-echo "Created libvirt network 'agent-sandbox'"
+virsh net-autostart evander
+virsh net-start evander
+echo "Created libvirt network 'evander'"

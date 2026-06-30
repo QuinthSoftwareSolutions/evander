@@ -4,8 +4,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.git_pr_notes import agent_pr_notes_ref_for_session
 
 
 def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(
@@ -34,7 +34,7 @@ def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(
             )
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo", local_branch="review/session-1/topic"
@@ -74,7 +74,7 @@ def test_admin_service_git_pr_note_query_fetches_configured_per_session_ref(
             )
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo",
@@ -109,7 +109,7 @@ def test_admin_service_git_pr_note_query_returns_has_note_false_when_note_missin
             return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="missing")
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo", local_branch="review/session-1/topic"
@@ -164,7 +164,7 @@ def test_admin_service_git_pr_note_query_falls_back_to_recent_first_parent_commi
                 )
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
     result = service.issue_git_admin.git_pr_note_query(
         host_repo_path="/repo", local_branch="review/session-1/topic"

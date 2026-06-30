@@ -19,11 +19,11 @@ fi
 if [[ "${{1:-}}" == --git-dir=* ]]; then
   if [[ "${{2:-}}" == "config" && "${{3:-}}" == "--get" ]]; then
     case "${{4:-}}" in
-      agent-sandbox.trustedRepoPath)
+      evander.trustedRepoPath)
         echo "{trusted_repo}"
         exit 0
         ;;
-      agent-sandbox.baseBranch)
+      evander.baseBranch)
         echo "main"
         exit 0
         ;;
@@ -218,16 +218,16 @@ def _run_handle_push(
     if note_content is not None:
         env["FAKE_NOTE_CONTENT"] = note_content
     if pr_body_max_bytes is not None:
-        env["AGENT_SANDBOX_PR_BODY_MAX_BYTES"] = str(pr_body_max_bytes)
+        env["EVANDER_PR_BODY_MAX_BYTES"] = str(pr_body_max_bytes)
     if auto_create_prs_override is not None:
-        env["AGENT_SANDBOX_AUTO_CREATE_PRS"] = auto_create_prs_override
+        env["EVANDER_AUTO_CREATE_PRS"] = auto_create_prs_override
     if create_prs_as_draft_override is not None:
-        env["AGENT_SANDBOX_CREATE_PRS_AS_DRAFT"] = create_prs_as_draft_override
+        env["EVANDER_CREATE_PRS_AS_DRAFT"] = create_prs_as_draft_override
 
     fixed_body_file = tmp_path / "fixed.md"
     if fixed_body is not None:
         fixed_body_file.write_text(fixed_body, encoding="utf-8")
-        env["AGENT_SANDBOX_PR_FIXED_BODY_FILE"] = str(fixed_body_file)
+        env["EVANDER_PR_FIXED_BODY_FILE"] = str(fixed_body_file)
 
     result = subprocess.run(
         [str(handle_script), str(bare_repo)],

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.triggers.delivery import (
+from evander.triggers.delivery import (
     TriggerDeliverySourceItem,
     TriggerDeliveryStore,
     TriggerDeliverySubscription,

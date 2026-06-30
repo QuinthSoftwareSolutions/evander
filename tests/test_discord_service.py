@@ -7,9 +7,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.models import DiscordCommandEnvelope
-from agent_sandbox.services import DiscordBotApiService, StubDiscordService
-from agent_sandbox.storage import JsonStore
+from evander.models import DiscordCommandEnvelope
+from evander.services import DiscordBotApiService, StubDiscordService
+from evander.storage import JsonStore
 
 
 def patch_httpx_client(
@@ -18,7 +18,7 @@ def patch_httpx_client(
 ) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 
@@ -806,8 +806,8 @@ def test_post_status_retries_transient_5xx_then_succeeds(
 
     transport = httpx.MockTransport(handler)
     patch_httpx_client(monkeypatch, transport)
-    monkeypatch.setattr("agent_sandbox.services.time.sleep", lambda _: None)
-    monkeypatch.setattr("agent_sandbox.services.random.uniform", lambda low, high: low)
+    monkeypatch.setattr("evander.services.time.sleep", lambda _: None)
+    monkeypatch.setattr("evander.services.random.uniform", lambda low, high: low)
 
     service = make_service(tmp_path, transport)
     result = service.post_status("status", "chan-a", "session-1")
@@ -829,7 +829,7 @@ def test_post_status_fails_fast_on_401_without_retry(
     transport = httpx.MockTransport(handler)
     patch_httpx_client(monkeypatch, transport)
 
-    monkeypatch.setattr("agent_sandbox.services.time.sleep", lambda _: None)
+    monkeypatch.setattr("evander.services.time.sleep", lambda _: None)
 
     service = make_service(tmp_path, transport)
 

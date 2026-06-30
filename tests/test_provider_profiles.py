@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.provider_profiles import (
+from evander.provider_profiles import (
     DEFAULT_PROVIDER_PROFILE_NAME,
     is_pure_orchestration_core_profile,
     resolve_provider_profile,

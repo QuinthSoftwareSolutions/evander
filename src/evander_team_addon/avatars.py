@@ -14,8 +14,8 @@ from uuid import uuid4
 
 import httpx
 
-from agent_sandbox.addons import addon_storage_path
-from agent_sandbox.models import utc_now
+from evander.addons import addon_storage_path
+from evander.models import utc_now
 
 from .models import AgentAvatar, PersistentAgent, TeamState
 

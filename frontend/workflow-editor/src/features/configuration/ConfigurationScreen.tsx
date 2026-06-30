@@ -142,7 +142,7 @@ const MODEL_PRICING_FALLBACK_ERROR = {
   status: "error",
   path: null,
   path_source: "unknown",
-  env_var: "AGENT_SANDBOX_MODEL_PRICING_PATH",
+  env_var: "EVANDER_MODEL_PRICING_PATH",
   version: null,
   currency: null,
   description: null,

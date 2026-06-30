@@ -7,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
-from agent_sandbox.addons import AddonContext
+from evander.addons import AddonContext
 
 _STATIC_ASSET_NAMES = frozenset(
     {"team-ui.css", "team-ui.js", "team-org-flow.css", "team-org-flow.js"}

@@ -256,8 +256,8 @@ guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  mkdir -p ~/bin ~/codex-vendor ~/.config/systemd/user ~/.config/agent-sandbox ~/.agent-sandbox
-  chmod 700 ~/.agent-sandbox
+  mkdir -p ~/bin ~/codex-vendor ~/.config/systemd/user ~/.config/evander ~/.evander
+  chmod 700 ~/.evander
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
 
@@ -273,21 +273,21 @@ else
   exit 1
 fi
 chmod +x ~/bin/codex
-export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"
 mkdir -p ~/.codex "${CODEX_HOME}"
 if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
-if [ -f /etc/agent-sandbox/session.env ]; then
+if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
-  . /etc/agent-sandbox/session.env
+  . /etc/evander/session.env
 fi
-CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
-CODEX_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
-if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then
-  CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"
-  CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"
+CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
+CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+if [ -n "${EVANDER_SESSION_ID:-}" ]; then
+  CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${EVANDER_SESSION_ID}"
+  CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"
 fi
 for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do
 cat > "${CODEX_CONFIG_PATH}" <<CONFIG
@@ -305,7 +305,7 @@ wire_api = "responses"
 requires_openai_auth = false
 supports_websockets = false
 
-[mcp_servers.agent_sandbox]
+[mcp_servers.evander]
 url = "${CODEX_GATEWAY_URL}"
 CONFIG
 cat >> "${CODEX_CONFIG_PATH}" <<CONFIG
@@ -344,7 +344,7 @@ def repair_missing_session_env_fi(profile_lines):
             in_session_env = False
         out.append(line)
         if stripped in {
-            "if [ -f /etc/agent-sandbox/session.env ]; then",
+            "if [ -f /etc/evander/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_session_env = True
@@ -357,18 +357,18 @@ filtered = [
     for line in lines
     if line.strip() not in {
         'export PATH="$HOME/bin:$PATH"',
-        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
+        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"',
     }
 ]
 filtered.append('export PATH="$HOME/bin:$PATH"')
-filtered.append('export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"')
+filtered.append('export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"')
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY
   if ! grep -q 'relay-placeholder' "${target}" 2>/dev/null; then
     cat >> "${target}" <<PROFILE
-if [ -f /etc/agent-sandbox/session.env ]; then
+if [ -f /etc/evander/session.env ]; then
   set -a
-  . /etc/agent-sandbox/session.env
+  . /etc/evander/session.env
   set +a
 fi
 export OPENAI_API_KEY="\${OPENAI_API_KEY:-relay-placeholder}"
@@ -392,7 +392,7 @@ if [[ -f "${HOST_CODEX_MODELS_CACHE_PATH}" ]]; then
   scp "${SSH_OPTS[@]}" "${HOST_CODEX_MODELS_CACHE_PATH}" "${VM_USER}@${VM_IP}:~/codex-models-cache.json"
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" <<'EOF'
 set -euo pipefail
-export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"
 mkdir -p "${CODEX_HOME}" "${HOME}/.codex"
 cp ~/codex-models-cache.json "${CODEX_HOME}/models_cache.json"
 cp ~/codex-models-cache.json "${HOME}/.codex/models_cache.json"
@@ -418,20 +418,20 @@ if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
       "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
       "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
       "${ROOT_DIR}/scripts/lib/agent_runner_codex.sh" \
-      "${VM_USER}@${VM_IP}:~/.config/agent-sandbox/"
+      "${VM_USER}@${VM_IP}:~/.config/evander/"
 
     ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' AGENT_MODEL='${AGENT_MODEL}' bash -s" <<'EOF'
       set -euo pipefail
-      mkdir -p ~/.config/systemd/user ~/.config/agent-sandbox/agent-runner-lib
-      mv ~/.config/agent-sandbox/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
-      mv ~/.config/agent-sandbox/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
-      mv ~/.config/agent-sandbox/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
-      mv ~/.config/agent-sandbox/agent_runner.sh ~/.config/agent-sandbox/agent-runner-lib/agent_runner.sh
-      mv ~/.config/agent-sandbox/agent_runner_codex.sh ~/.config/agent-sandbox/agent-runner-lib/agent_runner_codex.sh
+      mkdir -p ~/.config/systemd/user ~/.config/evander/agent-runner-lib
+      mv ~/.config/evander/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
+      mv ~/.config/evander/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
+      mv ~/.config/evander/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
+      mv ~/.config/evander/agent_runner.sh ~/.config/evander/agent-runner-lib/agent_runner.sh
+      mv ~/.config/evander/agent_runner_codex.sh ~/.config/evander/agent-runner-lib/agent_runner_codex.sh
       chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
-      cat > ~/.config/agent-sandbox/guest-heartbeat.env <<HEARTBEAT_ENV
+      cat > ~/.config/evander/guest-heartbeat.env <<HEARTBEAT_ENV
 AGENT_MODEL=$(python3 -c 'import os, shlex; print(shlex.quote(os.environ.get("AGENT_MODEL", "")))')
-AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
+EVANDER_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
 HEARTBEAT_ENV
       systemctl --user daemon-reload
       systemctl --user enable --now agent-heartbeat.timer
@@ -450,7 +450,7 @@ fi
 if (( ${#CODEX_SKILLS[@]} > 0 )); then
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
     set -euo pipefail
-    export CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.config/agent-sandbox/codex}\"
+    export CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.config/evander/codex}\"
     mkdir -p \"\${CODEX_HOME}/skills\" \"\${CODEX_HOME}/skill-bootstrap\"
   "
   for raw_skill in "${CODEX_SKILLS[@]}"; do
@@ -459,14 +459,14 @@ if (( ${#CODEX_SKILLS[@]} > 0 )); then
     remote_skill_bootstrap_dir="$(
       ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
         set -euo pipefail
-        export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+        export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"
         printf "%s\n" "${CODEX_HOME}/skill-bootstrap"
       '
     )"
     scp "${SSH_OPTS[@]}" -r "${skill_path}" "${VM_USER}@${VM_IP}:${remote_skill_bootstrap_dir}/"
     ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "SKILL_NAME='${skill_name}' bash -s" <<'EOF'
 set -euo pipefail
-export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"
 mkdir -p "${CODEX_HOME}/skills" "${CODEX_HOME}/skill-bootstrap"
 rm -rf "${CODEX_HOME}/skills/${SKILL_NAME}"
 mv "${CODEX_HOME}/skill-bootstrap/${SKILL_NAME}" "${CODEX_HOME}/skills/${SKILL_NAME}"

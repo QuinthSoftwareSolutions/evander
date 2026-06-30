@@ -244,7 +244,7 @@ if [[ "${LOCAL_UPDATE}" == "true" ]]; then
 fi
 
 for worker in "${WORKERS[@]}"; do
-  remote_base="/tmp/agent-sandbox-container-worker-nuget-prewarm-$RANDOM-$$"
+  remote_base="/tmp/evander-container-worker-nuget-prewarm-$RANDOM-$$"
   remote_archive="${remote_base}.tar.gz"
   remote_manifest="${remote_base}.manifest"
 
