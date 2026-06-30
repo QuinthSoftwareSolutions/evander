@@ -27,6 +27,25 @@ export function CopyIcon() {
   );
 }
 
+export function PlusIcon() {
+  return (
+    <ActionIcon>
+      <path d="M12 5.5v13" />
+      <path d="M5.5 12h13" />
+    </ActionIcon>
+  );
+}
+
+export function HistoryIcon() {
+  return (
+    <ActionIcon>
+      <path d="M12 7.5v5l3 2" />
+      <circle cx="12" cy="12" r="7.5" />
+      <path d="M5.2 5.8H8v2.8" />
+    </ActionIcon>
+  );
+}
+
 export function DownloadIcon() {
   return (
     <ActionIcon>

@@ -1,5 +1,14 @@
 ## Unreleased
 
+- Moved Admin Web workflow pack selection and history into compact controls
+  overlaid on the workflow canvas, with add/edit/remove pack actions kept to
+  icon buttons and the edit dialog.
+
+- Added cursor paging to the Admin Web workflow pack history popover.
+
+- Fixed the Admin Web workflow canvas layout so workflow focus mode fits inside
+  the visible viewport without adding a page scrollbar.
+
 - Added internal workflow pack change history for Admin Web/API edits, with
   runtime-local JSONL audit records, immutable before/after snapshots, actor
   attribution, history endpoints, and a Workflow editor history panel.

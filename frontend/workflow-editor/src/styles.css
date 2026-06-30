@@ -1233,8 +1233,26 @@ body {
 }
 
 .admin-shell.workflow-focus .admin-workflow-panel {
-  height: calc(100vh - 112px);
   border-radius: 24px;
+}
+
+@media (min-width: 981px) {
+  .admin-shell.workflow-focus .admin-shell-main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .admin-shell.workflow-focus .admin-shell-main > .admin-deployment-banner,
+  .admin-shell.workflow-focus .admin-shell-main > .admin-shell-alert {
+    flex: 0 0 auto;
+  }
+
+  .admin-shell.workflow-focus .admin-workflow-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+  }
 }
 
 .admin-workflow-panel > .app-shell {
@@ -2676,116 +2694,115 @@ select {
   line-height: 1.45;
 }
 
-.workflow-pack-identity {
+.workflow-pack-canvas-control {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 14;
+  width: min(32rem, calc(100% - 1.5rem));
   display: grid;
-  gap: 0.55rem;
-  margin-bottom: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.4rem;
+  pointer-events: auto;
 }
 
-.workflow-pack-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.7rem;
-}
-
-.workflow-pack-header > div:first-child {
-  display: grid;
-  gap: 0.15rem;
+.workflow-pack-canvas-control select {
   min-width: 0;
-}
-
-.workflow-pack-header strong {
-  color: #3f3325;
-  font-size: 0.92rem;
-}
-
-.workflow-pack-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.workflow-pack-actions button {
-  min-height: 2rem;
-  padding: 0.34rem 0.58rem;
-}
-
-.workflow-pack-selector,
-.workflow-pack-selected {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.workflow-pack-selector span,
-.workflow-pack-selected span {
-  color: #7a684f;
-  font-size: 0.76rem;
+  min-height: 2.2rem;
+  padding: 0.35rem 2rem 0.35rem 0.65rem;
+  border: 1px solid rgba(42, 71, 66, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.96);
+  color: #24393d;
+  font-size: 0.82rem;
   font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
+  box-shadow: 0 12px 28px rgba(22, 45, 52, 0.12);
 }
 
-.workflow-pack-selected strong {
-  color: #3f3325;
-  font-size: 0.92rem;
-  overflow-wrap: anywhere;
+.workflow-pack-canvas-control select:disabled {
+  opacity: 1;
+  color: #52666a;
 }
 
-.workflow-pack-paths {
-  overflow-wrap: anywhere;
-}
-
-.workflow-pack-list {
-  display: grid;
+.workflow-pack-canvas-actions {
+  display: flex;
   gap: 0.3rem;
 }
 
-.workflow-pack-list-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.55rem;
-  min-height: 3rem;
-  padding: 0.5rem 0.55rem;
-  border: 1px solid rgba(91, 67, 37, 0.12);
+.workflow-pack-canvas-button {
+  width: 2.2rem;
+  min-height: 2.2rem;
+  display: inline-grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(42, 71, 66, 0.16);
   border-radius: 8px;
-  background: rgba(255, 252, 246, 0.58);
-  color: #3f3325;
-  text-align: left;
+  background: rgba(255, 253, 248, 0.96);
+  color: #24393d;
+  box-shadow: 0 12px 28px rgba(22, 45, 52, 0.12);
+  cursor: pointer;
 }
 
-.workflow-pack-list-row:hover:not(:disabled),
-.workflow-pack-list-row.selected {
-  border-color: rgba(42, 115, 98, 0.32);
-  background: rgba(238, 248, 244, 0.78);
+.workflow-pack-canvas-button svg {
+  width: 1.05rem;
+  height: 1.05rem;
 }
 
-.workflow-pack-list-row.missing {
-  border-color: rgba(154, 52, 18, 0.28);
-  background: rgba(255, 245, 238, 0.78);
+.workflow-pack-canvas-button:disabled {
+  cursor: default;
+  opacity: 0.48;
 }
 
-.workflow-pack-list-row > span:first-child {
+.workflow-pack-canvas-button.active {
+  border-color: rgba(35, 89, 79, 0.44);
+  background: #23594f;
+  color: #f5f0e9;
+}
+
+.workflow-pack-canvas-control .runtime-run-error {
+  grid-column: 1 / -1;
+}
+
+.workflow-pack-history-popover {
+  position: absolute;
+  top: 3.45rem;
+  left: 0.75rem;
+  z-index: 13;
+  width: min(34rem, calc(100% - 1.5rem));
+  max-height: min(34rem, calc(100% - 4.35rem));
   display: grid;
+  gap: 0.55rem;
+  overflow: auto;
+  padding: 0.75rem;
+  border: 1px solid rgba(42, 71, 66, 0.16);
+  border-radius: 10px;
+  background: rgba(255, 253, 248, 0.97);
+  color: #24393d;
+  box-shadow: 0 18px 42px rgba(22, 45, 52, 0.18);
+  backdrop-filter: blur(14px);
+}
+
+.workflow-pack-history-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.workflow-pack-history-popover-header .section-label {
+  margin-bottom: 0;
+}
+
+.workflow-pack-history-pack-name {
   min-width: 0;
-}
-
-.workflow-pack-list-row strong,
-.workflow-pack-list-row small {
+  max-width: min(18rem, 62%);
   overflow: hidden;
+  color: #3f3325;
+  font-size: 0.92rem;
+  text-align: right;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflow-pack-list-row small,
-.workflow-pack-row-meta {
-  color: #7a684f;
-  font-size: 0.74rem;
-}
-
-.workflow-pack-row-meta {
   white-space: nowrap;
 }
 
@@ -2795,7 +2812,6 @@ select {
   padding-top: 0.2rem;
 }
 
-.workflow-pack-history-header,
 .workflow-pack-history-detail-header {
   display: flex;
   align-items: center;
@@ -2803,12 +2819,6 @@ select {
   gap: 0.55rem;
 }
 
-.workflow-pack-history-header > div:first-child {
-  display: grid;
-  gap: 0.15rem;
-}
-
-.workflow-pack-history-header strong,
 .workflow-pack-history-detail-header strong {
   color: #3f3325;
   font-size: 0.9rem;
@@ -2817,6 +2827,11 @@ select {
 .workflow-pack-history-list {
   display: grid;
   gap: 0.25rem;
+}
+
+.workflow-pack-history-more {
+  justify-self: start;
+  margin-top: 0.1rem;
 }
 
 .workflow-pack-history-row {
@@ -2951,8 +2966,40 @@ select {
 
 .workflow-pack-form-actions {
   display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.workflow-pack-form-primary-actions {
+  display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+.workflow-pack-form-actions button {
+  min-height: 2.2rem;
+  padding: 0.45rem 0.72rem;
+  border: 0;
+  border-radius: 8px;
+  background: #ded2bc;
+  color: #231a11;
+  cursor: pointer;
+}
+
+.workflow-pack-form-actions button.primary {
+  background: #23594f;
+  color: #f5f0e9;
+}
+
+.workflow-pack-form-actions button.danger {
+  background: #7b2f2f;
+  color: #fff6f1;
+}
+
+.workflow-pack-form-actions button:disabled {
+  cursor: default;
+  opacity: 0.58;
 }
 
 .save-status {
@@ -9376,42 +9423,35 @@ button.mobile-record-card:focus-visible,
   color: #a7bac8;
 }
 
-:root[data-theme="dark"] .workflow-pack-selector span,
-:root[data-theme="dark"] .workflow-pack-selected span {
-  color: #9db1bf;
-}
-
-:root[data-theme="dark"] .workflow-pack-selected strong {
+:root[data-theme="dark"] .workflow-pack-history-pack-name {
   color: #f1f6fa;
 }
 
-:root[data-theme="dark"] .workflow-pack-header strong {
+:root[data-theme="dark"] .workflow-pack-canvas-control select,
+:root[data-theme="dark"] .workflow-pack-canvas-button {
+  border-color: rgba(125, 170, 190, 0.18);
+  background: rgba(20, 35, 43, 0.9);
   color: #f1f6fa;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
 }
 
-:root[data-theme="dark"] .workflow-pack-list-row {
-  border-color: rgba(125, 170, 190, 0.16);
-  background: rgba(20, 35, 43, 0.76);
-  color: #f1f6fa;
-}
-
-:root[data-theme="dark"] .workflow-pack-list-row:hover:not(:disabled),
-:root[data-theme="dark"] .workflow-pack-list-row.selected {
-  border-color: rgba(107, 174, 204, 0.34);
-  background: rgba(27, 50, 60, 0.92);
-}
-
-:root[data-theme="dark"] .workflow-pack-list-row.missing {
-  border-color: rgba(239, 126, 101, 0.34);
-  background: rgba(60, 34, 31, 0.72);
-}
-
-:root[data-theme="dark"] .workflow-pack-list-row small,
-:root[data-theme="dark"] .workflow-pack-row-meta {
+:root[data-theme="dark"] .workflow-pack-canvas-control select:disabled {
   color: #a7bac8;
 }
 
-:root[data-theme="dark"] .workflow-pack-history-header strong,
+:root[data-theme="dark"] .workflow-pack-canvas-button.active {
+  border-color: rgba(107, 174, 204, 0.4);
+  background: #285d6e;
+  color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .workflow-pack-history-popover {
+  border-color: rgba(125, 170, 190, 0.18);
+  background: rgba(20, 35, 43, 0.94);
+  color: #f1f6fa;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
+}
+
 :root[data-theme="dark"] .workflow-pack-history-detail-header strong,
 :root[data-theme="dark"] .workflow-pack-history-revisions dd {
   color: #f1f6fa;
