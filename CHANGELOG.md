@@ -1,5 +1,15 @@
 ## Unreleased
 
+- Fixed workflow pack management authorization so pack create, metadata edit,
+  and removal require root-scoped `workflow_packs.manage` instead of
+  directory-scoped `workflows.write`, and refreshed saved pack descriptors in
+  the editor to avoid stale metadata or pack-list revision conflicts after
+  workflow saves.
+
+- Added first-class Admin Web workflow pack management so operators can create
+  blank packs, edit pack metadata, and remove packs from the active
+  `workflow_packs` list without deleting pack files.
+
 - Restored privileged-helper mode after the admin facade removal by returning
   helper responses, restoring JSON request handling, and wiring the public
   runtime flag to the focused services that consume it.

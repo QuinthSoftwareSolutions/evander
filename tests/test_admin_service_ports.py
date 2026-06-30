@@ -52,6 +52,15 @@ class FakeWorkflowConfig:
         self.saved_payload = kwargs
         return {"saved": kwargs}
 
+    def create_workflow_pack(self, **kwargs: Any) -> dict[str, Any]:
+        return {"created_pack": kwargs}
+
+    def update_workflow_pack_metadata(self, **kwargs: Any) -> dict[str, Any]:
+        return {"updated_pack": kwargs}
+
+    def remove_workflow_pack(self, **kwargs: Any) -> dict[str, Any]:
+        return {"removed_pack": kwargs}
+
     def read_workflow_run_snapshot(self) -> dict[str, bool]:
         return {"snapshot": True}
 

@@ -48,6 +48,7 @@ from agent_sandbox.admin.web.rbac import (
     AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
     TEAM_CHATS_READ_ALL_PERMISSION,
+    WORKFLOW_PACKS_MANAGE_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
@@ -278,6 +279,17 @@ def _workflow_expected_revision(client: TestClient) -> str:
     response = client.get("/api/workflow-editor/document")
     assert response.status_code == 200
     revision = response.json()["revision"]
+    assert isinstance(revision, str)
+    return revision
+
+
+def _workflow_pack_list_revision(client: TestClient, workflow_pack: str | None = None) -> str:
+    path = "/api/workflow-editor/document"
+    if workflow_pack is not None:
+        path = f"{path}?workflow_pack={workflow_pack}"
+    response = client.get(path)
+    assert response.status_code == 200
+    revision = response.json()["pack_list_revision"]
     assert isinstance(revision, str)
     return revision
 
@@ -4543,6 +4555,206 @@ def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
     assert "Node IDs must be globally unique" in response.json()["error"]
 
 
+def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_a_path = packs_dir / "pack-a.v1.json"
+    pack_a_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-a.v1.layout.json").write_text(json.dumps({"nodes": {}}), encoding="utf-8")
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+    pack_list_revision = _workflow_pack_list_revision(client, workflow_pack="pack-a.v1.json")
+
+    locked_response = client.post(
+        "/api/workflow-editor/packs",
+        json={
+            "pack_id": "custom-pack",
+            "pack_version": "v1",
+            "expected_revision": pack_list_revision,
+        },
+    )
+    assert locked_response.status_code == 403
+
+    _unlock_privileged_operations(client)
+    create_response = client.post(
+        "/api/workflow-editor/packs",
+        json={
+            "pack_id": "custom-pack",
+            "pack_version": "v1",
+            "description": "Created through Admin Web.",
+            "expected_revision": pack_list_revision,
+        },
+    )
+    assert create_response.status_code == 200
+    create_payload = create_response.json()
+    assert create_payload["selected_workflow_pack"]["reference"] == "custom-pack.v1.json"
+    custom_pack_path = packs_dir / "custom-pack.v1.json"
+    assert json.loads(custom_pack_path.read_text(encoding="utf-8"))["ir"] == {
+        "edges": [],
+        "nodes": [],
+        "version": "v1",
+    }
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "pack-a.v1.json",
+        "custom-pack.v1.json",
+    ]
+
+    metadata_revision = create_payload["selected_workflow_pack"]["revision"]
+    update_response = client.put(
+        "/api/workflow-editor/packs",
+        json={
+            "workflow_pack": "custom-pack.v1.json",
+            "pack_id": "renamed-pack",
+            "pack_version": "v2",
+            "description": "Renamed through Admin Web.",
+            "expected_revision": metadata_revision,
+        },
+    )
+    assert update_response.status_code == 200
+    updated_pack = json.loads(custom_pack_path.read_text(encoding="utf-8"))
+    assert updated_pack["pack_id"] == "renamed-pack"
+    assert updated_pack["pack_version"] == "v2"
+    assert updated_pack["description"] == "Renamed through Admin Web."
+
+    stale_update_response = client.put(
+        "/api/workflow-editor/packs",
+        json={
+            "workflow_pack": "custom-pack.v1.json",
+            "pack_id": "stale-name",
+            "pack_version": "v3",
+            "expected_revision": metadata_revision,
+        },
+    )
+    assert stale_update_response.status_code == 409
+
+    remove_revision = update_response.json()["document"]["pack_list_revision"]
+    remove_response = client.request(
+        "DELETE",
+        "/api/workflow-editor/packs",
+        json={
+            "workflow_pack": "pack-a.v1.json",
+            "expected_revision": remove_revision,
+        },
+    )
+    assert remove_response.status_code == 200
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "custom-pack.v1.json"
+    ]
+    assert pack_a_path.exists()
+    assert (packs_dir / "pack-a.v1.layout.json").exists()
+
+
+def test_admin_web_workflow_pack_mutations_require_root_pack_management_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-a.v1.layout.json").write_text(json.dumps({"nodes": {}}), encoding="utf-8")
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        encoding="utf-8",
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin")
+    store.upsert_user(login="scoped-writer@example.com", role="regular")
+    store.remove_user_group_assignment(
+        login="scoped-writer@example.com", group_id="operator", directory_path="root"
+    )
+    store.grant_user_workflow_permission(
+        login="scoped-writer@example.com",
+        permission=WORKFLOWS_WRITE_PERMISSION,
+        directory_path="root/ops",
+    )
+    store.upsert_user(login="pack-manager@example.com", role="regular")
+    store.remove_user_group_assignment(
+        login="pack-manager@example.com", group_id="operator", directory_path="root"
+    )
+    store.upsert_group(
+        group_id="pack-managers",
+        display_name="Pack Managers",
+        description="Manage workflow pack metadata and active pack list.",
+    )
+    store.set_group_permissions("pack-managers", [WORKFLOW_PACKS_MANAGE_PERMISSION])
+    store.assign_user_group(
+        login="pack-manager@example.com", group_id="pack-managers", directory_path="root"
+    )
+    pack_list_revision = (
+        service.workflow_config_admin.read_composed_workflow_editor_document().pack_list_revision
+    )
+    assert isinstance(pack_list_revision, str)
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+
+    scoped_login = _complete_azure_login(
+        app, client, login="scoped-writer@example.com", display_name="Scoped Writer"
+    )
+    _unlock_privileged_operations(client)
+    scoped_response = client.post(
+        "/api/workflow-editor/packs",
+        json={
+            "directory_path": "root/ops",
+            "pack_id": "ops-pack",
+            "pack_version": "v1",
+            "expected_revision": pack_list_revision,
+        },
+    )
+
+    assert scoped_login.status_code == 303
+    assert scoped_response.status_code == 403
+    assert scoped_response.json()["error"] == "Permission required: workflow_packs.manage"
+
+    manager_login = _complete_azure_login(
+        app, client, login="pack-manager@example.com", display_name="Pack Manager"
+    )
+    _unlock_privileged_operations(client)
+    manager_response = client.post(
+        "/api/workflow-editor/packs",
+        json={
+            "directory_path": "root/ops",
+            "pack_id": "managed-pack",
+            "pack_version": "v1",
+            "expected_revision": pack_list_revision,
+        },
+    )
+
+    assert manager_login.status_code == 303
+    assert manager_response.status_code == 200
+    assert manager_response.json()["selected_workflow_pack"]["reference"] == "managed-pack.v1.json"
+
+
 def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
@@ -8445,6 +8657,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
     assert set(session.json()["permissions"]) == {
         WORKFLOWS_READ_PERMISSION,
         WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
@@ -8456,6 +8669,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
     assert set(admin_state.json()["permissions"]) == {
         WORKFLOWS_READ_PERMISSION,
         WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,

@@ -70,6 +70,32 @@ class WorkflowConfigPort(Protocol):
         workflow_pack: str | None = None,
     ) -> Any: ...
 
+    def create_workflow_pack(
+        self,
+        *,
+        pack_id: str,
+        pack_version: str | None = None,
+        description: str | None = None,
+        expected_revision: str | None = None,
+    ) -> Any: ...
+
+    def update_workflow_pack_metadata(
+        self,
+        *,
+        workflow_pack: str,
+        pack_id: str,
+        pack_version: str,
+        description: str | None = None,
+        expected_revision: str | None = None,
+    ) -> Any: ...
+
+    def remove_workflow_pack(
+        self,
+        *,
+        workflow_pack: str,
+        expected_revision: str | None = None,
+    ) -> Any: ...
+
     def read_workflow_run_snapshot(self) -> Any: ...
 
     def read_workflow_run_detail(self, **kwargs: Any) -> Any: ...

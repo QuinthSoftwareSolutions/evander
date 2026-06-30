@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 from types import SimpleNamespace
 from agent_sandbox.admin import workflow_report_helpers
-from agent_sandbox.admin.payloads import WorkflowFailureClusterReportPayload
+from agent_sandbox.admin.payloads import AdminRevisionConflict, WorkflowFailureClusterReportPayload
 from agent_sandbox.admin.services import git_helpers, process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.issue_setup_helpers import EffectiveIssueSetupConfig
 import agent_sandbox.admin.services.teams_service as admin_teams_service
@@ -7486,6 +7486,36 @@ def test_workflow_editor_revision_changes_for_graph_metadata_only_edit(
     assert second.revision != first.revision
 
 
+def test_workflow_editor_inline_save_refreshes_pack_list_revision_for_pack_create(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    document = service.workflow_config_admin.read_workflow_editor_document()
+
+    save_result = service.workflow_config_admin.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime-after-inline-save"),
+            "triggers": [],
+            "gates": [],
+            "effects": [],
+            "queries": [],
+            "edges": [],
+        },
+        layout={"nodes": {}},
+        expected_revision=document.revision,
+    )
+    assert save_result.pack_list_revision is not None
+    assert save_result.pack_list_revision != document.pack_list_revision
+
+    create_result = service.workflow_config_admin.create_workflow_pack(
+        pack_id="post-save-pack",
+        expected_revision=save_result.pack_list_revision,
+    )
+
+    assert create_result.selected_workflow_pack is not None
+    assert create_result.selected_workflow_pack.reference == "post-save-pack.v1.json"
+
+
 def test_worker_global_config_revision_changes_for_config_edit(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     first = service.workflow_config_admin.read_worker_global_config("trigger-orchestrator")
@@ -7901,6 +7931,253 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     assert json.loads((packs_dir / "pack-b.v1.layout.json").read_text(encoding="utf-8")) == {
         "nodes": {"effect-b": {"x": 320.0, "y": 180.0}}
     }
+
+
+def test_workflow_editor_create_workflow_pack_appends_blank_pack(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-a",
+                            "display_name": "Every minute",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    revision = service.read_composed_workflow_editor_document().pack_list_revision
+
+    result = service.create_workflow_pack(
+        pack_id="custom-pack",
+        pack_version="v1",
+        description="Operator-owned workflow pack.",
+        expected_revision=revision,
+    )
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "pack-a.v1.json",
+        "custom-pack.v1.json",
+    ]
+    pack_payload = json.loads((packs_dir / "custom-pack.v1.json").read_text(encoding="utf-8"))
+    assert pack_payload == {
+        "description": "Operator-owned workflow pack.",
+        "graphs": [],
+        "ir": {"edges": [], "nodes": [], "version": "v1"},
+        "pack_id": "custom-pack",
+        "pack_version": "v1",
+    }
+    assert result.selected_workflow_pack is not None
+    assert result.selected_workflow_pack.reference == "custom-pack.v1.json"
+    assert result.document.config["workflow_packs"] == [
+        "pack-a.v1.json",
+        "custom-pack.v1.json",
+    ]
+
+
+def test_workflow_editor_create_workflow_pack_rejects_duplicate_or_inline_config(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    revision = service.read_composed_workflow_editor_document().pack_list_revision
+
+    with pytest.raises(ValueError, match="already configured"):
+        service.create_workflow_pack(
+            pack_id="pack-a",
+            pack_version="v1",
+            expected_revision=revision,
+        )
+
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-inline",
+                        "display_name": "Inline",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    revision = service.read_composed_workflow_editor_document().pack_list_revision
+    with pytest.raises(ValueError, match="cannot convert inline workflow configs"):
+        service.create_workflow_pack(
+            pack_id="new-pack",
+            pack_version="v1",
+            expected_revision=revision,
+        )
+
+
+def test_workflow_editor_update_workflow_pack_metadata_preserves_reference_and_graph(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "pack-a.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "description": "Original description.",
+                "graphs": [
+                    {
+                        "id": "graph-a",
+                        "name": "Graph A",
+                        "directory_path": "root",
+                        "node_ids": ["trigger-a"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-a",
+                            "display_name": "Every minute",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    wrapper_payload = {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+    config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    document = service.read_workflow_editor_document(workflow_pack="pack-a.v1.json")
+    assert document.selected_workflow_pack is not None
+    expected_revision = document.selected_workflow_pack.revision
+
+    result = service.update_workflow_pack_metadata(
+        workflow_pack="pack-a.v1.json",
+        pack_id="renamed-pack",
+        pack_version="v2",
+        description="Updated description.",
+        expected_revision=expected_revision,
+    )
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == wrapper_payload
+    pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    assert pack_payload["pack_id"] == "renamed-pack"
+    assert pack_payload["pack_version"] == "v2"
+    assert pack_payload["description"] == "Updated description."
+    assert pack_payload["graphs"][0]["id"] == "graph-a"
+    assert pack_payload["ir"]["nodes"][0]["id"] == "trigger-a"
+    assert result.selected_workflow_pack is not None
+    assert result.selected_workflow_pack.reference == "pack-a.v1.json"
+    assert result.selected_workflow_pack.display_name == "renamed-pack v2"
+
+    with pytest.raises(AdminRevisionConflict):
+        service.update_workflow_pack_metadata(
+            workflow_pack="pack-a.v1.json",
+            pack_id="stale",
+            pack_version="v3",
+            expected_revision=expected_revision,
+        )
+
+
+def test_workflow_editor_remove_workflow_pack_unlists_without_deleting_files(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    for pack_name in ("pack-a.v1.json", "pack-b.v1.json"):
+        (packs_dir / pack_name).write_text(
+            json.dumps(
+                {
+                    "pack_id": pack_name.removesuffix(".json"),
+                    "pack_version": "v1",
+                    "ir": {"version": "v1", "nodes": [], "edges": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (packs_dir / pack_name.replace(".json", ".layout.json")).write_text(
+            json.dumps({"nodes": {}}),
+            encoding="utf-8",
+        )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    revision = service.read_composed_workflow_editor_document().pack_list_revision
+
+    result = service.remove_workflow_pack(
+        workflow_pack="pack-a.v1.json",
+        expected_revision=revision,
+    )
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "pack-b.v1.json"
+    ]
+    assert (packs_dir / "pack-a.v1.json").exists()
+    assert (packs_dir / "pack-a.v1.layout.json").exists()
+    assert result.selected_workflow_pack is not None
+    assert result.selected_workflow_pack.reference == "pack-b.v1.json"
+
+    next_revision = result.document.pack_list_revision
+    with pytest.raises(ValueError, match="last configured workflow pack"):
+        service.remove_workflow_pack(
+            workflow_pack="pack-b.v1.json",
+            expected_revision=next_revision,
+        )
 
 
 def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(

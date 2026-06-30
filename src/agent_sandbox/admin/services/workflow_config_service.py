@@ -31,6 +31,7 @@ from agent_sandbox.admin.payloads import (
     WorkflowEditorDocumentPayload,
     WorkflowEditorGraphMetadata,
     WorkflowEditorLayoutDocument,
+    WorkflowEditorPackMutationPayload,
     WorkflowEditorSavePayload,
     WorkflowEditorValidationPayload,
     WorkflowEditorWorkflowPackDescriptor,
@@ -210,6 +211,49 @@ class WorkflowConfigAdminService:
             graphs=graphs,
             expected_revision=expected_revision,
             workflow_pack=workflow_pack,
+        )
+
+    def create_workflow_pack(
+        self,
+        *,
+        pack_id: str,
+        pack_version: str | None = None,
+        description: str | None = None,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorPackMutationPayload:
+        return self._create_workflow_pack(
+            pack_id=pack_id,
+            pack_version=pack_version,
+            description=description,
+            expected_revision=expected_revision,
+        )
+
+    def update_workflow_pack_metadata(
+        self,
+        *,
+        workflow_pack: str,
+        pack_id: str,
+        pack_version: str,
+        description: str | None = None,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorPackMutationPayload:
+        return self._update_workflow_pack_metadata(
+            workflow_pack=workflow_pack,
+            pack_id=pack_id,
+            pack_version=pack_version,
+            description=description,
+            expected_revision=expected_revision,
+        )
+
+    def remove_workflow_pack(
+        self,
+        *,
+        workflow_pack: str,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorPackMutationPayload:
+        return self._remove_workflow_pack(
+            workflow_pack=workflow_pack,
+            expected_revision=expected_revision,
         )
 
     def read_workflow_run_snapshot(self):
@@ -490,6 +534,237 @@ class WorkflowConfigAdminService:
             return []
         return [self._workflow_editor_pack_reference(pack) for pack in workflow_packs]
 
+    def _workflow_editor_read_raw_worker_config(self) -> tuple[Path, bool, dict[str, object]]:
+        config_path = self._worker_global_config_path("trigger-orchestrator")
+        if config_path is None:
+            raise ValueError("Unknown worker: trigger-orchestrator")
+        config_exists = config_path.exists()
+        if config_exists:
+            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_config, dict):
+                raise ValueError(f"worker config file {config_path} must contain a JSON object")
+        else:
+            model = _WORKER_GLOBAL_CONFIG_MODELS["trigger-orchestrator"]
+            raw_config = model.model_validate(self.config.model_dump(mode="json")).model_dump(
+                mode="json", exclude_none=True
+            )
+        return config_path, config_exists, raw_config
+
+    def _workflow_editor_worker_config_revision(self, raw_config: dict[str, object]) -> str:
+        return self._stable_json_revision(raw_config)
+
+    def _check_workflow_editor_worker_config_revision(
+        self,
+        raw_config: dict[str, object],
+        *,
+        expected_revision: str | None,
+    ) -> None:
+        if expected_revision is None:
+            return
+        current_revision = self._workflow_editor_worker_config_revision(raw_config)
+        if current_revision != expected_revision:
+            raise AdminRevisionConflict(
+                "Workflow pack list changed before save. Reload the workflow before saving again.",
+                details={
+                    "current_revision": current_revision,
+                    "current": self._read_composed_workflow_editor_document().model_dump(mode="json"),
+                },
+            )
+
+    @staticmethod
+    def _workflow_pack_slug(value: str, *, field_name: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError(f"{field_name} is required")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", normalized):
+            raise ValueError(
+                f"{field_name} must start with a letter or number and contain only letters, numbers, dots, hyphens, or underscores"
+            )
+        if normalized in {".", ".."}:
+            raise ValueError(f"{field_name} is not valid")
+        return normalized
+
+    @staticmethod
+    def _optional_workflow_pack_description(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    def _workflow_pack_reference_for_metadata(self, *, pack_id: str, pack_version: str) -> str:
+        return self._workflow_editor_pack_reference(f"{pack_id}.{pack_version}.json")
+
+    def _workflow_pack_mutation_payload(
+        self,
+        *,
+        config_path: Path,
+        selected_reference: str | None,
+    ) -> WorkflowEditorPackMutationPayload:
+        document = self._read_workflow_editor_document(workflow_pack=selected_reference)
+        return WorkflowEditorPackMutationPayload(
+            config_path=str(config_path),
+            workflow_packs=document.workflow_packs,
+            selected_workflow_pack=document.selected_workflow_pack,
+            revision=document.revision,
+            document=document,
+        )
+
+    @staticmethod
+    def _workflow_editor_has_inline_workflow(raw_config: dict[str, object]) -> bool:
+        if isinstance(raw_config.get("workflow_ir"), dict):
+            return True
+        for key in ("triggers", "gates", "effects", "queries", "edges", "workflow_graphs"):
+            value = raw_config.get(key)
+            if isinstance(value, list) and bool(value):
+                return True
+        return False
+
+    def _create_workflow_pack(
+        self,
+        *,
+        pack_id: str,
+        pack_version: str | None = None,
+        description: str | None = None,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorPackMutationPayload:
+        with self.admin_config_mutation_lock():
+            config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
+            self._check_workflow_editor_worker_config_revision(
+                raw_config,
+                expected_revision=expected_revision,
+            )
+            configured_references = self._workflow_editor_configured_pack_references(raw_config)
+            if self._workflow_editor_has_inline_workflow(raw_config):
+                raise ValueError(
+                    "Workflow pack management cannot convert inline workflow configs yet."
+                )
+            normalized_pack_id = self._workflow_pack_slug(pack_id, field_name="pack_id")
+            normalized_pack_version = self._workflow_pack_slug(
+                pack_version or "v1",
+                field_name="pack_version",
+            )
+            reference = self._workflow_pack_reference_for_metadata(
+                pack_id=normalized_pack_id,
+                pack_version=normalized_pack_version,
+            )
+            if reference in configured_references:
+                raise ValueError(f"Workflow pack is already configured: {reference}")
+            pack_path = self._workflow_editor_pack_path(reference)
+            if pack_path.exists():
+                raise ValueError(f"workflow pack file already exists at {pack_path}")
+
+            pack_payload: dict[str, object] = {
+                "pack_id": normalized_pack_id,
+                "pack_version": normalized_pack_version,
+                "graphs": [],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [],
+                    "edges": [],
+                },
+            }
+            normalized_description = self._optional_workflow_pack_description(description)
+            if normalized_description is not None:
+                pack_payload["description"] = normalized_description
+
+            wrapper_config = dict(raw_config)
+            wrapper_config["workflow_packs"] = [*configured_references, reference]
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            pack_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(pack_path, pack_payload)
+            self._write_json_file_atomic(config_path, wrapper_config)
+            return self._workflow_pack_mutation_payload(
+                config_path=config_path,
+                selected_reference=reference,
+            )
+
+    def _update_workflow_pack_metadata(
+        self,
+        *,
+        workflow_pack: str,
+        pack_id: str,
+        pack_version: str,
+        description: str | None = None,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorPackMutationPayload:
+        with self.admin_config_mutation_lock():
+            config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
+            selected_reference = self._workflow_editor_selected_pack_reference(
+                raw_config,
+                workflow_pack,
+            )
+            if selected_reference is None:
+                raise ValueError("Workflow pack is required")
+            current = self._read_workflow_editor_document(workflow_pack=selected_reference)
+            current_pack = current.selected_workflow_pack
+            if current_pack is None or not current_pack.exists:
+                raise ValueError(f"Workflow pack is not editable: {selected_reference}")
+            if expected_revision is not None and current_pack.revision != expected_revision:
+                raise AdminRevisionConflict(
+                    "Workflow pack metadata changed before save. Reload the workflow before saving again.",
+                    details={
+                        "current_revision": current_pack.revision,
+                        "current": current.model_dump(mode="json"),
+                    },
+                )
+
+            normalized_pack_id = self._workflow_pack_slug(pack_id, field_name="pack_id")
+            normalized_pack_version = self._workflow_pack_slug(
+                pack_version,
+                field_name="pack_version",
+            )
+            pack_path = self._workflow_editor_pack_path(selected_reference)
+            pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+            if not isinstance(pack_payload, dict):
+                raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
+            pack_payload["pack_id"] = normalized_pack_id
+            pack_payload["pack_version"] = normalized_pack_version
+            normalized_description = self._optional_workflow_pack_description(description)
+            if normalized_description is None:
+                pack_payload.pop("description", None)
+            else:
+                pack_payload["description"] = normalized_description
+            self._write_json_file_atomic(pack_path, pack_payload)
+            return self._workflow_pack_mutation_payload(
+                config_path=config_path,
+                selected_reference=selected_reference,
+            )
+
+    def _remove_workflow_pack(
+        self,
+        *,
+        workflow_pack: str,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorPackMutationPayload:
+        with self.admin_config_mutation_lock():
+            config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
+            self._check_workflow_editor_worker_config_revision(
+                raw_config,
+                expected_revision=expected_revision,
+            )
+            selected_reference = self._workflow_editor_selected_pack_reference(
+                raw_config,
+                workflow_pack,
+            )
+            if selected_reference is None:
+                raise ValueError("Workflow pack is required")
+            configured_references = self._workflow_editor_configured_pack_references(raw_config)
+            if len(configured_references) <= 1:
+                raise ValueError("Cannot remove the last configured workflow pack.")
+            selected_index = configured_references.index(selected_reference)
+            next_references = list(configured_references)
+            next_references.pop(selected_index)
+            next_selected_index = min(selected_index, len(next_references) - 1)
+            next_selected_reference = next_references[next_selected_index]
+            wrapper_config = dict(raw_config)
+            wrapper_config["workflow_packs"] = next_references
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(config_path, wrapper_config)
+            return self._workflow_pack_mutation_payload(
+                config_path=config_path,
+                selected_reference=next_selected_reference,
+            )
+
     def _workflow_editor_selected_pack_reference(
         self,
         raw_config: dict[str, object],
@@ -526,7 +801,11 @@ class WorkflowConfigAdminService:
             graph_count = 0
             node_count = 0
             display_name = reference
+            revision: str | None = None
             if exists:
+                raw_pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+                if not isinstance(raw_pack_payload, dict):
+                    raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
                 pack = load_workflow_pack(self.project_dir, reference)
                 pack_id = pack.pack_id
                 pack_version = pack.pack_version
@@ -536,6 +815,17 @@ class WorkflowConfigAdminService:
                 display_name = pack.pack_id or reference
                 if pack.pack_version:
                     display_name = f"{display_name} {pack.pack_version}"
+                revision = self._stable_json_revision(
+                    {
+                        "pack": raw_pack_payload,
+                        "layout_exists": layout_path.exists(),
+                        "layout": (
+                            json.loads(layout_path.read_text(encoding="utf-8"))
+                            if layout_path.exists()
+                            else {}
+                        ),
+                    }
+                )
             descriptors.append(
                 WorkflowEditorWorkflowPackDescriptor(
                     reference=reference,
@@ -544,6 +834,7 @@ class WorkflowConfigAdminService:
                     exists=exists,
                     editable=exists,
                     display_name=display_name,
+                    revision=revision,
                     id=pack_id,
                     version=pack_version,
                     description=description,
@@ -1141,6 +1432,7 @@ class WorkflowConfigAdminService:
             output_schemas=output_schemas,
             saved_at=saved_at,
             revision=revision,
+            pack_list_revision=self._workflow_editor_worker_config_revision(raw_config),
         )
 
     def _read_workflow_editor_document(
@@ -1246,6 +1538,7 @@ class WorkflowConfigAdminService:
             output_schemas=output_schemas,
             saved_at=saved_at,
             revision=revision,
+            pack_list_revision=self._workflow_editor_worker_config_revision(raw_config),
         )
 
     def _communication_target_options(
@@ -1640,6 +1933,9 @@ class WorkflowConfigAdminService:
             layout=validation.layout,
             graphs=validation.graphs,
         )
+        pack_list_revision = self._workflow_editor_worker_config_revision(
+            merged_config if pack_save is None else raw_config
+        )
         if selected_reference is not None:
             workflow_packs = self._workflow_editor_pack_descriptors(
                 raw_config,
@@ -1666,6 +1962,7 @@ class WorkflowConfigAdminService:
             validation_diagnostics=validation.validation_diagnostics,
             saved_at=saved_at,
             revision=revision,
+            pack_list_revision=pack_list_revision,
         )
 
     def _save_workflow_editor_document(
