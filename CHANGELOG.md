@@ -4,6 +4,9 @@
   interactive single/multi-select menus while preserving typed prompts for
   non-TTY setup runs.
 
+- Fixed guided setup arrow-key handling so raw terminal reads collect complete
+  Up/Down escape sequences before updating the highlighted row.
+
 - Moved Admin Web workflow pack selection and history into compact controls
   overlaid on the workflow canvas, with add/edit/remove pack actions kept to
   icon buttons and the edit dialog.

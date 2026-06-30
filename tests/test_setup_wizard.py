@@ -244,6 +244,19 @@ def test_setup_tui_checklist_arrow_navigation_wraps(tmp_path: Path, monkeypatch)
     assert wrapped_action.selected_index == len(manager.checklist(state)) - 1
 
 
+def test_setup_tui_raw_key_reader_collects_arrow_escape_sequence(monkeypatch) -> None:
+    reads = iter([b"\x1b", b"[", b"B"])
+    monkeypatch.setattr(setup_tui.os, "read", lambda fd, count: next(reads))
+    monkeypatch.setattr(setup_tui.select, "select", lambda reads, writes, errors, timeout: (reads, [], []))
+
+    assert setup_tui._read_key_bytes(0) == b"\x1b[B"
+
+
+def test_setup_tui_normalizes_arrow_escape_sequence() -> None:
+    assert setup_tui._normalize_key("\x1b[B") == "down"
+    assert setup_tui._normalize_key("\x1b[A") == "up"
+
+
 @pytest.mark.parametrize(
     ("key", "kind"),
     [

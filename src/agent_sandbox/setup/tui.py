@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import getpass
 import json
+import os
 from pathlib import Path
+import select
 import sys
 
 import click
@@ -436,7 +438,6 @@ def _is_interactive_terminal() -> bool:
 
 def _read_key() -> str:
     try:
-        import select
         import termios
         import tty
     except ImportError:
@@ -446,18 +447,22 @@ def _read_key() -> str:
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        value = sys.stdin.read(1)
-        if value == "\x1b":
-            tail = ""
-            while len(tail) < 2:
-                readable, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if not readable:
-                    break
-                tail += sys.stdin.read(1)
-            value += tail
-        return _normalize_key(value)
+        return _normalize_key(_read_key_bytes(fd).decode(errors="ignore"))
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _read_key_bytes(fd: int) -> bytes:
+    value = os.read(fd, 1)
+    if value != b"\x1b":
+        return value
+    tail = bytearray()
+    while len(tail) < 2:
+        readable, _, _ = select.select([fd], [], [], 0.05)
+        if not readable:
+            break
+        tail.extend(os.read(fd, 1))
+    return value + bytes(tail)
 
 
 def _normalize_key(value: str) -> str:
