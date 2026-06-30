@@ -1,4 +1,25 @@
 ---
+- name: Stop legacy worker daemon service from retired operational name
+  ansible.builtin.systemd:
+    name: agent-sandbox-worker-daemon.service
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Remove legacy worker daemon unit files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/agent-sandbox-worker-daemon.service
+    - /etc/systemd/system/agent-sandbox-worker-daemon.service.d
+  register: evander_legacy_worker_daemon_unit_remove
+
+- name: Reload systemd after removing legacy worker daemon unit files
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: evander_legacy_worker_daemon_unit_remove.changed
+
 - name: Render worker daemon environment
   ansible.builtin.template:
     src: worker-daemon.env.j2

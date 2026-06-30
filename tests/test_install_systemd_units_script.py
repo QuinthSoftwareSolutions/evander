@@ -63,6 +63,22 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "evander-npm-audit-facade.service" in text
 
 
+def test_install_systemd_units_retires_legacy_agent_sandbox_units() -> None:
+    text = _script_text()
+
+    assert 'LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"' in text
+    assert 'LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"' in text
+    assert "migrate_legacy_local_secrets" in text
+    assert "retire_legacy_agent_sandbox_units" in text
+    assert "agent-sandbox-gateway.service" in text
+    assert "agent-sandbox-admin-web.service" in text
+    assert "agent-sandbox-nexus.service" not in text
+    assert "agent-sandbox-worker-daemon.service" not in text
+    assert 'systemctl disable --now "${unit}"' in text
+    assert 'rm -rf "${SYSTEMD_DIR:?}/${unit}.d"' in text
+    assert 'systemctl enable "${EVANDER_UNITS[@]}"' in text
+
+
 def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
     text = _script_text()
 

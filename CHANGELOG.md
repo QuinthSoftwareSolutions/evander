@@ -14,6 +14,10 @@
   environment variables use `EVANDER_*`, and guest state/config paths now use
   `.evander` and `/etc/evander`.
 
+- Added systemd install migration cleanup for the Evander rename so legacy
+  `agent-sandbox-*` units are stopped, disabled, and removed while preserving
+  host-local secrets under `/etc/evander/local-secrets.env`.
+
 - Added an internal workflow event catalog so known stable event names can appear
   as `trigger:event.event_type` suggestions in Admin Web, including Team Add-on
   runtime events when the add-on is loaded.
@@ -21,6 +25,9 @@
 - Added provider-neutral remote issue workflow primitives for querying, matching,
   and comment polling across Azure DevOps work items and GitHub issues, while
   keeping the existing ADO node types as compatibility surfaces.
+
+- Fixed GitHub remote issue queries so `labels_any` pagination continues
+  scanning until enough matching issues are found.
 
 - Added cursor-key navigation to the guided `evander-cli setup` checklist and
   interactive single/multi-select menus while preserving typed prompts for

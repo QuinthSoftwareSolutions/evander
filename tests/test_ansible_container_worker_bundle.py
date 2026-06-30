@@ -252,6 +252,7 @@ def test_worker_container_egress_policy_role_applies_docker_user_default_deny() 
     ).read_text(encoding="utf-8")
 
     assert "evander_worker_egress_policy_active" in tasks
+    assert "agent-sandbox-worker-egress-policy.service" in tasks
     assert "Render worker egress policy script" in tasks
     assert "evander-worker-egress-policy.service" in tasks
     assert "Disable inactive worker egress policy service" in tasks
@@ -308,6 +309,7 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
 
     assert "config/worker-daemon.env" in tasks
     assert "no_log: true" in tasks
+    assert "agent-sandbox-worker-daemon.service" in tasks
     assert "evander-worker-daemon.service" in tasks
     assert "evander_worker_env_render.changed" in tasks
     assert "{{ key }}={{ value | string | quote }}" in env

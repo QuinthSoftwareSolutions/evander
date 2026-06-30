@@ -56,6 +56,50 @@ fi
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 SECRETS_FILE="${ROOT_DIR}/secrets.env"
+LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"
+LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"
+
+EVANDER_UNITS=(
+  evander-gateway.service
+  evander-admin-web.service
+  evander-openai-relay.service
+  evander-didww-sip-bridge.service
+  evander-firewall.service
+  evander-nuget-relay.service
+  evander-npm-audit-facade.service
+  evander-http-target-relay.service
+  evander-ado-worker.service
+  evander-proxy-issue-sync.service
+  evander-discord-ingest.service
+  evander-discord-wake.service
+  evander-scheduled-wake.service
+  evander-teams-ingest.service
+  evander-teams-meeting-ingest.service
+  evander-effect-orchestrator.service
+  evander-trigger-orchestrator.service
+)
+
+LEGACY_AGENT_SANDBOX_UNITS=(
+  agent-sandbox-gateway.service
+  agent-sandbox-admin-web.service
+  agent-sandbox-openai-relay.service
+  agent-sandbox-didww-sip-bridge.service
+  agent-sandbox-firewall.service
+  agent-sandbox-nuget-relay.service
+  agent-sandbox-npm-audit-facade.service
+  agent-sandbox-http-target-relay.service
+  agent-sandbox-ado-worker.service
+  agent-sandbox-proxy-issue-sync.service
+  agent-sandbox-discord-ingest.service
+  agent-sandbox-discord-wake.service
+  agent-sandbox-scheduled-wake.service
+  agent-sandbox-teams-ingest.service
+  agent-sandbox-teams-meeting-ingest.service
+  agent-sandbox-effect-orchestrator.service
+  agent-sandbox-trigger-orchestrator.service
+  agent-sandbox-issue-orchestrator.service
+  agent-sandbox-host-heartbeat.service
+)
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -391,6 +435,46 @@ render_unit() {
     "${template}" > "${target}"
 }
 
+migrate_legacy_local_secrets() {
+  if [[ -f "${LEGACY_LOCAL_SECRETS_FILE}" && ! -f "${LOCAL_SECRETS_FILE}" ]]; then
+    install -d -m 0750 "$(dirname "${LOCAL_SECRETS_FILE}")"
+    install -m 0600 "${LEGACY_LOCAL_SECRETS_FILE}" "${LOCAL_SECRETS_FILE}"
+    echo "Copied legacy local secrets to ${LOCAL_SECRETS_FILE}."
+  fi
+
+  if [[ ! -f "${LOCAL_SECRETS_FILE}" ]]; then
+    return
+  fi
+
+  local unit dropin_dir dropin_path
+  for unit in "${EVANDER_UNITS[@]}"; do
+    dropin_dir="${SYSTEMD_DIR}/${unit}.d"
+    dropin_path="${dropin_dir}/10-local-secrets.conf"
+    install -d -m 0755 "${dropin_dir}"
+    printf '[Service]\nEnvironmentFile=-%s\n' "${LOCAL_SECRETS_FILE}" > "${dropin_path}"
+  done
+}
+
+retire_legacy_agent_sandbox_units() {
+  local unit removed=0
+  for unit in "${LEGACY_AGENT_SANDBOX_UNITS[@]}"; do
+    if [[ -e "${SYSTEMD_DIR}/${unit}" || -d "${SYSTEMD_DIR}/${unit}.d" ]]; then
+      echo "Retiring legacy unit ${unit}."
+      systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+      rm -f "${SYSTEMD_DIR}/${unit}"
+      rm -rf "${SYSTEMD_DIR:?}/${unit}.d"
+      removed=1
+    fi
+  done
+
+  if [[ "${removed}" -ne 0 ]]; then
+    systemctl daemon-reload
+  fi
+}
+
+migrate_legacy_local_secrets
+retire_legacy_agent_sandbox_units
+
 render_unit \
   "${ROOT_DIR}/systemd/evander-gateway.service.template" \
   "${SYSTEMD_DIR}/evander-gateway.service"
@@ -460,23 +544,7 @@ render_unit \
   "${SYSTEMD_DIR}/evander-trigger-orchestrator.service"
 
 systemctl daemon-reload
-systemctl enable evander-gateway.service
-systemctl enable evander-admin-web.service
-systemctl enable evander-openai-relay.service
-systemctl enable evander-didww-sip-bridge.service
-systemctl enable evander-firewall.service
-systemctl enable evander-nuget-relay.service
-systemctl enable evander-npm-audit-facade.service
-systemctl enable evander-http-target-relay.service
-systemctl enable evander-ado-worker.service
-systemctl enable evander-proxy-issue-sync.service
-systemctl enable evander-discord-ingest.service
-systemctl enable evander-discord-wake.service
-systemctl enable evander-scheduled-wake.service
-systemctl enable evander-teams-ingest.service
-systemctl enable evander-teams-meeting-ingest.service
-systemctl enable evander-effect-orchestrator.service
-systemctl enable evander-trigger-orchestrator.service
+systemctl enable "${EVANDER_UNITS[@]}"
 
 cat <<EOF
 Installed systemd units:

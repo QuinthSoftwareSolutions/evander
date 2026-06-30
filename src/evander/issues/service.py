@@ -2578,6 +2578,8 @@ class GitHubIssueAdapter:
                     milestone=milestone,
                     since=since,
                     text_search=str(text_search or "").strip(),
+                    labels_any_set=labels_any_set,
+                    labels_all_set=labels_all_set,
                     top=normalized_top,
                     skip=normalized_skip,
                 )
@@ -2593,9 +2595,10 @@ class GitHubIssueAdapter:
                     mentioned=mentioned,
                     milestone=milestone,
                     since=since,
+                    labels_any_set=labels_any_set,
+                    labels_all_set=labels_all_set,
                     top=normalized_top,
                     skip=normalized_skip,
-                    needs_local_label_filter=bool(labels_any_set),
                 )
 
         normalized_items = [
@@ -2684,10 +2687,12 @@ class GitHubIssueAdapter:
         mentioned: str | None,
         milestone: str | None,
         since: str | None,
+        labels_any_set: set[str],
+        labels_all_set: set[str],
         top: int,
         skip: int,
-        needs_local_label_filter: bool,
     ) -> tuple[list[dict[str, Any]], int | None, bool]:
+        needs_local_label_filter = bool(labels_any_set)
         per_page = min(100, max(top + (skip if needs_local_label_filter else 0), 1))
         page = 1
         collected: list[dict[str, Any]] = []
@@ -2719,20 +2724,29 @@ class GitHubIssueAdapter:
             response.raise_for_status()
             payload = response.json()
             raw_items = payload if isinstance(payload, list) else []
+            page_has_more_matches = False
             for item in raw_items:
                 if not isinstance(item, dict) or isinstance(item.get("pull_request"), dict):
+                    continue
+                if not self._labels_match(
+                    item,
+                    labels_any_set=labels_any_set,
+                    labels_all_set=labels_all_set,
+                ):
                     continue
                 if skipped < skip:
                     skipped += 1
                     continue
-                collected.append(item)
                 if len(collected) >= top:
+                    page_has_more_matches = True
                     break
-            next_url = self._next_page_url(response)
+                collected.append(item)
+            next_page_url = self._next_page_url(response)
             params = None
-            has_more = bool(next_url)
-            if not raw_items:
+            has_more = page_has_more_matches or bool(next_page_url)
+            if not raw_items or len(collected) >= top:
                 break
+            next_url = next_page_url
         return collected, None, has_more
 
     def _search_issues(
@@ -2749,6 +2763,8 @@ class GitHubIssueAdapter:
         milestone: str | None,
         since: str | None,
         text_search: str,
+        labels_any_set: set[str],
+        labels_all_set: set[str],
         top: int,
         skip: int,
     ) -> tuple[list[dict[str, Any]], int | None, bool]:
@@ -2769,16 +2785,18 @@ class GitHubIssueAdapter:
             qualifiers.append(f'milestone:"{str(milestone).strip()}"')
         if since:
             qualifiers.append(f"updated:>={str(since).strip()}")
+        needs_local_label_filter = bool(labels_any_set)
+        per_page = min(100, max(top + (skip if needs_local_label_filter else 0), 1))
         params: dict[str, str] | None = {
             "q": " ".join(qualifiers),
             "sort": "updated",
             "order": "desc",
-            "per_page": str(min(100, max(top, 1))),
-            "page": str((skip // max(top, 1)) + 1),
+            "per_page": str(per_page),
+            "page": "1" if needs_local_label_filter else str((skip // max(top, 1)) + 1),
         }
         next_url: str | None = f"{self.api_base_url}/search/issues"
         collected: list[dict[str, Any]] = []
-        remaining_skip = skip % max(top, 1)
+        remaining_skip = skip if needs_local_label_filter else skip % max(top, 1)
         total_count: int | None = None
         has_more = False
         while next_url and len(collected) < top:
@@ -2791,20 +2809,29 @@ class GitHubIssueAdapter:
                     total_count = int(payload["total_count"])
             else:
                 raw_items = []
+            page_has_more_matches = False
             for item in raw_items:
                 if not isinstance(item, dict) or isinstance(item.get("pull_request"), dict):
+                    continue
+                if not self._labels_match(
+                    item,
+                    labels_any_set=labels_any_set,
+                    labels_all_set=labels_all_set,
+                ):
                     continue
                 if remaining_skip:
                     remaining_skip -= 1
                     continue
-                collected.append(item)
                 if len(collected) >= top:
+                    page_has_more_matches = True
                     break
-            next_url = self._next_page_url(response)
+                collected.append(item)
+            next_page_url = self._next_page_url(response)
             params = None
-            has_more = bool(next_url)
-            if not raw_items:
+            has_more = page_has_more_matches or bool(next_page_url)
+            if not raw_items or len(collected) >= top:
                 break
+            next_url = next_page_url
         return collected, total_count, has_more
 
     def _fetch_comments(

@@ -462,6 +462,8 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "evander_worker_npm_registry_url" in defaults
 
     assert "evander_nexus_admin_password must be set from Vault" in tasks
+    assert "agent-sandbox-nexus.service" in tasks
+    assert "/etc/systemd/system/agent-sandbox-nexus.service.d" in tasks
     assert "quiet: true" in tasks
     assert "Assert Nexus admin password is configured\n" in tasks
     assert "Read Nexus Community Edition EULA status" in tasks
@@ -607,6 +609,8 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     assert "guest/worker firewall allowances" in defaults
 
     assert "Stop Qdrant semantic store when disabled" in tasks
+    assert "agent-sandbox-qdrant.service" in tasks
+    assert "/etc/systemd/system/agent-sandbox-qdrant.service.d" in tasks
     assert "evander-qdrant.service" in tasks
     assert "Install Docker for Qdrant semantic store" in tasks
     assert "name: docker.io" in tasks

@@ -100,6 +100,53 @@ def test_github_issue_adapter_lists_issues_with_token_and_excludes_prs(
     assert result["items"][0]["author"]["login"] == "alice"
 
 
+def test_github_issue_adapter_scans_until_labels_any_matches(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr("evander.issues.service.httpx.Client", _Client)
+    _Client.requests = []
+    _Client.responses = [
+        _Response(
+            [
+                {
+                    "number": 41,
+                    "title": "Documentation cleanup",
+                    "state": "open",
+                    "labels": [{"name": "docs"}],
+                    "html_url": "https://github.com/owner/repo/issues/41",
+                }
+            ],
+            links={
+                "next": {
+                    "url": "https://api.github.test/repos/owner/repo/issues?page=2"
+                }
+            },
+        ),
+        _Response(
+            [
+                {
+                    "number": 42,
+                    "title": "Crash on launch",
+                    "state": "open",
+                    "labels": [{"name": "bug"}],
+                    "html_url": "https://github.com/owner/repo/issues/42",
+                }
+            ]
+        ),
+    ]
+
+    adapter = GitHubIssueAdapter(_Resolver(), api_base_url="https://api.github.test")
+    result = adapter.query_remote_issues(
+        directory_path="root/github",
+        repo="owner/repo",
+        labels_any=["bug"],
+        top=1,
+    )
+
+    assert len(_Client.requests) == 2
+    assert result["count"] == 1
+    assert result["items"][0]["remote_issue_id"] == "42"
+
+
 def test_github_issue_adapter_reads_issue_comments(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setattr("evander.issues.service.httpx.Client", _Client)
