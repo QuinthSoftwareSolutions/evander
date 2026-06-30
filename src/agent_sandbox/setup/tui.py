@@ -18,6 +18,7 @@ from agent_sandbox.setup.engine import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_RUNTIME_DIR,
     PROVIDER_ENV_VARS,
+    SetupDependencyInstallRejected,
     SetupManager,
     SetupPreflightError,
 )
@@ -501,7 +502,14 @@ def _launch(manager: SetupManager, state):
     if not typer.confirm("Apply this setup plan and verify the Admin Assistant?", default=False):
         return state
     try:
-        return manager.launch(state)
+        return manager.launch(
+            state,
+            approve_nodejs_npm_install=_confirm_nodejs_npm_install,
+        )
+    except SetupDependencyInstallRejected as exc:
+        typer.echo("")
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
     except Exception as exc:
         typer.echo("")
         typer.echo(f"Launch failed: {exc}")
@@ -509,3 +517,14 @@ def _launch(manager: SetupManager, state):
             "Fix the failed step above, then rerun Launch and Admin Assistant verification."
         )
         return manager.load_state()
+
+
+def _confirm_nodejs_npm_install(versions: dict[str, str]) -> bool:
+    typer.echo("")
+    typer.echo("Admin Web frontend assets are missing or stale, and npm is not installed.")
+    typer.echo(
+        "Setup can install "
+        f"Node.js {versions.get('nodejs', 'unknown')} and npm {versions.get('npm', 'unknown')} "
+        "with apt-get so it can build the Admin Web frontend."
+    )
+    return typer.confirm("Install Node.js/npm now?", default=False)

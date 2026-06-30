@@ -10,7 +10,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -125,6 +125,10 @@ class SetupPreflightError(RuntimeError):
     def __init__(self, *, returncode: int) -> None:
         super().__init__(f"install preflight failed with exit code {returncode}")
         self.returncode = returncode
+
+
+class SetupDependencyInstallRejected(RuntimeError):
+    pass
 
 
 def _now() -> str:
@@ -662,11 +666,18 @@ class SetupManager:
         self.save_state(state)
         return state
 
-    def launch(self, state: SetupState) -> SetupState:
+    def launch(
+        self,
+        state: SetupState,
+        *,
+        approve_nodejs_npm_install: Callable[[dict[str, str]], bool] | None = None,
+    ) -> SetupState:
         if not self.required_ready(state):
             raise ValueError("Setup checklist is not ready to launch")
         self._write_config_files(state)
-        self._ensure_admin_frontend_assets()
+        self._ensure_admin_frontend_assets(
+            approve_nodejs_npm_install=approve_nodejs_npm_install
+        )
         subprocess.run(
             [
                 "sudo",
@@ -695,7 +706,11 @@ class SetupManager:
         self.save_state(state)
         return state
 
-    def _ensure_admin_frontend_assets(self) -> None:
+    def _ensure_admin_frontend_assets(
+        self,
+        *,
+        approve_nodejs_npm_install: Callable[[dict[str, str]], bool] | None = None,
+    ) -> None:
         frontend_dir = self.project_dir / "frontend" / "workflow-editor"
         dist_dir = admin_frontend_dist_dir(self.project_dir)
         if admin_frontend_assets_ready(dist_dir):
@@ -709,12 +724,17 @@ class SetupManager:
             )
         npm_path = shutil.which("npm")
         if npm_path is None:
-            missing = ", ".join(str(path) for path in missing_admin_frontend_assets(dist_dir))
-            raise RuntimeError(
-                "Admin Web frontend assets are missing or stale and npm is not installed. "
-                "Install Node.js/npm, then rerun Launch and Admin Assistant verification. "
-                f"Missing assets: {missing}"
+            self._install_nodejs_npm_for_admin_frontend(
+                dist_dir,
+                approve_nodejs_npm_install=approve_nodejs_npm_install,
             )
+            npm_path = shutil.which("npm")
+            if npm_path is None:
+                raise RuntimeError(
+                    "Admin Web frontend assets are missing or stale, and npm was still "
+                    "not available after installing Node.js/npm. Install Node.js/npm, "
+                    "then rerun Launch and Admin Assistant verification."
+                )
 
         if not (frontend_dir / "node_modules").is_dir():
             install_command = [
@@ -734,6 +754,79 @@ class SetupManager:
             raise RuntimeError(
                 f"Admin Web frontend build did not produce required assets: {missing}"
             )
+
+    def _install_nodejs_npm_for_admin_frontend(
+        self,
+        dist_dir: Path,
+        *,
+        approve_nodejs_npm_install: Callable[[dict[str, str]], bool] | None,
+    ) -> None:
+        apt_get = shutil.which("apt-get")
+        apt_cache = shutil.which("apt-cache")
+        sudo = shutil.which("sudo")
+        running_as_root = getattr(os, "geteuid", lambda: 1)() == 0
+        if apt_get is None or apt_cache is None or (sudo is None and not running_as_root):
+            missing = ", ".join(str(path) for path in missing_admin_frontend_assets(dist_dir))
+            raise RuntimeError(
+                "Admin Web frontend assets are missing or stale and npm is not installed. "
+                "Install Node.js/npm, or run setup on an apt-based host with sudo and apt-cache available "
+                "so guided setup can install them automatically. "
+                f"Missing assets: {missing}"
+            )
+
+        versions = self._apt_candidate_versions(apt_cache, ["nodejs", "npm"])
+        if approve_nodejs_npm_install is None:
+            raise RuntimeError(
+                "Admin Web frontend assets are missing or stale and npm is not installed. "
+                f"Guided setup can install Node.js {versions['nodejs']} and npm {versions['npm']}; "
+                "rerun setup interactively to approve the install, or install Node.js/npm manually."
+            )
+        if not approve_nodejs_npm_install(versions):
+            raise SetupDependencyInstallRejected(
+                "Node.js/npm installation was not approved; setup launch cannot continue."
+            )
+
+        print("Installing approved Node.js/npm packages with apt-get...")
+        install_command = (
+            [apt_get, "install", "-y", f"nodejs={versions['nodejs']}", f"npm={versions['npm']}"]
+            if running_as_root
+            else [
+                sudo,
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                apt_get,
+                "install",
+                "-y",
+                f"nodejs={versions['nodejs']}",
+                f"npm={versions['npm']}",
+            ]
+        )
+        subprocess.run(install_command, check=True)
+
+    def _apt_candidate_versions(self, apt_cache: str, packages: list[str]) -> dict[str, str]:
+        versions = {}
+        for package in packages:
+            completed = subprocess.run(
+                [apt_cache, "policy", package],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode != 0:
+                detail = completed.stderr.strip() or completed.stdout.strip()
+                raise RuntimeError(
+                    f"Could not resolve apt candidate version for {package}: {detail}"
+                )
+            candidate = ""
+            for raw_line in completed.stdout.splitlines():
+                line = raw_line.strip()
+                if line.startswith("Candidate:"):
+                    candidate = line.split(":", 1)[1].strip()
+                    break
+            if not candidate or candidate == "(none)":
+                raise RuntimeError(f"No apt candidate version is available for {package}.")
+            versions[package] = candidate
+        return versions
 
     def _write_config_files(self, state: SetupState) -> None:
         self._ensure_container_worker_secret(state)

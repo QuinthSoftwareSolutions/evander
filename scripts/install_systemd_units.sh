@@ -276,12 +276,29 @@ check_admin_frontend_assets() {
 
   if command -v npm >/dev/null 2>&1; then
     report_pass "Admin Web frontend assets are missing or stale; npm is available to build them during guided setup launch."
+  elif [[ "${SERVICE_PROFILE}" == "setup" ]] && command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1 && { [[ "${EUID}" -eq 0 ]] || command -v sudo >/dev/null 2>&1; }; then
+    local nodejs_version
+    local npm_version
+    nodejs_version="$(apt_package_candidate nodejs)"
+    npm_version="$(apt_package_candidate npm)"
+    if [[ -n "${nodejs_version}" && "${nodejs_version}" != "(none)" && -n "${npm_version}" && "${npm_version}" != "(none)" ]]; then
+      report_pass "Admin Web frontend assets are missing or stale; guided setup can install Node.js ${nodejs_version} and npm ${npm_version} during launch after confirmation."
+    else
+      report_fail \
+        "Admin Web frontend assets are missing or stale and npm is not installed." \
+        "No apt candidate was found for Node.js/npm. Install Node.js/npm and build frontend/workflow-editor manually. Missing assets: ${missing}" \
+        "critical"
+    fi
   else
     report_fail \
       "Admin Web frontend assets are missing or stale and npm is not installed." \
-      "Install Node.js/npm so guided setup can build frontend/workflow-editor, or build the Admin Web frontend manually. Missing assets: ${missing}" \
+      "Install Node.js/npm and build frontend/workflow-editor, or run guided setup on an apt-based host with sudo available so it can ask before installing them. Missing assets: ${missing}" \
       "critical"
   fi
+}
+
+apt_package_candidate() {
+  apt-cache policy "$1" | awk '/Candidate:/ {print $2; exit}'
 }
 
 run_preflight_checks() {

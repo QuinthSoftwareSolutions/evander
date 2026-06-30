@@ -90,11 +90,13 @@ def test_install_systemd_units_preflight_checks_admin_frontend_assets() -> None:
     text = _script_text()
 
     assert "admin_frontend_assets_ready()" in text
+    assert "apt_package_candidate()" in text
     assert "check_admin_frontend_assets" in text
     assert "Admin Web frontend assets are built." in text
     assert "Admin Web frontend assets are missing or stale; npm is available" in text
+    assert "guided setup can install Node.js ${nodejs_version} and npm ${npm_version}" in text
     assert "Admin Web frontend assets are missing or stale and npm is not installed." in text
-    assert "Install Node.js/npm so guided setup can build frontend/workflow-editor" in text
+    assert "run guided setup on an apt-based host with sudo available" in text
 
 
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:

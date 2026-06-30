@@ -8,7 +8,11 @@ from typer.testing import CliRunner
 
 from agent_sandbox.cli import app
 from agent_sandbox.setup import tui as setup_tui
-from agent_sandbox.setup.engine import SetupManager, SetupPreflightError
+from agent_sandbox.setup.engine import (
+    SetupDependencyInstallRejected,
+    SetupManager,
+    SetupPreflightError,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,7 +164,7 @@ def test_setup_tui_launch_failure_returns_to_checklist(
     monkeypatch.setattr(manager, "plan", lambda: {"ready": True})
     monkeypatch.setattr(setup_tui.typer, "confirm", lambda *args, **kwargs: True)
 
-    def fail_launch(state):
+    def fail_launch(state, **kwargs):
         raise RuntimeError("worker daemon is not reachable")
 
     monkeypatch.setattr(manager, "launch", fail_launch)
@@ -319,7 +323,74 @@ def test_setup_builds_admin_frontend_assets_when_references_are_missing(
     assert all(call["check"] is True for call in run_calls)
 
 
-def test_setup_admin_frontend_asset_build_requires_npm(tmp_path: Path, monkeypatch) -> None:
+def test_setup_admin_frontend_asset_build_installs_approved_nodejs_npm(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "project"
+    frontend_dir = project_dir / "frontend" / "workflow-editor"
+    dist_dir = frontend_dir / "dist"
+    dist_dir.mkdir(parents=True)
+    (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
+    (frontend_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+    (dist_dir / "index.html").write_text(
+        '<script type="module" src="/assets/index-missing.js"></script>',
+        encoding="utf-8",
+    )
+    manager = SetupManager(project_dir=project_dir, runtime_dir=tmp_path / "runtime")
+    which_calls = {"npm": 0}
+    run_calls = []
+    approvals = []
+
+    def fake_which(command):
+        if command == "npm":
+            which_calls["npm"] += 1
+            return None if which_calls["npm"] == 1 else "/bin/npm"
+        return {
+            "apt-cache": "/usr/bin/apt-cache",
+            "apt-get": "/usr/bin/apt-get",
+            "sudo": "/usr/bin/sudo",
+        }.get(command)
+
+    def fake_run(args, **kwargs):
+        run_calls.append({"args": args, **kwargs})
+        if args == ["/usr/bin/apt-cache", "policy", "nodejs"]:
+            return subprocess.CompletedProcess(args, 0, stdout="Candidate: 18.19.1\n", stderr="")
+        if args == ["/usr/bin/apt-cache", "policy", "npm"]:
+            return subprocess.CompletedProcess(args, 0, stdout="Candidate: 9.2.0\n", stderr="")
+        if args == ["/bin/npm", "run", "build"]:
+            assets_dir = dist_dir / "assets"
+            assets_dir.mkdir()
+            (assets_dir / "index-missing.js").write_text("console.log('ok')", encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("agent_sandbox.setup.engine.shutil.which", fake_which)
+    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.setup.engine.os.geteuid", lambda: 1000)
+
+    manager._ensure_admin_frontend_assets(
+        approve_nodejs_npm_install=lambda versions: approvals.append(versions) or True
+    )
+
+    assert approvals == [{"nodejs": "18.19.1", "npm": "9.2.0"}]
+    assert [
+        "/usr/bin/sudo",
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "/usr/bin/apt-get",
+        "install",
+        "-y",
+        "nodejs=18.19.1",
+        "npm=9.2.0",
+    ] in [call["args"] for call in run_calls]
+    assert ["/bin/npm", "ci", "--no-audit", "--no-fund"] in [
+        call["args"] for call in run_calls
+    ]
+    assert ["/bin/npm", "run", "build"] in [call["args"] for call in run_calls]
+
+
+def test_setup_admin_frontend_asset_build_stops_when_nodejs_npm_is_rejected(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_dir = tmp_path / "project"
     frontend_dir = project_dir / "frontend" / "workflow-editor"
     dist_dir = frontend_dir / "dist"
@@ -331,10 +402,44 @@ def test_setup_admin_frontend_asset_build_requires_npm(tmp_path: Path, monkeypat
     )
     manager = SetupManager(project_dir=project_dir, runtime_dir=tmp_path / "runtime")
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.shutil.which", lambda command: None)
+    monkeypatch.setattr(
+        "agent_sandbox.setup.engine.shutil.which",
+        lambda command: {
+            "apt-cache": "/usr/bin/apt-cache",
+            "apt-get": "/usr/bin/apt-get",
+            "sudo": "/usr/bin/sudo",
+        }.get(command),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_apt_candidate_versions",
+        lambda apt_cache, packages: {"nodejs": "18.19.1", "npm": "9.2.0"},
+    )
 
-    with pytest.raises(RuntimeError, match="npm is not installed"):
-        manager._ensure_admin_frontend_assets()
+    with pytest.raises(SetupDependencyInstallRejected):
+        manager._ensure_admin_frontend_assets(
+            approve_nodejs_npm_install=lambda versions: False
+        )
+
+
+def test_setup_tui_launch_exits_when_dependency_install_is_rejected(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    monkeypatch.setattr(manager, "required_ready", lambda state: True)
+    monkeypatch.setattr(manager, "plan", lambda: {"ready": True})
+    monkeypatch.setattr(setup_tui.typer, "confirm", lambda *args, **kwargs: True)
+
+    def reject_launch(state, **kwargs):
+        raise SetupDependencyInstallRejected("Node.js/npm installation was not approved.")
+
+    monkeypatch.setattr(manager, "launch", reject_launch)
+
+    with pytest.raises(setup_tui.typer.Exit):
+        setup_tui._launch(manager, state)
+
+    assert "Node.js/npm installation was not approved." in capsys.readouterr().out
 
 
 def test_setup_launch_starts_local_worker_for_same_host_container(
@@ -351,7 +456,7 @@ def test_setup_launch_starts_local_worker_for_same_host_container(
 
     monkeypatch.setattr(manager, "required_ready", lambda state: True)
     monkeypatch.setattr(manager, "_write_config_files", lambda state: None)
-    monkeypatch.setattr(manager, "_ensure_admin_frontend_assets", lambda: None)
+    monkeypatch.setattr(manager, "_ensure_admin_frontend_assets", lambda **kwargs: None)
     monkeypatch.setattr(manager, "_install_secret_dropins", lambda state: None)
     monkeypatch.setattr(manager, "_wait_admin_web", lambda state: None)
     monkeypatch.setattr(manager, "_verify_admin_assistant", lambda state: None)
