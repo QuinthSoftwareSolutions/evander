@@ -121,6 +121,9 @@ class AdminRuntimePrivilegedHelperPort:
     def get_use_privileged_helper(self) -> bool:
         return bool(self._host.use_privileged_helper)
 
+    def set_use_privileged_helper(self, enabled: bool) -> None:
+        self._host.use_privileged_helper = bool(enabled)
+
     def set_privileged_helper(self, helper: Any | None) -> None:
         self._host._privileged_helper = helper
 
@@ -152,8 +155,7 @@ class AdminRuntimeComponents:
     admin_config_mutation_lock_path: Path
     local_issue_yaml_dir: Path
     workflow_generation_transport: httpx.AsyncBaseTransport | None
-    use_privileged_helper: bool
-    privileged_helper: Any | None
+    _privileged_helper_port: AdminRuntimePrivilegedHelperPort
     directory_admin: DirectoryAdminService
     directory_ownership: DirectoryOwnershipQueries
     issue_service: IssueService
@@ -185,6 +187,22 @@ class AdminRuntimeComponents:
     agent_create_operation_payloads_lock: threading.Lock
     agent_create_executor: ThreadPoolExecutor
     execution_backend_instance: Any | None
+
+    @property
+    def use_privileged_helper(self) -> bool:
+        return self._privileged_helper_port.get_use_privileged_helper()
+
+    @use_privileged_helper.setter
+    def use_privileged_helper(self, enabled: bool) -> None:
+        self._privileged_helper_port.set_use_privileged_helper(enabled)
+
+    @property
+    def privileged_helper(self) -> Any | None:
+        return self._privileged_helper_port.get_privileged_helper()
+
+    @privileged_helper.setter
+    def privileged_helper(self, helper: Any | None) -> None:
+        self._privileged_helper_port.set_privileged_helper(helper)
 
 
 class _AdminRuntimeHost:
@@ -616,8 +634,7 @@ def _build_admin_runtime_components(
         admin_config_mutation_lock_path=admin_config_mutation_lock_path,
         local_issue_yaml_dir=local_issue_yaml_dir,
         workflow_generation_transport=host.workflow_generation_transport,
-        use_privileged_helper=host.use_privileged_helper,
-        privileged_helper=host._privileged_helper,
+        _privileged_helper_port=privileged_helper_port,
         directory_admin=directory_admin,
         directory_ownership=directory_ownership,
         issue_service=issue_service,

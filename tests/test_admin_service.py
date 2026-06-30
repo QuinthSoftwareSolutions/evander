@@ -39,7 +39,7 @@ admin_service = SimpleNamespace(
 import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import httpx
 import pytest
-from agent_sandbox.admin import privileged_helper
+from agent_sandbox.admin import operations_helpers, privileged_helper
 from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.services.vm_agent.common_models import AgentCreateOperation
@@ -14698,7 +14698,7 @@ def test_wait_for_vm_ip_uses_pkexec_when_requested(monkeypatch) -> None:
 
 def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.operations_admin._privileged_helper._host.use_privileged_helper = True
+    service.use_privileged_helper = True
     started: list[str] = []
 
     class FakeHelper:
@@ -14716,10 +14716,80 @@ def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr("agent_sandbox.admin.composition.PrivilegedHelperSession", FakeHelper)
 
+    assert service.operations_admin.privileged_helper_required() is True
     assert service.operations_admin.unlock_privileged_operations() == "Privileged operations unlocked."
     assert service.operations_admin.privileged_operations_unlocked() is True
+    assert service.privileged_helper is not None
     service.operations_admin.lock_privileged_operations()
+    assert service.privileged_helper is None
     assert started == ["init", "start", "close"]
+
+
+def test_privileged_helper_session_round_trips_requests(monkeypatch, tmp_path: Path) -> None:
+    class FakeStdin:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            self.flushes = 0
+
+        def write(self, value: str) -> None:
+            self.writes.append(value)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.responses = [
+                json.dumps({"ok": True, "status": "pong"}) + "\n",
+                json.dumps({"ok": True, "returncode": 0, "stdout": "done"}) + "\n",
+                json.dumps({"ok": True}) + "\n",
+            ]
+
+        def readline(self) -> str:
+            return self.responses.pop(0)
+
+    class FakeStderr:
+        def read(self) -> str:
+            return ""
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout()
+            self.stderr = FakeStderr()
+            self.terminated = False
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    fake_process = FakeProcess()
+
+    monkeypatch.setattr(
+        operations_helpers.subprocess,
+        "Popen",
+        lambda *args, **kwargs: fake_process,
+    )
+
+    session = operations_helpers.PrivilegedHelperSession(
+        python_executable="/usr/bin/python3",
+        project_dir=tmp_path,
+    )
+
+    session.start()
+    response = session.call("run_script", script_path="/tmp/script.sh", args=["--flag"])
+    session.close()
+
+    assert response == {"ok": True, "returncode": 0, "stdout": "done"}
+    assert fake_process.stdin.flushes == 3
+    assert [json.loads(item) for item in fake_process.stdin.writes] == [
+        {"op": "ping"},
+        {"op": "run_script", "script_path": "/tmp/script.sh", "args": ["--flag"]},
+        {"op": "exit"},
+    ]
+    assert fake_process.terminated is True
 
 
 def test_privileged_helper_preserves_host_claude_binary_env() -> None:

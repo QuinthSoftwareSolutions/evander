@@ -412,7 +412,7 @@ def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
         )
     )
 
-    result = backend.vm_agent_admin.delete_session("session-1")
+    result = backend.delete_session("session-1")
 
     assert result == {"deleted": True, "session_id": "session-1"}
     assert client.deleted_sessions == ["session-1"]
@@ -466,7 +466,7 @@ def test_delete_session_uses_targeted_repository_lookup(tmp_path: Path) -> None:
         repository=targeted_repository,  # type: ignore[arg-type]
     )
 
-    result = backend.vm_agent_admin.delete_session("session-1")
+    result = backend.delete_session("session-1")
 
     assert result == {"deleted": True, "session_id": "session-1"}
     assert targeted_repository.listed_sessions == ["session-1"]

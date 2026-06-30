@@ -186,7 +186,11 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
         captured.update(kwargs)
         return report
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
 
     client = TestClient(create_app(service))
     response = client.post(
@@ -257,7 +261,11 @@ def test_admin_web_pr_integration_preflight_rejects_invalid_requests(
     def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
         raise AssertionError(f"service should not be invoked: {kwargs!r}")
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
 
     client = TestClient(create_app(service))
     response = client.post("/api/admin/pr-integration-preflight", json=body)
@@ -274,7 +282,11 @@ def test_admin_web_pr_integration_preflight_rejects_bad_json(
     def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
         raise AssertionError(f"service should not be invoked: {kwargs!r}")
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
 
     client = TestClient(create_app(service))
     response = client.post(
@@ -295,7 +307,11 @@ def test_admin_web_pr_integration_preflight_requires_workflow_write_permission(
     def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
         raise AssertionError(f"service should not be invoked: {kwargs!r}")
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
     auth = _DenyWorkflowWriteAuth()
     route = pr_integration_routes(service, auth)[0]
 

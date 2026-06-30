@@ -4327,7 +4327,7 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "list_vms",
         lambda include_inactive=True, vm_user="agent": [
             VmSummary(
@@ -4339,7 +4339,7 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
         ],
     )
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "resume_agent",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("resume_agent should not be called while busy")
@@ -4591,7 +4591,7 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "list_vms",
         lambda **kwargs: [
             VmSummary(
@@ -4603,7 +4603,7 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
         ],
     )
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "resume_agent",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("resume_agent should only be called by the queued dispatch port")
@@ -4611,7 +4611,7 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
     )
     metadata_updates: list[dict[str, object]] = []
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.issue_git_admin,
         "session_update_metadata",
         lambda **kwargs: metadata_updates.append(kwargs) or {"success": True},
     )
@@ -4762,7 +4762,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "list_vms",
         lambda **kwargs: [
             VmSummary(
@@ -4774,7 +4774,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
         ],
     )
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "resume_agent",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("resume_agent should only be called by queued dispatch")
@@ -4782,7 +4782,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
     )
     metadata_updates: list[dict[str, object]] = []
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.issue_git_admin,
         "session_update_metadata",
         lambda **kwargs: metadata_updates.append(kwargs) or {"success": True},
     )
@@ -6437,7 +6437,7 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "list_vms",
         lambda include_inactive=True, vm_user="agent": [
             VmSummary(
@@ -6449,7 +6449,7 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
         ],
     )
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "resume_agent",
         lambda **kwargs: type(
             "Result",
@@ -6538,7 +6538,7 @@ def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "list_vms",
         lambda include_inactive=True, vm_user="agent": [
             VmSummary(
@@ -6550,7 +6550,7 @@ def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
         ],
     )
     monkeypatch.setattr(
-        worker.provider_factory.admin_service,
+        worker.provider_factory.admin_service.vm_agent_admin,
         "resume_agent",
         lambda **kwargs: type(
             "Result",

@@ -152,22 +152,26 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     service = build_admin_runtime(write_config(tmp_path))
     _write_audit_log(service.config.audit_log_path)
 
-    default_page = service.list_tool_call_audit_entries(limit=2)
-    team_page = service.list_tool_call_audit_entries(directory_path="root/team")
-    team_direct_page = service.list_tool_call_audit_entries(
+    default_page = service.approval_audit_admin.list_tool_call_audit_entries(limit=2)
+    team_page = service.approval_audit_admin.list_tool_call_audit_entries(directory_path="root/team")
+    team_direct_page = service.approval_audit_admin.list_tool_call_audit_entries(
         directory_path="root/team", direct_only=True
     )
-    session_tool_status_page = service.list_tool_call_audit_entries(
+    session_tool_status_page = service.approval_audit_admin.list_tool_call_audit_entries(
         session_id="session-1",
         tool_name="email_send_approved",
         status="success",
     )
-    time_window_page = service.list_tool_call_audit_entries(
+    time_window_page = service.approval_audit_admin.list_tool_call_audit_entries(
         created_after=datetime(2026, 5, 18, 10, 1, tzinfo=UTC),
         created_before=datetime(2026, 5, 18, 10, 3, tzinfo=UTC),
     )
-    correlation_page = service.list_tool_call_audit_entries(q="correlation-2")
-    redaction_search_page = service.list_tool_call_audit_entries(q="super-secret")
+    correlation_page = service.approval_audit_admin.list_tool_call_audit_entries(
+        q="correlation-2"
+    )
+    redaction_search_page = service.approval_audit_admin.list_tool_call_audit_entries(
+        q="super-secret"
+    )
 
     assert default_page.limit == 2
     assert default_page.counts.scanned == 3
@@ -259,7 +263,7 @@ def test_admin_service_tool_call_recent_only_reads_from_log_tail(tmp_path: Path)
         encoding="utf-8",
     )
 
-    page = service.list_tool_call_audit_entries(
+    page = service.approval_audit_admin.list_tool_call_audit_entries(
         directory_path="root/team",
         direct_only=True,
         limit=5,
@@ -284,10 +288,10 @@ def test_admin_service_tool_call_fallback_reads_jsonl_when_index_is_disabled(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.tool_call_audit_index = None
+    service.approval_audit_admin.tool_call_audit_index = None
     _write_audit_log(service.config.audit_log_path)
 
-    page = service.list_tool_call_audit_entries(limit=2)
+    page = service.approval_audit_admin.list_tool_call_audit_entries(limit=2)
 
     assert page.counts.scanned == 5
     assert page.counts.skipped_malformed == 1
@@ -329,7 +333,7 @@ def test_admin_service_directory_filter_falls_back_when_audit_index_is_incomplet
         encoding="utf-8",
     )
 
-    page = service.list_tool_call_audit_entries(
+    page = service.approval_audit_admin.list_tool_call_audit_entries(
         directory_path="root/team",
         direct_only=True,
         limit=10,
@@ -367,14 +371,16 @@ def test_admin_service_default_read_falls_back_when_tail_index_is_sparse(
         encoding="utf-8",
     )
 
-    page = service.list_tool_call_audit_entries(limit=10)
+    page = service.approval_audit_admin.list_tool_call_audit_entries(limit=10)
 
     assert [item.tool_name for item in page.items] == ["old_tool_call"]
     assert page.counts.scanned == 1_201
     assert page.counts.skipped_non_tool_call == 1_200
     assert page.counts.matched == 1
 
-    recent_page = service.list_tool_call_audit_entries(limit=10, recent_only=True)
+    recent_page = service.approval_audit_admin.list_tool_call_audit_entries(
+        limit=10, recent_only=True
+    )
 
     assert recent_page.items == []
     assert recent_page.counts.scanned == 0
@@ -560,7 +566,7 @@ def test_admin_service_date_window_uses_index_without_full_jsonl_scan(tmp_path: 
         encoding="utf-8",
     )
 
-    page = service.list_tool_call_audit_entries(
+    page = service.approval_audit_admin.list_tool_call_audit_entries(
         directory_path="root/team",
         direct_only=True,
         created_after=datetime(2026, 5, 18, 0, 0, tzinfo=UTC),
@@ -606,7 +612,7 @@ def test_admin_web_tool_calls_route_recent_only_uses_bounded_recent_read(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.tool_call_audit_index = None
+    service.approval_audit_admin.tool_call_audit_index = None
     entries = [
         {
             "event_type": "tool_call",

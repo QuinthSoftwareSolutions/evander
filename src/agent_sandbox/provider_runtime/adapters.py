@@ -334,7 +334,7 @@ def build_provider_runtime_ports(
         issue_reader=_pick(provider_runtime, "issue_reader", admin_adapter),
         session_context_reader=_pick(provider_runtime, "session_context_reader", admin_adapter),
         session_artifact_reader=_pick(provider_runtime, "session_artifact_reader", admin_adapter),
-        admin_service=_pick(provider_runtime, "admin_service", admin_adapter, admin_service),
+        admin_service=_pick(provider_runtime, "admin_service", admin_service, admin_adapter),
         metadata=provider_metadata,
     )
 

@@ -11,7 +11,7 @@ from agent_sandbox.repositories.skills_library import SkillLibraryRepository
 def test_skill_admin_service_manages_skill_library(tmp_path: Path) -> None:
     service = SkillAdminService(SkillLibraryRepository(tmp_path))
 
-    created = service.skill_admin.create_skill({"name": "skill-a", "content": "# Skill A"})
+    created = service.create_skill({"name": "skill-a", "content": "# Skill A"})
 
     assert created.name == "skill-a"
     assert [item.name for item in service.list_skills()] == ["skill-a"]
@@ -32,10 +32,10 @@ def test_skill_admin_service_validates_create_payload(tmp_path: Path) -> None:
     service = SkillAdminService(SkillLibraryRepository(tmp_path))
 
     with pytest.raises(ValueError, match="Skill name is required"):
-        service.skill_admin.create_skill({"content": "# Missing name"})
+        service.create_skill({"content": "# Missing name"})
 
     with pytest.raises(ValueError, match="Skill content is required"):
-        service.skill_admin.create_skill({"name": "missing-content"})
+        service.create_skill({"name": "missing-content"})
 
 
 def test_skill_admin_service_rejects_unknown_managed_skill(tmp_path: Path) -> None:

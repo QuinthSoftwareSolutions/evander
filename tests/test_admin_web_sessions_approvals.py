@@ -942,14 +942,14 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(service.vm_agent_admin, "_current_utc_now", lambda: now)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
             vm_provider="container_worker_vm",
             vm_provider_id="container-target",
             allowed_tools=[ToolName.APPROVAL_CHECK],
-            expires_at=now + timedelta(hours=1),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "container-target",
@@ -1034,14 +1034,14 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    monkeypatch.setattr(service.vm_agent_admin, "_current_utc_now", lambda: now)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
             vm_provider="container_worker_vm",
             vm_provider_id="container-target",
             allowed_tools=[ToolName.APPROVAL_CHECK],
-            expires_at=now + timedelta(hours=1),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "container-target",

@@ -10,7 +10,7 @@ from agent_sandbox.repositories.skills_library import SkillLibraryRepository
 def test_skill_library_create_list_read_replace_delete(tmp_path: Path) -> None:
     repository = SkillLibraryRepository(tmp_path)
 
-    created = repository.skill_admin.create_skill(
+    created = repository.create_skill(
         name="demo.skill",
         content="# Demo\n\nUse this skill.",
     )
@@ -23,7 +23,7 @@ def test_skill_library_create_list_read_replace_delete(tmp_path: Path) -> None:
         encoding="utf-8"
     ) == "# Demo\n\nUse this skill."
 
-    replaced = repository.skill_admin.create_skill(
+    replaced = repository.create_skill(
         name="demo.skill",
         content="# Updated",
         replace=True,
@@ -41,10 +41,10 @@ def test_skill_library_create_list_read_replace_delete(tmp_path: Path) -> None:
 
 def test_skill_library_rejects_duplicates_without_replace(tmp_path: Path) -> None:
     repository = SkillLibraryRepository(tmp_path)
-    repository.skill_admin.create_skill(name="demo", content="# Demo")
+    repository.create_skill(name="demo", content="# Demo")
 
     with pytest.raises(FileExistsError, match="Skill already exists: demo"):
-        repository.skill_admin.create_skill(name="demo", content="# Other")
+        repository.create_skill(name="demo", content="# Other")
 
 
 @pytest.mark.parametrize("name", ["", "../escape", "nested/path", "nested\\path", ".", ".."])
@@ -52,14 +52,14 @@ def test_skill_library_rejects_invalid_names(tmp_path: Path, name: str) -> None:
     repository = SkillLibraryRepository(tmp_path)
 
     with pytest.raises(ValueError):
-        repository.skill_admin.create_skill(name=name, content="# Demo")
+        repository.create_skill(name=name, content="# Demo")
 
 
 def test_skill_library_rejects_empty_content(tmp_path: Path) -> None:
     repository = SkillLibraryRepository(tmp_path)
 
     with pytest.raises(ValueError, match="must not be empty"):
-        repository.skill_admin.create_skill(name="demo", content=" \n")
+        repository.create_skill(name="demo", content=" \n")
 
 
 def test_skill_library_container_file_specs_fail_for_unknown_skill(tmp_path: Path) -> None:

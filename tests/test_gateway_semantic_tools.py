@@ -313,7 +313,7 @@ def test_semantic_upsert_uses_session_directory_config_and_payload(
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("QDRANT_API_KEY", "qdrant-key")
     service = build_admin_runtime(tmp_path)
-    service.directory_admin.create_child("root", "team")
+    service.directory_admin.create_child(parent="root", name="team")
     service.operations_admin.write_directory_domain_config(
         "root/team",
         "providers",

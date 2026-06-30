@@ -1,5 +1,13 @@
 ## Unreleased
 
+- Restored privileged-helper mode after the admin facade removal by returning
+  helper responses, restoring JSON request handling, and wiring the public
+  runtime flag to the focused services that consume it.
+
+- Preserved caller-supplied provider runtime admin services while keeping
+  provider effects on narrow VM/issue ports, and updated tests to patch focused
+  admin services or concrete collaborators directly after the facade removal.
+
 - Updated CLI and gateway tests for the admin facade removal so fakes patch
   `build_admin_runtime` and expose only the focused runtime component under
   test.

@@ -82,7 +82,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     )
     _write_audit_log(service.config.audit_log_path)
 
-    payload = service.tool_visibility_payload(
+    payload = service.approval_audit_admin.tool_visibility_payload(
         target="session-1",
         workflow_run_id="run-7",
         mcp_tool_approval_lease_id="lease-9",
@@ -188,7 +188,7 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
         ),
     )
 
-    payload = service.tool_visibility_payload(target="session-1")
+    payload = service.approval_audit_admin.tool_visibility_payload(target="session-1")
     rows = _tool_rows(payload)
     delete_row = rows[ToolName.DELETE_ADO_BACKLOG_ITEM.value]
 
@@ -215,7 +215,7 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
         ),
     )
 
-    payload = service.tool_visibility_payload(target="session-1")
+    payload = service.approval_audit_admin.tool_visibility_payload(target="session-1")
     rows = _tool_rows(payload)
 
     visible = rows[ToolName.UPDATE_ADO_BACKLOG_TITLE.value]
@@ -255,7 +255,7 @@ def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     )
     service.runtime.session_repository.upsert_session(updated_session)
 
-    payload = service.tool_visibility_payload(
+    payload = service.approval_audit_admin.tool_visibility_payload(
         target="session-1",
         mcp_transport_session_id="transport-1",
     )
@@ -300,7 +300,7 @@ def test_admin_service_tool_visibility_payload_reports_mismatch_for_other_sessio
         visible_tool_names=visible_tool_names,
     )
 
-    payload = service.tool_visibility_payload(
+    payload = service.approval_audit_admin.tool_visibility_payload(
         target="session-b",
         mcp_transport_session_id="transport-1",
     )

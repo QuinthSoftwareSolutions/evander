@@ -739,8 +739,11 @@ def _existing_agent_noop_result(
 
 
 def _resolve_vm_defaults_for_create(context: Any, *, directory_path: str) -> Any:
-    admin_service = getattr(context, "admin_service", None)
-    resolve_vm_defaults = getattr(admin_service, "resolve_vm_defaults", None)
-    if callable(resolve_vm_defaults):
-        return resolve_vm_defaults(directory_path)
-    raise RuntimeError("effect:agent:create requires admin_service.resolve_vm_defaults")
+    for owner in (getattr(context, "vm_creator", None), getattr(context, "admin_service", None)):
+        resolve_vm_defaults = getattr(owner, "resolve_vm_defaults", None)
+        if callable(resolve_vm_defaults):
+            return resolve_vm_defaults(directory_path)
+    raise RuntimeError(
+        "effect:agent:create requires vm_creator.resolve_vm_defaults "
+        "or admin_service.resolve_vm_defaults"
+    )

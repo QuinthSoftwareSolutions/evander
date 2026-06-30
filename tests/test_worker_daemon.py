@@ -744,7 +744,7 @@ def test_session_delete_uses_session_scoped_job_lookup(tmp_path: Path) -> None:
 
     daemon.store = FakeWorkerJobStore()
 
-    deleted = daemon.vm_agent_admin.delete_session("session-a")
+    deleted = daemon.delete_session("session-a")
 
     assert deleted is True
     assert runtime.removed == ["job-a"]

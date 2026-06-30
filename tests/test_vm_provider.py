@@ -94,7 +94,7 @@ def test_azure_provider_lists_provider_neutral_vm_summaries(tmp_path: Path) -> N
         ),
     )
 
-    summaries = provider.vm_agent_admin.list_vms(directory_path="root/team", direct_only=True)
+    summaries = provider.list_vms(directory_path="root/team", direct_only=True)
 
     assert len(summaries) == 1
     assert summaries[0].provider == "azure"
@@ -127,7 +127,7 @@ def test_provider_registry_keeps_successful_provider_results_when_another_provid
         "azure": StaticProvider(),  # type: ignore[dict-item]
     }
 
-    summaries = registry.vm_agent_admin.list_vms()
+    summaries = registry.list_vms()
 
     assert [summary.vm_name for summary in summaries] == ["vm-azure-1"]
 
@@ -142,7 +142,7 @@ def test_provider_registry_raises_when_all_provider_inventory_fails() -> None:
     registry._providers = {"libvirt": FailingProvider()}  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="libvirt unavailable"):
-        registry.vm_agent_admin.list_vms()
+        registry.list_vms()
 
 
 def test_azure_cloud_init_adds_default_host_key_to_agent_admin(

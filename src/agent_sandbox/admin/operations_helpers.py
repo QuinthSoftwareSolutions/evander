@@ -261,3 +261,16 @@ class PrivilegedHelperSession:
                 raise RuntimeError(
                     str(response.get("error") or f"Privileged helper op {op} failed.")
                 )
+            return response
+
+    def _request_locked(self, payload: dict[str, object]) -> dict[str, object]:
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise RuntimeError("Privileged helper is unavailable.")
+        process.stdin.write(json.dumps(payload) + "\n")
+        process.stdin.flush()
+        line = process.stdout.readline()
+        if not line:
+            stderr = process.stderr.read().strip() if process.stderr is not None else ""
+            raise RuntimeError(stderr or "Privileged helper exited unexpectedly.")
+        return json.loads(line)

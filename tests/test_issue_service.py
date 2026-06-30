@@ -426,7 +426,7 @@ def test_update_issue_uploads_field_artifact_appends_image_and_links_relation(
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
-    result = adapter.issue_git_admin.update_issue(
+    result = adapter.update_issue(
         directory_path="root",
         remote_issue_id="77",
         state=None,
@@ -473,7 +473,7 @@ def test_update_issue_adds_expected_state_test_before_mutations(
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
-    result = adapter.issue_git_admin.update_issue(
+    result = adapter.update_issue(
         directory_path="root",
         project="override-project",
         remote_issue_id="77",

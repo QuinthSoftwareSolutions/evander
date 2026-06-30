@@ -222,6 +222,7 @@ def test_setup_admin_assistant_verification_queues_smoke_message(
         def __init__(self, runtime_dir: Path) -> None:
             self.runtime_dir = runtime_dir
             self.vm_agent_admin = FakeVmAgentAdmin()
+            self.operations_admin = self
             self.published = []
             created_services.append(self)
 
@@ -229,7 +230,10 @@ def test_setup_admin_assistant_verification_queues_smoke_message(
             self.published.append(kwargs)
             return {"event_id": f"chat:{kwargs['user_message_id']}"}
 
-    monkeypatch.setattr("agent_sandbox.setup.engine.AdminRuntimeComponents", FakeAdminService)
+    monkeypatch.setattr(
+        "agent_sandbox.setup.engine.build_admin_runtime",
+        lambda runtime_dir: FakeAdminService(runtime_dir),
+    )
 
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()

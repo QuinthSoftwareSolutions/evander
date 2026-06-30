@@ -15,7 +15,10 @@ from agent_sandbox.events.provider_models import (
     VmRunStateQueryDefinition,
 )
 from agent_sandbox.models import LocalIssueRecord, SessionManifest, ToolName, VmSummary
-from agent_sandbox.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from agent_sandbox.provider_runtime.adapters import (
+    AdminRuntimeProviderAdapter,
+    build_provider_runtime_ports,
+)
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
 from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
@@ -106,6 +109,15 @@ def test_admin_runtime_adapter_delegates_skill_validation_when_backed() -> None:
     assert adapter.resolve_container_codex_skill_files(["skill-a"]) == [
         {"name": "skill-a", "path": "/skills/skill-a/SKILL.md"}
     ]
+
+
+def test_provider_runtime_ports_preserve_original_admin_service_context() -> None:
+    admin_service = SimpleNamespace(runtime="original-runtime")
+
+    ports = build_provider_runtime_ports(admin_service=admin_service)
+
+    assert ports.admin_service is admin_service
+    assert isinstance(ports.vm_creator, AdminRuntimeProviderAdapter)
 
 
 @dataclass

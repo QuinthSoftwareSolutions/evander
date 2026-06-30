@@ -77,7 +77,7 @@ class _PrivilegedFakeAuth:
         return True
 
 
-def test_admin_web_teams_auth_routes_use_facade_methods_without_internal_services(
+def test_admin_web_teams_auth_routes_use_focused_admin_services(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[object, ...]] = []
@@ -87,10 +87,12 @@ def test_admin_web_teams_auth_routes_use_facade_methods_without_internal_service
 
     monkeypatch.setattr("agent_sandbox.admin.web.teams_auth.run_in_threadpool", run_inline)
 
-    class FacadeOnlyService:
-        def _normalize_directory_reference(self, value: str) -> str:
+    class TeamsService:
+        def normalize_directory_reference(self, value: str) -> str:
+            calls.append(("normalize_directory_reference", value))
             return value
 
+    class OperationsService:
         def privileged_helper_required(self) -> bool:
             calls.append(("privileged_helper_required",))
             return True
@@ -146,9 +148,13 @@ def test_admin_web_teams_auth_routes_use_facade_methods_without_internal_service
             calls.append(("channels", directory, team_id, channel_name, include_all))
             return {"directory_path": directory, "channels": []}
 
+    class FocusedService:
+        teams_admin = TeamsService()
+        operations_admin = OperationsService()
+
     endpoints = {
         route.path: route.endpoint
-        for route in teams_auth_routes(FacadeOnlyService(), _PrivilegedFakeAuth())
+        for route in teams_auth_routes(FocusedService(), _PrivilegedFakeAuth())
     }
 
     def request(
@@ -209,17 +215,22 @@ def test_admin_web_teams_auth_routes_use_facade_methods_without_internal_service
     assert channels.status_code == 200
 
     assert calls == [
+        ("normalize_directory_reference", "root/team-a"),
         ("status", "root/team-a"),
         ("list",),
         ("privileged_helper_required",),
         ("privileged_operations_unlocked",),
+        ("normalize_directory_reference", "root/team-a"),
         ("login", "root/team-a"),
         ("privileged_helper_required",),
         ("privileged_operations_unlocked",),
+        ("normalize_directory_reference", "root/team-a"),
         ("complete", "root/team-a", 5.0, "TEST-CODE"),
         ("privileged_helper_required",),
         ("privileged_operations_unlocked",),
+        ("normalize_directory_reference", "root/team-a"),
         ("logout", "root/team-a"),
+        ("normalize_directory_reference", "root/team-a"),
         ("channels", "root/team-a", "team-123", "General", False),
     ]
 
@@ -231,7 +242,7 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
     monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
 
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
-    created = service.directory_admin.create_child("root", "operations")
+    created = service.directory_admin.create_child(parent="root", name="operations")
     assert created.ok is True and created.data is not None
     selected_directory_path = created.data.details.directory.path
 
@@ -363,14 +374,28 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
             ],
         }
 
-    monkeypatch.setattr(service, "teams_auth_status", MethodType(fake_status, service))
-    monkeypatch.setattr(service, "teams_auth_list", MethodType(fake_list, service))
-    monkeypatch.setattr(service, "teams_auth_login", MethodType(fake_login, service))
     monkeypatch.setattr(
-        service, "teams_auth_complete_login", MethodType(fake_complete_login, service)
+        service.operations_admin, "teams_auth_status", MethodType(fake_status, service.operations_admin)
     )
-    monkeypatch.setattr(service, "teams_auth_logout", MethodType(fake_logout, service))
-    monkeypatch.setattr(service, "teams_auth_list_channels", MethodType(fake_list_channels, service))
+    monkeypatch.setattr(
+        service.operations_admin, "teams_auth_list", MethodType(fake_list, service.operations_admin)
+    )
+    monkeypatch.setattr(
+        service.operations_admin, "teams_auth_login", MethodType(fake_login, service.operations_admin)
+    )
+    monkeypatch.setattr(
+        service.operations_admin,
+        "teams_auth_complete_login",
+        MethodType(fake_complete_login, service.operations_admin),
+    )
+    monkeypatch.setattr(
+        service.operations_admin, "teams_auth_logout", MethodType(fake_logout, service.operations_admin)
+    )
+    monkeypatch.setattr(
+        service.operations_admin,
+        "teams_auth_list_channels",
+        MethodType(fake_list_channels, service.operations_admin),
+    )
 
     client = TestClient(create_app(service))
 
@@ -503,9 +528,17 @@ def test_admin_web_teams_auth_mutations_are_locked_until_privileged_unlock(
         calls.append("logout")
         raise AssertionError("logout should not run while privileged operations are locked")
 
-    monkeypatch.setattr(service, "teams_auth_login", MethodType(fail_login, service))
-    monkeypatch.setattr(service, "teams_auth_complete_login", MethodType(fail_complete, service))
-    monkeypatch.setattr(service, "teams_auth_logout", MethodType(fail_logout, service))
+    monkeypatch.setattr(
+        service.operations_admin, "teams_auth_login", MethodType(fail_login, service.operations_admin)
+    )
+    monkeypatch.setattr(
+        service.operations_admin,
+        "teams_auth_complete_login",
+        MethodType(fail_complete, service.operations_admin),
+    )
+    monkeypatch.setattr(
+        service.operations_admin, "teams_auth_logout", MethodType(fail_logout, service.operations_admin)
+    )
 
     client = TestClient(create_app(service))
 
@@ -559,7 +592,7 @@ def test_admin_web_teams_auth_reports_configuration_errors(
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     directory_path = "root"
     if provider_payload is not None:
-        created = service.directory_admin.create_child("root", directory_name or "ops")
+        created = service.directory_admin.create_child(parent="root", name=directory_name or "ops")
         assert created.ok is True and created.data is not None
         directory_path = created.data.details.directory.path
         provider_payload = dict(provider_payload)
@@ -568,7 +601,11 @@ def test_admin_web_teams_auth_reports_configuration_errors(
             assert directory == directory_path
             raise ValueError(expected_fragment)
 
-        monkeypatch.setattr(service, "teams_auth_status", MethodType(fake_status, service))
+        monkeypatch.setattr(
+            service.operations_admin,
+            "teams_auth_status",
+            MethodType(fake_status, service.operations_admin),
+        )
 
     client = TestClient(create_app(service))
     response = client.get("/api/teams-auth/status", params={"directory_path": directory_path})
