@@ -101,6 +101,7 @@ export type WorkflowEditorSave = {
   output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics: WorkflowValidationDiagnostic[];
   revision: string;
+  pack_list_revision?: string | null;
 };
 
 export type WorkflowPackMutation = {

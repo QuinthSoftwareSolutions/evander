@@ -200,6 +200,7 @@ class WorkflowEditorSavePayload(BaseModel):
     validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     saved_at: datetime | None = None
     revision: str | None = None
+    pack_list_revision: str | None = None
 
 
 class WorkflowEditorPackMutationPayload(BaseModel):

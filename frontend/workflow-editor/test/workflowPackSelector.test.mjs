@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const typesSource = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 
 test("workflow editor exposes workflow pack selection and sends it on save", () => {
   assert.match(source, /function workflowEditorDocumentPath\(workflowPack/);
@@ -27,6 +28,7 @@ test("workflow editor exposes workflow pack management actions", () => {
 });
 
 test("workflow editor refreshes saved pack descriptors after saving document changes", () => {
+  assert.match(typesSource, /export type WorkflowEditorSave = \{[\s\S]*pack_list_revision\?: string \| null;/);
   assert.match(source, /const normalizedSavedDocument = normalizeWorkflowEditorDocument/);
   assert.match(
     source,

@@ -7486,6 +7486,36 @@ def test_workflow_editor_revision_changes_for_graph_metadata_only_edit(
     assert second.revision != first.revision
 
 
+def test_workflow_editor_inline_save_refreshes_pack_list_revision_for_pack_create(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    document = service.workflow_config_admin.read_workflow_editor_document()
+
+    save_result = service.workflow_config_admin.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime-after-inline-save"),
+            "triggers": [],
+            "gates": [],
+            "effects": [],
+            "queries": [],
+            "edges": [],
+        },
+        layout={"nodes": {}},
+        expected_revision=document.revision,
+    )
+    assert save_result.pack_list_revision is not None
+    assert save_result.pack_list_revision != document.pack_list_revision
+
+    create_result = service.workflow_config_admin.create_workflow_pack(
+        pack_id="post-save-pack",
+        expected_revision=save_result.pack_list_revision,
+    )
+
+    assert create_result.selected_workflow_pack is not None
+    assert create_result.selected_workflow_pack.reference == "post-save-pack.v1.json"
+
+
 def test_worker_global_config_revision_changes_for_config_edit(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     first = service.workflow_config_admin.read_worker_global_config("trigger-orchestrator")

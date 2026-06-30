@@ -1933,6 +1933,9 @@ class WorkflowConfigAdminService:
             layout=validation.layout,
             graphs=validation.graphs,
         )
+        pack_list_revision = self._workflow_editor_worker_config_revision(
+            merged_config if pack_save is None else raw_config
+        )
         if selected_reference is not None:
             workflow_packs = self._workflow_editor_pack_descriptors(
                 raw_config,
@@ -1959,6 +1962,7 @@ class WorkflowConfigAdminService:
             validation_diagnostics=validation.validation_diagnostics,
             saved_at=saved_at,
             revision=revision,
+            pack_list_revision=pack_list_revision,
         )
 
     def _save_workflow_editor_document(
