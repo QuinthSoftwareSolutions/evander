@@ -19,6 +19,7 @@ from agent_sandbox.setup.engine import (
     DEFAULT_RUNTIME_DIR,
     PROVIDER_ENV_VARS,
     SetupManager,
+    SetupPreflightError,
 )
 
 
@@ -335,7 +336,13 @@ def _configure_item(manager: SetupManager, state, item_id: str, *, interactive: 
             "It does not start the control-plane services.",
         )
         if typer.confirm("Run install preflight now?", default=True):
-            return manager.run_install_preflight(state)
+            try:
+                return manager.run_install_preflight(state)
+            except SetupPreflightError as exc:
+                typer.echo("")
+                typer.echo(f"Install preflight failed with exit code {exc.returncode}.")
+                typer.echo("Fix the failed checks above, then rerun Install preflight.")
+                return manager.load_state()
         return state
     if item_id == "launch_verify":
         return _launch(manager, state)

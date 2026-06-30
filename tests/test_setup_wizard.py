@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import app
 from agent_sandbox.setup import tui as setup_tui
-from agent_sandbox.setup.engine import SetupManager
+from agent_sandbox.setup.engine import SetupManager, SetupPreflightError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +98,55 @@ def test_setup_plan_is_ready_after_required_items_and_preflight(tmp_path: Path) 
     assert plan["default_model"] == "gpt-5.4"
     assert "sk-test-secret" not in json.dumps(plan)
     assert plan["secrets"]["required"]["openai"]["set"] is True
+
+
+def test_setup_install_preflight_uses_setup_profile_and_clears_failed_pass(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.execution = {"execution_backend": "libvirt_vm"}
+    state.install_preflight_passed_at = "2026-06-28T00:00:00+00:00"
+    manager.save_state(state)
+    calls = []
+
+    monkeypatch.setattr(manager, "_write_config_files", lambda state: None)
+
+    def fake_run(args, *, cwd, env, check):
+        calls.append({"args": args, "cwd": cwd, "env": env, "check": check})
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+
+    with pytest.raises(SetupPreflightError) as exc_info:
+        manager.run_install_preflight(state)
+
+    assert exc_info.value.returncode == 1
+    assert calls[0]["check"] is False
+    assert calls[0]["env"]["AGENT_SANDBOX_SERVICE_PROFILE"] == "setup"
+    assert calls[0]["env"]["AGENT_SANDBOX_SETUP_EXECUTION_BACKEND"] == "libvirt_vm"
+    assert manager.load_state().install_preflight_passed_at == ""
+
+
+def test_setup_tui_install_preflight_failure_returns_to_checklist(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    monkeypatch.setattr(manager, "configuration_ready", lambda state: True)
+    monkeypatch.setattr(setup_tui.typer, "confirm", lambda *args, **kwargs: True)
+
+    def fail_preflight(state):
+        raise SetupPreflightError(returncode=1)
+
+    monkeypatch.setattr(manager, "run_install_preflight", fail_preflight)
+
+    result = setup_tui._configure_item(manager, state, "install_preflight", interactive=False)
+
+    output = capsys.readouterr().out
+    assert "Install preflight failed with exit code 1." in output
+    assert "Fix the failed checks above" in output
+    assert result == manager.load_state()
 
 
 def test_setup_doctor_json_reports_initial_checklist(tmp_path: Path) -> None:

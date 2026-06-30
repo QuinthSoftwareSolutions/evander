@@ -7,6 +7,10 @@
 - Fixed guided setup arrow-key handling so raw terminal reads collect complete
   Up/Down escape sequences before updating the highlighted row.
 
+- Fixed guided setup install preflight failures so expected non-zero preflight
+  results return to the checklist instead of raising a traceback, and made the
+  setup profile treat unrelated integration config as warnings.
+
 - Moved Admin Web workflow pack selection and history into compact controls
   overlaid on the workflow canvas, with add/edit/remove pack actions kept to
   icon buttons and the edit dialog.

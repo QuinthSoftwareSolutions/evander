@@ -53,6 +53,8 @@ ESSENTIAL_SERVICES = [
     "agent-sandbox-effect-orchestrator.service",
 ]
 
+SETUP_SERVICE_PROFILE = "setup"
+
 
 @dataclass
 class SetupState:
@@ -107,6 +109,12 @@ class ChecklistItem:
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
+
+
+class SetupPreflightError(RuntimeError):
+    def __init__(self, *, returncode: int) -> None:
+        super().__init__(f"install preflight failed with exit code {returncode}")
+        self.returncode = returncode
 
 
 def _now() -> str:
@@ -628,11 +636,16 @@ class SetupManager:
 
     def run_install_preflight(self, state: SetupState) -> SetupState:
         self._write_config_files(state)
-        subprocess.run(
+        completed = subprocess.run(
             [str(self.project_dir / "scripts" / "install_systemd_units.sh"), "--preflight"],
             cwd=self.project_dir,
-            check=True,
+            env={**os.environ, **_setup_install_env(state)},
+            check=False,
         )
+        if completed.returncode != 0:
+            state.install_preflight_passed_at = ""
+            self.save_state(state)
+            raise SetupPreflightError(returncode=completed.returncode)
         state.install_preflight_passed_at = _now()
         self.save_state(state)
         return state
@@ -642,7 +655,12 @@ class SetupManager:
             raise ValueError("Setup checklist is not ready to launch")
         self._write_config_files(state)
         subprocess.run(
-            ["sudo", str(self.project_dir / "scripts" / "install_systemd_units.sh")],
+            [
+                "sudo",
+                "env",
+                *[f"{key}={value}" for key, value in _setup_install_env(state).items()],
+                str(self.project_dir / "scripts" / "install_systemd_units.sh"),
+            ],
             cwd=self.project_dir,
             check=True,
         )
@@ -806,6 +824,15 @@ def _admin_auth_label(value: str) -> str:
         "local_password": "local password",
         "none": "no authentication",
     }.get(value, value)
+
+
+def _setup_install_env(state: SetupState) -> dict[str, str]:
+    return {
+        "AGENT_SANDBOX_SERVICE_PROFILE": SETUP_SERVICE_PROFILE,
+        "AGENT_SANDBOX_SETUP_EXECUTION_BACKEND": str(
+            state.execution.get("execution_backend") or ""
+        ),
+    }
 
 
 def setup_doctor_payload(

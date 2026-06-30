@@ -67,8 +67,16 @@ def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
     text = _script_text()
 
     assert 'SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"' in text
+    assert 'SETUP_EXECUTION_BACKEND="${AGENT_SANDBOX_SETUP_EXECUTION_BACKEND:-}"' in text
     assert 'if [[ "${SERVICE_PROFILE}" == "full" ]]; then' in text
+    assert (
+        'elif [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_BACKEND}" == "libvirt_vm" ]]; then'
+        in text
+    )
     assert "Skipping virsh check for service profile" in text
+    assert 'if [[ "${SERVICE_PROFILE}" == "setup" ]]; then' in text
+    assert 'setup_managed_config_severity="warning"' in text
+    assert '"${setup_managed_config_severity}"' in text
     assert '"warning"' in text
 
 

@@ -18,6 +18,7 @@ EOH
 
 MODE="install"
 SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"
+SETUP_EXECUTION_BACKEND="${AGENT_SANDBOX_SETUP_EXECUTION_BACKEND:-}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -247,21 +248,30 @@ run_preflight_checks() {
   check_command "python3" "Install Python 3 so the gateway/relay and env checks can run."
   if [[ "${SERVICE_PROFILE}" == "full" ]]; then
     check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available." "warning"
+  elif [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_BACKEND}" == "libvirt_vm" ]]; then
+    check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available."
   else
     report_pass "Skipping virsh check for service profile ${SERVICE_PROFILE}."
+  fi
+
+  local setup_managed_config_severity="critical"
+  if [[ "${SERVICE_PROFILE}" == "setup" ]]; then
+    setup_managed_config_severity="warning"
   fi
 
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
   check_file \
     "${ROOT_DIR}/config/ado-worker/config.json" \
-    "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json."
+    "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json." \
+    "${setup_managed_config_severity}"
   check_file \
     "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
     "Run evander-cli migrate-ado-worker-env-to-root, migrate-global-config-to-root, or configure the directory after deployment." \
     "warning"
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
-    "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files."
+    "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files." \
+    "${setup_managed_config_severity}"
   check_file \
     "${ROOT_DIR}/config/teams-meeting-ingest/config.json" \
     "Copy config/teams-meeting-ingest/config.json.example to config/teams-meeting-ingest/config.json if you want to override Teams meeting ingest defaults." \
