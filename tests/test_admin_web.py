@@ -282,6 +282,17 @@ def _workflow_expected_revision(client: TestClient) -> str:
     return revision
 
 
+def _workflow_pack_list_revision(client: TestClient, workflow_pack: str | None = None) -> str:
+    path = "/api/workflow-editor/document"
+    if workflow_pack is not None:
+        path = f"{path}?workflow_pack={workflow_pack}"
+    response = client.get(path)
+    assert response.status_code == 200
+    revision = response.json()["pack_list_revision"]
+    assert isinstance(revision, str)
+    return revision
+
+
 def _unlock_privileged_operations(client: TestClient) -> None:
     response = client.post("/api/admin/privileged/unlock")
     assert response.status_code == 200
@@ -4541,6 +4552,113 @@ def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
 
     assert response.status_code == 400
     assert "Node IDs must be globally unique" in response.json()["error"]
+
+
+def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_a_path = packs_dir / "pack-a.v1.json"
+    pack_a_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-a.v1.layout.json").write_text(json.dumps({"nodes": {}}), encoding="utf-8")
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+    pack_list_revision = _workflow_pack_list_revision(client, workflow_pack="pack-a.v1.json")
+
+    locked_response = client.post(
+        "/api/workflow-editor/packs",
+        json={
+            "pack_id": "custom-pack",
+            "pack_version": "v1",
+            "expected_revision": pack_list_revision,
+        },
+    )
+    assert locked_response.status_code == 403
+
+    _unlock_privileged_operations(client)
+    create_response = client.post(
+        "/api/workflow-editor/packs",
+        json={
+            "pack_id": "custom-pack",
+            "pack_version": "v1",
+            "description": "Created through Admin Web.",
+            "expected_revision": pack_list_revision,
+        },
+    )
+    assert create_response.status_code == 200
+    create_payload = create_response.json()
+    assert create_payload["selected_workflow_pack"]["reference"] == "custom-pack.v1.json"
+    custom_pack_path = packs_dir / "custom-pack.v1.json"
+    assert json.loads(custom_pack_path.read_text(encoding="utf-8"))["ir"] == {
+        "edges": [],
+        "nodes": [],
+        "version": "v1",
+    }
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "pack-a.v1.json",
+        "custom-pack.v1.json",
+    ]
+
+    metadata_revision = create_payload["selected_workflow_pack"]["revision"]
+    update_response = client.put(
+        "/api/workflow-editor/packs",
+        json={
+            "workflow_pack": "custom-pack.v1.json",
+            "pack_id": "renamed-pack",
+            "pack_version": "v2",
+            "description": "Renamed through Admin Web.",
+            "expected_revision": metadata_revision,
+        },
+    )
+    assert update_response.status_code == 200
+    updated_pack = json.loads(custom_pack_path.read_text(encoding="utf-8"))
+    assert updated_pack["pack_id"] == "renamed-pack"
+    assert updated_pack["pack_version"] == "v2"
+    assert updated_pack["description"] == "Renamed through Admin Web."
+
+    stale_update_response = client.put(
+        "/api/workflow-editor/packs",
+        json={
+            "workflow_pack": "custom-pack.v1.json",
+            "pack_id": "stale-name",
+            "pack_version": "v3",
+            "expected_revision": metadata_revision,
+        },
+    )
+    assert stale_update_response.status_code == 409
+
+    remove_revision = update_response.json()["document"]["pack_list_revision"]
+    remove_response = client.request(
+        "DELETE",
+        "/api/workflow-editor/packs",
+        json={
+            "workflow_pack": "pack-a.v1.json",
+            "expected_revision": remove_revision,
+        },
+    )
+    assert remove_response.status_code == 200
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "custom-pack.v1.json"
+    ]
+    assert pack_a_path.exists()
+    assert (packs_dir / "pack-a.v1.layout.json").exists()
 
 
 def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) -> None:

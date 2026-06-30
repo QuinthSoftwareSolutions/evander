@@ -47,6 +47,8 @@ import {
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
   type WorkflowOutputSchemas,
+  type WorkflowPackDescriptor,
+  type WorkflowPackMutation,
   type WorkflowRunDetail,
   type WorkflowRunDataAvailability,
   type WorkflowRunAgentLink,
@@ -173,6 +175,13 @@ type GraphNodeStatusBadge = {
 
 type SaveState = "idle" | "saving" | "saved";
 type WorkflowGeneratorState = "idle" | "draftable" | "generating" | "ready" | "error";
+type WorkflowPackModalMode = "create" | "edit";
+
+type WorkflowPackFormState = {
+  packId: string;
+  packVersion: string;
+  description: string;
+};
 
 type WorkflowUndoEntry = {
   document: WorkflowDocumentSurface;
@@ -4005,6 +4014,14 @@ export default function App() {
   const [workflowGeneratorWarnings, setWorkflowGeneratorWarnings] = useState<string[]>([]);
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
+  const [workflowPackModalMode, setWorkflowPackModalMode] = useState<WorkflowPackModalMode | null>(null);
+  const [workflowPackForm, setWorkflowPackForm] = useState<WorkflowPackFormState>({
+    packId: "",
+    packVersion: "v1",
+    description: "",
+  });
+  const [workflowPackSubmitting, setWorkflowPackSubmitting] = useState(false);
+  const [workflowPackError, setWorkflowPackError] = useState<string | null>(null);
   const [pageVisible, setPageVisible] = useState(currentPageVisible);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
@@ -5905,7 +5922,7 @@ export default function App() {
     nextDocument: WorkflowEditorDocument,
     selectedNodeIdsAfterPatch: string[] = [],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
-    options: { autoFit?: boolean; nodeEditOrigins?: Record<string, string> } = {},
+    options: { autoFit?: boolean; markClean?: boolean; nodeEditOrigins?: Record<string, string> } = {},
   ) {
     const normalizedDocument = normalizeWorkflowEditorDocument(nextDocument, selectedDirectoryPath);
     const validNodeIds = new Set(workflowNodeIds(normalizedDocument.config));
@@ -5919,9 +5936,10 @@ export default function App() {
     const nextDiagnostics = diagnosticsOverride
       ? workflowDiagnosticsForGraphs(diagnosticsOverride, visibleGraphsForDocument)
       : [];
+    const baselineDocument = options.markClean ? normalizedDocument : savedDocument;
     const nextDirtyNodeIds = dirtyWorkflowNodeIds(
       normalizedDocument,
-      savedDocument,
+      baselineDocument,
       options.nodeEditOrigins ?? nodeEditOrigins,
     );
     setDocument(normalizedDocument);
@@ -7398,8 +7416,7 @@ export default function App() {
     deleteNodes(deletedNodes.map((node) => node.id));
   }
 
-  async function handleWorkflowPackChange(event: ReactChangeEvent<HTMLSelectElement>) {
-    const nextWorkflowPack = event.target.value;
+  async function switchWorkflowPack(nextWorkflowPack: string) {
     if (!nextWorkflowPack || nextWorkflowPack === selectedWorkflowPackReference) return;
     if (hasUnsavedWorkflowChanges) {
       const confirmed = window.confirm("Discard unsaved workflow changes and switch workflow packs?");
@@ -7410,6 +7427,145 @@ export default function App() {
       await loadWorkflowDocument(nextWorkflowPack);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleWorkflowPackChange(event: ReactChangeEvent<HTMLSelectElement>) {
+    await switchWorkflowPack(event.target.value);
+  }
+
+  function confirmDiscardUnsavedWorkflowPackAction(): boolean {
+    if (!hasUnsavedWorkflowChanges) return true;
+    return window.confirm("Discard unsaved workflow changes before managing workflow packs?");
+  }
+
+  function workflowPackFormFor(pack: WorkflowPackDescriptor | null): WorkflowPackFormState {
+    return {
+      packId: pack?.id ?? "",
+      packVersion: pack?.version ?? "v1",
+      description: pack?.description ?? "",
+    };
+  }
+
+  function openCreateWorkflowPackModal() {
+    if (!confirmDiscardUnsavedWorkflowPackAction()) return;
+    setWorkflowPackForm({ packId: "", packVersion: "v1", description: "" });
+    setWorkflowPackError(null);
+    setWorkflowPackModalMode("create");
+  }
+
+  function openEditWorkflowPackModal() {
+    if (!selectedWorkflowPack || !confirmDiscardUnsavedWorkflowPackAction()) return;
+    setWorkflowPackForm(workflowPackFormFor(selectedWorkflowPack));
+    setWorkflowPackError(null);
+    setWorkflowPackModalMode("edit");
+  }
+
+  function closeWorkflowPackModal() {
+    if (workflowPackSubmitting) return;
+    setWorkflowPackModalMode(null);
+    setWorkflowPackError(null);
+  }
+
+  function applyWorkflowPackMutation(mutation: WorkflowPackMutation) {
+    const nextDocument = normalizeWorkflowEditorDocument(mutation.document, selectedDirectoryPath);
+    setSavedDocument(nextDocument);
+    setUndoHistory([]);
+    setNodeEditOrigins({});
+    setSelectedGraphId(null);
+    setSelectedEdgeId(null);
+    setPendingConnection(null);
+    setNodeConnectionMenu(null);
+    setInspectorDraftError(null);
+    applyWorkflowDocumentState(
+      nextDocument,
+      [],
+      nextDocument.validation_diagnostics ?? [],
+      { autoFit: true, markClean: true, nodeEditOrigins: {} },
+    );
+    setSaveState("saved");
+  }
+
+  async function submitWorkflowPackModal(event: ReactFormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!document || workflowEditLocked || !workflowPackModalMode) return;
+    const packId = workflowPackForm.packId.trim();
+    const packVersion = workflowPackForm.packVersion.trim() || "v1";
+    const description = workflowPackForm.description.trim();
+    if (!packId) {
+      setWorkflowPackError("Pack ID is required.");
+      return;
+    }
+    if (!packVersion) {
+      setWorkflowPackError("Version is required.");
+      return;
+    }
+    setWorkflowPackSubmitting(true);
+    setWorkflowPackError(null);
+    try {
+      const mutation = await fetchJson<WorkflowPackMutation>(
+        "/api/workflow-editor/packs",
+        {
+          method: workflowPackModalMode === "create" ? "POST" : "PUT",
+          body: JSON.stringify({
+            workflow_pack: workflowPackModalMode === "edit" ? selectedWorkflowPackReference : undefined,
+            directory_path: selectedDirectoryPath,
+            pack_id: packId,
+            pack_version: packVersion,
+            description,
+            expected_revision:
+              workflowPackModalMode === "create"
+                ? document.pack_list_revision
+                : selectedWorkflowPack?.revision,
+          }),
+        },
+      );
+      applyWorkflowPackMutation(mutation);
+      setWorkflowPackModalMode(null);
+    } catch (reason) {
+      setWorkflowPackError(
+        reason instanceof ApiError && reason.status === 409
+          ? "This workflow pack changed on the server. Reload before saving again."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
+    } finally {
+      setWorkflowPackSubmitting(false);
+    }
+  }
+
+  async function removeSelectedWorkflowPack() {
+    if (!document || workflowEditLocked || !selectedWorkflowPack) return;
+    if (workflowPackOptions.length <= 1) return;
+    if (!confirmDiscardUnsavedWorkflowPackAction()) return;
+    const confirmed = window.confirm(`Remove ${selectedWorkflowPack.display_name || selectedWorkflowPack.reference} from active workflow packs?`);
+    if (!confirmed) return;
+    setWorkflowPackSubmitting(true);
+    setWorkflowPackError(null);
+    try {
+      const mutation = await fetchJson<WorkflowPackMutation>(
+        "/api/workflow-editor/packs",
+        {
+          method: "DELETE",
+          body: JSON.stringify({
+            workflow_pack: selectedWorkflowPack.reference,
+            directory_path: selectedDirectoryPath,
+            expected_revision: document.pack_list_revision,
+          }),
+        },
+      );
+      applyWorkflowPackMutation(mutation);
+    } catch (reason) {
+      setWorkflowPackError(
+        reason instanceof ApiError && reason.status === 409
+          ? "The workflow pack list changed on the server. Reload before saving again."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
+    } finally {
+      setWorkflowPackSubmitting(false);
     }
   }
 
@@ -9775,6 +9931,75 @@ export default function App() {
     );
   }
 
+  function renderWorkflowPackModal() {
+    if (!workflowPackModalMode) return null;
+    const title = workflowPackModalMode === "create" ? "Add workflow pack" : "Edit workflow pack";
+    const submitLabel = workflowPackModalMode === "create" ? "Add pack" : "Save metadata";
+    return (
+      <div
+        className="modal-backdrop workflow-pack-modal-backdrop"
+        role="presentation"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            closeWorkflowPackModal();
+          }
+        }}
+      >
+        <div className="modal-card workflow-pack-modal" role="dialog" aria-modal="true" aria-label={title}>
+          <div className="modal-header">
+            <div>
+              <div className="section-label">Workflow pack</div>
+              <h2>{title}</h2>
+              {workflowPackModalMode === "edit" && selectedWorkflowPack ? (
+                <p>{selectedWorkflowPack.reference}</p>
+              ) : null}
+            </div>
+            <button type="button" className="subtle-button" onClick={closeWorkflowPackModal} disabled={workflowPackSubmitting}>
+              Close
+            </button>
+          </div>
+          <form className="modal-body workflow-pack-form" onSubmit={submitWorkflowPackModal}>
+            <label className="inspector-label">
+              <span>Pack ID</span>
+              <input
+                value={workflowPackForm.packId}
+                onChange={(event) => setWorkflowPackForm((current) => ({ ...current, packId: event.target.value }))}
+                disabled={workflowPackSubmitting}
+                autoFocus
+              />
+            </label>
+            <label className="inspector-label">
+              <span>Version</span>
+              <input
+                value={workflowPackForm.packVersion}
+                onChange={(event) => setWorkflowPackForm((current) => ({ ...current, packVersion: event.target.value }))}
+                disabled={workflowPackSubmitting}
+              />
+            </label>
+            <label className="inspector-label">
+              <span>Description</span>
+              <textarea
+                value={workflowPackForm.description}
+                onChange={(event) => setWorkflowPackForm((current) => ({ ...current, description: event.target.value }))}
+                rows={4}
+                disabled={workflowPackSubmitting}
+              />
+            </label>
+            {workflowPackError ? <div className="runtime-run-error">{workflowPackError}</div> : null}
+            <div className="workflow-pack-form-actions">
+              <button type="button" className="subtle-button" onClick={closeWorkflowPackModal} disabled={workflowPackSubmitting}>
+                Cancel
+              </button>
+              <button type="submit" className="primary" disabled={workflowPackSubmitting || workflowEditLocked}>
+                {workflowPackSubmitting ? "Saving..." : submitLabel}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   function renderWorkflowTutorialChooser() {
     if (!workflowTutorialChooserOpen) return null;
     return (
@@ -10278,6 +10503,8 @@ export default function App() {
 
   function renderWorkflowPackIdentity() {
     if (!document) return null;
+    const packActionsDisabled = workflowEditLocked || isTutorialMode || workflowPackSubmitting;
+    const canRemoveSelectedPack = Boolean(selectedWorkflowPack && workflowPackOptions.length > 1);
     if (workflowPackOptions.length === 0) {
       return (
         <div className="workflow-pack-identity">
@@ -10285,11 +10512,43 @@ export default function App() {
             <span>Workflow source</span>
             <strong>Inline config</strong>
           </div>
+          <div className="workflow-pack-actions">
+            <button type="button" onClick={openCreateWorkflowPackModal} disabled={packActionsDisabled}>
+              Add pack
+            </button>
+          </div>
+          {workflowPackError ? <div className="runtime-run-error">{workflowPackError}</div> : null}
         </div>
       );
     }
     return (
       <div className="workflow-pack-identity">
+        <div className="workflow-pack-header">
+          <div>
+            <span className="section-label">Workflow packs</span>
+            <strong>{workflowPackOptions.length}</strong>
+          </div>
+          <div className="workflow-pack-actions">
+            <button type="button" onClick={openCreateWorkflowPackModal} disabled={packActionsDisabled}>
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={openEditWorkflowPackModal}
+              disabled={packActionsDisabled || !selectedWorkflowPack?.editable}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => void removeSelectedWorkflowPack()}
+              disabled={packActionsDisabled || !canRemoveSelectedPack}
+            >
+              Remove
+            </button>
+          </div>
+        </div>
         {workflowPackOptions.length > 1 ? (
           <label className="workflow-pack-selector">
             <span>Workflow pack</span>
@@ -10317,6 +10576,30 @@ export default function App() {
             <div>{selectedWorkflowPack.layout_path}</div>
           </div>
         ) : null}
+        <div className="workflow-pack-list" aria-label="Configured workflow packs">
+          {workflowPackOptions.map((pack) => (
+            <button
+              key={pack.reference}
+              type="button"
+              className={`workflow-pack-list-row${pack.reference === selectedWorkflowPackReference ? " selected" : ""}${pack.exists ? "" : " missing"}`}
+              onClick={() => {
+                if (pack.reference !== selectedWorkflowPackReference) {
+                  void switchWorkflowPack(pack.reference);
+                }
+              }}
+              disabled={workflowReadLocked || isTutorialMode}
+            >
+              <span>
+                <strong>{pack.display_name || pack.reference}</strong>
+                <small>{pack.reference}</small>
+              </span>
+              <span className="workflow-pack-row-meta">
+                {pack.exists ? `${pack.graph_count} graphs / ${pack.node_count} nodes` : "Missing file"}
+              </span>
+            </button>
+          ))}
+        </div>
+        {workflowPackError ? <div className="runtime-run-error">{workflowPackError}</div> : null}
       </div>
     );
   }
@@ -11407,6 +11690,7 @@ export default function App() {
         </aside>
 
         {renderWorkflowTutorialChooser()}
+        {renderWorkflowPackModal()}
 
           <div
             className="workflow-sidebar-resize-handle"

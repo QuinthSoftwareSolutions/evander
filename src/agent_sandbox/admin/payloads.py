@@ -150,6 +150,7 @@ class WorkflowEditorWorkflowPackDescriptor(BaseModel):
     exists: bool
     editable: bool = True
     display_name: str
+    revision: str | None = None
     id: str | None = None
     version: str | None = None
     description: str | None = None
@@ -173,6 +174,7 @@ class WorkflowEditorDocumentPayload(BaseModel):
     output_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     saved_at: datetime | None = None
     revision: str | None = None
+    pack_list_revision: str | None = None
 
 
 class WorkflowEditorValidationPayload(BaseModel):
@@ -198,6 +200,15 @@ class WorkflowEditorSavePayload(BaseModel):
     validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     saved_at: datetime | None = None
     revision: str | None = None
+
+
+class WorkflowEditorPackMutationPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    config_path: str
+    workflow_packs: list[WorkflowEditorWorkflowPackDescriptor] = Field(default_factory=list)
+    selected_workflow_pack: WorkflowEditorWorkflowPackDescriptor | None = None
+    revision: str | None = None
+    document: WorkflowEditorDocumentPayload
 
 
 class WorkflowEditorGeneratedDraftPayload(BaseModel):

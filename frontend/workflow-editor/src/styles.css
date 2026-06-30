@@ -2678,8 +2678,37 @@ select {
 
 .workflow-pack-identity {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.55rem;
   margin-bottom: 0.75rem;
+}
+
+.workflow-pack-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.workflow-pack-header > div:first-child {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.workflow-pack-header strong {
+  color: #3f3325;
+  font-size: 0.92rem;
+}
+
+.workflow-pack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.workflow-pack-actions button {
+  min-height: 2rem;
+  padding: 0.34rem 0.58rem;
 }
 
 .workflow-pack-selector,
@@ -2705,6 +2734,74 @@ select {
 
 .workflow-pack-paths {
   overflow-wrap: anywhere;
+}
+
+.workflow-pack-list {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.workflow-pack-list-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 3rem;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.58);
+  color: #3f3325;
+  text-align: left;
+}
+
+.workflow-pack-list-row:hover:not(:disabled),
+.workflow-pack-list-row.selected {
+  border-color: rgba(42, 115, 98, 0.32);
+  background: rgba(238, 248, 244, 0.78);
+}
+
+.workflow-pack-list-row.missing {
+  border-color: rgba(154, 52, 18, 0.28);
+  background: rgba(255, 245, 238, 0.78);
+}
+
+.workflow-pack-list-row > span:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.workflow-pack-list-row strong,
+.workflow-pack-list-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-pack-list-row small,
+.workflow-pack-row-meta {
+  color: #7a684f;
+  font-size: 0.74rem;
+}
+
+.workflow-pack-row-meta {
+  white-space: nowrap;
+}
+
+.workflow-pack-modal {
+  width: min(100%, 34rem);
+}
+
+.workflow-pack-form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.workflow-pack-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .save-status {
@@ -9135,6 +9232,32 @@ button.mobile-record-card:focus-visible,
 
 :root[data-theme="dark"] .workflow-pack-selected strong {
   color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .workflow-pack-header strong {
+  color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .workflow-pack-list-row {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(20, 35, 43, 0.76);
+  color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .workflow-pack-list-row:hover:not(:disabled),
+:root[data-theme="dark"] .workflow-pack-list-row.selected {
+  border-color: rgba(107, 174, 204, 0.34);
+  background: rgba(27, 50, 60, 0.92);
+}
+
+:root[data-theme="dark"] .workflow-pack-list-row.missing {
+  border-color: rgba(239, 126, 101, 0.34);
+  background: rgba(60, 34, 31, 0.72);
+}
+
+:root[data-theme="dark"] .workflow-pack-list-row small,
+:root[data-theme="dark"] .workflow-pack-row-meta {
+  color: #a7bac8;
 }
 
 :root[data-theme="dark"] .save-status {

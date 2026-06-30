@@ -57,6 +57,7 @@ export type WorkflowPackDescriptor = {
   exists: boolean;
   editable: boolean;
   display_name: string;
+  revision?: string | null;
   id?: string | null;
   version?: string | null;
   description?: string | null;
@@ -79,6 +80,7 @@ export type WorkflowEditorDocument = {
   output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics?: WorkflowValidationDiagnostic[];
   revision: string;
+  pack_list_revision?: string | null;
 };
 
 export type WorkflowEditorValidation = {
@@ -99,6 +101,15 @@ export type WorkflowEditorSave = {
   output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics: WorkflowValidationDiagnostic[];
   revision: string;
+};
+
+export type WorkflowPackMutation = {
+  worker_id: string;
+  config_path: string;
+  workflow_packs: WorkflowPackDescriptor[];
+  selected_workflow_pack?: WorkflowPackDescriptor | null;
+  revision?: string | null;
+  document: WorkflowEditorDocument;
 };
 
 export type WorkflowEditorGeneratedDraft = {

@@ -806,8 +806,106 @@ def workflow_routes(
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:
-            return json_error(str(exc), status_code=403)
+                return json_error(str(exc), status_code=403)
         return JSONResponse(validation.model_dump(mode="json"))
+
+    async def create_workflow_pack(request: Request) -> JSONResponse:
+        try:
+            auth.require(request)
+            payload = await json_body(request)
+            directory_path = service.teams_admin.normalize_directory_reference(
+                str(payload.get("directory_path") or "").strip() or "root"
+            )
+            auth.require_permission(
+                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+            )
+            if not request_has_privileged_operations(auth=auth, service=service, request=request):
+                return json_error("Privileged operations are locked.", status_code=403)
+            expected_revision = expected_revision_from_payload(payload)
+            result = service.workflow_config_admin.create_workflow_pack(
+                pack_id=str(payload.get("pack_id") or ""),
+                pack_version=(
+                    str(payload.get("pack_version"))
+                    if payload.get("pack_version") is not None
+                    else None
+                ),
+                description=(
+                    str(payload.get("description"))
+                    if payload.get("description") is not None
+                    else None
+                ),
+                expected_revision=expected_revision,
+            )
+        except KeyError as exc:
+            return json_error(str(exc).strip("'"), status_code=428)
+        except AdminRevisionConflict as exc:
+            return json_error(str(exc), status_code=409, details=exc.details)
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(result.model_dump(mode="json"))
+
+    async def update_workflow_pack(request: Request) -> JSONResponse:
+        try:
+            auth.require(request)
+            payload = await json_body(request)
+            directory_path = service.teams_admin.normalize_directory_reference(
+                str(payload.get("directory_path") or "").strip() or "root"
+            )
+            auth.require_permission(
+                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+            )
+            if not request_has_privileged_operations(auth=auth, service=service, request=request):
+                return json_error("Privileged operations are locked.", status_code=403)
+            expected_revision = expected_revision_from_payload(payload)
+            result = service.workflow_config_admin.update_workflow_pack_metadata(
+                workflow_pack=str(payload.get("workflow_pack") or ""),
+                pack_id=str(payload.get("pack_id") or ""),
+                pack_version=str(payload.get("pack_version") or ""),
+                description=(
+                    str(payload.get("description"))
+                    if payload.get("description") is not None
+                    else None
+                ),
+                expected_revision=expected_revision,
+            )
+        except KeyError as exc:
+            return json_error(str(exc).strip("'"), status_code=428)
+        except AdminRevisionConflict as exc:
+            return json_error(str(exc), status_code=409, details=exc.details)
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(result.model_dump(mode="json"))
+
+    async def remove_workflow_pack(request: Request) -> JSONResponse:
+        try:
+            auth.require(request)
+            payload = await json_body(request)
+            directory_path = service.teams_admin.normalize_directory_reference(
+                str(payload.get("directory_path") or "").strip() or "root"
+            )
+            auth.require_permission(
+                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+            )
+            if not request_has_privileged_operations(auth=auth, service=service, request=request):
+                return json_error("Privileged operations are locked.", status_code=403)
+            expected_revision = expected_revision_from_payload(payload)
+            result = service.workflow_config_admin.remove_workflow_pack(
+                workflow_pack=str(payload.get("workflow_pack") or ""),
+                expected_revision=expected_revision,
+            )
+        except KeyError as exc:
+            return json_error(str(exc).strip("'"), status_code=428)
+        except AdminRevisionConflict as exc:
+            return json_error(str(exc), status_code=409, details=exc.details)
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(result.model_dump(mode="json"))
 
     async def generate_draft(request: Request) -> JSONResponse:
         try:
@@ -897,6 +995,9 @@ def workflow_routes(
         Route("/api/workflow-editor/runs/{event_id:path}", clear_run, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),
         Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),
+        Route("/api/workflow-editor/packs", create_workflow_pack, methods=["POST"]),
+        Route("/api/workflow-editor/packs", update_workflow_pack, methods=["PUT"]),
+        Route("/api/workflow-editor/packs", remove_workflow_pack, methods=["DELETE"]),
         Route("/api/workflow-editor/validate", validate_document, methods=["POST"]),
         Route("/api/workflow-editor/generate-draft", generate_draft, methods=["POST"]),
         Route("/api/workflow-editor/document", save_document, methods=["PUT"]),

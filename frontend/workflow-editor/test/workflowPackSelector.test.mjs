@@ -12,6 +12,18 @@ test("workflow editor exposes workflow pack selection and sends it on save", () 
   assert.match(source, /workflow_pack: selectedWorkflowPackReference \|\| undefined/);
 });
 
+test("workflow editor exposes workflow pack management actions", () => {
+  assert.match(source, /function openCreateWorkflowPackModal/);
+  assert.match(source, /function openEditWorkflowPackModal/);
+  assert.match(source, /function removeSelectedWorkflowPack/);
+  assert.match(source, /function renderWorkflowPackModal/);
+  assert.match(source, /fetchJson<WorkflowPackMutation>\(\s*"\/api\/workflow-editor\/packs"/);
+  assert.match(source, /method: workflowPackModalMode === "create" \? "POST" : "PUT"/);
+  assert.match(source, /method: "DELETE"/);
+  assert.match(source, /expected_revision:\s*document\.pack_list_revision/);
+  assert.match(source, /expected_revision:\s*[\s\S]*selectedWorkflowPack\?\.revision/);
+});
+
 test("workflow editor uses selected workflow pack when generating node ids", () => {
   assert.match(source, /function workflowPackSlugFromReference\(packReference: unknown\)/);
   assert.match(
