@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Added cursor-key navigation to the guided `evander-cli setup` checklist and
+  interactive single/multi-select menus while preserving typed prompts for
+  non-TTY setup runs.
+
 - Moved Admin Web workflow pack selection and history into compact controls
   overlaid on the workflow canvas, with add/edit/remove pack actions kept to
   icon buttons and the edit dialog.

@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import app
+from agent_sandbox.setup import tui as setup_tui
 from agent_sandbox.setup.engine import SetupManager
 
 
@@ -206,6 +208,155 @@ def test_setup_tui_supports_discouraged_no_auth_admin_web(
     payload = json.loads((tmp_path / "runtime" / "setup-wizard" / "state.json").read_text())
     assert payload["admin_web"]["auth_mode"] == "none"
     assert payload["admin_web"]["password_configured"] is False
+
+
+def _patch_tui_keys(monkeypatch, *keys: str) -> None:
+    key_iter = iter(keys)
+    monkeypatch.setattr(setup_tui, "_read_key", lambda: next(key_iter))
+
+
+def test_setup_tui_checklist_enter_opens_highlighted_item(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    _patch_tui_keys(monkeypatch, "enter")
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+
+    action = setup_tui._prompt_checklist_action(manager, state)
+
+    assert action.kind == "item"
+    assert action.item_id == "secret_storage"
+    assert action.selected_index == 0
+
+
+def test_setup_tui_checklist_arrow_navigation_wraps(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+
+    _patch_tui_keys(monkeypatch, "down", "enter")
+    action = setup_tui._prompt_checklist_action(manager, state)
+    assert action.item_id == "admin_web"
+    assert action.selected_index == 1
+
+    _patch_tui_keys(monkeypatch, "up", "enter")
+    wrapped_action = setup_tui._prompt_checklist_action(manager, state)
+    assert wrapped_action.item_id == "launch_verify"
+    assert wrapped_action.selected_index == len(manager.checklist(state)) - 1
+
+
+@pytest.mark.parametrize(
+    ("key", "kind"),
+    [
+        ("q", "quit"),
+        ("p", "plan"),
+        ("d", "doctor"),
+        ("l", "launch"),
+    ],
+)
+def test_setup_tui_checklist_hotkeys_route(
+    tmp_path: Path, monkeypatch, key: str, kind: str
+) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    _patch_tui_keys(monkeypatch, key)
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+
+    action = setup_tui._prompt_checklist_action(manager, state)
+
+    assert action.kind == kind
+    assert action.selected_index == 0
+
+
+def test_setup_tui_interactive_admin_no_auth_requires_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr(setup_tui, "_is_interactive_terminal", lambda: True)
+    _patch_tui_keys(monkeypatch, "down", "enter", "down", "enter", "q")
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    state.secret_storage_acknowledged = True
+    manager.save_state(state)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "setup",
+            "--config",
+            str(tmp_path / "runtime"),
+            "--project-dir",
+            str(ROOT),
+        ],
+        input="\n\noperator\ny\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Use Admin Web without authentication?" in result.output
+    payload = json.loads((tmp_path / "runtime" / "setup-wizard" / "state.json").read_text())
+    assert payload["admin_web"]["auth_mode"] == "none"
+    assert payload["admin_web"]["password_configured"] is False
+
+
+def test_setup_tui_interactive_execution_model_single_select(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    _patch_tui_keys(monkeypatch, "down", "enter")
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+
+    state = setup_tui._configure_item(manager, state, "execution_model", interactive=True)
+
+    assert state.execution["model"] == "container_worker_host"
+    assert state.execution["execution_backend"] == "container_worker_vm"
+
+
+def test_setup_tui_interactive_ai_provider_multiselect_requires_one_and_toggles(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("agent_sandbox.setup.tui.click.clear", lambda: None)
+    monkeypatch.setattr(setup_tui, "_is_interactive_terminal", lambda: True)
+    _patch_tui_keys(
+        monkeypatch,
+        "down",
+        "down",
+        "down",
+        "enter",
+        "space",
+        "enter",
+        "space",
+        "down",
+        "down",
+        "space",
+        "enter",
+        "q",
+    )
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    state.secret_storage_acknowledged = True
+    manager.save_state(state)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "setup",
+            "--config",
+            str(tmp_path / "runtime"),
+            "--project-dir",
+            str(ROOT),
+        ],
+        input="n\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Select at least one provider before continuing." in result.output
+    payload = json.loads((tmp_path / "runtime" / "setup-wizard" / "state.json").read_text())
+    assert payload["ai_providers"] == ["openai", "ollama"]
+    assert payload["provider_config"]["local_openai_api_base_url"]
 
 
 def test_setup_admin_assistant_verification_queues_smoke_message(

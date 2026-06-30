@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import getpass
 import json
 from pathlib import Path
+import sys
 
 import click
 import typer
@@ -18,9 +20,49 @@ from agent_sandbox.setup.engine import (
 )
 
 
+@dataclass(frozen=True)
+class _MenuOption:
+    value: str
+    label: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class _ChecklistAction:
+    kind: str
+    selected_index: int
+    item_id: str = ""
+
+
+_CHECKLIST_HOTKEYS = {
+    "q": "quit",
+    "p": "plan",
+    "d": "doctor",
+    "l": "launch",
+}
+
+_ADMIN_AUTH_OPTIONS = (
+    _MenuOption("local_password", "Local password (recommended)"),
+    _MenuOption("none", "No authentication (discouraged)"),
+)
+
+_EXECUTION_OPTIONS = (
+    _MenuOption("container_same_host", "Containers on this host"),
+    _MenuOption("container_worker_host", "Containers on a separate worker host"),
+    _MenuOption("libvirt_vm", "VM-backed agents"),
+)
+
+_PROVIDER_OPTIONS = (
+    _MenuOption("openai", "OpenAI"),
+    _MenuOption("anthropic", "Anthropic"),
+    _MenuOption("ollama", "Ollama"),
+)
+
+
 def run_setup_tui(*, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR) -> None:
     manager = SetupManager(project_dir=project_dir, runtime_dir=runtime_dir)
     state = manager.load_state()
+    interactive = _is_interactive_terminal()
     if not state.secret_storage_acknowledged:
         typer.echo("Evander keeps provider credentials on the control-plane host.")
         typer.echo(f"Secrets entered during setup will be stored in: {state.secret_file}")
@@ -31,7 +73,26 @@ def run_setup_tui(*, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR)
         else:
             raise typer.Exit(1)
 
+    selected_index = 0
     while True:
+        if interactive:
+            action = _prompt_checklist_action(manager, state, selected_index=selected_index)
+            selected_index = action.selected_index
+            _clear_screen()
+            if action.kind == "quit":
+                return
+            if action.kind == "plan":
+                typer.echo(json.dumps(manager.plan(), indent=2, sort_keys=True))
+                continue
+            if action.kind == "doctor":
+                typer.echo(json.dumps(manager.doctor(), indent=2, sort_keys=True))
+                continue
+            if action.kind == "launch":
+                state = _launch(manager, state)
+                continue
+            state = _configure_item(manager, state, action.item_id, interactive=interactive)
+            continue
+
         _clear_screen()
         _render_checklist(manager, state)
         choice = typer.prompt(
@@ -56,18 +117,60 @@ def run_setup_tui(*, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR)
         except (ValueError, IndexError):
             typer.echo("Unknown selection.")
             continue
-        state = _configure_item(manager, state, item.id)
+        state = _configure_item(manager, state, item.id, interactive=interactive)
 
 
-def _render_checklist(manager: SetupManager, state) -> None:
+def _render_checklist(
+    manager: SetupManager,
+    state,
+    *,
+    selected_index: int | None = None,
+) -> None:
     typer.echo("")
     typer.echo("Evander Setup")
     typer.echo("=" * 13)
-    for index, item in enumerate(manager.checklist(state), start=1):
+    items = manager.checklist(state)
+    for index, item in enumerate(items):
         marker = "completed" if item.status == "completed" else item.status
-        typer.echo(f"{index}. [{marker}] {item.label}: {item.summary}")
+        if selected_index is None:
+            typer.echo(f"{index + 1}. [{marker}] {item.label}: {item.summary}")
+            continue
+        cursor = ">" if index == selected_index else " "
+        line = f"{cursor} [{marker}] {item.label}: {item.summary}"
+        if index == selected_index:
+            line = click.style(line, reverse=True)
+        typer.echo(line)
     launch_status = "available" if manager.required_ready(state) else "blocked"
-    typer.echo(f"\nLaunch: {launch_status}")
+    if selected_index is None:
+        typer.echo(f"\nLaunch: {launch_status}")
+        return
+    typer.echo("")
+    typer.echo("Up/Down move, Enter opens selected.")
+    typer.echo(f"Hotkeys: L launch ({launch_status}), P plan, D doctor, Q quit")
+
+
+def _prompt_checklist_action(
+    manager: SetupManager,
+    state,
+    *,
+    selected_index: int = 0,
+) -> _ChecklistAction:
+    items = manager.checklist(state)
+    selected_index = min(max(selected_index, 0), max(len(items) - 1, 0))
+    while True:
+        _clear_screen()
+        _render_checklist(manager, state, selected_index=selected_index)
+        key = _read_key()
+        if key == "up":
+            selected_index = _move_selection(selected_index, -1, len(items))
+            continue
+        if key == "down":
+            selected_index = _move_selection(selected_index, 1, len(items))
+            continue
+        if key in _CHECKLIST_HOTKEYS:
+            return _ChecklistAction(_CHECKLIST_HOTKEYS[key], selected_index)
+        if key == "enter" and items:
+            return _ChecklistAction("item", selected_index, items[selected_index].id)
 
 
 def _echo_guidance(*lines: str) -> None:
@@ -81,7 +184,7 @@ def _clear_screen() -> None:
     click.clear()
 
 
-def _configure_item(manager: SetupManager, state, item_id: str):
+def _configure_item(manager: SetupManager, state, item_id: str, *, interactive: bool = False):
     if item_id == "secret_storage":
         _echo_guidance(
             "Evander keeps real provider credentials on the control-plane host.",
@@ -111,16 +214,23 @@ def _configure_item(manager: SetupManager, state, item_id: str):
             "Admin username",
             default=str(state.admin_web.get("username") or getpass.getuser() or "admin"),
         )
-        typer.echo("")
-        typer.echo("1. Local password (recommended)")
-        typer.echo("2. No authentication (discouraged)")
-        raw_auth = typer.prompt(
-            "Choose Admin Web authentication",
-            default="2"
-            if str(state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE) == "none"
-            else "1",
-        ).strip()
-        auth_mode = "none" if raw_auth == "2" else "local_password"
+        if interactive:
+            auth_mode = _select_single(
+                "Choose Admin Web authentication",
+                _ADMIN_AUTH_OPTIONS,
+                default_value=str(state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE),
+            )
+        else:
+            typer.echo("")
+            typer.echo("1. Local password (recommended)")
+            typer.echo("2. No authentication (discouraged)")
+            raw_auth = typer.prompt(
+                "Choose Admin Web authentication",
+                default="2"
+                if str(state.admin_web.get("auth_mode") or DEFAULT_ADMIN_AUTH_MODE) == "none"
+                else "1",
+            ).strip()
+            auth_mode = "none" if raw_auth == "2" else "local_password"
         password = ""
         if auth_mode == "none":
             typer.echo("")
@@ -143,13 +253,22 @@ def _configure_item(manager: SetupManager, state, item_id: str):
             "Containers on a separate worker host are a practical middle ground.",
             "VM-backed agents give the strongest isolation, with higher setup and resource cost.",
         )
-        typer.echo("1. Containers on this host")
-        typer.echo("2. Containers on a separate worker host")
-        typer.echo("3. VM-backed agents")
-        raw = typer.prompt("Choose execution model", default="1").strip()
-        model = {"1": "container_same_host", "2": "container_worker_host", "3": "libvirt_vm"}.get(
-            raw, "container_same_host"
-        )
+        if interactive:
+            model = _select_single(
+                "Choose execution model",
+                _EXECUTION_OPTIONS,
+                default_value=str(state.execution.get("model") or "container_same_host"),
+            )
+        else:
+            typer.echo("1. Containers on this host")
+            typer.echo("2. Containers on a separate worker host")
+            typer.echo("3. VM-backed agents")
+            raw = typer.prompt("Choose execution model", default="1").strip()
+            model = {
+                "1": "container_same_host",
+                "2": "container_worker_host",
+                "3": "libvirt_vm",
+            }.get(raw, "container_same_host")
         return manager.configure_execution(state, model=model)
     if item_id == "ai_providers":
         _echo_guidance(
@@ -158,11 +277,18 @@ def _configure_item(manager: SetupManager, state, item_id: str):
             "OpenAI and Anthropic need API keys stored in the host secret file.",
             "Ollama is for a local OpenAI-compatible Ollama server.",
         )
-        raw = typer.prompt(
-            "Select providers (comma-separated: openai, anthropic, ollama)",
-            default=", ".join(state.ai_providers) if state.ai_providers else "openai",
-        )
-        providers = [part.strip().lower() for part in raw.split(",") if part.strip()]
+        if interactive:
+            providers = _select_multiple(
+                "Select AI providers",
+                _PROVIDER_OPTIONS,
+                default_values=state.ai_providers or ["openai"],
+            )
+        else:
+            raw = typer.prompt(
+                "Select providers (comma-separated: openai, anthropic, ollama)",
+                default=", ".join(state.ai_providers) if state.ai_providers else "openai",
+            )
+            providers = [part.strip().lower() for part in raw.split(",") if part.strip()]
         secrets_by_env: dict[str, str] = {}
         for provider in providers:
             env_var = PROVIDER_ENV_VARS.get(provider)
@@ -213,6 +339,141 @@ def _configure_item(manager: SetupManager, state, item_id: str):
         return _launch(manager, state)
     typer.echo("This setup item is not configurable in v1.")
     return state
+
+
+def _select_single(
+    title: str,
+    options: tuple[_MenuOption, ...],
+    *,
+    default_value: str,
+) -> str:
+    selected_index = _default_index(options, default_value)
+    while True:
+        _clear_screen()
+        typer.echo(title)
+        typer.echo("=" * len(title))
+        for index, option in enumerate(options):
+            cursor = ">" if index == selected_index else " "
+            line = f"{cursor} {option.label}"
+            if option.description:
+                line = f"{line} - {option.description}"
+            if index == selected_index:
+                line = click.style(line, reverse=True)
+            typer.echo(line)
+        typer.echo("")
+        typer.echo("Up/Down move, Enter selects.")
+        key = _read_key()
+        if key == "up":
+            selected_index = _move_selection(selected_index, -1, len(options))
+        elif key == "down":
+            selected_index = _move_selection(selected_index, 1, len(options))
+        elif key == "enter":
+            return options[selected_index].value
+
+
+def _select_multiple(
+    title: str,
+    options: tuple[_MenuOption, ...],
+    *,
+    default_values: list[str],
+) -> list[str]:
+    selected_index = 0
+    enabled = {value for value in default_values if any(option.value == value for option in options)}
+    message = ""
+    while True:
+        _clear_screen()
+        typer.echo(title)
+        typer.echo("=" * len(title))
+        for index, option in enumerate(options):
+            cursor = ">" if index == selected_index else " "
+            checked = "[x]" if option.value in enabled else "[ ]"
+            line = f"{cursor} {checked} {option.label}"
+            if option.description:
+                line = f"{line} - {option.description}"
+            if index == selected_index:
+                line = click.style(line, reverse=True)
+            typer.echo(line)
+        typer.echo("")
+        if message:
+            typer.echo(message)
+        typer.echo("Up/Down move, Space toggles, Enter confirms.")
+        key = _read_key()
+        if key == "up":
+            selected_index = _move_selection(selected_index, -1, len(options))
+            message = ""
+        elif key == "down":
+            selected_index = _move_selection(selected_index, 1, len(options))
+            message = ""
+        elif key == "space":
+            value = options[selected_index].value
+            if value in enabled:
+                enabled.remove(value)
+            else:
+                enabled.add(value)
+            message = ""
+        elif key == "enter":
+            if enabled:
+                return [option.value for option in options if option.value in enabled]
+            message = "Select at least one provider before continuing."
+
+
+def _default_index(options: tuple[_MenuOption, ...], default_value: str) -> int:
+    for index, option in enumerate(options):
+        if option.value == default_value:
+            return index
+    return 0
+
+
+def _move_selection(index: int, delta: int, count: int) -> int:
+    if count <= 0:
+        return 0
+    return (index + delta) % count
+
+
+def _is_interactive_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _read_key() -> str:
+    try:
+        import select
+        import termios
+        import tty
+    except ImportError:
+        return _normalize_key(click.getchar())
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        value = sys.stdin.read(1)
+        if value == "\x1b":
+            tail = ""
+            while len(tail) < 2:
+                readable, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not readable:
+                    break
+                tail += sys.stdin.read(1)
+            value += tail
+        return _normalize_key(value)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _normalize_key(value: str) -> str:
+    if value in {"\x1b[A", "\x1bOA"}:
+        return "up"
+    if value in {"\x1b[B", "\x1bOB"}:
+        return "down"
+    if value in {"\r", "\n"}:
+        return "enter"
+    if value == " ":
+        return "space"
+    if value == "\x03":
+        raise KeyboardInterrupt
+    if len(value) == 1:
+        return value.lower()
+    return value
 
 
 def _launch(manager: SetupManager, state):
