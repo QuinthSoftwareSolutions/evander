@@ -279,6 +279,10 @@ class SetupManager:
     def secret_file_path(self, state: SetupState) -> Path:
         return Path(state.secret_file).expanduser()
 
+    def _secret_file_requires_root(self, state: SetupState) -> bool:
+        path = self.secret_file_path(state)
+        return path.is_absolute() and str(path).startswith("/etc/")
+
     def secret_status(self, state: SetupState) -> dict[str, object]:
         path = self.secret_file_path(state)
         values = _parse_env_file(path)
@@ -538,8 +542,7 @@ class SetupManager:
             _upsert_env_file(
                 self.secret_file_path(state),
                 secret_updates,
-                root_owned=self.secret_file_path(state).is_absolute()
-                and str(self.secret_file_path(state)).startswith("/etc/"),
+                root_owned=self._secret_file_requires_root(state),
             )
         self.save_state(state)
         return state
@@ -598,8 +601,7 @@ class SetupManager:
             _upsert_env_file(
                 self.secret_file_path(state),
                 secret_updates,
-                root_owned=self.secret_file_path(state).is_absolute()
-                and str(self.secret_file_path(state)).startswith("/etc/"),
+                root_owned=self._secret_file_requires_root(state),
             )
         state.provider_config = config
         existing_values = _parse_env_file(self.secret_file_path(state))
@@ -676,6 +678,7 @@ class SetupManager:
         return state
 
     def _write_config_files(self, state: SetupState) -> None:
+        self._ensure_container_worker_secret(state)
         build_runtime(load_runtime_gateway_config(runtime_dir=self.runtime_dir)).directories.ensure_root()
         _copy_if_missing(
             self.project_dir / "config" / "firewall.env.example",
@@ -711,6 +714,25 @@ class SetupManager:
                 "show_launcher_when_disabled": False,
             }
         )
+
+    def _ensure_container_worker_secret(self, state: SetupState) -> None:
+        if str(state.execution.get("execution_backend") or "") != "container_worker_vm":
+            return
+        token_env = (
+            str(state.execution.get("container_worker_token_env") or "").strip()
+            or DEFAULT_CONTAINER_WORKER_TOKEN_ENV
+        )
+        secret_path = self.secret_file_path(state)
+        root_owned = self._secret_file_requires_root(state)
+        existing_values = _read_env_for_update(secret_path, root_owned=root_owned)
+        token = (
+            existing_values.get(token_env)
+            or os.environ.get(token_env)
+            or secrets.token_urlsafe(32)
+        )
+        if existing_values.get(token_env) != token:
+            _upsert_env_file(secret_path, {token_env: token}, root_owned=root_owned)
+        os.environ[token_env] = token
 
     def _install_secret_dropins(self, state: SetupState) -> None:
         secret_file = str(self.secret_file_path(state))

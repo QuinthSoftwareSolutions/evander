@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -149,6 +150,28 @@ def test_setup_tui_install_preflight_failure_returns_to_checklist(
     assert result == manager.load_state()
 
 
+def test_setup_tui_launch_failure_returns_to_checklist(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    monkeypatch.setattr(manager, "required_ready", lambda state: True)
+    monkeypatch.setattr(manager, "plan", lambda: {"ready": True})
+    monkeypatch.setattr(setup_tui.typer, "confirm", lambda *args, **kwargs: True)
+
+    def fail_launch(state):
+        raise RuntimeError("worker daemon is not reachable")
+
+    monkeypatch.setattr(manager, "launch", fail_launch)
+
+    result = setup_tui._launch(manager, state)
+
+    output = capsys.readouterr().out
+    assert "Launch failed: worker daemon is not reachable" in output
+    assert "rerun Launch and Admin Assistant verification" in output
+    assert result == manager.load_state()
+
+
 def test_setup_doctor_json_reports_initial_checklist(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
@@ -204,6 +227,39 @@ def test_setup_writes_admin_web_no_auth_config_without_placeholder_password(
     assert 'AGENT_SANDBOX_ADMIN_WEB_PASSWORD=""' in admin_env
     assert 'AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET=""' in admin_env
     assert "replace-with-real-password" not in admin_env
+
+
+def test_setup_writes_container_worker_token_secret_without_state_leak(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("TEST_WORKER_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "agent_sandbox.setup.engine.secrets.token_urlsafe",
+        lambda length: "worker-token",
+    )
+    project_dir = tmp_path / "project"
+    config_dir = project_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "admin-web.env.example").write_text(
+        (ROOT / "config" / "admin-web.env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (config_dir / "firewall.env.example").write_text("", encoding="utf-8")
+    manager = SetupManager(project_dir=project_dir, runtime_dir=project_dir / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    state.execution = {
+        "execution_backend": "container_worker_vm",
+        "container_worker_token_env": "TEST_WORKER_TOKEN",
+    }
+    manager.save_state(state)
+
+    manager._write_config_files(state)
+
+    secret_text = (tmp_path / "local-secrets.env").read_text(encoding="utf-8")
+    assert 'TEST_WORKER_TOKEN="worker-token"' in secret_text
+    assert os.environ["TEST_WORKER_TOKEN"] == "worker-token"
+    assert "worker-token" not in manager.state_path.read_text(encoding="utf-8")
 
 
 def test_setup_tui_omits_nonfunctional_setup_profile_choice(

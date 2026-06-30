@@ -500,4 +500,12 @@ def _launch(manager: SetupManager, state):
     typer.echo(json.dumps(manager.plan(), indent=2, sort_keys=True))
     if not typer.confirm("Apply this setup plan and verify the Admin Assistant?", default=False):
         return state
-    return manager.launch(state)
+    try:
+        return manager.launch(state)
+    except Exception as exc:
+        typer.echo("")
+        typer.echo(f"Launch failed: {exc}")
+        typer.echo(
+            "Fix the failed step above, then rerun Launch and Admin Assistant verification."
+        )
+        return manager.load_state()
