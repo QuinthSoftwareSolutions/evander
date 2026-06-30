@@ -239,6 +239,51 @@ PY
   report_fail "$(printf "%s or %s is missing or empty in %s." "$1" "$2" "${file_path}")" "${hint}" "${severity}"
 }
 
+admin_frontend_assets_ready() {
+  python3 - "${ROOT_DIR}/frontend/workflow-editor/dist" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+dist_dir = Path(sys.argv[1])
+index_path = dist_dir / "index.html"
+if not index_path.is_file():
+    print(index_path)
+    raise SystemExit(1)
+
+html = index_path.read_text(encoding="utf-8")
+references = [
+    match.group("path").split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    for match in re.finditer(r'''(?:src|href)=["'](?P<path>/?assets/[^"']+)["']''', html)
+]
+if not references:
+    print(dist_dir / "assets" / "*.js")
+    raise SystemExit(1)
+
+missing = [dist_dir / reference for reference in references if not (dist_dir / reference).is_file()]
+if missing:
+    print("\n".join(str(path) for path in missing))
+    raise SystemExit(1)
+PY
+}
+
+check_admin_frontend_assets() {
+  local missing
+  if missing="$(admin_frontend_assets_ready)"; then
+    report_pass "Admin Web frontend assets are built."
+    return
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    report_pass "Admin Web frontend assets are missing or stale; npm is available to build them during guided setup launch."
+  else
+    report_fail \
+      "Admin Web frontend assets are missing or stale and npm is not installed." \
+      "Install Node.js/npm so guided setup can build frontend/workflow-editor, or build the Admin Web frontend manually. Missing assets: ${missing}" \
+      "critical"
+  fi
+}
+
 run_preflight_checks() {
   echo "Running install_systemd_units preflight checks..."
   echo "Service profile: ${SERVICE_PROFILE}"
@@ -257,6 +302,7 @@ run_preflight_checks() {
   if [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_MODEL}" == "container_same_host" ]]; then
     check_command "docker" "Install Docker so the same-host container worker can run agent containers."
   fi
+  check_admin_frontend_assets
 
   local setup_managed_config_severity="critical"
   if [[ "${SERVICE_PROFILE}" == "setup" ]]; then

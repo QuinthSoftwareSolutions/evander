@@ -18,6 +18,10 @@
 - Added guided setup provisioning for the same-host container worker daemon and
   made setup preflight require Docker before that execution model can launch.
 
+- Fixed guided setup/Admin Web launch by building the Admin Web frontend bundle
+  when hashed assets are missing or stale, and by showing the frontend-not-built
+  fallback page when `dist/index.html` references missing assets.
+
 - Moved Admin Web workflow pack selection and history into compact controls
   overlaid on the workflow canvas, with add/edit/remove pack actions kept to
   icon buttons and the edit dialog.

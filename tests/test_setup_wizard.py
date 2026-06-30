@@ -279,6 +279,64 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "Requires=docker.service" in unit
 
 
+def test_setup_builds_admin_frontend_assets_when_references_are_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "project"
+    frontend_dir = project_dir / "frontend" / "workflow-editor"
+    dist_dir = frontend_dir / "dist"
+    dist_dir.mkdir(parents=True)
+    (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
+    (frontend_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+    (dist_dir / "index.html").write_text(
+        '<script type="module" src="/assets/index-missing.js"></script>'
+        '<link rel="stylesheet" href="/assets/index-missing.css">',
+        encoding="utf-8",
+    )
+    manager = SetupManager(project_dir=project_dir, runtime_dir=tmp_path / "runtime")
+    run_calls = []
+
+    monkeypatch.setattr("agent_sandbox.setup.engine.shutil.which", lambda command: "/bin/npm")
+
+    def fake_run(args, *, cwd, check, **kwargs):
+        run_calls.append({"args": args, "cwd": cwd, "check": check, **kwargs})
+        if args == ["/bin/npm", "run", "build"]:
+            assets_dir = dist_dir / "assets"
+            assets_dir.mkdir()
+            (assets_dir / "index-missing.js").write_text("console.log('ok')", encoding="utf-8")
+            (assets_dir / "index-missing.css").write_text("body{}", encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+
+    manager._ensure_admin_frontend_assets()
+
+    assert [call["args"] for call in run_calls] == [
+        ["/bin/npm", "ci", "--no-audit", "--no-fund"],
+        ["/bin/npm", "run", "build"],
+    ]
+    assert all(call["cwd"] == frontend_dir for call in run_calls)
+    assert all(call["check"] is True for call in run_calls)
+
+
+def test_setup_admin_frontend_asset_build_requires_npm(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "project"
+    frontend_dir = project_dir / "frontend" / "workflow-editor"
+    dist_dir = frontend_dir / "dist"
+    dist_dir.mkdir(parents=True)
+    (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
+    (dist_dir / "index.html").write_text(
+        '<script type="module" src="/assets/index-missing.js"></script>',
+        encoding="utf-8",
+    )
+    manager = SetupManager(project_dir=project_dir, runtime_dir=tmp_path / "runtime")
+
+    monkeypatch.setattr("agent_sandbox.setup.engine.shutil.which", lambda command: None)
+
+    with pytest.raises(RuntimeError, match="npm is not installed"):
+        manager._ensure_admin_frontend_assets()
+
+
 def test_setup_launch_starts_local_worker_for_same_host_container(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -293,6 +351,7 @@ def test_setup_launch_starts_local_worker_for_same_host_container(
 
     monkeypatch.setattr(manager, "required_ready", lambda state: True)
     monkeypatch.setattr(manager, "_write_config_files", lambda state: None)
+    monkeypatch.setattr(manager, "_ensure_admin_frontend_assets", lambda: None)
     monkeypatch.setattr(manager, "_install_secret_dropins", lambda state: None)
     monkeypatch.setattr(manager, "_wait_admin_web", lambda state: None)
     monkeypatch.setattr(manager, "_verify_admin_assistant", lambda state: None)

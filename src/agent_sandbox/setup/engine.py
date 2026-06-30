@@ -15,6 +15,11 @@ from typing import Any
 import httpx
 
 from agent_sandbox.admin.composition import build_admin_runtime
+from agent_sandbox.admin.web.frontend_assets import (
+    admin_frontend_assets_ready,
+    admin_frontend_dist_dir,
+    missing_admin_frontend_assets,
+)
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.runtime import build_runtime
 
@@ -661,6 +666,7 @@ class SetupManager:
         if not self.required_ready(state):
             raise ValueError("Setup checklist is not ready to launch")
         self._write_config_files(state)
+        self._ensure_admin_frontend_assets()
         subprocess.run(
             [
                 "sudo",
@@ -688,6 +694,46 @@ class SetupManager:
         state.assistant_verification_error = ""
         self.save_state(state)
         return state
+
+    def _ensure_admin_frontend_assets(self) -> None:
+        frontend_dir = self.project_dir / "frontend" / "workflow-editor"
+        dist_dir = admin_frontend_dist_dir(self.project_dir)
+        if admin_frontend_assets_ready(dist_dir):
+            return
+
+        package_json = frontend_dir / "package.json"
+        if not package_json.is_file():
+            raise RuntimeError(
+                f"Admin Web frontend source is missing at {frontend_dir}; "
+                "cannot build static assets."
+            )
+        npm_path = shutil.which("npm")
+        if npm_path is None:
+            missing = ", ".join(str(path) for path in missing_admin_frontend_assets(dist_dir))
+            raise RuntimeError(
+                "Admin Web frontend assets are missing or stale and npm is not installed. "
+                "Install Node.js/npm, then rerun Launch and Admin Assistant verification. "
+                f"Missing assets: {missing}"
+            )
+
+        if not (frontend_dir / "node_modules").is_dir():
+            install_command = [
+                npm_path,
+                "ci" if (frontend_dir / "package-lock.json").is_file() else "install",
+            ]
+            subprocess.run(
+                [*install_command, "--no-audit", "--no-fund"],
+                cwd=frontend_dir,
+                check=True,
+            )
+        subprocess.run([npm_path, "run", "build"], cwd=frontend_dir, check=True)
+
+        missing_after_build = missing_admin_frontend_assets(dist_dir)
+        if missing_after_build:
+            missing = ", ".join(str(path) for path in missing_after_build)
+            raise RuntimeError(
+                f"Admin Web frontend build did not produce required assets: {missing}"
+            )
 
     def _write_config_files(self, state: SetupState) -> None:
         self._ensure_container_worker_secret(state)

@@ -26,6 +26,10 @@ from agent_sandbox.addons import (
 from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.release_metadata import NEWS_ASSET_BASE_PATH, NEWS_ASSET_DIRECTORY
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
+from agent_sandbox.admin.web.frontend_assets import (
+    admin_frontend_assets_ready,
+    admin_frontend_dist_dir,
+)
 from agent_sandbox.admin.web.agents import agent_routes
 from agent_sandbox.admin.web.capacity import capacity_routes
 from agent_sandbox.admin.web.artifacts import artifact_routes
@@ -80,7 +84,7 @@ class AdminWebAddonServiceAdapter:
 
 
 def _dist_dir() -> Path:
-    return Path(__file__).resolve().parents[4] / "frontend" / "workflow-editor" / "dist"
+    return admin_frontend_dist_dir(Path(__file__).resolve().parents[4])
 
 
 def _fallback_html(dist_dir: Path, *, page_title: str) -> str:
@@ -116,7 +120,7 @@ def _fallback_html(dist_dir: Path, *, page_title: str) -> str:
   <body>
     <main>
       <h1>Admin frontend not built</h1>
-      <p>The API is available, but the static frontend bundle was not found at <code>{dist_dir}</code>.</p>
+      <p>The API is available, but the static frontend bundle was not found or is incomplete at <code>{dist_dir}</code>.</p>
       <p>Build the React app in <code>frontend/workflow-editor</code> and reload this page.</p>
     </main>
   </body>
@@ -138,7 +142,7 @@ def _script_json(payload: object) -> str:
 def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
     index_path = dist_dir / "index.html"
     page_title = str(branding_payload.get("page_title") or "")
-    if not index_path.is_file():
+    if not admin_frontend_assets_ready(dist_dir):
         return _fallback_html(dist_dir, page_title=page_title)
     html = index_path.read_text(encoding="utf-8")
     title = f"<title>{escape(page_title)}</title>"
