@@ -27,6 +27,18 @@ test("workflow editor exposes workflow pack management actions", () => {
   assert.match(source, /expected_revision:\s*[\s\S]*selectedWorkflowPack\?\.revision/);
 });
 
+test("workflow editor exposes workflow pack history", () => {
+  assert.match(typesSource, /export type WorkflowPackHistoryEntry = \{/);
+  assert.match(typesSource, /export type WorkflowPackHistoryDetail = \{/);
+  assert.match(source, /function workflowPackHistoryPath\(workflowPack/);
+  assert.match(source, /\/api\/workflow-editor\/packs\/history/);
+  assert.match(source, /function loadWorkflowPackHistory\(workflowPack/);
+  assert.match(source, /function loadWorkflowPackHistoryDetail\(changeId/);
+  assert.match(source, /function renderWorkflowPackHistory\(\)/);
+  assert.match(source, /function renderWorkflowPackHistoryDetail\(\)/);
+  assert.match(source, /void loadWorkflowPackHistory\(saved\.selected_workflow_pack\?\.reference/);
+});
+
 test("workflow editor refreshes saved pack descriptors after saving document changes", () => {
   assert.match(typesSource, /export type WorkflowEditorSave = \{[\s\S]*pack_list_revision\?: string \| null;/);
   assert.match(source, /const normalizedSavedDocument = normalizeWorkflowEditorDocument/);

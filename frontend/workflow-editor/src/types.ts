@@ -113,6 +113,50 @@ export type WorkflowPackMutation = {
   document: WorkflowEditorDocument;
 };
 
+export type WorkflowPackActor = {
+  login: string;
+  display_name?: string | null;
+};
+
+export type WorkflowPackHistoryEntry = {
+  change_id: string;
+  operation: string;
+  workflow_pack: string;
+  actor: WorkflowPackActor;
+  changed_at: string;
+  before_revision?: string | null;
+  after_revision?: string | null;
+  touched_paths: string[];
+  summary: Record<string, unknown>;
+};
+
+export type WorkflowPackHistoryList = {
+  entries: WorkflowPackHistoryEntry[];
+  next_cursor?: string | null;
+};
+
+export type WorkflowPackHistoryFile = {
+  label: string;
+  path: string;
+  exists: boolean;
+  revision?: string | null;
+  content?: Record<string, unknown> | null;
+};
+
+export type WorkflowPackHistoryDiff = {
+  label: string;
+  path: string;
+  changes: Record<string, unknown>[];
+  truncated: boolean;
+};
+
+export type WorkflowPackHistoryDetail = {
+  entry: WorkflowPackHistoryEntry;
+  before_files: WorkflowPackHistoryFile[];
+  after_files: WorkflowPackHistoryFile[];
+  diffs: WorkflowPackHistoryDiff[];
+};
+
 export type WorkflowEditorGeneratedDraft = {
   worker_id: string;
   model: string;

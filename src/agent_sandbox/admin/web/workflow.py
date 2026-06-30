@@ -11,6 +11,7 @@ from starlette.routing import Route
 
 from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.payloads import AdminRevisionConflict
+from agent_sandbox.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.rbac import (
     WORKFLOW_PACKS_MANAGE_PERMISSION,
@@ -63,6 +64,13 @@ def optional_limit_from_query(value: str | None, *, default: int = 25) -> int:
     if parsed < 1 or parsed > 100:
         raise ValueError("limit must be between 1 and 100.")
     return parsed
+
+
+def workflow_pack_actor_from_session(session: dict[str, Any]) -> WorkflowPackChangeActor:
+    return WorkflowPackChangeActor.from_values(
+        login=session.get("login"),
+        display_name=session.get("name"),
+    )
 
 
 def _graph_directory_paths(graphs: object) -> tuple[str, ...]:
@@ -812,7 +820,7 @@ def workflow_routes(
 
     async def create_workflow_pack(request: Request) -> JSONResponse:
         try:
-            auth.require(request)
+            session = auth.require(request)
             payload = await json_body(request)
             auth.require_permission(
                 request, WORKFLOW_PACKS_MANAGE_PERMISSION, directory_path="root"
@@ -833,6 +841,7 @@ def workflow_routes(
                     else None
                 ),
                 expected_revision=expected_revision,
+                actor=workflow_pack_actor_from_session(session),
             )
         except KeyError as exc:
             return json_error(str(exc).strip("'"), status_code=428)
@@ -846,7 +855,7 @@ def workflow_routes(
 
     async def update_workflow_pack(request: Request) -> JSONResponse:
         try:
-            auth.require(request)
+            session = auth.require(request)
             payload = await json_body(request)
             auth.require_permission(
                 request, WORKFLOW_PACKS_MANAGE_PERMISSION, directory_path="root"
@@ -864,6 +873,7 @@ def workflow_routes(
                     else None
                 ),
                 expected_revision=expected_revision,
+                actor=workflow_pack_actor_from_session(session),
             )
         except KeyError as exc:
             return json_error(str(exc).strip("'"), status_code=428)
@@ -877,7 +887,7 @@ def workflow_routes(
 
     async def remove_workflow_pack(request: Request) -> JSONResponse:
         try:
-            auth.require(request)
+            session = auth.require(request)
             payload = await json_body(request)
             auth.require_permission(
                 request, WORKFLOW_PACKS_MANAGE_PERMISSION, directory_path="root"
@@ -888,6 +898,7 @@ def workflow_routes(
             result = service.workflow_config_admin.remove_workflow_pack(
                 workflow_pack=str(payload.get("workflow_pack") or ""),
                 expected_revision=expected_revision,
+                actor=workflow_pack_actor_from_session(session),
             )
         except KeyError as exc:
             return json_error(str(exc).strip("'"), status_code=428)
@@ -898,6 +909,33 @@ def workflow_routes(
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
         return JSONResponse(result.model_dump(mode="json"))
+
+    async def list_workflow_pack_history(request: Request) -> JSONResponse:
+        try:
+            auth.require_permission(request, WORKFLOWS_READ_PERMISSION, directory_path="root")
+            payload = service.workflow_config_admin.list_workflow_pack_history(
+                workflow_pack=request.query_params.get("workflow_pack"),
+                limit=optional_limit_from_query(request.query_params.get("limit"), default=50),
+                cursor=request.query_params.get("cursor"),
+            )
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(payload.model_dump(mode="json"))
+
+    async def get_workflow_pack_history_detail(request: Request) -> JSONResponse:
+        try:
+            auth.require_permission(request, WORKFLOWS_READ_PERMISSION, directory_path="root")
+            payload = service.workflow_config_admin.get_workflow_pack_history_detail(
+                str(request.path_params.get("change_id") or "")
+            )
+        except ValueError as exc:
+            status_code = 404 if "Unknown workflow pack history change" in str(exc) else 400
+            return json_error(str(exc), status_code=status_code)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(payload.model_dump(mode="json"))
 
     async def generate_draft(request: Request) -> JSONResponse:
         try:
@@ -922,7 +960,7 @@ def workflow_routes(
 
     async def save_document(request: Request) -> JSONResponse:
         try:
-            auth.require(request)
+            session = auth.require(request)
             payload = await json_body(request)
             fallback_graphs = None
             if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
@@ -954,6 +992,7 @@ def workflow_routes(
                     if payload.get("workflow_pack") is not None
                     else None
                 ),
+                actor=workflow_pack_actor_from_session(session),
             )
         except KeyError as exc:
             return json_error(str(exc).strip("'"), status_code=428)
@@ -987,6 +1026,12 @@ def workflow_routes(
         Route("/api/workflow-editor/runs/{event_id:path}", clear_run, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),
         Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),
+        Route("/api/workflow-editor/packs/history", list_workflow_pack_history, methods=["GET"]),
+        Route(
+            "/api/workflow-editor/packs/history/{change_id}",
+            get_workflow_pack_history_detail,
+            methods=["GET"],
+        ),
         Route("/api/workflow-editor/packs", create_workflow_pack, methods=["POST"]),
         Route("/api/workflow-editor/packs", update_workflow_pack, methods=["PUT"]),
         Route("/api/workflow-editor/packs", remove_workflow_pack, methods=["DELETE"]),

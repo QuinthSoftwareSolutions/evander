@@ -4661,6 +4661,37 @@ def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
     assert pack_a_path.exists()
     assert (packs_dir / "pack-a.v1.layout.json").exists()
 
+    history_response = client.get("/api/workflow-editor/packs/history?limit=10")
+    assert history_response.status_code == 200
+    history_payload = history_response.json()
+    assert [entry["operation"] for entry in history_payload["entries"]] == [
+        "remove",
+        "update_metadata",
+        "create",
+    ]
+    assert history_payload["entries"][0]["workflow_pack"] == "pack-a.v1.json"
+    assert history_payload["entries"][0]["actor"]["login"] == "admin"
+    custom_history_response = client.get(
+        "/api/workflow-editor/packs/history?workflow_pack=custom-pack.v1.json"
+    )
+    assert custom_history_response.status_code == 200
+    assert [entry["operation"] for entry in custom_history_response.json()["entries"]] == [
+        "update_metadata",
+        "create",
+    ]
+    detail_response = client.get(
+        f"/api/workflow-editor/packs/history/{history_payload['entries'][-1]['change_id']}"
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["entry"]["operation"] == "create"
+    assert next(file for file in detail_payload["before_files"] if file["label"] == "pack")[
+        "exists"
+    ] is False
+    assert next(file for file in detail_payload["after_files"] if file["label"] == "pack")[
+        "content"
+    ]["pack_id"] == "custom-pack"
+
 
 def test_admin_web_workflow_pack_mutations_require_root_pack_management_permission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

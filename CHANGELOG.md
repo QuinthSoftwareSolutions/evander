@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Added internal workflow pack change history for Admin Web/API edits, with
+  runtime-local JSONL audit records, immutable before/after snapshots, actor
+  attribution, history endpoints, and a Workflow editor history panel.
+
 - Fixed workflow pack management authorization so pack create, metadata edit,
   and removal require root-scoped `workflow_packs.manage` instead of
   directory-scoped `workflows.write`, and refreshed saved pack descriptors in

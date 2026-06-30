@@ -18,6 +18,7 @@ from agent_sandbox.admin import workflow_report_helpers
 from agent_sandbox.admin.payloads import AdminRevisionConflict, WorkflowFailureClusterReportPayload
 from agent_sandbox.admin.services import git_helpers, process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.issue_setup_helpers import EffectiveIssueSetupConfig
+from agent_sandbox.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 import agent_sandbox.admin.services.teams_service as admin_teams_service
 import agent_sandbox.admin.services.worker_control_service as worker_control_service
 admin_service = SimpleNamespace(
@@ -8178,6 +8179,159 @@ def test_workflow_editor_remove_workflow_pack_unlists_without_deleting_files(tmp
             workflow_pack="pack-b.v1.json",
             expected_revision=next_revision,
         )
+
+
+def test_workflow_pack_history_records_pack_management_changes(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_a_path = packs_dir / "pack-a.v1.json"
+    pack_a_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-a.v1.layout.json").write_text(json.dumps({"nodes": {}}), encoding="utf-8")
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    actor = WorkflowPackChangeActor.from_values(
+        login="Operator@Example.com",
+        display_name="Operator",
+    )
+
+    create_revision = service.read_composed_workflow_editor_document().pack_list_revision
+    create_result = service.create_workflow_pack(
+        pack_id="custom-pack",
+        pack_version="v1",
+        expected_revision=create_revision,
+        actor=actor,
+    )
+    created_pack_revision = create_result.selected_workflow_pack.revision
+    update_result = service.update_workflow_pack_metadata(
+        workflow_pack="custom-pack.v1.json",
+        pack_id="renamed-pack",
+        pack_version="v2",
+        description="Updated",
+        expected_revision=created_pack_revision,
+        actor=actor,
+    )
+    remove_revision = update_result.document.pack_list_revision
+    service.remove_workflow_pack(
+        workflow_pack="pack-a.v1.json",
+        expected_revision=remove_revision,
+        actor=actor,
+    )
+
+    history = service.list_workflow_pack_history()
+    assert [entry.operation for entry in history.entries] == [
+        "remove",
+        "update_metadata",
+        "create",
+    ]
+    create_entry = history.entries[2]
+    assert create_entry.workflow_pack == "custom-pack.v1.json"
+    assert create_entry.actor.login == "operator@example.com"
+    assert create_entry.actor.display_name == "Operator"
+    assert create_entry.before_revision is None
+    assert create_entry.after_revision == created_pack_revision
+    assert create_entry.summary["workflow_packs_before"] == 1
+    assert create_entry.summary["workflow_packs_after"] == 2
+
+    detail = service.get_workflow_pack_history_detail(create_entry.change_id)
+    before_pack = next(file for file in detail.before_files if file.label == "pack")
+    after_pack = next(file for file in detail.after_files if file.label == "pack")
+    assert before_pack.exists is False
+    assert after_pack.exists is True
+    assert after_pack.content is not None
+    assert after_pack.content["pack_id"] == "custom-pack"
+    pack_diff = next(diff for diff in detail.diffs if diff.label == "pack")
+    assert pack_diff.changes[0]["change_type"] == "added"
+
+
+def test_workflow_pack_history_records_pack_document_saves_and_skips_conflicts(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "demo.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "demo",
+                "pack_version": "v1",
+                "graphs": [],
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "demo.v1.layout.json").write_text(json.dumps({"nodes": {}}), encoding="utf-8")
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["demo.v1.json"]}),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    document = service.read_workflow_editor_document(workflow_pack="demo.v1.json")
+    actor = WorkflowPackChangeActor.from_values(login="operator", display_name="Operator")
+    next_config = dict(document.config)
+    next_config["effects"] = [
+        {
+            "id": "effect-a",
+            "display_name": "Emit event",
+            "type": "effect:event:emit",
+            "event_type": "workflow.synthetic",
+            "payload": {"message": "hello"},
+        }
+    ]
+
+    save_result = service.save_workflow_editor_document(
+        config=next_config,
+        layout={"nodes": {"effect-a": {"x": 120, "y": 80}}},
+        graphs=[
+            {
+                "id": "graph-a",
+                "name": "Graph A",
+                "directory_path": "root",
+                "node_ids": ["effect-a"],
+            }
+        ],
+        workflow_pack="demo.v1.json",
+        expected_revision=document.revision,
+        actor=actor,
+    )
+
+    history = service.list_workflow_pack_history(workflow_pack="demo.v1.json")
+    assert len(history.entries) == 1
+    entry = history.entries[0]
+    assert entry.operation == "save"
+    assert entry.before_revision == document.selected_workflow_pack.revision
+    assert entry.after_revision == save_result.selected_workflow_pack.revision
+    assert entry.summary["nodes_before"] == 0
+    assert entry.summary["nodes_after"] == 1
+    detail = service.get_workflow_pack_history_detail(entry.change_id)
+    after_layout = next(file for file in detail.after_files if file.label == "layout")
+    assert after_layout.content == {"nodes": {"effect-a": {"x": 120, "y": 80}}}
+
+    with pytest.raises(AdminRevisionConflict):
+        service.save_workflow_editor_document(
+            config=next_config,
+            layout={"nodes": {}},
+            workflow_pack="demo.v1.json",
+            expected_revision=document.revision,
+            actor=actor,
+        )
+    assert len(service.list_workflow_pack_history(workflow_pack="demo.v1.json").entries) == 1
 
 
 def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(

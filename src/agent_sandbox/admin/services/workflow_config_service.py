@@ -35,9 +35,16 @@ from agent_sandbox.admin.payloads import (
     WorkflowEditorSavePayload,
     WorkflowEditorValidationPayload,
     WorkflowEditorWorkflowPackDescriptor,
+    WorkflowPackHistoryDetailPayload,
+    WorkflowPackHistoryListPayload,
     WorkflowNodeFailuresDismissPayload,
     WorkflowRunClearPayload,
     WorkflowRunResumePayload,
+)
+from agent_sandbox.admin.services.workflow_pack_history_service import (
+    WorkflowPackChangeActor,
+    WorkflowPackHistoryFileState,
+    WorkflowPackHistoryService,
 )
 from agent_sandbox.admin.worker_config import (
     _WORKER_GLOBAL_CONFIG_MODELS,
@@ -129,6 +136,15 @@ class WorkflowConfigAdminService:
         self._admin_config_mutation_lock = dependencies.admin_config_mutation_lock
         self._normalize_directory_reference = dependencies.normalize_directory_reference
         self._workflow_reports_admin = dependencies.workflow_reports_admin
+        history_runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=self.config.runtime_dir,
+            fallback=self.project_dir / "runtime",
+        )
+        self._workflow_pack_history = WorkflowPackHistoryService(
+            runtime_dir=history_runtime_dir,
+            stable_json_revision=self._stable_json_revision,
+        )
 
     def set_workflow_reports_admin(self, workflow_reports_admin: Any) -> None:
         self._workflow_reports_admin = workflow_reports_admin
@@ -204,6 +220,7 @@ class WorkflowConfigAdminService:
         graphs: list[dict[str, object]] | None = None,
         expected_revision: str | None = None,
         workflow_pack: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorSavePayload:
         return self._save_workflow_editor_document(
             config=config,
@@ -211,6 +228,7 @@ class WorkflowConfigAdminService:
             graphs=graphs,
             expected_revision=expected_revision,
             workflow_pack=workflow_pack,
+            actor=actor,
         )
 
     def create_workflow_pack(
@@ -220,12 +238,14 @@ class WorkflowConfigAdminService:
         pack_version: str | None = None,
         description: str | None = None,
         expected_revision: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorPackMutationPayload:
         return self._create_workflow_pack(
             pack_id=pack_id,
             pack_version=pack_version,
             description=description,
             expected_revision=expected_revision,
+            actor=actor,
         )
 
     def update_workflow_pack_metadata(
@@ -236,6 +256,7 @@ class WorkflowConfigAdminService:
         pack_version: str,
         description: str | None = None,
         expected_revision: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorPackMutationPayload:
         return self._update_workflow_pack_metadata(
             workflow_pack=workflow_pack,
@@ -243,6 +264,7 @@ class WorkflowConfigAdminService:
             pack_version=pack_version,
             description=description,
             expected_revision=expected_revision,
+            actor=actor,
         )
 
     def remove_workflow_pack(
@@ -250,11 +272,32 @@ class WorkflowConfigAdminService:
         *,
         workflow_pack: str,
         expected_revision: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorPackMutationPayload:
         return self._remove_workflow_pack(
             workflow_pack=workflow_pack,
             expected_revision=expected_revision,
+            actor=actor,
         )
+
+    def list_workflow_pack_history(
+        self,
+        *,
+        workflow_pack: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> WorkflowPackHistoryListPayload:
+        return self._workflow_pack_history.list_history(
+            workflow_pack=workflow_pack,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    def get_workflow_pack_history_detail(
+        self,
+        change_id: str,
+    ) -> WorkflowPackHistoryDetailPayload:
+        return self._workflow_pack_history.get_history_detail(change_id)
 
     def read_workflow_run_snapshot(self):
         if self._workflow_reports_admin is None:
@@ -609,6 +652,54 @@ class WorkflowConfigAdminService:
             document=document,
         )
 
+    def _workflow_pack_history_files(
+        self,
+        *,
+        config_path: Path,
+        pack_path: Path,
+        layout_path: Path,
+    ) -> list[WorkflowPackHistoryFileState]:
+        return [
+            self._workflow_pack_history.capture_file_state("worker_config", config_path),
+            self._workflow_pack_history.capture_file_state("pack", pack_path),
+            self._workflow_pack_history.capture_file_state("layout", layout_path),
+        ]
+
+    def _workflow_pack_revision_from_history_files(
+        self, files: list[WorkflowPackHistoryFileState]
+    ) -> str | None:
+        by_label = {file_state.label: file_state for file_state in files}
+        pack = by_label.get("pack")
+        if pack is None or not pack.exists or pack.content is None:
+            return None
+        layout = by_label.get("layout")
+        return self._stable_json_revision(
+            {
+                "pack": pack.content,
+                "layout_exists": bool(layout and layout.exists),
+                "layout": layout.content if layout and layout.exists and layout.content else {},
+            }
+        )
+
+    def _record_workflow_pack_history(
+        self,
+        *,
+        operation: str,
+        workflow_pack: str,
+        actor: WorkflowPackChangeActor | None,
+        before_files: list[WorkflowPackHistoryFileState],
+        after_files: list[WorkflowPackHistoryFileState],
+    ) -> None:
+        self._workflow_pack_history.record_change(
+            operation=operation,
+            workflow_pack=workflow_pack,
+            actor=actor,
+            before_files=before_files,
+            after_files=after_files,
+            before_revision=self._workflow_pack_revision_from_history_files(before_files),
+            after_revision=self._workflow_pack_revision_from_history_files(after_files),
+        )
+
     @staticmethod
     def _workflow_editor_has_inline_workflow(raw_config: dict[str, object]) -> bool:
         if isinstance(raw_config.get("workflow_ir"), dict):
@@ -626,6 +717,7 @@ class WorkflowConfigAdminService:
         pack_version: str | None = None,
         description: str | None = None,
         expected_revision: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorPackMutationPayload:
         with self.admin_config_mutation_lock():
             config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
@@ -652,6 +744,12 @@ class WorkflowConfigAdminService:
             pack_path = self._workflow_editor_pack_path(reference)
             if pack_path.exists():
                 raise ValueError(f"workflow pack file already exists at {pack_path}")
+            layout_path = self._workflow_editor_pack_layout_path(reference)
+            before_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
 
             pack_payload: dict[str, object] = {
                 "pack_id": normalized_pack_id,
@@ -673,6 +771,18 @@ class WorkflowConfigAdminService:
             pack_path.parent.mkdir(parents=True, exist_ok=True)
             self._write_json_file_atomic(pack_path, pack_payload)
             self._write_json_file_atomic(config_path, wrapper_config)
+            after_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
+            self._record_workflow_pack_history(
+                operation="create",
+                workflow_pack=reference,
+                actor=actor,
+                before_files=before_files,
+                after_files=after_files,
+            )
             return self._workflow_pack_mutation_payload(
                 config_path=config_path,
                 selected_reference=reference,
@@ -686,6 +796,7 @@ class WorkflowConfigAdminService:
         pack_version: str,
         description: str | None = None,
         expected_revision: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorPackMutationPayload:
         with self.admin_config_mutation_lock():
             config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
@@ -714,6 +825,12 @@ class WorkflowConfigAdminService:
                 field_name="pack_version",
             )
             pack_path = self._workflow_editor_pack_path(selected_reference)
+            layout_path = self._workflow_editor_pack_layout_path(selected_reference)
+            before_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
             pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
             if not isinstance(pack_payload, dict):
                 raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
@@ -725,6 +842,18 @@ class WorkflowConfigAdminService:
             else:
                 pack_payload["description"] = normalized_description
             self._write_json_file_atomic(pack_path, pack_payload)
+            after_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
+            self._record_workflow_pack_history(
+                operation="update_metadata",
+                workflow_pack=selected_reference,
+                actor=actor,
+                before_files=before_files,
+                after_files=after_files,
+            )
             return self._workflow_pack_mutation_payload(
                 config_path=config_path,
                 selected_reference=selected_reference,
@@ -735,6 +864,7 @@ class WorkflowConfigAdminService:
         *,
         workflow_pack: str,
         expected_revision: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorPackMutationPayload:
         with self.admin_config_mutation_lock():
             config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
@@ -751,6 +881,13 @@ class WorkflowConfigAdminService:
             configured_references = self._workflow_editor_configured_pack_references(raw_config)
             if len(configured_references) <= 1:
                 raise ValueError("Cannot remove the last configured workflow pack.")
+            pack_path = self._workflow_editor_pack_path(selected_reference)
+            layout_path = self._workflow_editor_pack_layout_path(selected_reference)
+            before_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
             selected_index = configured_references.index(selected_reference)
             next_references = list(configured_references)
             next_references.pop(selected_index)
@@ -760,6 +897,18 @@ class WorkflowConfigAdminService:
             wrapper_config["workflow_packs"] = next_references
             config_path.parent.mkdir(parents=True, exist_ok=True)
             self._write_json_file_atomic(config_path, wrapper_config)
+            after_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
+            self._record_workflow_pack_history(
+                operation="remove",
+                workflow_pack=selected_reference,
+                actor=actor,
+                before_files=before_files,
+                after_files=after_files,
+            )
             return self._workflow_pack_mutation_payload(
                 config_path=config_path,
                 selected_reference=next_selected_reference,
@@ -1819,6 +1968,7 @@ class WorkflowConfigAdminService:
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
         workflow_pack: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorSavePayload:
         config_path = self._worker_global_config_path("trigger-orchestrator")
         if config_path is None:
@@ -1902,6 +2052,7 @@ class WorkflowConfigAdminService:
             if graphs_to_persist is not None
             else None
         )
+        history_before_files: list[WorkflowPackHistoryFileState] | None = None
         if pack_save is None:
             if graph_payloads_to_persist is not None:
                 merged_config["workflow_graphs"] = graph_payloads_to_persist
@@ -1919,6 +2070,11 @@ class WorkflowConfigAdminService:
                 selected_reference=selected_reference,
                 selected_validation=validation,
             )
+            history_before_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
             pack_payload = self._workflow_editor_pack_payload_to_persist(
                 pack_path=pack_path,
                 validated_config=merged_config,
@@ -1926,6 +2082,23 @@ class WorkflowConfigAdminService:
             )
             self._write_json_file_atomic(pack_path, pack_payload)
         self._write_json_file_atomic(layout_path, validation.layout)
+        if (
+            pack_save is not None
+            and selected_reference is not None
+            and history_before_files is not None
+        ):
+            history_after_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+            )
+            self._record_workflow_pack_history(
+                operation="save",
+                workflow_pack=selected_reference,
+                actor=actor,
+                before_files=history_before_files,
+                after_files=history_after_files,
+            )
         saved_path = pack_path if pack_save is not None else config_path
         saved_at = datetime.fromtimestamp(saved_path.stat().st_mtime, tz=UTC)
         revision = self._workflow_editor_revision(
@@ -1973,6 +2146,7 @@ class WorkflowConfigAdminService:
         graphs: list[dict[str, object]] | None = None,
         expected_revision: str | None = None,
         workflow_pack: str | None = None,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> WorkflowEditorSavePayload:
         with self.admin_config_mutation_lock():
             if expected_revision is not None:
@@ -1990,6 +2164,7 @@ class WorkflowConfigAdminService:
                 layout=layout,
                 graphs=graphs,
                 workflow_pack=workflow_pack,
+                actor=actor,
             )
 
     def _seed_new_ticket_created_trigger_cursors(
