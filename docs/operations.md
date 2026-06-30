@@ -337,6 +337,12 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
   changes**, and leaving the workflow view or switching directories prompts for confirmation while
   any workflow changes remain unsaved.
+- Admin Web and workflow API pack mutations write internal change history under
+  `runtime/workflow-pack-history/`. `changes.jsonl` is the append-only ledger, and
+  `snapshots/<change-id>/` stores before/after copies of the touched pack, layout, and trigger
+  wrapper config. Use the Workflow tab history panel or
+  `/api/workflow-editor/packs/history` endpoints to inspect who changed a pack and what changed.
+  Direct file edits under `config/workflow-packs/` are outside that attribution path.
 - Admin Web exposes workflow reporting under **Reports**. The workflow graph activity report ranks
   graph metadata by trigger events plus gate/effect execution records over the selected period.
 - Admin Web also exposes workflow failure clusters under **Reports**. That report groups repeated

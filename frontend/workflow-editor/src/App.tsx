@@ -48,6 +48,9 @@ import {
   type WorkflowNodeKind,
   type WorkflowOutputSchemas,
   type WorkflowPackDescriptor,
+  type WorkflowPackHistoryDetail,
+  type WorkflowPackHistoryEntry,
+  type WorkflowPackHistoryList,
   type WorkflowPackMutation,
   type WorkflowRunDetail,
   type WorkflowRunDataAvailability,
@@ -2419,6 +2422,18 @@ function workflowEditorDocumentPath(workflowPack?: string | null): string {
   return query ? `/api/workflow-editor/document?${query}` : "/api/workflow-editor/document";
 }
 
+function workflowPackHistoryPath(workflowPack?: string | null): string {
+  const params = new URLSearchParams();
+  const trimmedWorkflowPack = (workflowPack ?? "").trim();
+  if (trimmedWorkflowPack) params.set("workflow_pack", trimmedWorkflowPack);
+  params.set("limit", "10");
+  return `/api/workflow-editor/packs/history?${params.toString()}`;
+}
+
+function workflowPackHistoryDetailPath(changeId: string): string {
+  return `/api/workflow-editor/packs/history/${encodeURIComponent(changeId)}`;
+}
+
 function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string, { x: number; y: number }> {
   return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
 }
@@ -4023,6 +4038,11 @@ export default function App() {
   });
   const [workflowPackSubmitting, setWorkflowPackSubmitting] = useState(false);
   const [workflowPackError, setWorkflowPackError] = useState<string | null>(null);
+  const [workflowPackHistory, setWorkflowPackHistory] = useState<WorkflowPackHistoryEntry[]>([]);
+  const [workflowPackHistoryLoading, setWorkflowPackHistoryLoading] = useState(false);
+  const [workflowPackHistoryError, setWorkflowPackHistoryError] = useState<string | null>(null);
+  const [workflowPackHistoryDetail, setWorkflowPackHistoryDetail] = useState<WorkflowPackHistoryDetail | null>(null);
+  const [workflowPackHistoryDetailLoading, setWorkflowPackHistoryDetailLoading] = useState(false);
   const [pageVisible, setPageVisible] = useState(currentPageVisible);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
@@ -4633,6 +4653,50 @@ export default function App() {
     applyLoadedWorkflowDocument(payload, selectedDirectoryPath);
   }
 
+  async function loadWorkflowPackHistory(workflowPack?: string | null) {
+    const normalizedWorkflowPack = (workflowPack ?? "").trim();
+    if (!normalizedWorkflowPack || workflowReadLocked) {
+      setWorkflowPackHistory([]);
+      setWorkflowPackHistoryDetail(null);
+      return;
+    }
+    setWorkflowPackHistoryLoading(true);
+    setWorkflowPackHistoryError(null);
+    try {
+      const payload = await fetchJson<WorkflowPackHistoryList>(
+        workflowPackHistoryPath(normalizedWorkflowPack),
+      );
+      setWorkflowPackHistory(payload.entries);
+      setWorkflowPackHistoryDetail((current) => (
+        current && payload.entries.some((entry) => entry.change_id === current.entry.change_id)
+          ? current
+          : null
+      ));
+    } catch (reason) {
+      setWorkflowPackHistory([]);
+      setWorkflowPackHistoryDetail(null);
+      setWorkflowPackHistoryError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkflowPackHistoryLoading(false);
+    }
+  }
+
+  async function loadWorkflowPackHistoryDetail(changeId: string) {
+    if (!changeId || workflowReadLocked) return;
+    setWorkflowPackHistoryDetailLoading(true);
+    setWorkflowPackHistoryError(null);
+    try {
+      const payload = await fetchJson<WorkflowPackHistoryDetail>(
+        workflowPackHistoryDetailPath(changeId),
+      );
+      setWorkflowPackHistoryDetail(payload);
+    } catch (reason) {
+      setWorkflowPackHistoryError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkflowPackHistoryDetailLoading(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     fetchJson<WorkflowEditorDocument>(workflowEditorDocumentPath())
@@ -4648,6 +4712,10 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    void loadWorkflowPackHistory(selectedWorkflowPackReference);
+  }, [selectedWorkflowPackReference, workflowReadLocked]);
 
   useEffect(() => {
     if (workflowRunReadLocked) {
@@ -7486,6 +7554,7 @@ export default function App() {
       { autoFit: true, markClean: true, nodeEditOrigins: {} },
     );
     setSaveState("saved");
+    void loadWorkflowPackHistory(nextDocument.selected_workflow_pack?.reference ?? "");
   }
 
   async function submitWorkflowPackModal(event: ReactFormEvent<HTMLFormElement>) {
@@ -7634,6 +7703,7 @@ export default function App() {
         { markClean: true, nodeEditOrigins: {} },
       );
       setSaveState("saved");
+      void loadWorkflowPackHistory(saved.selected_workflow_pack?.reference ?? selectedWorkflowPackReference);
     } catch (reason) {
       setSaveState("idle");
       setError(
@@ -10499,6 +10569,134 @@ export default function App() {
     );
   }
 
+  function workflowPackHistoryOperationLabel(operation: string): string {
+    if (operation === "create") return "Created";
+    if (operation === "update_metadata") return "Metadata";
+    if (operation === "remove") return "Removed";
+    if (operation === "save") return "Saved";
+    return operation;
+  }
+
+  function workflowPackHistorySummary(entry: WorkflowPackHistoryEntry): string {
+    const summary = entry.summary ?? {};
+    const numberValue = (key: string): number | null => (
+      typeof summary[key] === "number" ? summary[key] as number : null
+    );
+    const nodesBefore = numberValue("nodes_before");
+    const nodesAfter = numberValue("nodes_after");
+    const graphsBefore = numberValue("graphs_before");
+    const graphsAfter = numberValue("graphs_after");
+    const packsBefore = numberValue("workflow_packs_before");
+    const packsAfter = numberValue("workflow_packs_after");
+    if ((entry.operation === "create" || entry.operation === "remove") && packsBefore !== null && packsAfter !== null) {
+      return `${packsBefore} -> ${packsAfter} active packs`;
+    }
+    if (nodesBefore !== null && nodesAfter !== null && nodesBefore !== nodesAfter) {
+      return `${nodesBefore} -> ${nodesAfter} nodes`;
+    }
+    if (graphsBefore !== null && graphsAfter !== null && graphsBefore !== graphsAfter) {
+      return `${graphsBefore} -> ${graphsAfter} graphs`;
+    }
+    return entry.touched_paths.length === 1 ? "1 file" : `${entry.touched_paths.length} files`;
+  }
+
+  function renderWorkflowPackHistoryDetail() {
+    if (!workflowPackHistoryDetail) return null;
+    const { entry, diffs } = workflowPackHistoryDetail;
+    const changedDiffs = diffs.filter((diff) => diff.changes.length > 0);
+    return (
+      <div className="workflow-pack-history-detail">
+        <div className="workflow-pack-history-detail-header">
+          <strong>{workflowPackHistoryOperationLabel(entry.operation)}</strong>
+          <button type="button" className="subtle-button" onClick={() => setWorkflowPackHistoryDetail(null)}>
+            Close
+          </button>
+        </div>
+        <dl className="workflow-pack-history-revisions">
+          <div>
+            <dt>Before</dt>
+            <dd>{entry.before_revision ? entry.before_revision.slice(0, 12) : "none"}</dd>
+          </div>
+          <div>
+            <dt>After</dt>
+            <dd>{entry.after_revision ? entry.after_revision.slice(0, 12) : "none"}</dd>
+          </div>
+        </dl>
+        {changedDiffs.length ? (
+          <div className="workflow-pack-history-diffs">
+            {changedDiffs.slice(0, 3).map((diff) => (
+              <div key={diff.label} className="workflow-pack-history-diff">
+                <strong>{diff.label}</strong>
+                <ul>
+                  {diff.changes.slice(0, 8).map((change, index) => (
+                    <li key={`${diff.label}-${index}`}>
+                      <code>{String(change.path ?? "$")}</code>
+                      <span>{String(change.change_type ?? "changed")}</span>
+                    </li>
+                  ))}
+                </ul>
+                {diff.truncated || diff.changes.length > 8 ? (
+                  <small>{diff.changes.length > 8 ? `${diff.changes.length - 8} more changes` : "Diff truncated"}</small>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="workflow-pack-history-empty">No JSON field changes.</p>
+        )}
+      </div>
+    );
+  }
+
+  function renderWorkflowPackHistory() {
+    if (!selectedWorkflowPack) return null;
+    return (
+      <div className="workflow-pack-history">
+        <div className="workflow-pack-history-header">
+          <div>
+            <span className="section-label">History</span>
+            <strong>{workflowPackHistory.length}</strong>
+          </div>
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() => void loadWorkflowPackHistory(selectedWorkflowPackReference)}
+            disabled={workflowPackHistoryLoading || workflowReadLocked}
+          >
+            Refresh
+          </button>
+        </div>
+        {workflowPackHistoryError ? <div className="runtime-run-error">{workflowPackHistoryError}</div> : null}
+        {workflowPackHistoryLoading ? (
+          <div className="workflow-pack-history-empty">Loading history...</div>
+        ) : workflowPackHistory.length === 0 ? (
+          <div className="workflow-pack-history-empty">No recorded changes.</div>
+        ) : (
+          <div className="workflow-pack-history-list">
+            {workflowPackHistory.map((entry) => (
+              <button
+                key={entry.change_id}
+                type="button"
+                className={`workflow-pack-history-row${workflowPackHistoryDetail?.entry.change_id === entry.change_id ? " selected" : ""}`}
+                onClick={() => void loadWorkflowPackHistoryDetail(entry.change_id)}
+                disabled={workflowPackHistoryDetailLoading}
+              >
+                <span>
+                  <strong>{workflowPackHistoryOperationLabel(entry.operation)}</strong>
+                  <small>{entry.actor.display_name || entry.actor.login} / {formatRuntimeTimestamp(entry.changed_at)}</small>
+                </span>
+                <span>{workflowPackHistorySummary(entry)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {workflowPackHistoryDetailLoading ? (
+          <div className="workflow-pack-history-empty">Loading change...</div>
+        ) : renderWorkflowPackHistoryDetail()}
+      </div>
+    );
+  }
+
   function renderWorkflowPackIdentity() {
     if (!document) return null;
     const packActionsDisabled = workflowPackManageLocked || isTutorialMode || workflowPackSubmitting;
@@ -10597,6 +10795,7 @@ export default function App() {
             </button>
           ))}
         </div>
+        {renderWorkflowPackHistory()}
         {workflowPackError ? <div className="runtime-run-error">{workflowPackError}</div> : null}
       </div>
     );

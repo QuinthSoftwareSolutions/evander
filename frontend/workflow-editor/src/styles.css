@@ -2789,6 +2789,157 @@ select {
   white-space: nowrap;
 }
 
+.workflow-pack-history {
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.2rem;
+}
+
+.workflow-pack-history-header,
+.workflow-pack-history-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.workflow-pack-history-header > div:first-child {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.workflow-pack-history-header strong,
+.workflow-pack-history-detail-header strong {
+  color: #3f3325;
+  font-size: 0.9rem;
+}
+
+.workflow-pack-history-list {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.workflow-pack-history-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.8rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.5);
+  color: #3f3325;
+  text-align: left;
+}
+
+.workflow-pack-history-row:hover:not(:disabled),
+.workflow-pack-history-row.selected {
+  border-color: rgba(42, 115, 98, 0.3);
+  background: rgba(238, 248, 244, 0.72);
+}
+
+.workflow-pack-history-row > span:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.workflow-pack-history-row strong,
+.workflow-pack-history-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-pack-history-row small,
+.workflow-pack-history-row > span:last-child,
+.workflow-pack-history-empty {
+  color: #7a684f;
+  font-size: 0.74rem;
+}
+
+.workflow-pack-history-row > span:last-child {
+  white-space: nowrap;
+}
+
+.workflow-pack-history-detail {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(42, 115, 98, 0.18);
+  border-radius: 8px;
+  background: rgba(238, 248, 244, 0.62);
+}
+
+.workflow-pack-history-revisions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.workflow-pack-history-revisions div {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.workflow-pack-history-revisions dt {
+  color: #7a684f;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.workflow-pack-history-revisions dd {
+  margin: 0;
+  color: #3f3325;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-pack-history-diffs {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.workflow-pack-history-diff {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.workflow-pack-history-diff ul {
+  display: grid;
+  gap: 0.18rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-pack-history-diff li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  color: #5f4f3b;
+  font-size: 0.74rem;
+}
+
+.workflow-pack-history-diff code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-pack-history-diff small {
+  color: #7a684f;
+  font-size: 0.72rem;
+}
+
 .workflow-pack-modal {
   width: min(100%, 34rem);
 }
@@ -9258,6 +9409,41 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .workflow-pack-list-row small,
 :root[data-theme="dark"] .workflow-pack-row-meta {
   color: #a7bac8;
+}
+
+:root[data-theme="dark"] .workflow-pack-history-header strong,
+:root[data-theme="dark"] .workflow-pack-history-detail-header strong,
+:root[data-theme="dark"] .workflow-pack-history-revisions dd {
+  color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .workflow-pack-history-row {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(20, 35, 43, 0.66);
+  color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .workflow-pack-history-row:hover:not(:disabled),
+:root[data-theme="dark"] .workflow-pack-history-row.selected {
+  border-color: rgba(107, 174, 204, 0.34);
+  background: rgba(27, 50, 60, 0.86);
+}
+
+:root[data-theme="dark"] .workflow-pack-history-row small,
+:root[data-theme="dark"] .workflow-pack-history-row > span:last-child,
+:root[data-theme="dark"] .workflow-pack-history-empty,
+:root[data-theme="dark"] .workflow-pack-history-revisions dt,
+:root[data-theme="dark"] .workflow-pack-history-diff small {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .workflow-pack-history-detail {
+  border-color: rgba(107, 174, 204, 0.2);
+  background: rgba(20, 35, 43, 0.72);
+}
+
+:root[data-theme="dark"] .workflow-pack-history-diff li {
+  color: #d8e4ec;
 }
 
 :root[data-theme="dark"] .save-status {

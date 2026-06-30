@@ -212,6 +212,51 @@ class WorkflowEditorPackMutationPayload(BaseModel):
     document: WorkflowEditorDocumentPayload
 
 
+class WorkflowPackActorPayload(BaseModel):
+    login: str
+    display_name: str | None = None
+
+
+class WorkflowPackHistoryEntryPayload(BaseModel):
+    change_id: str
+    operation: str
+    workflow_pack: str
+    actor: WorkflowPackActorPayload
+    changed_at: datetime
+    before_revision: str | None = None
+    after_revision: str | None = None
+    touched_paths: list[str] = Field(default_factory=list)
+    summary: dict[str, object] = Field(default_factory=dict)
+
+
+class WorkflowPackHistoryListPayload(BaseModel):
+    entries: list[WorkflowPackHistoryEntryPayload] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class WorkflowPackHistoryFilePayload(BaseModel):
+    label: str
+    path: str
+    exists: bool
+    revision: str | None = None
+    content: dict[str, object] | None = None
+    error: str | None = None
+
+
+class WorkflowPackHistoryDiffPayload(BaseModel):
+    label: str
+    path: str
+    changes: list[dict[str, object]] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class WorkflowPackHistoryDetailPayload(BaseModel):
+    entry: WorkflowPackHistoryEntryPayload
+    before_files: list[WorkflowPackHistoryFilePayload] = Field(default_factory=list)
+    after_files: list[WorkflowPackHistoryFilePayload] = Field(default_factory=list)
+    diffs: list[WorkflowPackHistoryDiffPayload] = Field(default_factory=list)
+
+
 class WorkflowEditorGeneratedDraftPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     model: str

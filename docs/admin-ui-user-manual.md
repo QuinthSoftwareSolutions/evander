@@ -584,6 +584,11 @@ Common editing tasks:
     version.
 12. Use **Save workflow** to persist the workflow document after all diagnostics are acceptable.
 
+For pack-backed workflows, the Workflow tab shows a **History** section for the selected pack. Each
+entry records the operation, actor, timestamp, before/after revisions, changed files, and changed
+JSON paths. The history is generated for Admin Web/API pack edits and saves; direct filesystem edits
+cannot be attributed to an operator.
+
 The experimental **Generate workflow** control opens a separate blank draft canvas. If the current
 editor has unsaved changes, opening the generator asks for confirmation and discards those edits.
 Enter a natural-language description, then choose **Generate draft** to request a preview from the
