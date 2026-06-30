@@ -21,8 +21,9 @@ from starlette.testclient import TestClient
 
 import agent_sandbox.admin.services.workflow_reports_service as workflow_reports_service
 import agent_sandbox.admin.web.vms_issues as vms_issues_module
-from agent_sandbox.admin.service import AgentCreateOperation, AdminService
-from agent_sandbox.admin.service import (
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from agent_sandbox.admin.services.vm_agent.common_models import AgentCreateOperation
+from agent_sandbox.admin.payloads import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
     CapacityHealthPayload,
@@ -145,7 +146,7 @@ def write_config(
 
 
 def wait_for_agent_create_operation_status(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     operation_id: str,
     status: str,
     *,
@@ -153,11 +154,11 @@ def wait_for_agent_create_operation_status(
 ):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        operation = service.get_admin_agent_create_operation(operation_id)
+        operation = service.vm_agent_admin.get_admin_agent_create_operation(operation_id)
         if operation.status == status:
             return operation
         time.sleep(0.01)
-    operation = service.get_admin_agent_create_operation(operation_id)
+    operation = service.vm_agent_admin.get_admin_agent_create_operation(operation_id)
     raise AssertionError(
         f"Operation {operation_id} did not reach {status}; "
         f"last status was {operation.status}"
@@ -501,7 +502,7 @@ def _signed_webhook_headers(body: bytes, *, secret: str) -> dict[str, str]:
 
 
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/workflow-editor/document")
     catalog_response = client.get("/api/workflow-editor/catalog")
@@ -1862,10 +1863,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
 def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    created = service.create_directory_child("root", "ops")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.directory_admin.create_child(parent="root", name="ops")
     assert created.ok is True and created.data is not None
-    root_write = service.write_directory_domain_config(
+    root_write = service.operations_admin.write_directory_domain_config(
         "root",
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -1946,7 +1947,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
             ]
         },
     )
-    child_write = service.write_directory_domain_config(
+    child_write = service.operations_admin.write_directory_domain_config(
         "root/ops",
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -2222,7 +2223,7 @@ def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> N
 
 
 def test_admin_web_exposes_deployment_status_from_runtime(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     status_path = service.config.runtime_dir / "deployment-status.json"
     status_path.write_text(
         json.dumps(
@@ -2253,7 +2254,7 @@ def test_admin_web_deployment_status_is_public_when_auth_required(
 ) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     (service.config.runtime_dir / "deployment-status.json").write_text(
         json.dumps({"active": True, "message": "Deploying", "ttl_seconds": 3600}),
         encoding="utf-8",
@@ -2271,7 +2272,7 @@ def test_admin_web_deployment_status_is_public_when_auth_required(
 def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     monkeypatch, tmp_path: Path
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
     monkeypatch.setattr(
         release_metadata_module.importlib_metadata,
@@ -2447,7 +2448,7 @@ def test_admin_web_release_info_is_protected_when_auth_required(
 ) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     protected_response = client.get("/api/admin/release-info")
@@ -2462,7 +2463,7 @@ def test_admin_web_release_info_is_protected_when_auth_required(
 
 
 def test_admin_web_ignores_stale_deployment_status(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     stale_started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
     (service.config.runtime_dir / "deployment-status.json").write_text(
         json.dumps(
@@ -2485,7 +2486,7 @@ def test_admin_web_ignores_stale_deployment_status(tmp_path: Path) -> None:
 
 
 def test_admin_web_accepts_naive_deployment_status_timestamps(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     naive_timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     (service.config.runtime_dir / "deployment-status.json").write_text(
         json.dumps(
@@ -2512,7 +2513,7 @@ def test_admin_web_accepts_naive_deployment_status_timestamps(tmp_path: Path) ->
 
 
 def test_admin_web_exposes_capacity_health_endpoint(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     payload = CapacityHealthPayload(
         generated_at=datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
         control_plane=CapacityControlPlanePayload(
@@ -2648,7 +2649,9 @@ def test_admin_web_exposes_capacity_health_endpoint(tmp_path: Path) -> None:
             ],
         ),
     )
-    service.read_capacity_health = MethodType(lambda self: payload, service)
+    service.capacity_health_admin.read_capacity_health = MethodType(
+        lambda self: payload, service.capacity_health_admin
+    )
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/capacity-health")
@@ -2665,7 +2668,7 @@ def test_admin_web_exposes_capacity_health_endpoint(tmp_path: Path) -> None:
 def test_admin_web_capacity_health_requires_auth_when_enabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/capacity-health")
@@ -2674,7 +2677,7 @@ def test_admin_web_capacity_health_requires_auth_when_enabled(monkeypatch, tmp_p
 
 
 def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
     monkeypatch.setattr(
         release_metadata_module.importlib_metadata,
@@ -2708,8 +2711,8 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
         encoding="utf-8",
     )
 
-    release_info = service.read_release_info()
-    older_release_info = service.read_release_info(news_index=1)
+    release_info = service.operations_admin.read_release_info()
+    older_release_info = service.operations_admin.read_release_info(news_index=1)
 
     assert release_info.version == "9.8.7"
     assert release_info.version_source == str(service.project_dir / "pyproject.toml")
@@ -2756,7 +2759,7 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
 
 
 def test_admin_web_release_info_reports_missing_sources(monkeypatch, tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.delenv("AGENT_SANDBOX_REPO_VERSION", raising=False)
     monkeypatch.delenv("agent_sandbox_repo_version", raising=False)
     monkeypatch.delenv("AGENT_SANDBOX_BUILD_VERSION", raising=False)
@@ -2769,7 +2772,7 @@ def test_admin_web_release_info_reports_missing_sources(monkeypatch, tmp_path: P
         ),
     )
 
-    release_info = service.read_release_info()
+    release_info = service.operations_admin.read_release_info()
 
     assert release_info.version is None
     assert release_info.version_source is None
@@ -2784,7 +2787,7 @@ def test_admin_web_release_info_reports_missing_sources(monkeypatch, tmp_path: P
 
 
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     create_response = client.post(
         "/api/admin/skills",
@@ -2831,7 +2834,7 @@ def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
 
 
 def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     assert client.post("/api/admin/skills", json=[]).status_code == 400
     assert (
@@ -2851,7 +2854,7 @@ def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
 
 
 def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     class RequestStub:
         async def is_disconnected(self) -> bool:
@@ -2875,7 +2878,7 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
 
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
@@ -3003,7 +3006,7 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
 
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
@@ -3097,7 +3100,7 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
 def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
     snapshots = iter(
         [
@@ -3147,8 +3150,8 @@ def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_ke
         async def is_disconnected(self) -> bool:
             return False
 
-    monkeypatch.setattr(service, "workflow_event_journal", lambda: FakeJournal())
-    monkeypatch.setattr(service, "read_workflow_run_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(service.workflow_config_admin, "workflow_event_journal", lambda: FakeJournal())
+    monkeypatch.setattr(service.workflow_config_admin, "read_workflow_run_snapshot", lambda: next(snapshots))
 
     async def read_two_events() -> tuple[str, str]:
         stream = _workflow_run_events(service, RequestStub())  # type: ignore[arg-type]
@@ -3168,7 +3171,7 @@ def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_ke
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -3227,8 +3230,8 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
 def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "ops")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
     client = TestClient(create_app(service))
     payload = {
         "config": {
@@ -3286,7 +3289,7 @@ def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
 
 
 def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -3325,7 +3328,7 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
 
 
 def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     _unlock_privileged_operations(client)
     payload = {
         "config": {
@@ -3360,9 +3363,9 @@ def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Pat
 def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.create_directory_child("root", "ops")
-    service.save_workflow_editor_document(
+    service = build_admin_runtime(write_config(tmp_path))
+    service.directory_admin.create_child(parent="root", name="ops")
+    service.workflow_config_admin.save_workflow_editor_document(
         config={
             "runtime_dir": str(tmp_path / "runtime"),
             "triggers": [
@@ -3441,7 +3444,7 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
     callback = _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
     response = client.get("/api/workflow-editor/document")
     payload = response.json()
-    full_revision = service.read_workflow_editor_document().revision
+    full_revision = service.workflow_config_admin.read_workflow_editor_document().revision
 
     assert callback.status_code == 303
     assert response.status_code == 200
@@ -3467,9 +3470,9 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
 def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "ops")
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    service.operations_admin.write_directory_domain_config(
         "root",
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -3484,7 +3487,7 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
             ]
         },
     )
-    service.write_directory_domain_config(
+    service.operations_admin.write_directory_domain_config(
         "root/ops",
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -3499,7 +3502,7 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
             ]
         },
     )
-    service.save_workflow_editor_document(
+    service.workflow_config_admin.save_workflow_editor_document(
         config={
             "runtime_dir": str(tmp_path / "runtime"),
             "triggers": [
@@ -3678,7 +3681,7 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
 def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     config_root = tmp_path / "config" / "trigger-orchestrator"
@@ -3895,7 +3898,7 @@ def test_admin_web_workflow_failure_clusters_rejects_invalid_query_params(
     query_params: dict[str, str],
     expected_error: str,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/reports/workflow-failure-clusters", params=query_params)
@@ -3907,14 +3910,14 @@ def test_admin_web_workflow_failure_clusters_rejects_invalid_query_params(
 def test_admin_web_workflow_failure_clusters_returns_empty_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setattr(
-        service,
+        service.workflow_config_admin,
         "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(graphs=[]),
     )
     monkeypatch.setattr(
-        service,
+        service.workflow_reports_admin,
         "read_workflow_failure_clusters_report",
         lambda **kwargs: _workflow_failure_cluster_report(
             [],
@@ -3941,14 +3944,14 @@ def test_admin_web_workflow_failure_clusters_returns_empty_result(
 def test_admin_web_workflow_failure_clusters_requires_workflow_runs_read_for_root_without_graphs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setattr(
-        service,
+        service.workflow_config_admin,
         "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(graphs=[]),
     )
     monkeypatch.setattr(
-        service,
+        service.workflow_reports_admin,
         "read_workflow_failure_clusters_report",
         lambda **kwargs: pytest.fail("report generation should not be reached"),
     )
@@ -3977,7 +3980,7 @@ def test_admin_web_workflow_failure_clusters_requires_workflow_runs_read_for_roo
 def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_exposes_example_links(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     graphs = [
         {
             "id": "graph-ops",
@@ -3995,7 +3998,7 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
         },
     ]
     monkeypatch.setattr(
-        service,
+        service.workflow_config_admin,
         "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(graphs=graphs),
     )
@@ -4080,7 +4083,7 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
         ],
     )
     monkeypatch.setattr(
-        service,
+        service.workflow_reports_admin,
         "read_workflow_failure_clusters_report",
         lambda **kwargs: (
             captured_kwargs.update(kwargs)
@@ -4141,9 +4144,9 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
 def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_root_reader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setattr(
-        service,
+        service.workflow_config_admin,
         "read_composed_workflow_editor_document",
         lambda: SimpleNamespace(
             graphs=[
@@ -4186,7 +4189,7 @@ def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_r
         ],
     )
     monkeypatch.setattr(
-        service,
+        service.workflow_reports_admin,
         "read_workflow_failure_clusters_report",
         lambda **kwargs: _workflow_failure_cluster_report(
             [unassigned_cluster],
@@ -4223,7 +4226,7 @@ def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_r
 def test_admin_web_workflow_run_controls_require_workflow_runs_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     config_root = tmp_path / "config" / "trigger-orchestrator"
@@ -4431,7 +4434,7 @@ def _agent_create_clone_validation_payload(tmp_path: Path) -> dict[str, object]:
 def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = _workflow_binding_validation_payload(
         tmp_path,
         "Review ${{deleted-ticket-node.ticket.title}}",
@@ -4460,7 +4463,7 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
 def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
     (packs_dir / "pack-a.v1.json").write_text(
@@ -4517,7 +4520,7 @@ def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
         ),
         encoding="utf-8",
     )
-    document = service.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    document = service.workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
     config = dict(document.config)
     effects = [dict(effect) for effect in config["effects"]]
     effects[0]["id"] = "shared-id"
@@ -4541,7 +4544,7 @@ def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
 
 
 def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
     config_root = tmp_path / "config" / "trigger-orchestrator"
     pack_root = tmp_path / "config" / "workflow-packs"
@@ -4632,7 +4635,7 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
 
 
 def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = _workflow_binding_validation_payload(
         tmp_path,
         "Review ${{trigger-ticket-created-main.missing_output}}",
@@ -4655,7 +4658,7 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
 def test_admin_web_validate_reports_agent_create_missing_execution_backend(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -4690,7 +4693,7 @@ def test_admin_web_validate_reports_agent_create_missing_execution_backend(
 def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -4758,7 +4761,7 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
 def test_admin_web_validate_requires_while_body_loopback(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -4819,7 +4822,7 @@ def test_admin_web_validate_requires_while_body_loopback(
 def test_admin_web_validate_exposes_backend_output_schemas_for_switch_gate(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -4889,7 +4892,7 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_switch_gate(
 def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = _agent_create_clone_validation_payload(tmp_path)
 
     response = client.post("/api/workflow-editor/validate", json=payload)
@@ -4904,7 +4907,7 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
 def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effects(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -4974,7 +4977,7 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effe
 def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -5048,7 +5051,7 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
 def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = _agent_create_clone_validation_payload(tmp_path)
     config = payload["config"]
     assert isinstance(config, dict)
@@ -5119,7 +5122,7 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
 
 
 def test_admin_web_validate_reports_malformed_binding_fallback(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = _workflow_binding_validation_payload(
         tmp_path,
         "Review ${{trigger-ticket-created-main.ticket ?? {}}}",
@@ -5233,7 +5236,7 @@ def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/workflow-editor/runs")
 
     assert response.status_code == 200
@@ -5326,7 +5329,7 @@ def test_admin_web_can_clear_specific_workflow_run(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     before_response = client.get("/api/workflow-editor/runs")
     clear_response = client.delete("/api/workflow-editor/runs/evt-stale")
@@ -5401,7 +5404,7 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     runs_response = client.get("/api/workflow-editor/runs")
     resume_response = client.post("/api/workflow-editor/runs/evt-failed/resume")
@@ -5522,7 +5525,7 @@ def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
     }
     _write_json_payload(effect_executions_path, effect_executions)
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     runs_response = client.get("/api/workflow-editor/runs")
     detail_response = client.get(
@@ -5587,7 +5590,7 @@ def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     before_response = client.get("/api/workflow-editor/runs")
     dismiss_response = client.delete("/api/workflow-editor/runs/evt-failed")
@@ -5732,7 +5735,7 @@ def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path)
         },
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     before_response = client.get("/api/workflow-editor/runs")
     dismiss_response = client.delete("/api/workflow-editor/node-failures/effect-prompt")
@@ -5966,7 +5969,7 @@ def test_admin_web_dismisses_workflow_node_failures_with_sqlite_fast_path(
     monkeypatch.setattr(SqliteExecutionStore, "update_all", fail_update_all, raising=False)
     monkeypatch.setattr(SqliteGateExecutionStore, "update_all", fail_update_all, raising=False)
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     before_response = client.get("/api/workflow-editor/runs")
     dismiss_response = client.delete("/api/workflow-editor/node-failures/effect-prompt")
@@ -6055,7 +6058,7 @@ def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Pa
         source_byte_count=24,
         published_at=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
     )
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     list_response = client.get("/api/admin/artifacts?limit=1")
     detail_response = client.get("/api/admin/artifacts/runs%2Fsession-1%2Freport")
@@ -6096,7 +6099,7 @@ def test_admin_web_artifact_key_ending_download_resolves_metadata(
         session_id="session-1",
         archive_path=archive,
     )
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     detail_response = client.get("/api/admin/artifacts/runs%2Ffoo%2Fdownload")
     download_response = client.get("/api/admin/artifact-downloads/runs%2Ffoo%2Fdownload")
@@ -6116,7 +6119,7 @@ def test_admin_web_public_communication_artifact_download_requires_signed_token(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "admin-secret")
     monkeypatch.setenv("TEAM_LINK_SECRET", "link-secret")
     config_path = write_config(tmp_path)
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     team_directory = DirectoryService(service.runtime.directories).create(
         parent="root", name="team"
     )
@@ -6164,7 +6167,7 @@ def test_admin_web_public_communication_artifact_download_requires_signed_token(
 
 
 def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.post(
         "/api/admin/artifacts/uploads",
@@ -6734,7 +6737,7 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
 
 def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> None:
     fixture = _seed_workflow_run_detail_fixture(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     event_response = client.get(
         "/api/workflow-editor/run-detail", params={"event_id": fixture["rich_event_id"]}
@@ -6866,7 +6869,7 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
 
 def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) -> None:
     _seed_workflow_run_detail_fixture(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-notrace"})
 
@@ -6882,7 +6885,7 @@ def test_admin_web_run_detail_attaches_session_scoped_tool_call_to_single_node(
     tmp_path: Path,
 ) -> None:
     _seed_workflow_run_detail_fixture(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get(
         "/api/workflow-editor/run-detail", params={"event_id": "evt-session-only"}
@@ -6907,7 +6910,7 @@ def test_admin_web_run_detail_attaches_session_scoped_tool_call_to_single_node(
 
 def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     fixture = _seed_workflow_run_detail_fixture(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get(
         "/api/workflow-editor/run-detail", params={"event_id": fixture["legacy_event_id"]}
@@ -7072,7 +7075,7 @@ def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
         },
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     node_response = client.get(
         "/api/workflow-editor/run-search",
@@ -7136,7 +7139,7 @@ def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(
     config_path = write_config(tmp_path)
     monkeypatch.chdir("/")
 
-    client = TestClient(create_app(AdminService(config_path)))
+    client = TestClient(create_app(build_admin_runtime(config_path)))
     response = client.get("/api/workflow-editor/runs")
 
     assert response.status_code == 200
@@ -7186,7 +7189,7 @@ def test_admin_web_workflow_runs_resolve_project_relative_store_paths(tmp_path: 
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/workflow-editor/runs")
 
     assert response.status_code == 200
@@ -7195,7 +7198,7 @@ def test_admin_web_workflow_runs_resolve_project_relative_store_paths(tmp_path: 
 
 
 def test_admin_web_returns_400_for_invalid_workflow_editor_payload(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.post(
         "/api/workflow-editor/validate",
@@ -7270,7 +7273,7 @@ def test_admin_web_load_normalizes_stale_filter_outputs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/workflow-editor/document")
 
     assert response.status_code == 200
@@ -7325,7 +7328,7 @@ def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigge
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/workflow-editor/document")
 
     assert response.status_code == 200
@@ -7385,7 +7388,7 @@ def test_admin_web_load_normalizes_for_gate_outputs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/workflow-editor/document")
 
     assert response.status_code == 200
@@ -7439,7 +7442,7 @@ def test_admin_web_load_normalizes_switch_gate_outputs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/workflow-editor/document")
 
     assert response.status_code == 200
@@ -7448,7 +7451,7 @@ def test_admin_web_load_normalizes_switch_gate_outputs(tmp_path: Path) -> None:
 
 
 def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/auth/session")
 
@@ -7465,7 +7468,7 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
 
 
 def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/admin/branding")
 
@@ -7519,7 +7522,7 @@ def test_admin_web_branding_reads_env_and_serves_assets_without_login(
         "https://assets.example.test/company-dark.png",
     )
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     branding = client.get("/api/admin/branding")
     index = client.get("/")
@@ -7557,7 +7560,7 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     unauthorized = client.get("/api/workflow-editor/document")
     login = client.post("/api/auth/login", json={"username": "operator", "password": "swordfish"})
@@ -7580,7 +7583,7 @@ def test_admin_web_local_password_username_permissions_are_case_insensitive(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "Jonathan")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     login = client.post("/api/auth/login", json={"username": "jonathan", "password": "swordfish"})
     session = client.get("/api/auth/session")
@@ -7603,7 +7606,7 @@ def test_admin_web_bootstraps_local_password_user_from_env(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     users = app.state.admin_user_store.list_users()
     credential = app.state.admin_user_store.get_local_password_credential("operator")
 
@@ -7620,7 +7623,7 @@ def test_admin_web_local_password_supports_multiple_users(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     admin_client = TestClient(app)
     regular_client = TestClient(app)
 
@@ -7663,7 +7666,7 @@ def test_admin_web_local_password_user_create_requires_password(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
 
     created = client.post(
@@ -7681,7 +7684,7 @@ def test_admin_web_local_password_reset_changes_user_password(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     admin_client = TestClient(app)
     regular_client = TestClient(app)
 
@@ -7722,7 +7725,7 @@ def test_admin_web_deleted_local_password_user_loses_existing_session(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     admin_client = TestClient(app)
     regular_client = TestClient(app)
 
@@ -7762,7 +7765,7 @@ def test_workflow_event_api_mints_token_and_publishes_external_event(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     unauthorized_mint = client.post("/api/workflow-events/token")
@@ -7809,7 +7812,7 @@ def test_workflow_event_api_mints_token_and_publishes_external_event(
 def test_workflow_event_api_rejects_invalid_bearer_payload_and_event_type(
     tmp_path: Path,
 ) -> None:
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
     minted = client.post("/api/workflow-events/token")
     token = minted.json()["access_token"]
@@ -7859,7 +7862,7 @@ def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
         "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
         "ado-pipeline:ado-secret, github-action:github-secret",
     )
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     invalid = client.post(
         "/api/workflow-events",
@@ -7927,7 +7930,7 @@ def test_workflow_event_api_token_from_azure_session_publishes_user_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     _set_azure_sso_env(monkeypatch)
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     callback = _complete_azure_login(app, client)
@@ -7951,7 +7954,7 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
     wake_paths: list[Path] = []
 
@@ -7959,7 +7962,7 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
         wake_paths.append(wake_socket_path_for_lock(lock_path))
         return True
 
-    monkeypatch.setattr("agent_sandbox.admin.service.notify_wake_socket_for_lock", _fake_notify)
+    monkeypatch.setattr("agent_sandbox.admin.services.workflow_config_service.notify_wake_socket_for_lock", _fake_notify)
     token = client.post("/api/workflow-events/token").json()["access_token"]
     publish_response = client.post(
         "/api/workflow-events",
@@ -8013,7 +8016,7 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path)
 
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     body = json.dumps(
@@ -8109,7 +8112,7 @@ def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
         ),
         encoding="utf-8",
     )
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     body = b'{"target":"demo"}'
     headers = _signed_webhook_headers(body, secret="webhook-secret")
@@ -8157,7 +8160,7 @@ def test_workflow_webhook_ingress_rejects_missing_or_malformed_signature(
 ) -> None:
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     body = b'{"target":"demo"}'
     headers = {"Content-Type": "application/json"}
@@ -8173,7 +8176,7 @@ def test_workflow_webhook_ingress_rejects_missing_or_malformed_signature(
 def test_workflow_webhook_ingress_rejects_bad_hmac(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     body = b'{"target":"demo"}'
     response = client.post(
@@ -8194,7 +8197,7 @@ def test_workflow_webhook_ingress_rejects_invalid_json_and_non_object_body(
 ) -> None:
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     invalid_json = client.post(
         "/api/workflow-webhooks/build-notify",
@@ -8223,7 +8226,7 @@ def test_workflow_webhook_ingress_rejects_missing_secret_and_unknown_slug(
     tmp_path: Path, monkeypatch
 ) -> None:
     _write_workflow_webhook_config(tmp_path, secret_env="MISSING_WEBHOOK_SECRET")
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     body = b'{"target":"demo"}'
     response_missing_secret = client.post(
@@ -8256,7 +8259,7 @@ def test_workflow_webhook_ingress_rejects_duplicate_active_slug(
 ) -> None:
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path, duplicate=True)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     body = b'{"target":"demo"}'
     response = client.post(
@@ -8319,7 +8322,7 @@ def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, m
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/auth/session")
 
     assert response.status_code == 200
@@ -8344,7 +8347,7 @@ def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkey
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     response = client.get("/api/auth/session")
 
     assert response.status_code == 200
@@ -8366,7 +8369,7 @@ def test_admin_web_bootstraps_azure_users_from_env_on_first_startup(
         allowed_users="Operator@Example.com,second@example.com, operator@example.com",
     )
 
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
 
     users = app.state.admin_user_store.list_users()
     assert [user.login for user in users] == ["operator@example.com", "second@example.com"]
@@ -8381,7 +8384,7 @@ def test_admin_web_does_not_rebootstrap_nonempty_azure_user_store(
     store.upsert_user(login="existing@example.com", role="admin")
     _set_azure_sso_env(monkeypatch, allowed_users="new@example.com")
 
-    app = create_app(AdminService(config_path))
+    app = create_app(build_admin_runtime(config_path))
 
     assert [user.login for user in app.state.admin_user_store.list_users()] == [
         "existing@example.com"
@@ -8396,7 +8399,7 @@ def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
         login="operator@example.com", role="admin", display_name="Runtime Operator"
     )
     _set_azure_sso_env(monkeypatch, allowed_users=None)
-    app = create_app(AdminService(config_path))
+    app = create_app(build_admin_runtime(config_path))
     client = TestClient(app)
 
     callback = _complete_azure_login(app, client)
@@ -8425,7 +8428,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
     store.upsert_user(login="admin@example.com", role="admin")
     store.upsert_user(login="regular@example.com", role="regular")
     _set_azure_sso_env(monkeypatch, allowed_users=None)
-    app = create_app(AdminService(config_path))
+    app = create_app(build_admin_runtime(config_path))
     client = TestClient(app)
 
     callback = _complete_azure_login(
@@ -8460,7 +8463,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
 
 
 def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     root_state = client.get("/api/admin/state")
@@ -8491,7 +8494,7 @@ def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> 
 
 def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
     client = TestClient(
-        create_app(AdminService(write_config(tmp_path, execution_backend="container_worker_vm")))
+        create_app(build_admin_runtime(write_config(tmp_path, execution_backend="container_worker_vm")))
     )
 
     response = client.get("/api/admin/state")
@@ -8512,7 +8515,7 @@ def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> Non
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/workflow-editor/document")
 
@@ -8531,7 +8534,7 @@ def test_admin_web_azure_start_login_redirects_and_sets_state(tmp_path: Path, mo
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/auth/azure-sso/start?next=%2Fworkflow", follow_redirects=False)
 
@@ -8553,7 +8556,7 @@ def test_admin_web_azure_callback_rejects_bad_state(tmp_path: Path, monkeypatch)
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
     assert start.status_code == 307
@@ -8577,7 +8580,7 @@ def test_admin_web_azure_callback_rejects_wrong_tenant(tmp_path: Path, monkeypat
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
@@ -8616,7 +8619,7 @@ def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, m
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
@@ -8658,7 +8661,7 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/#workflow")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
@@ -8709,7 +8712,7 @@ def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monk
         "https://admin.example.test/api/auth/azure-sso/callback",
     )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
@@ -8741,7 +8744,7 @@ def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monk
 
 def test_admin_web_removed_azure_user_loses_existing_session(tmp_path: Path, monkeypatch) -> None:
     _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,backup@example.com")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     callback = _complete_azure_login(app, client, login="operator@example.com")
@@ -8761,7 +8764,7 @@ def test_admin_web_removed_azure_user_loses_existing_session(tmp_path: Path, mon
 
 
 def test_admin_web_user_api_manages_users_as_builtin_admin(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     created = client.post(
         "/api/admin/users",
@@ -8783,7 +8786,7 @@ def test_admin_web_user_api_manages_users_as_builtin_admin(tmp_path: Path) -> No
 
 
 def test_admin_web_user_api_prevents_last_admin_delete_and_demotion(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     client.post("/api/admin/users", json={"login": "admin@example.com", "role": "admin"})
 
     demote = client.patch("/api/admin/users/admin@example.com", json={"role": "regular"})
@@ -8803,8 +8806,8 @@ def test_admin_web_user_api_prevents_last_admin_delete_and_demotion(tmp_path: Pa
 
 
 def test_admin_web_user_api_attaches_directory_contact(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.operations_admin.write_directory_domain_config(
         "root",
         "contacts",
         {
@@ -8841,9 +8844,9 @@ def test_admin_web_user_api_attaches_directory_contact(tmp_path: Path) -> None:
 
 
 def test_admin_web_user_api_clears_inherited_directory_contact(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "team")
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team")
+    service.operations_admin.write_directory_domain_config(
         "root",
         "contacts",
         {
@@ -8880,8 +8883,8 @@ def test_admin_web_user_api_clears_inherited_directory_contact(tmp_path: Path) -
 def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grants(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "ops")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
     client = TestClient(create_app(service))
 
     owner = client.post(
@@ -8969,7 +8972,7 @@ def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
         assignments=[{"group_id": "group-managers", "directory_path": "root"}],
     )
     _set_azure_sso_env(monkeypatch, allowed_users=None)
-    app = create_app(AdminService(config_path))
+    app = create_app(build_admin_runtime(config_path))
     client = TestClient(app)
 
     callback = _complete_azure_login(
@@ -9012,7 +9015,7 @@ def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypat
     store.upsert_user(login="admin@example.com", role="admin")
     store.upsert_user(login="regular@example.com", role="regular")
     _set_azure_sso_env(monkeypatch, allowed_users=None)
-    app = create_app(AdminService(config_path))
+    app = create_app(build_admin_runtime(config_path))
     client = TestClient(app)
 
     callback = _complete_azure_login(
@@ -9033,7 +9036,7 @@ def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypat
 def test_admin_web_workflow_tutorial_preference_defaults_and_persists(
     tmp_path: Path,
 ) -> None:
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     initial = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
@@ -9065,7 +9068,7 @@ def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
 ) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     unauthenticated = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
@@ -9092,7 +9095,7 @@ def test_admin_web_workflow_tutorial_preference_uses_azure_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
     _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,other@example.com")
-    app = create_app(AdminService(write_config(tmp_path)))
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
     client = TestClient(app)
 
     callback = _complete_azure_login(app, client, login="operator@example.com")
@@ -9120,15 +9123,15 @@ def test_admin_web_workflow_tutorial_preference_uses_azure_identity(
 def test_admin_web_exposes_admin_domain_smoke_endpoints(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     monkeypatch.setattr(service.vm_agent_admin, "list_vms", lambda **kwargs: [])
     monkeypatch.setattr(
-        service,
+        service.workflow_config_admin,
         "read_workflow_editor_document",
         lambda: SimpleNamespace(graphs=[]),
     )
     monkeypatch.setattr(
-        service,
+        service.workflow_reports_admin,
         "read_workflow_failure_clusters_report",
         lambda **kwargs: _workflow_failure_cluster_report(
             [],
@@ -9208,8 +9211,8 @@ def _assert_json_schema_requires_every_object_property(
 def test_workflow_generator_returns_validated_draft_without_writing_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     captured_requests: list[dict[str, object]] = []
 
@@ -9274,7 +9277,7 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
             },
         )
 
-    service.workflow_generation_transport = httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -9306,8 +9309,8 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
 def test_workflow_generator_rejects_cyclic_generated_graph_without_hanging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     generated = {
         "graph": {
@@ -9344,7 +9347,7 @@ def test_workflow_generator_rejects_cyclic_generated_graph_without_hanging(
             },
         )
 
-    service.workflow_generation_transport = httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -9401,14 +9404,14 @@ def _workflow_generator_success_response() -> dict[str, object]:
 def test_workflow_generator_returns_json_error_for_transport_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
-    service.workflow_generation_transport = httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -9425,8 +9428,8 @@ def test_workflow_generator_returns_json_error_for_transport_failures(
 def test_workflow_generator_rejects_back_to_back_model_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     model_request_count = 0
 
@@ -9435,7 +9438,7 @@ def test_workflow_generator_rejects_back_to_back_model_requests(
         model_request_count += 1
         return httpx.Response(200, json=_workflow_generator_success_response())
 
-    service.workflow_generation_transport = httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
     client = TestClient(create_app(service))
 
     first_response = client.post(
@@ -9456,8 +9459,8 @@ def test_workflow_generator_rejects_back_to_back_model_requests(
 def test_workflow_generator_rejects_concurrent_model_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     model_request_count = 0
 
@@ -9472,9 +9475,9 @@ def test_workflow_generator_rejects_concurrent_model_requests(
             await release.wait()
             return httpx.Response(200, json=_workflow_generator_success_response())
 
-        service.workflow_generation_transport = httpx.MockTransport(handler)
+        service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
         first_task = asyncio.create_task(
-            service.generate_workflow_editor_draft(
+            service.workflow_generation_admin.generate_workflow_editor_draft(
                 description="Every night, emit a generated summary event.",
                 directory_path="root",
             )
@@ -9482,7 +9485,7 @@ def test_workflow_generator_rejects_concurrent_model_requests(
         try:
             await asyncio.wait_for(started.wait(), timeout=1.0)
             with pytest.raises(ValueError, match="already in progress"):
-                await service.generate_workflow_editor_draft(
+                await service.workflow_generation_admin.generate_workflow_editor_draft(
                     description="Every morning, emit a generated summary event.",
                     directory_path="root",
                 )
@@ -9495,7 +9498,7 @@ def test_workflow_generator_rejects_concurrent_model_requests(
 
 
 def test_workflow_generator_requires_configured_model(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -9510,7 +9513,7 @@ def test_workflow_generator_requires_configured_model(tmp_path: Path) -> None:
 def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     calls = 0
     capacity_calls = 0
 
@@ -9536,8 +9539,8 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
             "workers": {"total_workers": capacity_calls},
         }
 
-    monkeypatch.setattr(service, "list_background_workers", list_background_workers)
-    monkeypatch.setattr(service, "read_capacity_health", read_capacity_health)
+    monkeypatch.setattr(service.operations_admin, "list_background_workers", list_background_workers)
+    monkeypatch.setattr(service.capacity_health_admin, "read_capacity_health", read_capacity_health)
     client = TestClient(create_app(service))
 
     first = client.get("/api/workers?_dashboard=1")
@@ -9644,7 +9647,7 @@ def test_admin_web_conformance_report_endpoint_returns_invalid_records(
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "trigger-conformance-report.json").write_text("{bad json", encoding="utf-8")
-    client = TestClient(create_app(AdminService(config_path)))
+    client = TestClient(create_app(build_admin_runtime(config_path)))
 
     response = client.get("/api/admin/reports/conformance")
 
@@ -9659,7 +9662,7 @@ def test_admin_web_conformance_report_endpoint_returns_invalid_records(
 def test_admin_web_run_conformance_report_endpoint_delegates_to_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
     calls: list[str] = []
 
@@ -9681,7 +9684,7 @@ def test_admin_web_run_conformance_report_endpoint_delegates_to_service(
             }
         )
 
-    monkeypatch.setattr(service, "run_conformance_report", fake_run)
+    monkeypatch.setattr(service.workflow_reports_admin, "run_conformance_report", fake_run)
 
     response = client.post("/api/admin/reports/conformance/trigger/run")
 
@@ -9691,8 +9694,8 @@ def test_admin_web_run_conformance_report_endpoint_delegates_to_service(
 
 
 def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
-    active_issue = service.create_local_issue(title="Active issue", body="body")
+    service = build_admin_runtime(write_config(tmp_path))
+    active_issue = service.issue_git_admin.create_local_issue(title="Active issue", body="body")
     done_issue = LocalIssueRecord(
         issue_id="root::azure_devops::42",
         issue_number="42",
@@ -9720,7 +9723,7 @@ def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> N
 
 
 def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     workers_response = client.get("/api/workers")
     worker_id = workers_response.json()["workers"][0]["worker_id"]
@@ -9735,7 +9738,7 @@ def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
 
 
 def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     worker_id = "trigger-orchestrator"
     detail_response = client.get(f"/api/workers/{worker_id}")
     assert detail_response.status_code == 200
@@ -9797,7 +9800,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         },
     )
     client = TestClient(
-        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+        create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
 
     response = client.get("/api/configuration/state")
@@ -10050,7 +10053,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("AGENT_SANDBOX_MODEL_PRICING_PATH", raising=False)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
 
@@ -10087,7 +10090,7 @@ def test_admin_web_model_pricing_catalog_status_reports_env_override(
         encoding="utf-8",
     )
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
 
@@ -10111,7 +10114,7 @@ def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text("not-json", encoding="utf-8")
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
 
@@ -10145,7 +10148,7 @@ def test_admin_web_model_pricing_catalog_write_requires_unlock_and_revision(
     )
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
     clear_model_pricing_catalog_cache()
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     initial_response = client.get("/api/configuration/model-pricing")
     assert initial_response.status_code == 200
@@ -10193,7 +10196,7 @@ def test_admin_web_model_pricing_catalog_write_rejects_invalid_catalog(
     initial_catalog = _pricing_catalog_payload(version="initial-pricing", model="initial-model")
     catalog_path.write_text(json.dumps(initial_catalog), encoding="utf-8")
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     _unlock_privileged_operations(client)
     initial_revision = client.get("/api/configuration/model-pricing").json()["revision"]
     invalid_catalog = _pricing_catalog_payload(version="invalid-pricing")
@@ -10214,7 +10217,7 @@ def test_admin_web_model_pricing_catalog_write_creates_missing_env_catalog(
 ) -> None:
     catalog_path = tmp_path / "runtime" / "pricing.json"
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     missing_response = client.get("/api/configuration/model-pricing")
     assert missing_response.status_code == 200
     assert missing_response.json()["status"] == "error"
@@ -10248,7 +10251,7 @@ def test_admin_web_model_pricing_catalog_write_uses_default_catalog_path(
         encoding="utf-8",
     )
     clear_model_pricing_catalog_cache()
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     initial_response = client.get("/api/configuration/model-pricing")
     assert initial_response.status_code == 200
     assert initial_response.json()["path"] == str(catalog_path)
@@ -10281,7 +10284,7 @@ def test_admin_web_model_pricing_catalog_write_invalidates_cached_default_catalo
     monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
     clear_model_pricing_catalog_cache()
     assert default_model_pricing_catalog().version == "initial-pricing"
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     _unlock_privileged_operations(client)
     initial_revision = client.get("/api/configuration/model-pricing").json()["revision"]
 
@@ -10301,8 +10304,8 @@ def test_admin_web_model_pricing_catalog_write_invalidates_cached_default_catalo
 def test_admin_web_contacts_tab_save_preserves_user_contact_links(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.operations_admin.write_directory_domain_config(
         "root",
         "contacts",
         {
@@ -10346,7 +10349,7 @@ def test_admin_web_contacts_tab_save_preserves_user_contact_links(
     )
 
     assert response.status_code == 200
-    saved = service.read_directory_domain_config("root", "contacts")
+    saved = service.operations_admin.read_directory_domain_config("root", "contacts")
     assert saved.ok
     assert saved.data.config["contacts"]["support"]["name"] == "Support"
     assert saved.data.config["user_contact_links"] == {"operator@example.com": "ops"}
@@ -10356,7 +10359,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     tmp_path: Path,
 ) -> None:
     client = TestClient(
-        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+        create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
     create_response = client.post(
         "/api/configuration/directories",
@@ -10410,7 +10413,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
 
 def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Path) -> None:
     client = TestClient(
-        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+        create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
 
     create_response = client.post(
@@ -10444,7 +10447,7 @@ def test_admin_web_provider_integrations_saves_communication_artifact_link_field
     tmp_path: Path,
 ) -> None:
     client = TestClient(
-        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+        create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
 
     response = client.put(
@@ -10475,7 +10478,7 @@ def test_admin_web_provider_integrations_saves_communication_artifact_link_field
 def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_override(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
     target_payload = [
         {
@@ -10492,17 +10495,17 @@ def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_ove
         json={"parent_path": "root", "name": "ops"},
     )
     assert create_response.status_code == 200
-    root_write = service.write_directory_domain_config(
+    root_write = service.operations_admin.write_directory_domain_config(
         "root",
         "providers",
         {"teams_delegated_scopes": ["Chat.ReadWrite"]},
     )
-    child_provider_write = service.write_directory_domain_config(
+    child_provider_write = service.operations_admin.write_directory_domain_config(
         "root/ops",
         "providers",
         {"teams_delegated_scopes": ["ChannelMessage.Read.All"]},
     )
-    child_target_write = service.write_directory_domain_config(
+    child_target_write = service.operations_admin.write_directory_domain_config(
         "root/ops",
         COMMUNICATION_TARGETS_DOMAIN,
         {"targets": target_payload},
@@ -10523,18 +10526,18 @@ def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_ove
     )
 
     assert response.status_code == 200
-    child_providers = service.read_directory_domain_config("root/ops", "providers")
+    child_providers = service.operations_admin.read_directory_domain_config("root/ops", "providers")
     assert child_providers.ok is True
     assert child_providers.data is not None
     assert child_providers.data.exists is False
     assert child_providers.data.config is None
-    effective_providers = service.compute_directory_effective_config("root/ops", "providers")
+    effective_providers = service.operations_admin.compute_directory_effective_config("root/ops", "providers")
     assert effective_providers.ok is True
     assert effective_providers.data is not None
     assert effective_providers.data.resolution.effective_config["teams_delegated_scopes"] == [
         "Chat.ReadWrite"
     ]
-    targets = service.read_directory_domain_config("root/ops", COMMUNICATION_TARGETS_DOMAIN)
+    targets = service.operations_admin.read_directory_domain_config("root/ops", COMMUNICATION_TARGETS_DOMAIN)
     assert targets.ok is True
     assert targets.data is not None
     assert targets.data.config is not None
@@ -10546,7 +10549,7 @@ def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
     tmp_path: Path,
 ) -> None:
     client = TestClient(
-        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+        create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
     create_response = client.post(
         "/api/configuration/directories",
@@ -10586,7 +10589,7 @@ def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
 def test_admin_web_communications_tab_saves_sqlite_communication_targets(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     root_response = client.put(
@@ -10657,7 +10660,7 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
 
 
 def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     unlock = client.post("/api/admin/privileged/unlock")
@@ -10684,7 +10687,7 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
     assert snapshot["raw"]["config"]["enabled"] is True
     assert snapshot["raw"]["config"]["read_only"] is False
     assert snapshot["raw"]["config"]["custom_system_instructions"] == "Use the admin context."
-    assert service.read_assistant_settings() == {
+    assert service.operations_admin.read_assistant_settings() == {
         "custom_system_instructions": "Use the admin context.",
         "default_model": "gpt-test",
         "default_profile": "full-admin",
@@ -10692,13 +10695,13 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
         "read_only": False,
         "show_launcher_when_disabled": True,
     }
-    assert service.assistant_settings_path().exists()
+    assert service.operations_admin.assistant_settings_path().exists()
 
 
 def test_admin_web_communications_tab_assistant_only_save_preserves_directory_domains(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     create_response = client.post(
@@ -10732,9 +10735,9 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
     )
     assert assistant_response.status_code == 200
 
-    providers_result = service.read_directory_domain_config("ops", "providers")
-    policy_result = service.read_directory_domain_config("ops", "policy")
-    wake_result = service.read_directory_domain_config("ops", "wake")
+    providers_result = service.operations_admin.read_directory_domain_config("ops", "providers")
+    policy_result = service.operations_admin.read_directory_domain_config("ops", "policy")
+    wake_result = service.operations_admin.read_directory_domain_config("ops", "wake")
     assert providers_result.ok is True
     assert policy_result.ok is True
     assert wake_result.ok is True
@@ -10744,14 +10747,14 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
     assert providers_result.data.config["discord_backend"] == "stub"
     assert policy_result.data.config["discord_operator_channel_allowlist"] == ["chan-1"]
     assert wake_result.data.config["discord_resume_prompt"] == "Resume this session."
-    assert service.read_assistant_settings()["default_model"] == "gpt-test"
+    assert service.operations_admin.read_assistant_settings()["default_model"] == "gpt-test"
 
 
 def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    path = service.assistant_settings_path()
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    path = service.operations_admin.assistant_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -10764,7 +10767,7 @@ def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
         encoding="utf-8",
     )
 
-    settings = service.read_assistant_settings()
+    settings = service.operations_admin.read_assistant_settings()
 
     assert settings["default_profile"] == "full-admin"
     assert "allowed_mcp_tool_profile" not in settings
@@ -10773,8 +10776,8 @@ def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
 def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.write_assistant_settings(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.operations_admin.write_assistant_settings(
         {
             "enabled": True,
             "show_launcher_when_disabled": True,
@@ -10793,8 +10796,8 @@ def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
     )
 
     assert response.status_code == 200
-    assert service.read_assistant_settings()["default_model"] == "gpt-existing"
-    assert service.read_assistant_settings()["enabled"] is True
+    assert service.operations_admin.read_assistant_settings()["default_model"] == "gpt-existing"
+    assert service.operations_admin.read_assistant_settings()["enabled"] is True
 
 
 def test_admin_web_chat_settings_write_requires_privileged_unlock(
@@ -10805,7 +10808,7 @@ def test_admin_web_chat_settings_write_requires_privileged_unlock(
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     login = client.post(
@@ -10819,7 +10822,7 @@ def test_admin_web_chat_settings_write_requires_privileged_unlock(
         json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
     )
     assert locked.status_code == 403
-    assert service.read_assistant_settings()["enabled"] is False
+    assert service.operations_admin.read_assistant_settings()["enabled"] is False
 
     unlock = client.post("/api/admin/privileged/unlock")
     assert unlock.status_code == 200
@@ -10828,13 +10831,13 @@ def test_admin_web_chat_settings_write_requires_privileged_unlock(
         json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
     )
     assert saved.status_code == 200
-    assert service.read_assistant_settings()["default_profile"] == "full-admin"
+    assert service.operations_admin.read_assistant_settings()["default_profile"] == "full-admin"
 
 
 def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     create_response = client.post(
@@ -10861,7 +10864,7 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     )
     assert communications_response.status_code == 200
 
-    providers_result = service.read_directory_domain_config("ops", "providers")
+    providers_result = service.operations_admin.read_directory_domain_config("ops", "providers")
     assert providers_result.ok is True
     assert providers_result.data is not None
     assert providers_result.data.config == {
@@ -10878,14 +10881,14 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     )
     assert clear_response.status_code == 200
 
-    providers_result = service.read_directory_domain_config("ops", "providers")
+    providers_result = service.operations_admin.read_directory_domain_config("ops", "providers")
     assert providers_result.ok is True
     assert providers_result.data is not None
     assert providers_result.data.config == {"openai_api_base_url": "http://relay.internal/v1"}
 
 
 def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     state = {"unlocked": False}
 
     def unlock(self):
@@ -10898,9 +10901,21 @@ def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkey
     def unlocked(self):
         return state["unlocked"]
 
-    monkeypatch.setattr(service, "unlock_privileged_operations", MethodType(unlock, service))
-    monkeypatch.setattr(service, "lock_privileged_operations", MethodType(lock, service))
-    monkeypatch.setattr(service, "privileged_operations_unlocked", MethodType(unlocked, service))
+    monkeypatch.setattr(
+        service.operations_admin,
+        "unlock_privileged_operations",
+        MethodType(unlock, service.operations_admin),
+    )
+    monkeypatch.setattr(
+        service.operations_admin,
+        "lock_privileged_operations",
+        MethodType(lock, service.operations_admin),
+    )
+    monkeypatch.setattr(
+        service.operations_admin,
+        "privileged_operations_unlocked",
+        MethodType(unlocked, service.operations_admin),
+    )
 
     client = TestClient(create_app(service))
 
@@ -10921,10 +10936,11 @@ def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkey
 def test_request_has_privileged_operations_uses_admin_service_facade() -> None:
     calls: list[str] = []
 
-    service = SimpleNamespace(
+    operations_admin = SimpleNamespace(
         privileged_helper_required=lambda: calls.append("required") or True,
         privileged_operations_unlocked=lambda: calls.append("unlocked") or True,
     )
+    service = SimpleNamespace(operations_admin=operations_admin)
     auth = SimpleNamespace(privileged_for_request=lambda _request: True)
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
 
@@ -10938,12 +10954,16 @@ def test_admin_web_unlocks_without_starting_helper_when_helper_is_not_required(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def fail_unlock(self):
         raise AssertionError("web unlock should not require the privileged helper when disabled")
 
-    monkeypatch.setattr(service, "privileged_operations_unlocked", MethodType(fail_unlock, service))
+    monkeypatch.setattr(
+        service.operations_admin,
+        "privileged_operations_unlocked",
+        MethodType(fail_unlock, service.operations_admin),
+    )
 
     client = TestClient(create_app(service))
 
@@ -10966,7 +10986,7 @@ def test_admin_web_unlocks_without_starting_helper_when_helper_is_not_required(
 def test_admin_web_rejects_start_when_vm_session_model_is_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def list_vms(self, **_kwargs):
         return [
@@ -11008,9 +11028,15 @@ def test_admin_web_rejects_start_when_vm_session_model_is_missing(
         "list_vms",
         MethodType(list_vms, service.vm_agent_admin),
     )
-    monkeypatch.setattr(service, "list_sessions", MethodType(list_sessions, service))
     monkeypatch.setattr(
-        service, "compute_directory_effective_config", MethodType(compute_effective, service)
+        service.vm_agent_admin,
+        "list_sessions",
+        MethodType(list_sessions, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.operations_admin,
+        "compute_directory_effective_config",
+        MethodType(compute_effective, service.operations_admin),
     )
     monkeypatch.setattr(
         service.vm_agent_admin,
@@ -11032,9 +11058,9 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "team-a")
-    service.create_directory_child("root", "team-b")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.directory_admin.create_child(parent="root", name="team-b")
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="vm-session-a",
@@ -11244,8 +11270,8 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "team-a")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session-a",
@@ -11274,14 +11300,18 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             directory_path="root/team-a",
         )
     )
-    original_list_agents = service.list_agents
+    original_list_agents = service.vm_agent_admin.list_agents
     list_agents_calls: list[dict[str, object]] = []
 
     def list_agents(self, **kwargs):
         list_agents_calls.append(kwargs)
         return original_list_agents(**kwargs)
 
-    monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_agents",
+        MethodType(list_agents, service.vm_agent_admin),
+    )
     client = TestClient(create_app(service))
 
     summary_url = (
@@ -11355,7 +11385,7 @@ def test_admin_web_agents_backend_filter_controls_vm_inventory_failures(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -11397,7 +11427,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -11592,7 +11622,7 @@ def test_admin_web_container_agent_log_threads_view_groups_threads(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-threads",
@@ -11706,10 +11736,10 @@ def test_admin_web_container_agent_log_threads_view_groups_threads(
 
 
 def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "team-a")
-    service.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
-    communication_targets_write = service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.skill_admin.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
+    communication_targets_write = service.operations_admin.write_directory_domain_config(
         "root/team-a",
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -11844,9 +11874,9 @@ def test_admin_web_agents_create_rejects_capability_limited_email_targets(
     target_id: str,
     capabilities: list[str],
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.create_directory_child("root", "team-a")
-    communication_targets_write = service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    communication_targets_write = service.operations_admin.write_directory_domain_config(
         "root/team-a",
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -11897,7 +11927,7 @@ def test_admin_web_agents_create_rejects_capability_limited_email_targets(
 
 
 def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/agents/create-options")
@@ -11931,11 +11961,11 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
 
 
 def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    created = service.create_directory_child("root", "team")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.directory_admin.create_child(parent="root", name="team")
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
-    providers_write = service.write_directory_domain_config(
+    providers_write = service.operations_admin.write_directory_domain_config(
         team_path,
         "providers",
         {
@@ -11947,7 +11977,7 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
         },
     )
     assert providers_write.ok is True
-    vm_write = service.write_directory_domain_config(
+    vm_write = service.operations_admin.write_directory_domain_config(
         team_path,
         "vm",
         {
@@ -11959,7 +11989,7 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
         },
     )
     assert vm_write.ok is True
-    communications_write = service.write_directory_domain_config(
+    communications_write = service.operations_admin.write_directory_domain_config(
         team_path,
         COMMUNICATION_TARGETS_DOMAIN,
         {
@@ -12043,7 +12073,7 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
 def test_admin_web_agents_create_vm_duplicate_session_returns_409(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def create_vm(self, **payload):
         return VmActionResult(
@@ -12078,7 +12108,7 @@ def test_admin_web_agents_create_vm_duplicate_session_returns_409(
 def test_admin_web_agents_create_operations_submit_list_and_get(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     captured_payloads: list[dict[str, object]] = []
 
     def create_admin_agent(self, payload):
@@ -12148,7 +12178,7 @@ def test_admin_web_agents_create_operations_submit_list_and_get(
 def test_admin_web_startup_marks_abandoned_agent_create_operations_failed(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.agent_create_operations.put(
         "operation-running",
         AgentCreateOperation(
@@ -12165,7 +12195,7 @@ def test_admin_web_startup_marks_abandoned_agent_create_operations_failed(
 
     create_app(service)
 
-    operation = service.get_admin_agent_create_operation("operation-running")
+    operation = service.vm_agent_admin.get_admin_agent_create_operation("operation-running")
     assert operation.status == "failed"
     assert operation.error == "Admin Web process exited before this create operation finished."
     assert operation.finished_at is not None
@@ -12174,7 +12204,7 @@ def test_admin_web_startup_marks_abandoned_agent_create_operations_failed(
 def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     captured: dict[str, object] = {}
 
     def create_vm(self, **payload):
@@ -12208,11 +12238,11 @@ def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
 
 
 def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
-    created = service.create_directory_child("root", "team-a")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.directory_admin.create_child(parent="root", name="team-a")
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
-    write_result = service.write_directory_domain_config(
+    write_result = service.operations_admin.write_directory_domain_config(
         team_path,
         "providers",
         {
@@ -12338,7 +12368,7 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
 def test_admin_web_agents_create_container_duplicate_session_returns_400(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
 
     class FakeContainerBackend:
         def __init__(self) -> None:
@@ -12385,7 +12415,7 @@ def test_admin_web_agents_create_container_duplicate_session_returns_400(
 def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="lab-session",
@@ -12503,7 +12533,7 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
 def test_admin_web_agents_delete_vm_removes_unambiguous_session(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="lab-session",
@@ -12518,7 +12548,7 @@ def test_admin_web_agents_delete_vm_removes_unambiguous_session(
         calls.append(cmd)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
     client = TestClient(create_app(service))
 
     response = client.delete("/api/admin/agents/lab-vm?backend=libvirt_vm")
@@ -12532,7 +12562,7 @@ def test_admin_web_agents_delete_vm_removes_unambiguous_session(
 def test_admin_web_agents_delete_container_cleans_mapping_and_session(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -12609,7 +12639,7 @@ def test_admin_web_agents_delete_container_cleans_mapping_and_session(
 def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -12668,7 +12698,7 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
 def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     for session_id in ("session-a", "session-b"):
         service.runtime.session_repository.upsert_session(
             SessionManifest(
@@ -12680,9 +12710,9 @@ def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(
         )
     destroyed: list[str] = []
     monkeypatch.setattr(
-        service,
+        service.vm_agent_admin,
         "destroy_vm",
-        MethodType(lambda self, target: destroyed.append(target), service),
+        MethodType(lambda self, target: destroyed.append(target), service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
 
@@ -12696,7 +12726,7 @@ def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(
 
 
 def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     called: list[str] = []
 
     def start_vm(self, target: str) -> VmActionResult:
@@ -12725,11 +12755,11 @@ def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeyp
 def test_admin_web_agent_prompt_action_uses_existing_vm_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     calls: list[dict[str, object]] = []
 
     def prompt_admin_agent(
-        self: AdminService,
+        self: AdminRuntimeComponents,
         agent_id: str,
         *,
         backend: str,
@@ -12801,11 +12831,11 @@ def test_admin_web_agent_prompt_action_uses_existing_vm_path(
 def test_admin_web_agent_prompt_action_uses_existing_container_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = AdminService(write_config(tmp_path, execution_backend="container_worker_vm"))
+    service = build_admin_runtime(write_config(tmp_path, execution_backend="container_worker_vm"))
     calls: list[dict[str, object]] = []
 
     def prompt_admin_agent(
-        self: AdminService,
+        self: AdminRuntimeComponents,
         agent_id: str,
         *,
         backend: str,
@@ -12875,7 +12905,7 @@ def test_admin_web_agent_prompt_action_uses_existing_container_path(
 
 
 def test_admin_web_agent_prompt_action_rejects_blank_prompt(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -12888,8 +12918,8 @@ def test_admin_web_agent_prompt_action_rejects_blank_prompt(tmp_path: Path) -> N
 
 
 def test_admin_web_issue_detail_preserves_local_editability(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
-    created_issue = service.create_local_issue(
+    service = build_admin_runtime(write_config(tmp_path))
+    created_issue = service.issue_git_admin.create_local_issue(
         title="Editable issue",
         body="body",
         directory_path="root/team-a",
@@ -12908,8 +12938,8 @@ def test_admin_web_issue_detail_preserves_local_editability(tmp_path: Path) -> N
 
 
 def test_admin_web_reads_issue_yaml_by_canonical_issue_id(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
-    created_issue = service.create_local_issue(
+    service = build_admin_runtime(write_config(tmp_path))
+    created_issue = service.issue_git_admin.create_local_issue(
         title="YAML issue",
         body="body",
         directory_path="root/team-a",
@@ -12926,7 +12956,7 @@ def test_admin_web_reads_issue_yaml_by_canonical_issue_id(tmp_path: Path) -> Non
 
 
 def test_admin_web_reads_issue_detail_for_scoped_issue_id_with_slash(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     yaml_path = tmp_path / "team-issue.yaml"
     yaml_path.write_text("issue_number: 7\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
     issue = LocalIssueRecord(
@@ -12949,7 +12979,7 @@ def test_admin_web_reads_issue_detail_for_scoped_issue_id_with_slash(tmp_path: P
 
 
 def test_admin_web_reads_issue_yaml_for_scoped_issue_id_with_slash(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     yaml_path = tmp_path / "team-issue.yaml"
     yaml_path.write_text("issue_number: 9\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
     issue = LocalIssueRecord(
@@ -12974,7 +13004,7 @@ def test_admin_web_reads_issue_yaml_for_scoped_issue_id_with_slash(tmp_path: Pat
 def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credentials(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     yaml_path = tmp_path / "proxy-issue.yaml"
     yaml_path.write_text(
         "issue_number: 14378\ntitle: Proxy issue\nbody: Local body\n", encoding="utf-8"
@@ -13024,7 +13054,7 @@ def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credential
 
 
 def test_admin_web_operator_steering_note_flow_requires_unlock(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-steer",
@@ -13098,7 +13128,7 @@ def test_admin_web_operator_steering_note_flow_requires_unlock(tmp_path: Path) -
 
 
 def test_admin_web_creates_standalone_vm(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def create_vm(self, **payload):
         assert payload["vm_name"] == "lab-vm-1"
@@ -13117,7 +13147,11 @@ def test_admin_web_creates_standalone_vm(tmp_path: Path, monkeypatch) -> None:
             message="created",
         )
 
-    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_vm",
+        MethodType(create_vm, service.vm_agent_admin),
+    )
 
     client = TestClient(create_app(service))
 
@@ -13141,8 +13175,8 @@ def test_admin_web_creates_standalone_vm(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path))
-    created_issue = service.create_local_issue(
+    service = build_admin_runtime(write_config(tmp_path))
+    created_issue = service.issue_git_admin.create_local_issue(
         title="Draft fix",
         body="body",
         directory_path="root/team-a",
@@ -13164,9 +13198,15 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
             message="vm created",
         )
 
-    monkeypatch.setattr(service, "create_local_issue", MethodType(create_local_issue, service))
     monkeypatch.setattr(
-        service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
+        service.issue_git_admin,
+        "create_local_issue",
+        MethodType(create_local_issue, service.issue_git_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_issue_vm_from_local_issue",
+        MethodType(create_issue_vm, service.vm_agent_admin),
     )
     threadpool_calls: list[str] = []
 
@@ -13203,8 +13243,8 @@ def test_admin_web_create_vm_from_issue_runs_in_threadpool(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    created_issue = service.create_local_issue(
+    service = build_admin_runtime(write_config(tmp_path))
+    created_issue = service.issue_git_admin.create_local_issue(
         title="Draft fix",
         body="body",
         directory_path="root/team-a",
@@ -13224,7 +13264,7 @@ def test_admin_web_create_vm_from_issue_runs_in_threadpool(
         )
 
     monkeypatch.setattr(
-        service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
+        service.vm_agent_admin, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service.vm_agent_admin)
     )
     threadpool_calls: list[str] = []
 

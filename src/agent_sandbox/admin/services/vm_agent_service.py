@@ -219,7 +219,7 @@ class VmAgentAdminService(
     def _workflow_uses_sqlite_store(self, *args: Any, **kwargs: Any):
         return self.workflow_config_admin._workflow_uses_sqlite_store(*args, **kwargs)
 
-    # VM/agent/container domain methods moved from AdminService.
+    # VM/agent/container domain methods moved from the admin runtime.
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
         for session_id, session in self.runtime.session_repository.read_all().items():

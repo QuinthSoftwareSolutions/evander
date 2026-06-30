@@ -7,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.rbac import (
     WORKFLOW_RUNS_CONTROL_PERMISSION,
     WORKFLOW_RUNS_READ_PERMISSION,
@@ -48,13 +48,13 @@ def _limit_from_query(value: str | None) -> int:
     return limit
 
 
-def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
+def operator_steering_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Route]:
     async def active_context(request: Request) -> JSONResponse:
         try:
             auth.require(request)
             session_id = str(request.query_params.get("session_id") or "").strip()
-            context = service.active_operator_steering_context(session_id=session_id)
-            directory_path = service.operator_steering_directory_path(
+            context = service.model_usage_admin.active_operator_steering_context(session_id=session_id)
+            directory_path = service.model_usage_admin.operator_steering_directory_path(
                 session_id=session_id,
                 dispatch_id=context.dispatch_id if context is not None else None,
             )
@@ -78,14 +78,14 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
             auth.require(request)
             session_id = str(request.query_params.get("session_id") or "").strip()
             dispatch_id = str(request.query_params.get("dispatch_id") or "").strip() or None
-            directory_path = service.operator_steering_directory_path(
+            directory_path = service.model_usage_admin.operator_steering_directory_path(
                 session_id=session_id,
                 dispatch_id=dispatch_id,
             )
             auth.require_permission(
                 request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
             )
-            notes = service.list_operator_steering_notes(
+            notes = service.operator_steering_admin.list_operator_steering_notes(
                 session_id=session_id,
                 dispatch_id=dispatch_id,
                 limit=_limit_from_query(request.query_params.get("limit")),
@@ -109,7 +109,7 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
             payload = await _json_body(request)
             session_id = str(payload.get("session_id") or "").strip()
             dispatch_id = str(payload.get("dispatch_id") or "").strip()
-            directory_path = service.operator_steering_directory_path(
+            directory_path = service.model_usage_admin.operator_steering_directory_path(
                 session_id=session_id,
                 dispatch_id=dispatch_id,
             )
@@ -118,7 +118,7 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
             )
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
-            result = service.submit_operator_steering_note(
+            result = service.model_usage_admin.submit_operator_steering_note(
                 session_id=session_id,
                 dispatch_id=dispatch_id,
                 worker_execution_id=str(payload.get("worker_execution_id") or "").strip() or None,
@@ -139,8 +139,8 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
         try:
             auth.require(request)
             note_id = str(request.path_params.get("note_id") or "").strip()
-            existing = service.get_operator_steering_note(note_id)
-            directory_path = service.operator_steering_directory_path(
+            existing = service.operator_steering_admin.get_operator_steering_note(note_id)
+            directory_path = service.model_usage_admin.operator_steering_directory_path(
                 session_id=existing.session_id,
                 dispatch_id=existing.dispatch_id,
             )
@@ -149,7 +149,7 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
             )
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
-            note = service.cancel_operator_steering_note(note_id)
+            note = service.operator_steering_admin.cancel_operator_steering_note(note_id)
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:

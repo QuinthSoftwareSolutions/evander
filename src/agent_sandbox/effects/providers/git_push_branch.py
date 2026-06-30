@@ -25,7 +25,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         context = self._context()
         push_branch = getattr(context.git_branch_pusher, "push_branch", None)
         if not callable(push_branch):
-            raise RuntimeError("AdminService.push_branch is not available")
+            raise RuntimeError("Admin runtime push_branch is not available")
 
         result = push_branch(
             host_repo_path=host_repo_path,

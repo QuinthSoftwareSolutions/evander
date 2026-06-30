@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.admin import service as admin_service_module
+from agent_sandbox.admin.services import vm_helpers as admin_vm_helpers
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.vm_exec import VmExecEffectProvider
@@ -240,9 +240,9 @@ def test_vm_exec_provider_uses_ssh_fallback_session_id(tmp_path, monkeypatch) ->
     )
     provider.initialize(_effect_definition(), runtime_context)
 
-    monkeypatch.setattr(admin_service_module, "_resolve_vm_ip", lambda vm_name: "10.0.0.2")
-    monkeypatch.setattr(admin_service_module, "_resolve_private_key_path", lambda: Path("/tmp/key"))
-    monkeypatch.setattr(admin_service_module, "_ssh_options", lambda *_args: [])
+    monkeypatch.setattr(admin_vm_helpers, "resolve_vm_ip", lambda vm_name: "10.0.0.2")
+    monkeypatch.setattr(admin_vm_helpers, "resolve_private_key_path", lambda: Path("/tmp/key"))
+    monkeypatch.setattr(admin_vm_helpers, "ssh_options", lambda *_args: [])
     monkeypatch.setattr(
         subprocess,
         "run",

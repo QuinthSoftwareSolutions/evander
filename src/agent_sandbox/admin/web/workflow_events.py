@@ -6,11 +6,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
 
-def workflow_event_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
+def workflow_event_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Route]:
     async def mint_token(request: Request) -> JSONResponse:
         try:
             payload = auth.issue_workflow_event_api_token(request)
@@ -42,7 +42,7 @@ def workflow_event_routes(service: AdminService, auth: AdminWebAuth) -> list[Rou
             return json_error("payload must be a JSON object")
 
         try:
-            event = service.publish_external_workflow_event(
+            event = service.operations_admin.publish_external_workflow_event(
                 event_type=body.get("event_type"),
                 payload=payload,
                 correlation_key=body.get("correlation_key"),

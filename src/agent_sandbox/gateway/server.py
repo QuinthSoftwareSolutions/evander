@@ -26,7 +26,7 @@ from agent_sandbox.addons import (
     load_addons,
     register_addon_mcp_tools,
 )
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import build_admin_runtime
 from agent_sandbox.ado_reports import (
     DEFAULT_DONE_STATES,
     DEFAULT_EFFORT_FIELDS,
@@ -510,7 +510,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
     artifact_helpers = CommunicationArtifactHelpers(context, deps)
     attachment_helpers = CommunicationAttachmentHelpers(context, artifact_helpers)
     email_helpers = EmailDraftHelpers(context)
-    visibility_helpers = VisibilityHelpers(context, deps.admin_service_factory)
+    visibility_helpers = VisibilityHelpers(context, deps.admin_runtime_factory)
 
     def _record_visible_tools(
         *,

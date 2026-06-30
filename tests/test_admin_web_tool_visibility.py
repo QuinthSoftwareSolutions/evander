@@ -6,7 +6,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.tool_visibility import (
     ToolVisibilityBindingState,
     ToolVisibilityManifestState,
@@ -76,8 +76,8 @@ def _write_denied_audit_log(path: Path) -> None:
 def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_directory_domain_config(
         "root",
         "policy",
         {"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": True}}},
@@ -182,7 +182,7 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
 def test_admin_web_tool_visibility_marks_locked_approval_rows(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     session = SessionManifest(
         session_id="session-locked",
         vm_id="vm-1",
@@ -216,7 +216,7 @@ def test_admin_web_tool_visibility_marks_locked_approval_rows(
 def test_admin_web_tool_visibility_classifies_update_title_tool(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     session = SessionManifest(
         session_id="session-1",
         vm_id="vm-1",
@@ -241,7 +241,7 @@ def test_admin_web_tool_visibility_classifies_update_title_tool(
 def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     session_a = SessionManifest(
         session_id="session-a",
         vm_id="vm-a",
@@ -288,7 +288,7 @@ def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(
 def test_admin_web_tool_visibility_validates_session_id_and_unknown_session(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
     missing_session = client.get("/api/admin/tool-visibility")

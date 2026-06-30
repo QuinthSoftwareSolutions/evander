@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_sandbox.admin.service import (
-    _build_issue_session_manifest as build_admin_issue_session_manifest,
+from agent_sandbox.admin.services.session_helpers import (
+    build_issue_session_manifest as build_admin_issue_session_manifest,
 )
 from agent_sandbox.cli import _build_issue_session_manifest as build_cli_issue_session_manifest
 from agent_sandbox.models import ToolName

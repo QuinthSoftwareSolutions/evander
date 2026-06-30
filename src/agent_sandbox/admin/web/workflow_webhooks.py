@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.admin.web.shared import json_error
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
@@ -20,7 +20,7 @@ from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_work
 _WEBHOOK_SIGNATURE_RE = re.compile(r"^sha256=([0-9a-fA-F]{64})$")
 
 
-def workflow_webhook_routes(service: AdminService) -> list[Route]:
+def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
     async def publish_webhook(request: Request) -> JSONResponse:
         slug = str(request.path_params.get("slug") or "").strip()
         if not slug:
@@ -91,7 +91,7 @@ def workflow_webhook_routes(service: AdminService) -> list[Route]:
         }
 
         try:
-            event = service.publish_external_workflow_event(
+            event = service.operations_admin.publish_external_workflow_event(
                 event_type=trigger.event_type,
                 payload=envelope,
                 correlation_key=f"webhook:{trigger.slug}",

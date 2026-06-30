@@ -14,7 +14,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from agent_sandbox.addons import AddonLoaderConfig
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
@@ -1428,7 +1428,7 @@ def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
     }
     config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
     config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
-    document = AdminService(context.config.runtime_dir).read_workflow_editor_document(
+    document = build_admin_runtime(context.config.runtime_dir).workflow_config_admin.read_workflow_editor_document(
         workflow_pack="pack-b.v1.json"
     )
     edited_config = dict(document.config)
@@ -1889,7 +1889,7 @@ def test_assistant_list_agents_defaults_to_all_directories(
     )
     list_agents_kwargs: dict[str, Any] = {}
 
-    def fake_list_agents(self: AdminService, **kwargs: Any) -> list[object]:
+    def fake_list_agents(self: AdminRuntimeComponents, **kwargs: Any) -> list[object]:
         del self
         list_agents_kwargs.update(kwargs)
         return [
@@ -1920,7 +1920,10 @@ def test_assistant_list_agents_defaults_to_all_directories(
             )
         ]
 
-    monkeypatch.setattr(AdminService, "list_agents", fake_list_agents)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.services.vm_agent_service.VmAgentAdminService.list_agents",
+        fake_list_agents,
+    )
     server = create_server(context)
 
     result = _call_tool(
@@ -1942,18 +1945,18 @@ def test_assistant_list_agents_defaults_to_all_directories(
 def test_assistant_read_config_returns_directory_global_and_worker_config(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(tmp_path)
-    created = service.create_directory_child("root", "team")
+    service = build_admin_runtime(tmp_path)
+    created = service.directory_admin.create_child(parent="root", name="team")
     assert created.ok
-    root_write = service.write_directory_domain_config(
+    root_write = service.operations_admin.write_directory_domain_config(
         "root", "policy", {"default_session_ttl_seconds": 111}
     )
     assert root_write.ok
-    team_write = service.write_directory_domain_config(
+    team_write = service.operations_admin.write_directory_domain_config(
         "root/team", "policy", {"approval_ttl_seconds": 222}
     )
     assert team_write.ok
-    service.write_assistant_settings(
+    service.operations_admin.write_assistant_settings(
         {"enabled": True, "default_profile": "read-only", "read_only": True}
     )
     context = build_runtime(

@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin.service import AdminService
 from agent_sandbox.events.provider_models import ModelUsageListQueryDefinition
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.store import ModelUsageStore
+from agent_sandbox.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.queries.providers.model_usage_list import ModelUsageListQueryProvider
 
@@ -75,7 +75,7 @@ class _ModelUsageAdminServiceStub:
         return self.store.list_events(**kwargs)
 
 
-def test_admin_service_list_model_usage_events_delegates_to_model_usage_admin(
+def test_provider_runtime_adapter_list_model_usage_events_delegates_to_model_usage_admin(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
@@ -92,8 +92,8 @@ def test_admin_service_list_model_usage_events_delegates_to_model_usage_admin(
 
     model_usage_admin = _ModelUsageAdminServiceStub(store)
     runtime_stub = SimpleNamespace(model_usage_admin=model_usage_admin)
-    events = AdminService.list_model_usage_events(
-        runtime_stub,
+    adapter = AdminRuntimeProviderAdapter(runtime_stub)
+    events = adapter.list_model_usage_events(
         directory_path="root/team-a",
         include_directory_descendants=True,
         provider="openai",
@@ -106,19 +106,9 @@ def test_admin_service_list_model_usage_events_delegates_to_model_usage_admin(
     assert model_usage_admin.calls == [
         {
             "session_id": "session-1",
-            "workflow_run_id": None,
-            "effect_id": None,
-            "dispatch_id": None,
             "directory_path": "root/team-a",
             "include_directory_descendants": True,
             "provider": "openai",
-            "model": None,
-            "agent_harness": None,
-            "execution_backend": None,
-            "normalized_usage_status": None,
-            "request_status": None,
-            "occurred_after": None,
-            "occurred_before": None,
             "limit": 1,
         }
     ]

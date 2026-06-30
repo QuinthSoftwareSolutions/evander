@@ -177,7 +177,7 @@ def test_git_promote_agent_branch_provider_requires_admin_service_method(tmp_pat
         ),
     )
 
-    with pytest.raises(RuntimeError, match="AdminService\\.promote_agent_branch is not available"):
+    with pytest.raises(RuntimeError, match="Admin runtime promote_agent_branch is not available"):
         provider.execute(
             resolved_config={
                 "host_repo_path": "/trusted/repo",

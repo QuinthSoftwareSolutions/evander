@@ -115,6 +115,8 @@ class WakeRequestRepository(Protocol):
 
     def latest_dispatch_by_request_id(self) -> dict[str, WakeDispatchRecord]: ...
 
+    def ledger_entry_for_request(self, request: WakeScheduledRequest) -> dict[str, Any]: ...
+
     def list_ledger_entries(
         self,
         *,
@@ -801,6 +803,15 @@ class WakeRequestStore:
             if len(entries) >= int(limit):
                 break
         return entries
+
+    def ledger_entry_for_request(self, request: WakeScheduledRequest) -> dict[str, Any]:
+        latest_dispatch = self.latest_dispatch_by_request_id().get(request.request_id)
+        status = self._ledger_status_for_request(request, latest_dispatch=latest_dispatch)
+        return self._ledger_entry_for_request(
+            request,
+            latest_dispatch=latest_dispatch,
+            status=status,
+        )
 
     def read_raw(self) -> dict[str, Any]:
         with self._lock, self._connect() as connection:

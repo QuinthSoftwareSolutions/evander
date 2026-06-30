@@ -33,7 +33,9 @@ class VmAgentAdminDependencies:
     runtime: Any
     project_dir: Path
     local_issue_store: Any
-    worker_admin: Any
+    vm_inventory_admin: Any
+    agent_control_store: Any
+    directory_ownership: Any
     privileged_helper: PrivilegedHelperPort
     directory_path: DirectoryPathPort
     workflow_config: WorkflowConfigPort
@@ -121,9 +123,11 @@ class VmAgentAdminSupport:
     project_dir: Path
     local_issue_store: Any
     local_issue_identity_resolver: LocalIssueIdentityResolver
-    worker_admin: Any
+    vm_inventory_admin: Any
     workflow_config_admin: Any
     directory_admin: Any
+    agent_control_store: Any | None = None
+    directory_ownership: Any | None = None
     privileged_helper: PrivilegedHelperPort | None = None
     get_privileged_helper: Any | None = None
     get_use_privileged_helper: Any | None = None
@@ -134,6 +138,10 @@ class VmAgentAdminSupport:
                 self.get_privileged_helper,
                 self.get_use_privileged_helper,
             )
+        if self.agent_control_store is None:
+            self.agent_control_store = _EnabledAgentControlStore()
+        if self.directory_ownership is None:
+            self.directory_ownership = _EmptyDirectoryOwnership()
 
     def normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:

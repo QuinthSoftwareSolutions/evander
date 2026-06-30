@@ -7,7 +7,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.rbac import WORKFLOW_RUNS_READ_PERMISSION
 from agent_sandbox.admin.web.shared import AdminWebAuth
@@ -78,14 +78,14 @@ def _filter_workflow_failure_clusters_report_payload(
 
 
 def report_routes(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
     async def workflow_graph_activity(request: Request) -> JSONResponse:
         try:
             payload = await run_in_threadpool(
-                service.read_workflow_graph_activity_report,
+                service.workflow_reports_admin.read_workflow_graph_activity_report,
                 period_start=_parse_optional_datetime(
                     request.query_params.get("start"),
                     field_name="start",
@@ -115,7 +115,7 @@ def report_routes(
                 request.query_params.get("recent_seconds")
             )
 
-            document = service.read_composed_workflow_editor_document()
+            document = service.workflow_config_admin.read_composed_workflow_editor_document()
             readable_node_ids: set[str] | None = None
             if not document.graphs:
                 auth.require_permission(
@@ -131,7 +131,7 @@ def report_routes(
                     raise PermissionError("Permission required: workflow_runs.read")
 
             payload = await run_in_threadpool(
-                service.read_workflow_failure_clusters_report,
+                service.workflow_reports_admin.read_workflow_failure_clusters_report,
                 period_start=period_start,
                 period_end=period_end,
                 limit=limit,
@@ -154,13 +154,13 @@ def report_routes(
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def conformance(_: Request) -> JSONResponse:
-        payload = service.read_conformance_reports()
+        payload = service.workflow_reports_admin.read_conformance_reports()
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def run_conformance(request: Request) -> JSONResponse:
         kind = request.path_params["kind"]
         try:
-            payload = await run_in_threadpool(service.run_conformance_report, kind)
+            payload = await run_in_threadpool(service.workflow_reports_admin.run_conformance_report, kind)
         except ValueError as exc:
             return json_error(str(exc))
         except RuntimeError as exc:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import agent_sandbox.admin.service as admin_service
+from agent_sandbox.admin.services import session_helpers as admin_service
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference
 

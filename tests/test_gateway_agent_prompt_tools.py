@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -207,7 +208,10 @@ def test_prompt_agent_rejects_cross_directory_dispatch(
             del kwargs
             raise AssertionError("VM inventory should not be read for a target without a VM")
 
-    monkeypatch.setattr("agent_sandbox.gateway.AdminService", FailingAdminService)
+    monkeypatch.setattr(
+        "agent_sandbox.gateway.build_admin_runtime",
+        lambda runtime_dir: SimpleNamespace(vm_agent_admin=FailingAdminService(runtime_dir)),
+    )
     server = create_server(context)
 
     with pytest.raises(ToolError, match="outside the session directory scope"):

@@ -211,7 +211,7 @@ def test_kernel_module_has_no_platform_specific_imports() -> None:
         if isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     forbidden_prefixes = (
-        "agent_sandbox.admin.service",
+        "agent_sandbox.admin.composition",
         "agent_sandbox.platform_integrations",
         "agent_sandbox.provider_config",
     )

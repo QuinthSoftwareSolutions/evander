@@ -1,5 +1,34 @@
 ## Unreleased
 
+- Restored privileged-helper mode after the admin facade removal by returning
+  helper responses, restoring JSON request handling, and wiring the public
+  runtime flag to the focused services that consume it.
+
+- Preserved caller-supplied provider runtime admin services while keeping
+  provider effects on narrow VM/issue ports, and updated tests to patch focused
+  admin services or concrete collaborators directly after the facade removal.
+
+- Updated CLI and gateway tests for the admin facade removal so fakes patch
+  `build_admin_runtime` and expose only the focused runtime component under
+  test.
+
+- Restored Admin Web add-on service compatibility after the admin facade removal
+  by passing add-on routes a narrow adapter for project Git imports, agent
+  inventory summaries, and Team chat dispatch helpers.
+
+- Fixed provider-runtime adapter regressions from the admin facade removal so
+  narrow VM providers no longer advertise unavailable skill validation, model
+  usage query providers delegate through `model_usage_admin`, and tests no
+  longer import the removed `admin.service` module.
+
+- Split the remaining admin facade concerns into focused Teams, session, wake
+  schedule, VM inventory, and worker-control services, and replaced private
+  composition wiring with public workflow-config service ports.
+
+- Removed the legacy `AdminService` facade and routed Admin Web, gateway, CLI,
+  provider runtime, and tests through the explicit `build_admin_runtime`
+  component graph and focused admin services.
+
 - Added Team Add-on workflow primitives for deterministic review routing:
   `trigger:team:deliverable-created` and
   `effect:team:create-review-request`.

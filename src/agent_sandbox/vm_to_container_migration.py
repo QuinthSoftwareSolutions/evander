@@ -11,7 +11,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin.service import _resolve_vm_ssh_access, _ssh_options
+from agent_sandbox.admin.services.vm_helpers import (
+    resolve_vm_ssh_access as _resolve_vm_ssh_access,
+    ssh_options as _ssh_options,
+)
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.agent_session import build_container_session_files
 from agent_sandbox.execution.models import ExecutionBackendKind

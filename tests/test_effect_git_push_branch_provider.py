@@ -96,5 +96,5 @@ def test_git_push_branch_provider_requires_admin_service_method(tmp_path: Path) 
         ),
     )
 
-    with pytest.raises(RuntimeError, match="AdminService\\.push_branch is not available"):
+    with pytest.raises(RuntimeError, match="Admin runtime push_branch is not available"):
         provider.execute()

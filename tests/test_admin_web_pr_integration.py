@@ -8,7 +8,7 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.admin.web.pr_integration import pr_integration_routes
 from agent_sandbox.pr_merge_preflight import (
@@ -178,7 +178,7 @@ def _report() -> MergePreflightReport:
 def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     report = _report()
     captured: dict[str, object] = {}
 
@@ -186,7 +186,11 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
         captured.update(kwargs)
         return report
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
 
     client = TestClient(create_app(service))
     response = client.post(
@@ -252,12 +256,16 @@ def test_admin_web_pr_integration_preflight_rejects_invalid_requests(
     body: dict[str, object],
     expected_error: str,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
         raise AssertionError(f"service should not be invoked: {kwargs!r}")
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
 
     client = TestClient(create_app(service))
     response = client.post("/api/admin/pr-integration-preflight", json=body)
@@ -269,12 +277,16 @@ def test_admin_web_pr_integration_preflight_rejects_invalid_requests(
 def test_admin_web_pr_integration_preflight_rejects_bad_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
         raise AssertionError(f"service should not be invoked: {kwargs!r}")
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
 
     client = TestClient(create_app(service))
     response = client.post(
@@ -290,12 +302,16 @@ def test_admin_web_pr_integration_preflight_rejects_bad_json(
 def test_admin_web_pr_integration_preflight_requires_workflow_write_permission(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
 
     def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
         raise AssertionError(f"service should not be invoked: {kwargs!r}")
 
-    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    monkeypatch.setattr(
+        service.pr_integration_preflight_admin,
+        "run_pr_integration_preflight",
+        run_pr_integration_preflight,
+    )
     auth = _DenyWorkflowWriteAuth()
     route = pr_integration_routes(service, auth)[0]
 

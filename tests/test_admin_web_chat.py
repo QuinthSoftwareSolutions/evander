@@ -68,6 +68,7 @@ class FakeAdminService:
     def __init__(self, runtime_dir: Path) -> None:
         self.config = SimpleNamespace(runtime_dir=runtime_dir, execution_backend="libvirt_vm")
         self.vm_agent_admin = FakeVmAgentAdmin()
+        self.operations_admin = self
         self.published_chat_events: list[dict[str, Any]] = []
         self.assistant_enabled = True
 

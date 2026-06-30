@@ -37,7 +37,7 @@ class IssueGetQueryProvider(QueryProviderBase):
         context = self._context()
         query_fn = getattr(context.issue_reader, "get_issue", None)
         if not callable(query_fn):
-            raise RuntimeError("AdminService.get_issue is not available")
+            raise RuntimeError("Admin runtime get_issue is not available")
         result = query_fn(issue_id=issue_id)
         return self._coerce_result(result)
 

@@ -23,9 +23,8 @@ from agent_sandbox.execution.container_worker_client import (
 )
 from agent_sandbox.models import SessionManifest
 
-# Payload models still live in ``admin.service`` while capacity calculation logic
-# is owned here.
-from agent_sandbox.admin.service import (
+from agent_sandbox.admin.common import _coerce_optional_datetime, _utc_now
+from agent_sandbox.admin.payloads import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
     CapacityHealthPayload,
@@ -35,8 +34,6 @@ from agent_sandbox.admin.service import (
     CapacitySessionSummaryPayload,
     CapacityWorkerTelemetryEntryPayload,
     CapacityWorkerTelemetrySummaryPayload,
-    _coerce_optional_datetime,
-    _utc_now,
 )
 
 
@@ -58,7 +55,7 @@ class CapacityHealthAdminDependencies:
 
 
 class CapacityHealthAdminService:
-    """Capacity and health telemetry operations extracted from AdminService."""
+    """Capacity and health telemetry operations."""
 
     def __init__(self, dependencies: CapacityHealthAdminDependencies) -> None:
         self._deps = dependencies

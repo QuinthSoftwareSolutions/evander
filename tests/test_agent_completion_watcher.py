@@ -152,6 +152,7 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
     class _AdminServiceStub:
         def __init__(self, runtime_dir: Path) -> None:
             self.runtime_dir = runtime_dir
+            self.vm_agent_admin = self
 
         def list_vms(self, **kwargs):
             return responses.pop(0)
@@ -168,7 +169,9 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(event_id=event.event_id)
 
-    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(
+        watcher, "build_admin_runtime", lambda runtime_dir: _AdminServiceStub(runtime_dir)
+    )
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     monkeypatch.setattr(watcher.time, "sleep", lambda _: None)
     wake_paths: list[Path] = []
@@ -233,6 +236,7 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
     class _AdminServiceStub:
         def __init__(self, runtime_dir: Path) -> None:
             self.runtime_dir = runtime_dir
+            self.vm_agent_admin = self
             self.runtime = SimpleNamespace(wake_store=wake_store)
 
         def list_vms(self, **kwargs):
@@ -263,7 +267,9 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(event_id=event.event_id)
 
-    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(
+        watcher, "build_admin_runtime", lambda runtime_dir: _AdminServiceStub(runtime_dir)
+    )
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     monkeypatch.setattr(watcher, "notify_wake_socket_for_lock", lambda lock_path: True)
 
@@ -302,6 +308,7 @@ def test_await_agent_completion_uses_configured_event_queue_path(
     class _AdminServiceStub:
         def __init__(self, runtime_dir: Path) -> None:
             self.runtime_dir = runtime_dir
+            self.vm_agent_admin = self
 
         def list_vms(self, **kwargs):
             return [
@@ -331,7 +338,9 @@ def test_await_agent_completion_uses_configured_event_queue_path(
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(event_id=event.event_id)
 
-    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(
+        watcher, "build_admin_runtime", lambda runtime_dir: _AdminServiceStub(runtime_dir)
+    )
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     wake_paths: list[Path] = []
     monkeypatch.setattr(

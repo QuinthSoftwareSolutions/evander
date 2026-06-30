@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
@@ -14,6 +15,10 @@ from agent_sandbox.events.provider_models import (
     VmRunStateQueryDefinition,
 )
 from agent_sandbox.models import LocalIssueRecord, SessionManifest, ToolName, VmSummary
+from agent_sandbox.provider_runtime.adapters import (
+    AdminRuntimeProviderAdapter,
+    build_provider_runtime_ports,
+)
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
 from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
@@ -73,6 +78,46 @@ def test_effect_provider_can_run_with_only_contract_interfaces(tmp_path: Path) -
 
     assert output["success"] is True
     assert services.resumed and services.resumed[0]["target"] == "session-1"
+
+
+def test_admin_runtime_adapter_hides_skill_validation_without_skill_admin() -> None:
+    adapter = AdminRuntimeProviderAdapter(SimpleNamespace())
+
+    assert not hasattr(adapter, "validate_managed_codex_skills")
+    assert not hasattr(adapter, "resolve_container_codex_skill_files")
+
+
+def test_admin_runtime_adapter_delegates_skill_validation_when_backed() -> None:
+    class _SkillAdmin:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def validate_managed_codex_skills(self, skill_names):
+            self.calls.append(list(skill_names))
+            return ["managed:" + name for name in skill_names]
+
+        def resolve_container_codex_skill_files(self, skill_names):
+            return [{"name": name, "path": f"/skills/{name}/SKILL.md"} for name in skill_names]
+
+    skill_admin = _SkillAdmin()
+    adapter = AdminRuntimeProviderAdapter(SimpleNamespace(skill_admin=skill_admin))
+
+    assert adapter.validate_managed_codex_skills([" skill-a ", "skill-a"]) == [
+        "managed:skill-a"
+    ]
+    assert skill_admin.calls == [["skill-a"]]
+    assert adapter.resolve_container_codex_skill_files(["skill-a"]) == [
+        {"name": "skill-a", "path": "/skills/skill-a/SKILL.md"}
+    ]
+
+
+def test_provider_runtime_ports_preserve_original_admin_service_context() -> None:
+    admin_service = SimpleNamespace(runtime="original-runtime")
+
+    ports = build_provider_runtime_ports(admin_service=admin_service)
+
+    assert ports.admin_service is admin_service
+    assert isinstance(ports.vm_creator, AdminRuntimeProviderAdapter)
 
 
 @dataclass

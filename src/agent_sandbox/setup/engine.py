@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import build_admin_runtime
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.runtime import build_runtime
 
@@ -681,10 +681,11 @@ class SetupManager:
         _merge_env_file(admin_env, admin_updates)
         provider_payload = self._provider_payload(state)
         issue_payload = {"default_model": state.default_model}
-        service = AdminService(self.runtime_dir)
-        service.write_directory_domain_config("root", "providers", provider_payload)
-        service.write_directory_domain_config("root", "issue_setup", issue_payload)
-        service.write_assistant_settings(
+        admin_runtime = build_admin_runtime(self.runtime_dir)
+        operations = admin_runtime.operations_admin
+        operations.write_directory_domain_config("root", "providers", provider_payload)
+        operations.write_directory_domain_config("root", "issue_setup", issue_payload)
+        operations.write_assistant_settings(
             {
                 "enabled": True,
                 "read_only": True,
@@ -763,11 +764,11 @@ class SetupManager:
         raise RuntimeError(f"Admin Web did not become healthy at {url}: {last_exc}")
 
     def _verify_admin_assistant(self, state: SetupState) -> None:
-        service = AdminService(self.runtime_dir)
+        admin_runtime = build_admin_runtime(self.runtime_dir)
         backend = str(state.execution.get("execution_backend") or "libvirt_vm")
         user_id = str(state.admin_web.get("username") or "admin")
         thread_id = "setup-smoke"
-        assistant_session = service.vm_agent_admin.resolve_chat_assistant_session(
+        assistant_session = admin_runtime.vm_agent_admin.resolve_chat_assistant_session(
             user_id=user_id,
             backend=backend,
             assistant_scope="admin_chat",
@@ -780,7 +781,7 @@ class SetupManager:
             user_message_id=None,
         )
         message_id = f"setup-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
-        smoke_event = service.publish_chat_assistant_message(
+        smoke_event = admin_runtime.operations_admin.publish_chat_assistant_message(
             user_id=user_id,
             thread_id=thread_id,
             user_message_id=message_id,

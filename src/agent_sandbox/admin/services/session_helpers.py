@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent_sandbox.cron import cron_min_interval_seconds, validate_cron_expression
 from agent_sandbox.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
@@ -101,6 +102,24 @@ def parse_session_extension(value: str | None) -> timedelta:
     amount = int(match.group(1))
     unit = match.group(2)
     return timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
+
+
+def normalize_resume_mode(value: str | None) -> str:
+    normalized = str(value or "").strip() or "same_context"
+    if normalized not in {"same_context", "new_context"}:
+        raise ValueError("resume_mode must be one of: same_context, new_context")
+    return normalized
+
+
+def require_valid_cron(cron: str) -> str:
+    try:
+        return validate_cron_expression(cron)
+    except ValueError as exc:
+        raise ValueError(f"Invalid cron expression. {exc}") from exc
+
+
+def cron_min_interval_seconds_for_schedule(expression: str) -> float | None:
+    return cron_min_interval_seconds(expression, utc_now().replace(second=0, microsecond=0))
 
 
 def default_session_ttl(policy: EffectivePolicyConfig) -> timedelta:

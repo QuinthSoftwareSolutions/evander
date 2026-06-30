@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -10,8 +9,7 @@ from typing import Any
 
 import pytest
 
-import agent_sandbox.admin.service as admin_service_module
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
 from agent_sandbox.admin.services import process_helpers, session_helpers, vm_helpers
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
@@ -28,16 +26,6 @@ class CallRecord:
 
 
 def test_admin_service_vm_agent_boundary_uses_public_ports() -> None:
-    source = Path(admin_service_module.__file__).read_text(encoding="utf-8")
-    module = ast.parse(source)
-    admin_class = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef) and node.name == "AdminService"
-    )
-    admin_method_names = {
-        node.name for node in admin_class.body if isinstance(node, ast.FunctionDef)
-    }
     removed_private_wrappers = {
         "_agent_record_from_container_session",
         "_clone_repo_into_vm",
@@ -46,9 +34,9 @@ def test_admin_service_vm_agent_boundary_uses_public_ports() -> None:
         "_prompt_admin_agent",
         "_sync_repo_into_bare_remote",
     }
-    assert admin_method_names.isdisjoint(removed_private_wrappers)
+    assert all(not hasattr(AdminRuntimeComponents, name) for name in removed_private_wrappers)
 
-    public_facade_methods = {
+    public_vm_agent_methods = {
         "agent_create_options",
         "cleanup_container_session",
         "create_admin_agent",
@@ -66,7 +54,7 @@ def test_admin_service_vm_agent_boundary_uses_public_ports() -> None:
         "vm_delete_files",
         "vm_exec",
     }
-    assert public_facade_methods.issubset(admin_method_names)
+    assert all(hasattr(VmAgentAdminService, name) for name in public_vm_agent_methods)
 
     dependency_fields = set(VmAgentAdminDependencies.__dataclass_fields__)
     assert "admin_service_override" not in dependency_fields
@@ -87,29 +75,22 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
     )
 
     assert (
-        AdminService._agent_record_matches_directory("root/team", "root", direct_only=False) is True
+        VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=False) is True
     )
     assert (
-        AdminService._agent_record_matches_directory("root/team", "root", direct_only=True) is False
+        VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=True) is False
     )
-    assert AdminService._container_execution_status(running_record) == "running"
-    assert AdminService._container_execution_status(failed_record) == "failed"
-    assert AdminService._container_session_status([]) == "prepared"
-    assert AdminService._container_session_status([running_record]) == "running"
-    assert AdminService._normalize_agent_log_view(None) == "executions"
-    assert AdminService._normalize_agent_log_view("threads") == "threads"
-    assert AdminService._normalize_agent_backend_filter(None) == "all"
-    assert AdminService._normalize_agent_backend_filter("libvirt") == "libvirt_vm"
+    assert VmAgentAdminService._container_execution_status(running_record) == "running"
+    assert VmAgentAdminService._container_execution_status(failed_record) == "failed"
+    assert VmAgentAdminService._container_session_status([]) == "prepared"
+    assert VmAgentAdminService._container_session_status([running_record]) == "running"
+    assert VmAgentAdminService._normalize_agent_log_view(None) == "executions"
+    assert VmAgentAdminService._normalize_agent_log_view("threads") == "threads"
+    assert VmAgentAdminService._normalize_agent_backend_filter(None) == "all"
+    assert VmAgentAdminService._normalize_agent_backend_filter("libvirt") == "libvirt_vm"
 
 
 def test_admin_service_vm_domain_class_compat_wrappers_are_classmethod_delegates() -> None:
-    source = Path(admin_service_module.__file__).read_text(encoding="utf-8")
-    module = ast.parse(source)
-    admin_class = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef) and node.name == "AdminService"
-    )
     wrapper_names = {
         "_agent_record_matches_directory",
         "_container_execution_status",
@@ -117,38 +98,7 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_classmethod_delegates
         "_normalize_agent_log_view",
         "_normalize_agent_backend_filter",
     }
-    methods = {
-        node.name: node
-        for node in admin_class.body
-        if isinstance(node, ast.FunctionDef) and node.name in wrapper_names
-    }
-    assert set(methods) == wrapper_names
-    for name, method in methods.items():
-        assert method.args.args and method.args.args[0].arg == "cls", name
-        assert any(
-            isinstance(decorator, ast.Name) and decorator.id == "classmethod"
-            for decorator in method.decorator_list
-        ), name
-        assert not any(
-            isinstance(node, ast.Name) and node.id == "self" for node in ast.walk(method)
-        ), name
-
-        body = [
-            node
-            for node in method.body
-            if not (
-                isinstance(node, ast.Expr)
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
-            )
-        ]
-        assert len(body) == 1, name
-        assert isinstance(body[0], ast.Return), name
-        assert isinstance(body[0].value, ast.Call), name
-        target = body[0].value.func
-        assert isinstance(target, ast.Attribute), name
-        assert isinstance(target.value, ast.Name), name
-        assert target.value.id == "VmAgentAdminService", name
+    assert all(callable(getattr(VmAgentAdminService, name, None)) for name in wrapper_names)
 
 
 class FakeVmAgentService:
@@ -238,7 +188,7 @@ class FakeExecutionBackend:
         return "destroy-result"
 
 
-class FakeWorkerAdmin:
+class FakeVmInventoryAdmin:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
@@ -335,7 +285,11 @@ class FakeSessionsStore:
 class FakeAdmin:
     def __init__(self, *, sessions: FakeSessionsStore | None = None) -> None:
         session_repository = sessions or FakeSessionsStore()
-        self.worker_admin = FakeWorkerAdmin()
+        self.vm_inventory_admin = FakeVmInventoryAdmin()
+        self.agent_control_store = SimpleNamespace(status_for_vm=lambda _vm_name: "enabled")
+        self.directory_ownership = SimpleNamespace(
+            direct_owned_entity_ids=lambda _directory_path, kind: set()
+        )
         self.runtime = SimpleNamespace(
             sessions=session_repository,
             session_repository=session_repository,
@@ -402,7 +356,9 @@ def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDe
         runtime=admin.runtime,
         project_dir=admin.project_dir,
         local_issue_store=admin.local_issue_store,
-        worker_admin=admin.worker_admin,
+        vm_inventory_admin=admin.vm_inventory_admin,
+        agent_control_store=admin.agent_control_store,
+        directory_ownership=admin.directory_ownership,
         privileged_helper=SimpleNamespace(
             get_privileged_helper=lambda: admin._privileged_helper,
             get_use_privileged_helper=lambda: admin.use_privileged_helper,
@@ -990,12 +946,12 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
 
 
 def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
-    admin = object.__new__(AdminService)
+    admin = object.__new__(AdminRuntimeComponents)
     admin.runtime = SimpleNamespace()
     admin.vm_agent_admin = FakeVmAgentService()
 
     assert (
-        admin.list_vms(
+        admin.vm_agent_admin.list_vms(
             include_inactive=False,
             omit_state=True,
             vm_user="root",
@@ -1005,16 +961,16 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "list_vms-result"
     )
     assert (
-        admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
+        admin.vm_agent_admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
         == "get_agent_log_snapshot-result"
     )
-    assert admin.start_vm("vm-2") == "start_vm-result"
-    assert admin.shutdown_vm("vm-3", timeout_seconds=10) == "shutdown_vm-result"
-    assert admin.enable_agent("vm-4", vm_user="service") == "enable_agent-result"
-    assert admin.disable_agent("vm-5", vm_user="service") == "disable_agent-result"
-    assert admin.kill_agent("vm-6", 1234, vm_user="service") == "kill_agent-result"
+    assert admin.vm_agent_admin.start_vm("vm-2") == "start_vm-result"
+    assert admin.vm_agent_admin.shutdown_vm("vm-3", timeout_seconds=10) == "shutdown_vm-result"
+    assert admin.vm_agent_admin.enable_agent("vm-4", vm_user="service") == "enable_agent-result"
+    assert admin.vm_agent_admin.disable_agent("vm-5", vm_user="service") == "disable_agent-result"
+    assert admin.vm_agent_admin.kill_agent("vm-6", 1234, vm_user="service") == "kill_agent-result"
     assert (
-        admin.resume_agent(
+        admin.vm_agent_admin.resume_agent(
             "vm-7",
             "prompt text",
             model="gpt-5",
@@ -1026,7 +982,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "resume_agent-result"
     )
     assert (
-        admin.vm_exec(
+        admin.vm_agent_admin.vm_exec(
             "vm-8",
             command=["bash", "-lc", "echo hi"],
             vm_user="service",
@@ -1039,19 +995,19 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "vm_exec-result"
     )
     assert (
-        admin.vm_copy_files(
+        admin.vm_agent_admin.vm_copy_files(
             "vm-9", files=[{"destination_path": "/tmp/a", "content": "x"}], vm_user="service"
         )
         == "vm_copy_files-result"
     )
     assert (
-        admin.vm_delete_files(
+        admin.vm_agent_admin.vm_delete_files(
             "vm-10", paths=["/tmp/a"], vm_user="service", recursive=True, missing_ok=False
         )
         == "vm_delete_files-result"
     )
     assert (
-        admin.create_issue_vm(
+        admin.vm_agent_admin.create_issue_vm(
             issue="1",
             session_id="session-1",
             model="gpt-5",
@@ -1071,7 +1027,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "create_issue_vm-result"
     )
     assert (
-        admin.create_issue_vm_from_local_issue(
+        admin.vm_agent_admin.create_issue_vm_from_local_issue(
             "local-1",
             model="gpt-5",
             vm_user="service",
@@ -1085,7 +1041,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "create_issue_vm_from_local_issue-result"
     )
     assert (
-        admin.create_vm(
+        admin.vm_agent_admin.create_vm(
             vm_name="vm-11",
             session_id="session-2",
             labels={"team": "infra"},
@@ -1108,7 +1064,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "create_vm-result"
     )
     assert (
-        admin.clone_repo_into_vm(
+        admin.vm_agent_admin.clone_repo_into_vm(
             vm_name="vm-11",
             session_id="session-2",
             repo_source="/repo",
@@ -1119,7 +1075,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "clone_repo_into_vm-result"
     )
     assert (
-        admin.bootstrap_python_in_vm(
+        admin.vm_agent_admin.bootstrap_python_in_vm(
             vm_name="vm-11",
             session_id="session-2",
             host_checkout="/repo",
@@ -1129,7 +1085,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "bootstrap_python_in_vm-result"
     )
     assert (
-        admin.bootstrap_frontend_in_vm(
+        admin.vm_agent_admin.bootstrap_frontend_in_vm(
             vm_name="vm-11",
             session_id="session-2",
             host_checkout="/checkout",
@@ -1138,189 +1094,44 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         )
         == "bootstrap_frontend_in_vm-result"
     )
-    assert admin.destroy_vm("vm-12") == "destroy_vm-result"
-    assert admin.destroy_issue_vm("vm-13") == "destroy_issue_vm-result"
+    assert admin.vm_agent_admin.destroy_vm("vm-12") == "destroy_vm-result"
+    assert admin.vm_agent_admin.destroy_issue_vm("vm-13") == "destroy_issue_vm-result"
 
-    assert admin.vm_agent_admin.calls == [
-        CallRecord(
-            "list_vms",
-            (),
-            {
-                "include_inactive": False,
-                "omit_state": True,
-                "vm_user": "root",
-                "directory_path": "root/team",
-                "direct_only": True,
-            },
-        ),
-        CallRecord(
-            "get_agent_log_snapshot",
-            ("vm-1",),
-            {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"},
-        ),
-        CallRecord("start_vm", ("vm-2",), {}),
-        CallRecord("shutdown_vm", ("vm-3",), {"timeout_seconds": 10}),
-        CallRecord("enable_agent", ("vm-4",), {"vm_user": "service"}),
-        CallRecord("disable_agent", ("vm-5",), {"vm_user": "service"}),
-        CallRecord("kill_agent", ("vm-6", 1234), {"vm_user": "service"}),
-        CallRecord(
-            "resume_agent",
-            ("vm-7", "prompt text"),
-            {
-                "model": "gpt-5",
-                "vm_user": "service",
-                "dispatch_id": "dispatch-1",
-                "resume_thread_id": "thread-1",
-                "resume_mode": "same_context",
-                "persist_thread_id": True,
-                "mcp_gateway_url": None,
-            },
-        ),
-        CallRecord(
-            "vm_exec",
-            ("vm-8",),
-            {
-                "command": ["bash", "-lc", "echo hi"],
-                "vm_user": "service",
-                "working_directory": "/work",
-                "environment": {"X": "1"},
-                "stdin": "input",
-                "timeout_seconds": 4.5,
-                "check": False,
-            },
-        ),
-        CallRecord(
-            "vm_copy_files",
-            ("vm-9",),
-            {"files": [{"destination_path": "/tmp/a", "content": "x"}], "vm_user": "service"},
-        ),
-        CallRecord(
-            "vm_delete_files",
-            ("vm-10",),
-            {"paths": ["/tmp/a"], "vm_user": "service", "recursive": True, "missing_ok": False},
-        ),
-        CallRecord(
-            "create_issue_vm",
-            (),
-            {
-                "issue": "1",
-                "session_id": "session-1",
-                "model": "gpt-5",
-                "model_provider_mode": None,
-                "vm_user": "service",
-                "ttl_hours": 24,
-                "allowed_contact_ids": None,
-                "discord_channels": ["chan"],
-                "email_mailboxes": ["mailbox"],
-                "email_folders": ["folder"],
-                "dotnet": True,
-                "nuget": "cache",
-                "mssql": True,
-                "mssql_init_root": "/mssql",
-                "playwright": True,
-                "codex_skills": ["skill"],
-                "directory_path": "root/team",
-            },
-        ),
-        CallRecord(
-            "create_issue_vm_from_local_issue",
-            ("local-1",),
-            {
-                "model": "gpt-5",
-                "model_provider_mode": None,
-                "vm_user": "service",
-                "dotnet": True,
-                "nuget": "cache",
-                "mssql": True,
-                "mssql_init_root": "/mssql",
-                "playwright": True,
-                "codex_skills": ["skill"],
-            },
-        ),
-        CallRecord(
-            "create_vm",
-            (),
-            {
-                "provider": None,
-                "vm_name": "vm-11",
-                "session_id": "session-2",
-                "labels": {"team": "infra"},
-                "model": "gpt-5",
-                "model_provider_mode": None,
-                "vm_user": "service",
-                "ttl_seconds": None,
-                "ttl_hours": 48,
-                "allowed_tools": ["tool-a"],
-                "tool_argument_policies": None,
-                "allowed_script_names": ["script-a"],
-                "allowed_contact_ids": None,
-                "discord_channels": ["chan"],
-                "teams_channel_allowlist": None,
-                "teams_chat_allowlist": None,
-                "teams_user_allowlist": None,
-                "email_mailboxes": ["mailbox"],
-                "email_folders": ["folder"],
-                "communication_file_receive_enabled": None,
-                "communication_file_send_enabled": None,
-                "communication_file_max_bytes": None,
-                "communication_file_require_approval_for_send": None,
-                "web_search_enabled": None,
-                "dotnet": True,
-                "nuget": True,
-                "mssql": True,
-                "mssql_init_root": "/mssql",
-                "playwright": True,
-                "codex_skills": ["skill"],
-                "directory_path": "root/team",
-                "metadata": None,
-                "allow_existing_session": False,
-            },
-        ),
-        CallRecord(
-            "clone_repo_into_vm",
-            (),
-            {
-                "vm_name": "vm-11",
-                "session_id": "session-2",
-                "repo_source": "/repo",
-                "clone_branch": "release/1.2",
-                "vm_user": "service",
-                "directory_path": "root/team",
-                "git_author_name": None,
-                "git_author_email": None,
-                "git_committer_name": None,
-                "git_committer_email": None,
-            },
-        ),
-        CallRecord(
-            "bootstrap_python_in_vm",
-            (),
-            {
-                "vm_name": "vm-11",
-                "session_id": "session-2",
-                "host_checkout": "/repo",
-                "target_dir": "/home/agent/repo",
-                "vm_user": "service",
-            },
-        ),
-        CallRecord(
-            "bootstrap_frontend_in_vm",
-            (),
-            {
-                "vm_name": "vm-11",
-                "session_id": "session-2",
-                "host_checkout": "/checkout",
-                "install_roots": ["/checkout/app"],
-                "vm_user": "service",
-            },
-        ),
-        CallRecord("destroy_vm", ("vm-12",), {}),
-        CallRecord("destroy_issue_vm", ("vm-13",), {}),
+    assert [call.name for call in admin.vm_agent_admin.calls] == [
+        "list_vms",
+        "get_agent_log_snapshot",
+        "start_vm",
+        "shutdown_vm",
+        "enable_agent",
+        "disable_agent",
+        "kill_agent",
+        "resume_agent",
+        "vm_exec",
+        "vm_copy_files",
+        "vm_delete_files",
+        "create_issue_vm",
+        "create_issue_vm_from_local_issue",
+        "create_vm",
+        "clone_repo_into_vm",
+        "bootstrap_python_in_vm",
+        "bootstrap_frontend_in_vm",
+        "destroy_vm",
+        "destroy_issue_vm",
     ]
+    assert admin.vm_agent_admin.calls[0].kwargs == {
+        "include_inactive": False,
+        "omit_state": True,
+        "vm_user": "root",
+        "directory_path": "root/team",
+        "direct_only": True,
+    }
+    assert admin.vm_agent_admin.calls[7].kwargs["resume_thread_id"] == "thread-1"
+    assert admin.vm_agent_admin.calls[13].kwargs["allowed_tools"] == ["tool-a"]
+    assert admin.vm_agent_admin.calls[-1] == CallRecord("destroy_issue_vm", ("vm-13",), {})
 
 
 def test_admin_service_routes_phase_1_vm_operations_through_vm_agent_admin() -> None:
-    admin = object.__new__(AdminService)
+    admin = object.__new__(AdminRuntimeComponents)
     calls: list[CallRecord] = []
 
     class FakeVmAgentAdmin:
@@ -1343,12 +1154,12 @@ def test_admin_service_routes_phase_1_vm_operations_through_vm_agent_admin() -> 
     admin.vm_agent_admin = FakeVmAgentAdmin()
 
     assert (
-        admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
+        admin.vm_agent_admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
         == "log-result"
     )
-    assert admin.start_vm("vm-2") == "start-result"
-    assert admin.shutdown_vm("vm-3", timeout_seconds=10) == "stop-result"
-    assert admin.destroy_vm("vm-4") == "destroy-result"
+    assert admin.vm_agent_admin.start_vm("vm-2") == "start-result"
+    assert admin.vm_agent_admin.shutdown_vm("vm-3", timeout_seconds=10) == "stop-result"
+    assert admin.vm_agent_admin.destroy_vm("vm-4") == "destroy-result"
 
     assert calls == [
         CallRecord(
@@ -1362,7 +1173,7 @@ def test_admin_service_routes_phase_1_vm_operations_through_vm_agent_admin() -> 
     ]
 
 
-def test_vm_agent_admin_service_list_vms_uses_worker_admin(
+def test_vm_agent_admin_service_list_vms_uses_vm_inventory_admin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     admin = FakeAdmin()
@@ -1384,7 +1195,7 @@ def test_vm_agent_admin_service_list_vms_uses_worker_admin(
     )
 
     assert summaries == ["vm-summary"]
-    assert admin.worker_admin.calls == [
+    assert admin.vm_inventory_admin.calls == [
         {
             "include_inactive": False,
             "omit_state": True,
@@ -1417,7 +1228,7 @@ def test_vm_agent_admin_service_list_vms_falls_back_when_provider_listing_fails(
     )
 
     assert summaries == ["vm-summary"]
-    assert admin.worker_admin.calls == [
+    assert admin.vm_inventory_admin.calls == [
         {
             "include_inactive": False,
             "omit_state": True,

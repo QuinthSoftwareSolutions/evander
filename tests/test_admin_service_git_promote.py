@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 
 
 def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_branch(
@@ -14,7 +14,7 @@ def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_br
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     captured: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -26,9 +26,9 @@ def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_br
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.promote_agent_branch(
+    result = service.issue_git_admin.promote_agent_branch(
         host_repo_path="/trusted/repo",
         bare_repo_path="/git-remotes/sample.git",
         agent_branch="agents/session-1/topic",
@@ -54,7 +54,7 @@ def test_admin_service_promote_agent_branch_passes_optional_flags(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     captured: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -66,9 +66,9 @@ def test_admin_service_promote_agent_branch_passes_optional_flags(
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.promote_agent_branch(
+    result = service.issue_git_admin.promote_agent_branch(
         host_repo_path="/trusted/repo",
         bare_repo_name="sample",
         agent_branch="feature/topic",
@@ -98,7 +98,7 @@ def test_admin_service_promote_agent_branch_accepts_target_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     captured: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -110,9 +110,9 @@ def test_admin_service_promote_agent_branch_accepts_target_branch(
             stderr="",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.promote_agent_branch(
+    result = service.issue_git_admin.promote_agent_branch(
         host_repo_path="/trusted/repo",
         bare_repo_name="sample",
         agent_branch="agents/session-1/release",
@@ -141,7 +141,7 @@ def test_admin_service_promote_agent_branch_surfaces_phase_specific_script_error
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
@@ -151,10 +151,10 @@ def test_admin_service_promote_agent_branch_surfaces_phase_specific_script_error
             stderr="Failed to resolve fetched commit for agents/session-1/topic\n",
         )
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", _fake_run)
 
     with pytest.raises(RuntimeError, match="Failed to resolve fetched commit for agents/session-1/topic"):
-        service.promote_agent_branch(
+        service.issue_git_admin.promote_agent_branch(
             host_repo_path="/trusted/repo",
             bare_repo_path="/git-remotes/sample.git",
             agent_branch="agents/session-1/topic",

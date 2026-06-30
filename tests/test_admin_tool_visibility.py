@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.tool_visibility import (
     ToolVisibilityBindingState,
     ToolVisibilityExecutionState,
@@ -59,8 +59,8 @@ def _write_audit_log(path: Path) -> None:
 def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
-    service.write_directory_domain_config(
+    service = build_admin_runtime(write_config(tmp_path))
+    service.operations_admin.write_directory_domain_config(
         "root",
         "policy",
         {"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": True}}},
@@ -82,7 +82,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     )
     _write_audit_log(service.config.audit_log_path)
 
-    payload = service.tool_visibility_payload(
+    payload = service.approval_audit_admin.tool_visibility_payload(
         target="session-1",
         workflow_run_id="run-7",
         mcp_tool_approval_lease_id="lease-9",
@@ -177,7 +177,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
 def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -188,7 +188,7 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
         ),
     )
 
-    payload = service.tool_visibility_payload(target="session-1")
+    payload = service.approval_audit_admin.tool_visibility_payload(target="session-1")
     rows = _tool_rows(payload)
     delete_row = rows[ToolName.DELETE_ADO_BACKLOG_ITEM.value]
 
@@ -204,7 +204,7 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
 def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -215,7 +215,7 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
         ),
     )
 
-    payload = service.tool_visibility_payload(target="session-1")
+    payload = service.approval_audit_admin.tool_visibility_payload(target="session-1")
     rows = _tool_rows(payload)
 
     visible = rows[ToolName.UPDATE_ADO_BACKLOG_TITLE.value]
@@ -229,7 +229,7 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
 def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     initial_session = SessionManifest(
         session_id="session-1",
         vm_id="vm-1",
@@ -255,7 +255,7 @@ def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     )
     service.runtime.session_repository.upsert_session(updated_session)
 
-    payload = service.tool_visibility_payload(
+    payload = service.approval_audit_admin.tool_visibility_payload(
         target="session-1",
         mcp_transport_session_id="transport-1",
     )
@@ -272,7 +272,7 @@ def test_admin_service_tool_visibility_payload_flags_stale_manifest(
 def test_admin_service_tool_visibility_payload_reports_mismatch_for_other_session(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path))
     session_a = SessionManifest(
         session_id="session-a",
         vm_id="vm-a",
@@ -300,7 +300,7 @@ def test_admin_service_tool_visibility_payload_reports_mismatch_for_other_sessio
         visible_tool_names=visible_tool_names,
     )
 
-    payload = service.tool_visibility_payload(
+    payload = service.approval_audit_admin.tool_visibility_payload(
         target="session-b",
         mcp_transport_session_id="transport-1",
     )

@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.cache import DASHBOARD_CACHE_PARAM, AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import json_error
 
@@ -57,14 +57,14 @@ def _dashboard_cache_requested(value: str | None) -> bool:
 
 
 def tool_call_routes(
-    service: AdminService,
+    service: AdminRuntimeComponents,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
     async def list_tool_calls(request: Request) -> JSONResponse:
         params = request.query_params
         try:
             entries = await run_in_threadpool(
-                service.list_tool_call_audit_entries,
+                service.approval_audit_admin.list_tool_call_audit_entries,
                 session_id=_optional_text(params.get("session_id")),
                 tool_name=_optional_text(params.get("tool_name")),
                 status=_optional_text(params.get("status")),

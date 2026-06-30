@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.models import SessionManifest, ToolName
 
 
 def test_admin_service_session_update_metadata_merges_into_manifest(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -21,7 +21,7 @@ def test_admin_service_session_update_metadata_merges_into_manifest(tmp_path: Pa
         ),
     )
 
-    result = service.session_update_metadata(
+    result = service.issue_git_admin.session_update_metadata(
         target="session-1", metadata={"issue_title": "Fix APP"}
     )
 
@@ -35,7 +35,7 @@ def test_admin_service_session_update_metadata_merges_into_manifest(tmp_path: Pa
 def test_admin_service_session_context_query_returns_generic_fields(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    service = AdminService(runtime_dir)
+    service = build_admin_runtime(runtime_dir)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -49,7 +49,7 @@ def test_admin_service_session_context_query_returns_generic_fields(tmp_path: Pa
         ),
     )
 
-    result = service.session_context_query(target="session-1")
+    result = service.issue_git_admin.session_context_query(target="session-1")
 
     assert result["session_id"] == "session-1"
     assert result["vm_name"] == "vm-1"

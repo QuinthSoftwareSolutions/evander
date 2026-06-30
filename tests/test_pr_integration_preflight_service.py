@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.services import (
     PrIntegrationPreflightAdminDependencies,
     PrIntegrationPreflightAdminService,
@@ -75,7 +75,7 @@ def _resolve_repo_source_support(project_dir: Path) -> VmAgentAdminSupport:
         project_dir=project_dir,
         local_issue_store=SimpleNamespace(),
         local_issue_identity_resolver=SimpleNamespace(),
-        worker_admin=SimpleNamespace(),
+        vm_inventory_admin=SimpleNamespace(),
         workflow_config_admin=SimpleNamespace(),
         directory_admin=SimpleNamespace(),
         get_privileged_helper=lambda: None,
@@ -370,12 +370,12 @@ def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
 
 
 def test_admin_service_delegates_run_pr_integration_preflight() -> None:
-    admin = object.__new__(AdminService)
+    admin = object.__new__(AdminRuntimeComponents)
     admin.pr_integration_preflight_admin = SimpleNamespace(
         run_pr_integration_preflight=lambda **kwargs: {"kwargs": kwargs}
     )
 
-    result = admin.run_pr_integration_preflight(
+    result = admin.pr_integration_preflight_admin.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],

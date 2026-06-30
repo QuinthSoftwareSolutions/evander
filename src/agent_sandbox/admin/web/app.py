@@ -5,6 +5,7 @@ import json
 import re
 from html import escape
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
@@ -22,7 +23,7 @@ from agent_sandbox.addons import (
     resolve_addon_admin_api_routes,
     resolve_addon_admin_ui_routes,
 )
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.release_metadata import NEWS_ASSET_BASE_PATH, NEWS_ASSET_DIRECTORY
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.agents import agent_routes
@@ -54,6 +55,28 @@ from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_event
 from agent_sandbox.admin.web.workflow_events import workflow_event_routes
 from agent_sandbox.admin.web.workflow_webhooks import workflow_webhook_routes
 from agent_sandbox.admin.web.workers_config import worker_config_routes
+
+
+class AdminWebAddonServiceAdapter:
+    """Narrow Admin Web service surface exposed to add-on admin routes."""
+
+    def __init__(self, components: AdminRuntimeComponents) -> None:
+        self._components = components
+        self.runtime = components.runtime
+        self.config = components.config
+        self.project_dir = components.project_dir
+
+    def import_git_repo(self, **kwargs: Any) -> Any:
+        return self._components.issue_git_admin.import_git_repo(**kwargs)
+
+    def list_agents(self, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.list_agents(**kwargs)
+
+    def resume_agent(self, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.resume_agent(**kwargs)
+
+    def vm_copy_files(self, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.vm_copy_files(**kwargs)
 
 
 def _dist_dir() -> Path:
@@ -167,7 +190,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def create_app(service: AdminService) -> Starlette:
+def create_app(service: AdminRuntimeComponents) -> Starlette:
     dist_dir = _dist_dir()
     admin_user_store = AdminWebUserStore(
         service.config.runtime_dir / "admin-web.db",
@@ -176,7 +199,7 @@ def create_app(service: AdminService) -> Starlette:
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
     addon_catalog = load_addons(service.config.addon_loader)
-    service.mark_abandoned_agent_create_operations_failed()
+    service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return request_has_privileged_operations(auth=auth, service=service, request=request)
@@ -281,7 +304,7 @@ def create_app(service: AdminService) -> Starlette:
 
     async def logout(request: Request) -> JSONResponse:
         if auth.privileged_for_request(request):
-            service.lock_privileged_operations()
+            service.operations_admin.lock_privileged_operations()
         auth.logout(request)
         permissions = (
             list(auth.effective_permissions(auth.config.username))
@@ -324,12 +347,12 @@ def create_app(service: AdminService) -> Starlette:
 
     async def get_admin_state(request: Request) -> JSONResponse:
         session = auth.require(request)
-        assistant_settings = service.read_assistant_settings()
+        assistant_settings = service.operations_admin.read_assistant_settings()
         requested_directory_path = (
             str(request.query_params.get("directory_path") or "root").strip() or "root"
         )
         try:
-            selected_directory_path = service._normalize_directory_reference(
+            selected_directory_path = service.teams_admin.normalize_directory_reference(
                 requested_directory_path
             )
         except ValueError:
@@ -338,8 +361,8 @@ def create_app(service: AdminService) -> Starlette:
         return JSONResponse(
             {
                 "selected_directory_path": selected_directory_path,
-                "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
-                "execution_backend": service.effective_execution_backend(selected_directory_path),
+                "directory_scoped_config_enabled": service.config.enable_directory_scoped_config,
+                "execution_backend": service.vm_agent_admin.effective_execution_backend(selected_directory_path),
                 "role": _role_for_permissions(permissions) if session else None,
                 "can_manage_users": auth.can_manage_users(
                     session, directory_path=selected_directory_path
@@ -352,7 +375,7 @@ def create_app(service: AdminService) -> Starlette:
                         assistant_settings.get("show_launcher_when_disabled")
                     ),
                 },
-                "deployment": service.read_deployment_status().model_dump(mode="json"),
+                "deployment": service.operations_admin.read_deployment_status().model_dump(mode="json"),
                 "addons": addon_admin_navigation_payloads(addon_catalog),
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
@@ -361,7 +384,7 @@ def create_app(service: AdminService) -> Starlette:
         )
 
     async def get_deployment_status(_: Request) -> JSONResponse:
-        return JSONResponse(service.read_deployment_status().model_dump(mode="json"))
+        return JSONResponse(service.operations_admin.read_deployment_status().model_dump(mode="json"))
 
     async def get_branding(_: Request) -> JSONResponse:
         return JSONResponse(auth.config.branding.to_payload())
@@ -391,7 +414,7 @@ def create_app(service: AdminService) -> Starlette:
         except ValueError as exc:
             return json_error(str(exc))
         return JSONResponse(
-            service.read_release_info(news_index=news_index).model_dump(mode="json")
+            service.operations_admin.read_release_info(news_index=news_index).model_dump(mode="json")
         )
 
     async def get_news_asset(request: Request) -> FileResponse | JSONResponse:
@@ -410,7 +433,7 @@ def create_app(service: AdminService) -> Starlette:
 
     async def download_changelog(_: Request) -> FileResponse | JSONResponse:
         try:
-            changelog_path = service.release_changelog_file()
+            changelog_path = service.operations_admin.release_changelog_file()
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
         return FileResponse(
@@ -422,7 +445,7 @@ def create_app(service: AdminService) -> Starlette:
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
         try:
-            message = service.unlock_privileged_operations()
+            message = service.operations_admin.unlock_privileged_operations()
         except ValueError as exc:
             return json_error(str(exc))
         auth.mark_privileged_for_request(request)
@@ -437,7 +460,7 @@ def create_app(service: AdminService) -> Starlette:
 
     async def lock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
-        service.lock_privileged_operations()
+        service.operations_admin.lock_privileged_operations()
         auth.clear_privileged_for_request(request)
         return JSONResponse(
             {
@@ -499,6 +522,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))
     routes.extend(artifact_routes(service))
+    addon_service = AdminWebAddonServiceAdapter(service)
     for addon in addon_catalog.registrations:
         context = AddonContext(
             addon_id=addon.addon_id,
@@ -506,7 +530,7 @@ def create_app(service: AdminService) -> Starlette:
             addon_runtime_dir=addon_runtime_dir(service.config.runtime_dir, addon.addon_id),
             project_dir=service.project_dir,
             config=service.config,
-            service=service,
+            service=addon_service,
             auth=auth,
         )
         api_routes = resolve_addon_admin_api_routes(addon, context)
@@ -564,7 +588,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    service = AdminService(Path(args.runtime_dir))
+    service = build_admin_runtime(Path(args.runtime_dir))
     uvicorn.run(create_app(service), host=args.host, port=args.port, log_level="info")
 
 

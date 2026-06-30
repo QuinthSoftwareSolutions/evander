@@ -87,7 +87,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if callable(vm_copy_files):
             result = vm_copy_files(target=target, files=files, vm_user=vm_user)
             if not isinstance(result, Mapping):
-                raise RuntimeError("AdminService.vm_copy_files must return a mapping")
+                raise RuntimeError("Admin runtime vm_copy_files must return a mapping")
             normalized = dict(result)
             normalized.setdefault("success", False)
             normalized.setdefault("action", "vm_copy_files")
@@ -109,9 +109,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             directory_path=directory_path,
         )
 
-        from agent_sandbox.admin.service import _resolve_private_key_path
+        from agent_sandbox.admin.services.vm_helpers import resolve_private_key_path
 
-        ssh_private_key_path = _resolve_private_key_path()
+        ssh_private_key_path = resolve_private_key_path()
         if ssh_private_key_path is None:
             raise RuntimeError(
                 "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
@@ -246,7 +246,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         ssh_private_key_path: Path,
         remote_path: str,
     ) -> None:
-        from agent_sandbox.admin.service import _ssh_options
+        from agent_sandbox.admin.services.vm_helpers import ssh_options
 
         remote_parent = PurePosixPath(remote_path).parent.as_posix() or "."
         if remote_parent == ".":
@@ -255,7 +255,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         completed = subprocess.run(
             [
                 "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 f"{vm_user}@{vm_ip}",
                 command,
             ],
@@ -278,13 +278,13 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         ssh_private_key_path: Path,
         remote_path: str,
     ) -> None:
-        from agent_sandbox.admin.service import _ssh_options
+        from agent_sandbox.admin.services.vm_helpers import ssh_options
 
         command = f"test ! -e {shlex.quote(remote_path)}"
         completed = subprocess.run(
             [
                 "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 f"{vm_user}@{vm_ip}",
                 command,
             ],
@@ -310,7 +310,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         remote_path: str,
         mode: str | None,
     ) -> None:
-        from agent_sandbox.admin.service import _ssh_options
+        from agent_sandbox.admin.services.vm_helpers import ssh_options
 
         remote_spec = f"{vm_user}@{vm_ip}:{remote_path}"
         cmd = ["scp"]
@@ -318,7 +318,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             cmd.append("-r")
         cmd.extend(
             [
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+            *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 str(local_source),
                 remote_spec,
             ]
@@ -338,7 +338,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         chmod_result = subprocess.run(
             [
                 "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 f"{vm_user}@{vm_ip}",
                 chmod_command,
             ],
@@ -366,7 +366,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         remove_section_ids: Sequence[str],
         mode: str | None,
     ) -> None:
-        from agent_sandbox.admin.service import _ssh_options
+        from agent_sandbox.admin.services.vm_helpers import ssh_options
 
         normalized_section_id = normalize_managed_section_id(section_id)
         normalized_remove_section_ids = [
@@ -414,7 +414,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         completed = subprocess.run(
             [
                 "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 f"{vm_user}@{vm_ip}",
                 "bash",
                 "-s",
@@ -437,7 +437,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         chmod_result = subprocess.run(
             [
                 "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 f"{vm_user}@{vm_ip}",
                 chmod_command,
             ],

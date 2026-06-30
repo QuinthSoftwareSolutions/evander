@@ -7,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -16,7 +16,7 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
-def tool_visibility_routes(service: AdminService) -> list[Route]:
+def tool_visibility_routes(service: AdminRuntimeComponents) -> list[Route]:
     async def get_tool_visibility(request: Request) -> JSONResponse:
         params = request.query_params
         session_id = _optional_text(params.get("session_id"))
@@ -24,7 +24,7 @@ def tool_visibility_routes(service: AdminService) -> list[Route]:
             return json_error("session_id is required.")
         try:
             payload = await run_in_threadpool(
-                service.tool_visibility_payload,
+                service.approval_audit_admin.tool_visibility_payload,
                 target=session_id,
                 workflow_run_id=_optional_text(params.get("workflow_run_id")),
                 mcp_tool_approval_lease_id=_optional_text(
@@ -42,7 +42,7 @@ def tool_visibility_routes(service: AdminService) -> list[Route]:
             return json_error("session_id is required.")
         try:
             payload = await run_in_threadpool(
-                service.tool_visibility_payload,
+                service.approval_audit_admin.tool_visibility_payload,
                 target=session_id,
                 workflow_run_id=_optional_text(request.query_params.get("workflow_run_id")),
                 mcp_tool_approval_lease_id=_optional_text(

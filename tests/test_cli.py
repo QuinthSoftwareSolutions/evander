@@ -60,6 +60,15 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     return config_path
 
 
+def patch_cli_admin_runtime(monkeypatch, **service_factories):
+    def fake_build_admin_runtime(config):
+        return SimpleNamespace(
+            **{name: factory(config) for name, factory in service_factories.items()}
+        )
+
+    monkeypatch.setattr("agent_sandbox.cli.build_admin_runtime", fake_build_admin_runtime)
+
+
 def write_container_config(
     tmp_path: Path, *, base_url: str | None = "http://worker.test:11888"
 ) -> Path:
@@ -593,7 +602,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
         def __init__(self, config) -> None:
             self.config = config
 
-        def teams_auth_login(self, *, directory="root"):
+        def login(self, *, directory="root"):
             calls.append("login")
             return {
                 "status": "device_code_pending",
@@ -604,7 +613,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 "refresh_token": "should-not-leak-either",
             }
 
-        def teams_auth_complete_login(self, login_session, *, directory="root"):
+        def complete_login(self, login_session, *, directory="root"):
             calls.append("complete_login")
             return {
                 "status": "authenticated",
@@ -615,7 +624,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 "access_token": "should-not-leak",
             }
 
-        def teams_auth_status(self, *, directory="root"):
+        def status(self, *, directory="root"):
             calls.append("status")
             return {
                 "status": "authenticated",
@@ -626,7 +635,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 "access_token": "should-not-leak",
             }
 
-        def teams_auth_list(self):
+        def list(self):
             calls.append("list")
             return [
                 {
@@ -642,11 +651,11 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 },
             ]
 
-        def teams_auth_logout(self, *, directory="root"):
+        def logout(self, *, directory="root"):
             calls.append("logout")
             return None
 
-        def teams_auth_list_channels(
+        def list_channels(
             self,
             *,
             directory="root",
@@ -668,7 +677,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 ],
             }
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, teams_admin=FakeAdminService)
 
     login_result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
     status_result = runner.invoke(app, ["teams-auth", "status", "--config", str(config_path)])
@@ -724,7 +733,7 @@ def test_teams_auth_login_reports_auth_errors_without_traceback(
         def __init__(self, config) -> None:
             self.config = config
 
-        def teams_auth_login(self, *, directory="root"):
+        def login(self, *, directory="root"):
             return {
                 "status": "device_code_pending",
                 "message": "Open the browser and authenticate.",
@@ -732,13 +741,13 @@ def test_teams_auth_login_reports_auth_errors_without_traceback(
                 "user_code": "ABCD-EFGH",
             }
 
-        def teams_auth_complete_login(self, login_session, *, directory="root"):
+        def complete_login(self, login_session, *, directory="root"):
             raise InvalidClientConfigurationError(
                 "Microsoft Entra rejected the device-code flow because the configured app registration "
                 "is not enabled as a public client."
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, teams_admin=FakeAdminService)
 
     result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
 
@@ -758,7 +767,7 @@ def test_teams_auth_login_renders_datetime_details_without_traceback(
         def __init__(self, config) -> None:
             self.config = config
 
-        def teams_auth_login(self, *, directory="root"):
+        def login(self, *, directory="root"):
             return {
                 "status": "device_code_pending",
                 "message": "Open the browser and authenticate.",
@@ -766,7 +775,7 @@ def test_teams_auth_login_renders_datetime_details_without_traceback(
                 "user_code": "ABCD-EFGH",
             }
 
-        def teams_auth_complete_login(self, login_session, *, directory="root"):
+        def complete_login(self, login_session, *, directory="root"):
             return {
                 "status": "authenticated",
                 "backend": "delegated_graph_api",
@@ -777,7 +786,7 @@ def test_teams_auth_login_renders_datetime_details_without_traceback(
                 "store_path": "/tmp/teams.json",
             }
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, teams_admin=FakeAdminService)
 
     result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
 
@@ -1831,7 +1840,7 @@ def test_create_issue_vm_creates_manifest_before_invoking_setup_script(
         assert sessions["issue-1234-session"]["vm_id"] == "vm-1234"
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -1860,7 +1869,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service.subprocess.run",
+        "agent_sandbox.admin.services.process_helpers.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -1926,7 +1935,7 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
                 success=True, vm_name="vm-14084", action="create_issue_vm", message="ok"
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     with monkeypatch.context() as m:
         m.setenv("MSSQL_SA_PASSWORD", "SecretPassw0rd!")
@@ -2003,7 +2012,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(
         captured_env.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -2057,7 +2066,7 @@ def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, m
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service.subprocess.run",
+        "agent_sandbox.admin.services.process_helpers.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -2126,7 +2135,7 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.service.subprocess.run",
+        "agent_sandbox.admin.services.process_helpers.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -2176,7 +2185,7 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(
                 success=True, vm_name=kwargs["vm_name"], action="create_vm", message="ok"
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(
         app,
@@ -2252,7 +2261,7 @@ def test_clone_repo_into_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> N
                 success=True, vm_name=kwargs["vm_name"], action="clone_repo_into_vm", message="ok"
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(
         app,
@@ -2303,7 +2312,7 @@ def test_bootstrap_python_in_vm_uses_admin_service(tmp_path: Path, monkeypatch) 
                 message="ok",
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(
         app,
@@ -2351,7 +2360,7 @@ def test_bootstrap_frontend_in_vm_uses_admin_service(tmp_path: Path, monkeypatch
                 message="ok",
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(
         app,
@@ -3709,7 +3718,7 @@ def test_destroy_vm_delegates_to_admin_service(tmp_path: Path, monkeypatch) -> N
                 success=True, vm_name=target, action="destroy_vm", message="destroyed"
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(app, ["destroy-vm", "--config", str(config_path), "lab-vm"])
 
@@ -4046,7 +4055,7 @@ def test_list_vms_json_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
                 )
             ]
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(app, ["list-vms", "--config", str(config_path), "--all", "--json"])
 
@@ -4076,7 +4085,7 @@ def test_start_vm_reports_failure_exit_code(tmp_path: Path, monkeypatch) -> None
                 message="VM not found: vm-12305",
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, vm_agent_admin=FakeAdminService)
 
     result = runner.invoke(app, ["start-vm", "--config", str(config_path), "vm-12305"])
 
@@ -4111,7 +4120,7 @@ def test_create_local_issue_uses_admin_service(tmp_path: Path, monkeypatch) -> N
                 repo_source=repo_source,
             )
 
-    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+    patch_cli_admin_runtime(monkeypatch, issue_git_admin=FakeAdminService)
 
     result = runner.invoke(
         app,

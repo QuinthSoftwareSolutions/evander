@@ -14,77 +14,96 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from agent_sandbox.admin import service as admin_service_module
-from agent_sandbox.admin.service import (
-    COMMUNICATION_TARGETS_DOMAIN,
-    EXTERNAL_WORKFLOW_EVENT_PREFIX,
+from agent_sandbox.admin.common import (
+    _coerce_optional_datetime,
+    _coerce_optional_string,
+    _read_json_object,
+    _resolve_path_setting,
+    _safe_validation_error,
+    _utc_now,
+)
+from agent_sandbox.admin.payloads import (
+    AdminRevisionConflict,
+    EffectConfigMutationPayload,
+    TriggerConfigMutationPayload,
+    WorkerGlobalConfigPayload,
+    WorkerGlobalConfigWritePayload,
+    WorkflowEditorDocumentPayload,
+    WorkflowEditorGraphMetadata,
+    WorkflowEditorLayoutDocument,
+    WorkflowEditorSavePayload,
+    WorkflowEditorValidationPayload,
+    WorkflowEditorWorkflowPackDescriptor,
+    WorkflowNodeFailuresDismissPayload,
+    WorkflowRunClearPayload,
+    WorkflowRunResumePayload,
+)
+from agent_sandbox.admin.worker_config import (
+    _WORKER_GLOBAL_CONFIG_MODELS,
+    _WORKER_GLOBAL_CONFIG_PATHS,
+)
+from agent_sandbox.admin.workflow_catalog import (
     _EFFECT_DEFINITION_ADAPTER,
     _GATE_DEFINITION_ADAPTER,
     _QUERY_DEFINITION_ADAPTER,
     _TRIGGER_DEFINITION_ADAPTER,
-    _WORKER_GLOBAL_CONFIG_MODELS,
-    _WORKER_GLOBAL_CONFIG_PATHS,
     _WORKFLOW_EDITOR_NODE_CATALOG,
     _WORKFLOW_EDITOR_NODE_DESCRIPTIONS,
-    AdminRevisionConflict,
-    EffectConfigMutationPayload,
-    InternalEventBus,
-    InternalEventSource,
-    JsonStore,
-    JsonTriggerEventRepository,
-    JsonWorkflowConfigSnapshotRepository,
-    SqliteTriggerEventQueue,
-    SqliteWorkflowConfigSnapshotRepository,
-    SqliteWorkflowEventJournal,
-    TriggerConfigDocument,
-    TriggerConfigMutationPayload,
-    TriggerEvent,
-    TriggerEventQueue,
-    TriggerOrchestratorWorkerGlobalConfig,
-    TriggerQueueRecord,
-    WorkerGlobalConfigPayload,
-    WorkerGlobalConfigWritePayload,
-    WorkflowEditorCatalogPayload,
-    WorkflowEditorDocumentPayload,
     WorkflowEditorFieldOption,
-    WorkflowEditorGraphMetadata,
-    WorkflowEditorLayoutDocument,
     WorkflowEditorNodeCatalogEntry,
-    WorkflowEditorSavePayload,
-    WorkflowEditorValidationPayload,
-    WorkflowEditorWorkflowPackDescriptor,
-    WorkflowEventJournal,
-    WorkflowNodeFailuresDismissPayload,
-    WorkflowRunClearPayload,
-    WorkflowRunResumePayload,
-    _append_builtin_hidden_workflows,
-    _coerce_optional_datetime,
-    _coerce_optional_string,
     _communication_target_capabilities,
     _communication_target_option,
     _communication_target_shape,
-    _compose_configured_workflow_ir,
     _field_option,
     _is_system_managed_workflow_node_id,
     _looks_like_declared_output_schema,
-    _read_json_object,
-    _resolve_path_setting,
-    _safe_validation_error,
     _strip_default_edge_fields,
     _tool_field_options,
-    _utc_now,
     _workflow_agent_create_diagnostics,
     _workflow_binding_diagnostics_for_graphs,
     _workflow_config_for_legacy_mutation_response,
-    compile_worker_global_config_with_diagnostics,
-    compose_workflow_ir,
-    derive_workflow_output_schemas,
-    load_workflow_pack,
-    migrate_agent_prompt_lifecycle_ports,
-    seed_new_ticket_created_trigger_cursors,
+)
+from agent_sandbox.config import TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.events.internal import (
+    EXTERNAL_WORKFLOW_EVENT_PREFIX,
+    InternalEventBus,
+    InternalEventSource,
     validate_internal_event_type,
+)
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
+from agent_sandbox.repositories.orchestration import (
+    JsonWorkflowConfigSnapshotRepository,
+    SqliteWorkflowConfigSnapshotRepository,
+)
+from agent_sandbox.repositories.triggers import (
+    JsonTriggerEventRepository,
+    TriggerConfigDocument,
+)
+from agent_sandbox.storage import JsonStore
+from agent_sandbox.triggers.providers._local_tickets import (
+    seed_new_ticket_created_trigger_cursors,
+)
+from agent_sandbox.triggers.queue import (
+    SqliteTriggerEventQueue,
+    TriggerEventQueue,
+    TriggerQueueRecord,
+)
+from agent_sandbox.workflow.catalog import WorkflowEditorCatalogPayload
+from agent_sandbox.workflow.events import (
+    SqliteWorkflowEventJournal,
+    WorkflowEventJournal,
     workflow_event_journal_path,
 )
+from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
+from agent_sandbox.workflow.packs import compose_workflow_ir, load_workflow_pack
+from agent_sandbox.workflow.runtime_config import (
+    _append_builtin_hidden_workflows,
+    _compose_configured_workflow_ir,
+    compile_worker_global_config_with_diagnostics,
+)
+from agent_sandbox.workflow.validation import derive_workflow_output_schemas
 
 
 @dataclass(slots=True)
@@ -116,9 +135,15 @@ class WorkflowConfigAdminService:
     def admin_config_mutation_lock(self) -> ContextManager[None]:
         return self._admin_config_mutation_lock()
 
+    def stable_json_revision(self, payload: object) -> str:
+        return self._stable_json_revision(payload)
+
     def _stable_json_revision(self, payload: object) -> str:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    def write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:
+        self._write_json_file_atomic(path, payload)
 
     def read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
         return self._read_worker_global_config(worker_id)
@@ -146,6 +171,14 @@ class WorkflowConfigAdminService:
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
         return self._read_workflow_editor_catalog(directory_path=directory_path)
+
+    def coerce_workflow_editor_graphs(
+        self,
+        raw_graphs: object,
+        *,
+        strict: bool = True,
+    ) -> list[WorkflowEditorGraphMetadata]:
+        return self._coerce_workflow_editor_graphs(raw_graphs, strict=strict)
 
     def validate_workflow_editor_document(
         self,
@@ -183,6 +216,21 @@ class WorkflowConfigAdminService:
         if self._workflow_reports_admin is None:
             raise RuntimeError("workflow reports service is not configured")
         return self._workflow_reports_admin._read_workflow_run_snapshot()
+
+    def read_trigger_document(self) -> TriggerConfigDocument:
+        return self._read_trigger_document()
+
+    def write_trigger_document(self, config: dict[str, object]) -> TriggerConfigDocument:
+        return self._write_trigger_document(config)
+
+    def workflow_run_store_paths(self) -> dict[str, Any]:
+        return self._workflow_run_store_paths()
+
+    def workflow_uses_sqlite_store(self, stores: Mapping[str, Any]) -> bool:
+        return self._workflow_uses_sqlite_store(stores)
+
+    def workflow_run_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+        return self._workflow_run_store_bundle(stores)
 
     def read_workflow_run_detail(self, **kwargs: Any):
         if self._workflow_reports_admin is None:
@@ -381,7 +429,7 @@ class WorkflowConfigAdminService:
             source=source,
             idempotency_key=idempotency_key,
         )
-        admin_service_module.notify_wake_socket_for_lock(worker_config.lock_path)
+        notify_wake_socket_for_lock(worker_config.lock_path)
         return event.model_dump(mode="json")
 
     def _workflow_editor_default_layout_path(self) -> Path:
@@ -1947,7 +1995,7 @@ class WorkflowConfigAdminService:
             queue_store.publish(resume_event)
         else:
             TriggerEventQueue(event_queue_store_path).publish(resume_event)
-        admin_service_module.notify_wake_socket_for_lock(stores["effect_lock_path"])
+        notify_wake_socket_for_lock(stores["effect_lock_path"])
         self._workflow_event_journal().append(
             "workflow.run.resumed",
             source="workflow_editor",

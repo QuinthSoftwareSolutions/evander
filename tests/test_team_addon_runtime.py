@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.artifact_spaces import ArtifactSpaceStore
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
@@ -244,9 +244,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
 
-    service = AdminService(tmp_path / "runtime")
-    document = service.read_workflow_editor_document()
-    assert service.read_workflow_editor_document().revision == document.revision
+    service = build_admin_runtime(tmp_path / "runtime")
+    document = service.workflow_config_admin.read_workflow_editor_document()
+    assert service.workflow_config_admin.read_workflow_editor_document().revision == document.revision
     assert document.output_schemas["team-route-completed-session"]["persistent"] == {
         "type": "boolean"
     }
@@ -297,20 +297,20 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "host_repo_path": "${{team-git-promote-review-branch.host_repo_path ?? null}}",
         "message": "${{team-git-promote-review-branch.message ?? null}}",
     }
-    validation = service.validate_workflow_editor_document(
+    validation = service.workflow_config_admin.validate_workflow_editor_document(
         config=flattened_config,
         layout=document.layout,
         graphs=graphs,
     )
     assert validation.validation_diagnostics == []
-    legacy_validation = service.validate_workflow_editor_document(
+    legacy_validation = service.workflow_config_admin.validate_workflow_editor_document(
         config=_legacy_outputs_config(flattened_config),
         layout=document.layout,
         graphs=graphs,
     )
     assert legacy_validation.validation_diagnostics == []
-    current_document = service.read_workflow_editor_document()
-    save = service.save_workflow_editor_document(
+    current_document = service.workflow_config_admin.read_workflow_editor_document()
+    save = service.workflow_config_admin.save_workflow_editor_document(
         config=flattened_config,
         layout=document.layout,
         graphs=graphs,

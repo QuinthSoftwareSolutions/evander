@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from agent_sandbox.provider_config import (
@@ -10,99 +10,295 @@ from agent_sandbox.provider_config import (
     TriggerProviderConfig,
 )
 from agent_sandbox.provider_runtime.contracts import ProviderRuntimePorts
+from agent_sandbox.repositories.skills_library import normalize_skill_names
 
 
-class AdminServiceProviderAdapter:
+class AdminRuntimeProviderAdapter:
     """Narrow provider-runtime adapter over a host runtime object."""
 
-    def __init__(self, admin_service: object) -> None:
-        self._admin_service = admin_service
+    _CONDITIONALLY_BACKED_METHODS = {
+        "validate_managed_codex_skills": "_managed_codex_skill_validator",
+        "resolve_container_codex_skill_files": "_container_codex_skill_file_resolver",
+        "list_model_usage_events": "_model_usage_events_lister",
+        "sync_added_discord_session_cursors": "_sync_added_discord_session_cursors_delegate",
+        "delete_admin_agent": "_delete_admin_agent_delegate",
+    }
+
+    def __init__(self, admin_runtime: object) -> None:
+        self._admin_runtime = admin_runtime
+        self.runtime = getattr(admin_runtime, "runtime", None)
+        self.config = getattr(admin_runtime, "config", None)
+        project_dir = getattr(admin_runtime, "project_dir", None)
+        if project_dir is not None:
+            self.project_dir = project_dir
+        self.vm_agent_admin = getattr(admin_runtime, "vm_agent_admin", None)
+        self.issue_git_admin = getattr(admin_runtime, "issue_git_admin", None)
+
+    def __getattribute__(self, name: str) -> Any:
+        conditional_methods = object.__getattribute__(self, "_CONDITIONALLY_BACKED_METHODS")
+        resolver_name = conditional_methods.get(name)
+        if resolver_name is not None:
+            resolver = object.__getattribute__(self, resolver_name)
+            if resolver() is None:
+                raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+    def _vm_agent_admin(self) -> object:
+        return self.vm_agent_admin or self._admin_runtime
+
+    def _issue_git_admin(self) -> object:
+        return self.issue_git_admin or self._admin_runtime
+
+    def _operations_admin(self) -> object:
+        return getattr(self._admin_runtime, "operations_admin", self._admin_runtime)
+
+    def _delegate_method(self, attr_name: str, *owners: object | None) -> Callable[..., Any] | None:
+        for owner in owners:
+            if owner is None or owner is self:
+                continue
+            method = getattr(owner, attr_name, None)
+            if callable(method):
+                return method
+        return None
+
+    def _vm_agent_method(self, attr_name: str) -> Callable[..., Any] | None:
+        return self._delegate_method(attr_name, self.vm_agent_admin, self._admin_runtime)
+
+    def _issue_git_method(self, attr_name: str) -> Callable[..., Any] | None:
+        return self._delegate_method(attr_name, self.issue_git_admin, self._admin_runtime)
+
+    def _call_required(
+        self,
+        method: Callable[..., Any] | None,
+        attr_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if method is None:
+            raise AttributeError(attr_name)
+        return method(*args, **kwargs)
+
+    def _managed_codex_skill_validator(self) -> Callable[..., Any] | None:
+        return self._delegate_method(
+            "validate_managed_codex_skills",
+            getattr(self._admin_runtime, "skill_admin", None),
+            self.vm_agent_admin,
+            self._admin_runtime,
+        )
+
+    def _container_codex_skill_file_resolver(self) -> Callable[..., Any] | None:
+        return self._delegate_method(
+            "resolve_container_codex_skill_files",
+            getattr(self._admin_runtime, "skill_admin", None),
+            self.vm_agent_admin,
+            self._admin_runtime,
+        )
+
+    def _model_usage_events_lister(self) -> Callable[..., Any] | None:
+        return self._delegate_method(
+            "list_model_usage_events",
+            getattr(self._admin_runtime, "model_usage_admin", None),
+            self._admin_runtime,
+        )
+
+    def _sync_added_discord_session_cursors_delegate(self) -> Callable[..., Any] | None:
+        return self._vm_agent_method("sync_added_discord_session_cursors")
+
+    def _delete_admin_agent_delegate(self) -> Callable[..., Any] | None:
+        return self._vm_agent_method("delete_admin_agent")
 
     def create_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.create_vm(**kwargs)
+        return self._call_required(self._vm_agent_method("create_vm"), "create_vm", **kwargs)
 
     def resolve_vm_defaults(self, directory_path: str) -> Any:
-        return self._admin_service.resolve_vm_defaults(directory_path)
+        return self._call_required(
+            self._vm_agent_method("resolve_vm_defaults"),
+            "resolve_vm_defaults",
+            directory_path,
+        )
 
     def clone_repo_into_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.clone_repo_into_vm(**kwargs)
+        return self._call_required(
+            self._vm_agent_method("clone_repo_into_vm"),
+            "clone_repo_into_vm",
+            **kwargs,
+        )
 
     def bootstrap_python_in_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.bootstrap_python_in_vm(**kwargs)
+        return self._call_required(
+            self._vm_agent_method("bootstrap_python_in_vm"),
+            "bootstrap_python_in_vm",
+            **kwargs,
+        )
 
     def bootstrap_frontend_in_vm(self, **kwargs: Any) -> Any:
-        return self._admin_service.bootstrap_frontend_in_vm(**kwargs)
+        return self._call_required(
+            self._vm_agent_method("bootstrap_frontend_in_vm"),
+            "bootstrap_frontend_in_vm",
+            **kwargs,
+        )
 
     def resume_agent(self, **kwargs: Any) -> Any:
-        return self._admin_service.resume_agent(**kwargs)
+        return self._call_required(self._vm_agent_method("resume_agent"), "resume_agent", **kwargs)
 
     def start_vm(self, target: str) -> Any:
-        return self._admin_service.start_vm(target)
+        return self._call_required(self._vm_agent_method("start_vm"), "start_vm", target)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> Any:
-        return self._admin_service.shutdown_vm(target, timeout_seconds=timeout_seconds)
+        return self._call_required(
+            self._vm_agent_method("shutdown_vm"),
+            "shutdown_vm",
+            target,
+            timeout_seconds=timeout_seconds,
+        )
 
     def list_vms(self, **kwargs: Any) -> list[Any]:
-        return self._admin_service.list_vms(**kwargs)
+        return self._call_required(self._vm_agent_method("list_vms"), "list_vms", **kwargs)
 
     def vm_exec(self, **kwargs: Any) -> Mapping[str, Any]:
-        return self._admin_service.vm_exec(**kwargs)
+        return self._call_required(self._vm_agent_method("vm_exec"), "vm_exec", **kwargs)
 
     def vm_copy_files(self, **kwargs: Any) -> Mapping[str, Any]:
-        return self._admin_service.vm_copy_files(**kwargs)
+        return self._call_required(
+            self._vm_agent_method("vm_copy_files"),
+            "vm_copy_files",
+            **kwargs,
+        )
 
     def vm_delete_files(self, **kwargs: Any) -> Mapping[str, Any]:
-        return self._admin_service.vm_delete_files(**kwargs)
+        return self._call_required(
+            self._vm_agent_method("vm_delete_files"),
+            "vm_delete_files",
+            **kwargs,
+        )
 
     def read_all_sessions(self) -> Mapping[str, Any]:
-        runtime = getattr(self._admin_service, "runtime", None)
+        runtime = self.runtime
         session_repository = getattr(runtime, "session_repository", None)
         if session_repository is not None:
             return {session.session_id: session for session in session_repository.list_sessions()}
         return {}
 
     def update_issue(self, issue_id: str, **kwargs: Any) -> Any:
-        return self._admin_service.update_issue(issue_id, **kwargs)
+        return self._call_required(
+            self._issue_git_method("update_issue"),
+            "update_issue",
+            issue_id,
+            **kwargs,
+        )
 
     def update_issue_metadata(self, **kwargs: Any) -> Any:
-        return self._admin_service.update_issue_metadata(**kwargs)
+        return self._call_required(
+            self._issue_git_method("update_issue_metadata"),
+            "update_issue_metadata",
+            **kwargs,
+        )
 
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any:
-        return self._admin_service.session_update_metadata(target=target, metadata=metadata)
+        return self._call_required(
+            self._issue_git_method("session_update_metadata"),
+            "session_update_metadata",
+            target=target,
+            metadata=metadata,
+        )
 
     def promote_agent_branch(self, **kwargs: Any) -> Any:
-        return self._admin_service.promote_agent_branch(**kwargs)
+        return self._call_required(
+            self._issue_git_method("promote_agent_branch"),
+            "promote_agent_branch",
+            **kwargs,
+        )
 
     def push_branch(self, **kwargs: Any) -> Any:
-        return self._admin_service.push_branch(**kwargs)
+        return self._call_required(self._issue_git_method("push_branch"), "push_branch", **kwargs)
 
     def pr_create(self, **kwargs: Any) -> Any:
-        return self._admin_service.pr_create(**kwargs)
+        return self._call_required(self._issue_git_method("pr_create"), "pr_create", **kwargs)
 
     def git_pr_note_query(self, **kwargs: Any) -> Any:
-        return self._admin_service.git_pr_note_query(**kwargs)
+        return self._call_required(
+            self._issue_git_method("git_pr_note_query"),
+            "git_pr_note_query",
+            **kwargs,
+        )
 
     def get_issue(self, **kwargs: Any) -> Any:
-        return self._admin_service.get_issue(**kwargs)
+        return self._call_required(self._issue_git_method("get_issue"), "get_issue", **kwargs)
 
     def list_issues(self, **kwargs: Any) -> Any:
-        return self._admin_service.list_issues(**kwargs)
+        return self._call_required(self._issue_git_method("list_issues"), "list_issues", **kwargs)
 
     def session_context_query(self, **kwargs: Any) -> Any:
-        return self._admin_service.session_context_query(**kwargs)
+        return self._call_required(
+            self._issue_git_method("session_context_query"),
+            "session_context_query",
+            **kwargs,
+        )
 
     def read_session_artifact_text(self, **kwargs: Any) -> Any:
-        return self._admin_service.read_session_artifact_text(**kwargs)
+        return self._call_required(
+            self._vm_agent_method("read_session_artifact_text"),
+            "read_session_artifact_text",
+            **kwargs,
+        )
+
+    def sync_added_discord_session_cursors(self, *args: Any, **kwargs: Any) -> None:
+        return self._call_required(
+            self._sync_added_discord_session_cursors_delegate(),
+            "sync_added_discord_session_cursors",
+            *args,
+            **kwargs,
+        )
+
+    def validate_managed_codex_skills(
+        self, skill_names: list[str] | tuple[str, ...] | None
+    ) -> list[str]:
+        validator = self._managed_codex_skill_validator()
+        if validator is None:
+            return normalize_skill_names(skill_names)
+        return validator(normalize_skill_names(skill_names))
+
+    def resolve_container_codex_skill_files(
+        self, skill_names: list[str] | tuple[str, ...] | None
+    ) -> list[dict[str, Any]]:
+        resolver = self._container_codex_skill_file_resolver()
+        if resolver is None:
+            raise AttributeError("resolve_container_codex_skill_files")
+        return resolver(skill_names)
+
+    def list_model_usage_events(self, **kwargs: Any) -> Any:
+        lister = self._model_usage_events_lister()
+        if lister is None:
+            raise AttributeError("list_model_usage_events")
+        return lister(**kwargs)
+
+    def destroy_vm(self, target: str) -> Any:
+        return self._call_required(self._vm_agent_method("destroy_vm"), "destroy_vm", target)
+
+    def delete_admin_agent(self, agent_id: str, *, backend: str | None = None) -> Any:
+        return self._call_required(
+            self._delete_admin_agent_delegate(),
+            "delete_admin_agent",
+            agent_id,
+            backend=backend,
+        )
+
+    def read_assistant_settings(self) -> dict[str, object]:
+        return self._operations_admin().read_assistant_settings()
+
+    def _resolve_issue_setup(self, directory_path: str, *, root_dir: Any) -> Any:
+        return self._vm_agent_admin()._resolve_issue_setup(directory_path, root_dir=root_dir)
 
 
 class GateProviderAdapter:
     """Narrow gate-runtime adapter over a host runtime object."""
 
-    def __init__(self, admin_service: object) -> None:
-        self._admin_service = admin_service
+    def __init__(self, admin_runtime: object) -> None:
+        self._admin_runtime = admin_runtime
 
     def list_vms(self, **kwargs: Any) -> list[Any]:
-        return self._admin_service.list_vms(**kwargs)
+        vm_agent_admin = getattr(self._admin_runtime, "vm_agent_admin", self._admin_runtime)
+        return vm_agent_admin.list_vms(**kwargs)
 
 
 def build_provider_runtime_ports(
@@ -113,7 +309,7 @@ def build_provider_runtime_ports(
     gate_adapter: object | None = None,
 ) -> ProviderRuntimePorts:
     if admin_adapter is None and admin_service is not None:
-        admin_adapter = AdminServiceProviderAdapter(admin_service)
+        admin_adapter = AdminRuntimeProviderAdapter(admin_service)
     if gate_adapter is None and admin_service is not None:
         gate_adapter = GateProviderAdapter(admin_service)
     provider_metadata = _extract_mapping_attr(provider_runtime, "metadata")

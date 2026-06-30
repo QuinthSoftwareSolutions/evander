@@ -6,12 +6,13 @@ import subprocess
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 import httpx
 from PIL import Image
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
@@ -102,7 +103,7 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
     return TestClient(
-        create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon)))
+        create_app(build_admin_runtime(_write_config(tmp_path, enable_team_addon=enable_team_addon)))
     )
 
 
@@ -563,7 +564,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
         return state
 
     repo.update(_clear_backend_runtime)
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-backend",
@@ -604,8 +605,8 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
             ],
         }
 
-    monkeypatch.setattr(service, "resume_agent", _fake_resume_agent)
-    monkeypatch.setattr(service, "vm_copy_files", _fake_vm_copy_files)
+    monkeypatch.setattr(service.vm_agent_admin, "resume_agent", _fake_resume_agent)
+    monkeypatch.setattr(service.vm_agent_admin, "vm_copy_files", _fake_vm_copy_files)
     client = TestClient(create_app(service))
 
     created = client.post(
@@ -696,7 +697,7 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-backend",
@@ -713,7 +714,7 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
         resume_calls.append({"target": target, "prompt": prompt, **kwargs})
         return {"success": True, "dispatch_id": kwargs.get("dispatch_id")}
 
-    monkeypatch.setattr(service, "resume_agent", _fake_resume_agent)
+    monkeypatch.setattr(service.vm_agent_admin, "resume_agent", _fake_resume_agent)
     client = TestClient(create_app(service))
 
     created = client.post(
@@ -1225,7 +1226,7 @@ def test_agent_voice_session_create_query_and_end(
         set_voice_profile=True,
         expected_revision=repo.read().revision,
     )
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-backend",
@@ -1334,7 +1335,7 @@ def test_agent_voice_session_records_chat_conversation_message(
         agent_id="backend",
         expected_revision=repo.read().revision,
     )
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-backend",
@@ -1420,7 +1421,7 @@ def test_agent_voice_session_can_end_by_request_id(
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
     _seed_runtime_operations_state(tmp_path / "runtime")
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-backend",
@@ -2008,6 +2009,70 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert attention["failed_ephemeral_assignment"]["state"] == "failed"
     assert attention["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
     assert attention["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_team_addon_admin_api_runtime_operations_use_admin_web_addon_service_adapter(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+    service = build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
+    list_agents_calls: list[dict[str, object]] = []
+
+    def list_agents(self, **kwargs):
+        del self
+        list_agents_calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                session_id="session-backend",
+                backend="container_worker_vm",
+                status="running",
+                host={
+                    "active_execution_count": 2,
+                    "latest_execution_id": "exec-backend",
+                },
+            )
+        ]
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_agents",
+        MethodType(list_agents, service.vm_agent_admin),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/addons/team-addon/state")
+
+    assert response.status_code == 200
+    assert list_agents_calls == [
+        {
+            "include_inactive": True,
+            "direct_only": False,
+            "all_directories": True,
+            "reconcile_containers": False,
+            "omit_vm_state": True,
+            "summary_only": True,
+            "backend": "container_worker_vm",
+        }
+    ]
+    session_health = {
+        row["agent_id"]: row for row in response.json()["runtime_operations"]["session_health"]
+    }
+    backend_health = session_health["backend"]
+    assert backend_health["agent_execution_backend"] == "container_worker_vm"
+    assert backend_health["agent_execution_status"] == "running"
+    assert backend_health["agent_active_execution_count"] == 2
+    assert backend_health["agent_latest_execution_id"] == "exec-backend"
 
 
 def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
@@ -3111,7 +3176,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
     source_commit = _git(source_repo, "rev-parse", "refs/heads/main").stdout.strip()
 
     config_path = _write_config(tmp_path, enable_team_addon=True)
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     service.project_dir = PROJECT_ROOT
     service.vm_agent_support.project_dir = PROJECT_ROOT
     git_root = tmp_path / "git-remotes"
@@ -3197,7 +3262,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
     monkeypatch,
 ) -> None:
     config_path = _write_config(tmp_path, enable_team_addon=True)
-    service = AdminService(config_path)
+    service = build_admin_runtime(config_path)
     calls: dict[str, object] = {}
 
     def fake_import_git_repo(
@@ -3223,7 +3288,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
         calls["threadpool"] = True
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(service, "import_git_repo", fake_import_git_repo)
+    monkeypatch.setattr(service.issue_git_admin, "import_git_repo", fake_import_git_repo)
     monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
     client = TestClient(create_app(service))
 

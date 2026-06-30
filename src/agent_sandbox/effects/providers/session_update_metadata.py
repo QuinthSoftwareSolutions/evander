@@ -27,7 +27,7 @@ class SessionUpdateMetadataEffectProvider(EffectProviderBase):
         context = self._context()
         update_fn = getattr(context.session_metadata_updater, "session_update_metadata", None)
         if not callable(update_fn):
-            raise RuntimeError("AdminService.session_update_metadata is not available")
+            raise RuntimeError("Admin runtime session_update_metadata is not available")
 
         result = update_fn(target=target, metadata=dict(metadata))
         output = self._coerce_result(result)
