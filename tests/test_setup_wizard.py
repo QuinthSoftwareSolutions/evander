@@ -106,7 +106,7 @@ def test_setup_install_preflight_uses_setup_profile_and_clears_failed_pass(
 ) -> None:
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
-    state.execution = {"execution_backend": "libvirt_vm"}
+    state.execution = {"execution_backend": "libvirt_vm", "model": "libvirt_vm"}
     state.install_preflight_passed_at = "2026-06-28T00:00:00+00:00"
     manager.save_state(state)
     calls = []
@@ -126,6 +126,7 @@ def test_setup_install_preflight_uses_setup_profile_and_clears_failed_pass(
     assert calls[0]["check"] is False
     assert calls[0]["env"]["AGENT_SANDBOX_SERVICE_PROFILE"] == "setup"
     assert calls[0]["env"]["AGENT_SANDBOX_SETUP_EXECUTION_BACKEND"] == "libvirt_vm"
+    assert calls[0]["env"]["AGENT_SANDBOX_SETUP_EXECUTION_MODEL"] == "libvirt_vm"
     assert manager.load_state().install_preflight_passed_at == ""
 
 
@@ -260,6 +261,57 @@ def test_setup_writes_container_worker_token_secret_without_state_leak(
     assert 'TEST_WORKER_TOKEN="worker-token"' in secret_text
     assert os.environ["TEST_WORKER_TOKEN"] == "worker-token"
     assert "worker-token" not in manager.state_path.read_text(encoding="utf-8")
+
+
+def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path: Path) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+
+    unit = manager._local_container_worker_unit_content(state, run_user="operator")
+
+    assert "User=operator" in unit
+    assert "SupplementaryGroups=docker" in unit
+    assert f"EnvironmentFile=-{tmp_path / 'local-secrets.env'}" in unit
+    assert "agent-sandbox-worker-daemon --host 127.0.0.1 --port 11888" in unit
+    assert "--runtime-dir /var/lib/agent-worker/runtime" in unit
+    assert "--worker-root /var/lib/agent-worker" in unit
+    assert "Requires=docker.service" in unit
+
+
+def test_setup_launch_starts_local_worker_for_same_host_container(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.execution = {
+        "execution_backend": "container_worker_vm",
+        "model": "container_same_host",
+    }
+    local_worker_installs = []
+    run_calls = []
+
+    monkeypatch.setattr(manager, "required_ready", lambda state: True)
+    monkeypatch.setattr(manager, "_write_config_files", lambda state: None)
+    monkeypatch.setattr(manager, "_install_secret_dropins", lambda state: None)
+    monkeypatch.setattr(manager, "_wait_admin_web", lambda state: None)
+    monkeypatch.setattr(manager, "_verify_admin_assistant", lambda state: None)
+    monkeypatch.setattr(
+        manager,
+        "_install_local_container_worker_daemon",
+        lambda state: local_worker_installs.append(state),
+    )
+
+    def fake_run(args, **kwargs):
+        run_calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("agent_sandbox.setup.engine.subprocess.run", fake_run)
+
+    manager.launch(state)
+
+    assert local_worker_installs == [state]
+    assert ["sudo", "systemctl", "restart", "agent-sandbox-worker-daemon.service"] in run_calls
 
 
 def test_setup_tui_omits_nonfunctional_setup_profile_choice(

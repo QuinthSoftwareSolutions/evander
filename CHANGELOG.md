@@ -15,6 +15,9 @@
   worker bearer token in the host secret file, loading it for the launch smoke
   check, and reporting launch failures without a traceback.
 
+- Added guided setup provisioning for the same-host container worker daemon and
+  made setup preflight require Docker before that execution model can launch.
+
 - Moved Admin Web workflow pack selection and history into compact controls
   overlaid on the workflow canvas, with add/edit/remove pack actions kept to
   icon buttons and the edit dialog.

@@ -30,6 +30,11 @@ DEFAULT_ADMIN_AUTH_MODE = "local_password"
 DEFAULT_CONTAINER_WORKER_URL = "http://127.0.0.1:11888"
 DEFAULT_CONTAINER_WORKER_TOKEN_ENV = "AGENT_SANDBOX_WORKER_TOKEN"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
+LOCAL_CONTAINER_WORKER_SERVICE = "agent-sandbox-worker-daemon.service"
+LOCAL_CONTAINER_WORKER_HOST = "127.0.0.1"
+LOCAL_CONTAINER_WORKER_PORT = "11888"
+LOCAL_CONTAINER_WORKER_ROOT = Path("/var/lib/agent-worker")
+LOCAL_CONTAINER_WORKER_RUNTIME_DIR = LOCAL_CONTAINER_WORKER_ROOT / "runtime"
 
 PROVIDER_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
@@ -666,7 +671,14 @@ class SetupManager:
             cwd=self.project_dir,
             check=True,
         )
+        if _same_host_container_worker_selected(state):
+            self._install_local_container_worker_daemon(state)
         self._install_secret_dropins(state)
+        if _same_host_container_worker_selected(state):
+            subprocess.run(
+                ["sudo", "systemctl", "restart", LOCAL_CONTAINER_WORKER_SERVICE],
+                check=True,
+            )
         for service in ESSENTIAL_SERVICES:
             subprocess.run(["sudo", "systemctl", "start", service], check=True)
         self._wait_admin_web(state)
@@ -757,6 +769,87 @@ class SetupManager:
             subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
         finally:
             tmp.unlink(missing_ok=True)
+
+    def _install_local_container_worker_daemon(self, state: SetupState) -> None:
+        self._ensure_container_worker_secret(state)
+        run_user = _setup_run_user()
+        run_group = _primary_group_for_user(run_user)
+        unit_content = self._local_container_worker_unit_content(state, run_user=run_user)
+        tmp = (
+            Path(os.environ.get("TMPDIR", "/tmp"))
+            / f"evander-container-worker-{secrets.token_hex(8)}.service"
+        )
+        tmp.write_text(unit_content, encoding="utf-8")
+        try:
+            subprocess.run(
+                [
+                    "sudo",
+                    "install",
+                    "-d",
+                    "-o",
+                    run_user,
+                    "-g",
+                    run_group,
+                    "-m",
+                    "0750",
+                    str(LOCAL_CONTAINER_WORKER_ROOT),
+                    str(LOCAL_CONTAINER_WORKER_RUNTIME_DIR),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "sudo",
+                    "install",
+                    "-m",
+                    "0644",
+                    str(tmp),
+                    f"/etc/systemd/system/{LOCAL_CONTAINER_WORKER_SERVICE}",
+                ],
+                check=True,
+            )
+            subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+            subprocess.run(
+                ["sudo", "systemctl", "enable", LOCAL_CONTAINER_WORKER_SERVICE],
+                check=True,
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _local_container_worker_unit_content(
+        self, state: SetupState, *, run_user: str | None = None
+    ) -> str:
+        run_user = run_user or _setup_run_user()
+        return "\n".join(
+            [
+                "[Unit]",
+                "Description=Agent Sandbox Local Container Worker Daemon",
+                "After=network-online.target docker.service",
+                "Wants=network-online.target docker.service",
+                "Requires=docker.service",
+                "",
+                "[Service]",
+                "Type=simple",
+                f"User={run_user}",
+                "SupplementaryGroups=docker",
+                f"WorkingDirectory={self.project_dir}",
+                f"EnvironmentFile=-{self.secret_file_path(state)}",
+                (
+                    f"ExecStart={self.project_dir}/.venv/bin/agent-sandbox-worker-daemon "
+                    f"--host {LOCAL_CONTAINER_WORKER_HOST} "
+                    f"--port {LOCAL_CONTAINER_WORKER_PORT} "
+                    f"--runtime-dir {LOCAL_CONTAINER_WORKER_RUNTIME_DIR} "
+                    f"--worker-root {LOCAL_CONTAINER_WORKER_ROOT} "
+                    "--sandbox-profile default"
+                ),
+                "Restart=on-failure",
+                "RestartSec=5",
+                "",
+                "[Install]",
+                "WantedBy=multi-user.target",
+                "",
+            ]
+        )
 
     def _provider_payload(self, state: SetupState) -> dict[str, object]:
         payload: dict[str, object] = dict(state.provider_config)
@@ -854,7 +947,30 @@ def _setup_install_env(state: SetupState) -> dict[str, str]:
         "AGENT_SANDBOX_SETUP_EXECUTION_BACKEND": str(
             state.execution.get("execution_backend") or ""
         ),
+        "AGENT_SANDBOX_SETUP_EXECUTION_MODEL": str(state.execution.get("model") or ""),
     }
+
+
+def _same_host_container_worker_selected(state: SetupState) -> bool:
+    return (
+        str(state.execution.get("execution_backend") or "") == "container_worker_vm"
+        and str(state.execution.get("model") or "") == "container_same_host"
+    )
+
+
+def _setup_run_user() -> str:
+    return os.environ.get("SUDO_USER") or getpass.getuser() or DEFAULT_ADMIN_USERNAME
+
+
+def _primary_group_for_user(user: str) -> str:
+    result = subprocess.run(
+        ["id", "-gn", user],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    group = result.stdout.strip() if result.returncode == 0 else ""
+    return group or user
 
 
 def setup_doctor_payload(

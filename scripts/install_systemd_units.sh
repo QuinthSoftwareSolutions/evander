@@ -19,6 +19,7 @@ EOH
 MODE="install"
 SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"
 SETUP_EXECUTION_BACKEND="${AGENT_SANDBOX_SETUP_EXECUTION_BACKEND:-}"
+SETUP_EXECUTION_MODEL="${AGENT_SANDBOX_SETUP_EXECUTION_MODEL:-}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -252,6 +253,9 @@ run_preflight_checks() {
     check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available."
   else
     report_pass "Skipping virsh check for service profile ${SERVICE_PROFILE}."
+  fi
+  if [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_MODEL}" == "container_same_host" ]]; then
+    check_command "docker" "Install Docker so the same-host container worker can run agent containers."
   fi
 
   local setup_managed_config_severity="critical"
