@@ -9,6 +9,7 @@ USERS_MANAGE_PERMISSION = "users.manage"
 GROUPS_MANAGE_PERMISSION = "groups.manage"
 WORKFLOWS_READ_PERMISSION = "workflows.read"
 WORKFLOWS_WRITE_PERMISSION = "workflows.write"
+WORKFLOW_PACKS_MANAGE_PERMISSION = "workflow_packs.manage"
 WORKFLOW_RUNS_READ_PERMISSION = "workflow_runs.read"
 WORKFLOW_RUNS_CONTROL_PERMISSION = "workflow_runs.control"
 TEAM_CHATS_READ_ALL_PERMISSION = "team_chats.read_all"
@@ -27,6 +28,7 @@ PERMISSION_CATALOG = frozenset(
         GROUPS_MANAGE_PERMISSION,
         WORKFLOWS_READ_PERMISSION,
         WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_PACKS_MANAGE_PERMISSION,
         WORKFLOW_RUNS_READ_PERMISSION,
         WORKFLOW_RUNS_CONTROL_PERMISSION,
         TEAM_CHATS_READ_ALL_PERMISSION,
@@ -58,6 +60,7 @@ BUILTIN_GROUP_DEFINITIONS: dict[str, dict[str, object]] = {
             {
                 WORKFLOWS_READ_PERMISSION,
                 WORKFLOWS_WRITE_PERMISSION,
+                WORKFLOW_PACKS_MANAGE_PERMISSION,
                 WORKFLOW_RUNS_READ_PERMISSION,
                 WORKFLOW_RUNS_CONTROL_PERMISSION,
                 TEAM_CHATS_READ_ALL_PERMISSION,
@@ -72,6 +75,7 @@ BUILTIN_GROUP_DEFINITIONS: dict[str, dict[str, object]] = {
             {
                 WORKFLOWS_READ_PERMISSION,
                 WORKFLOWS_WRITE_PERMISSION,
+                WORKFLOW_PACKS_MANAGE_PERMISSION,
             }
         ),
     },

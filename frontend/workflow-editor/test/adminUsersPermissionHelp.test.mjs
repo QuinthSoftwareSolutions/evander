@@ -11,6 +11,7 @@ test("users and groups permission catalog has help copy", () => {
     ["users.manage", "user records"],
     ["workflow_runs.control", "Resume, dismiss, or clear workflow runs"],
     ["workflow_runs.read", "workflow run snapshots"],
+    ["workflow_packs.manage", "global pack configuration"],
     ["workflows.read", "workflow definitions"],
     ["workflows.write", "Save workflow definition"],
   ];

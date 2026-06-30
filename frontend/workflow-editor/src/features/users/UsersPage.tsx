@@ -74,6 +74,7 @@ const PERMISSION_HELP: Record<string, string> = {
   "users.manage": "Create and edit user records, directory-scoped group assignments, and direct workflow grants.",
   "workflow_runs.control": "Resume, dismiss, or clear workflow runs. Pair with workflow_runs.read when the user also needs run details.",
   "workflow_runs.read": "Inspect workflow run snapshots, run details, trigger/gate/effect activity, and runtime graph status.",
+  "workflow_packs.manage": "Create, edit metadata for, and remove workflow packs from the active list. This is global pack configuration, not a direct workflow grant.",
   "workflows.read": "Open and inspect workflow definitions, graph metadata, layouts, and workflow catalog details.",
   "workflows.write": "Save workflow definition and layout changes. Add workflows.read too when the group should open workflow documents.",
 };

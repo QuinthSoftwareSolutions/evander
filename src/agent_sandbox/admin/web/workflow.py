@@ -13,6 +13,7 @@ from agent_sandbox.admin.composition import AdminRuntimeComponents
 from agent_sandbox.admin.payloads import AdminRevisionConflict
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.rbac import (
+    WORKFLOW_PACKS_MANAGE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
     WORKFLOW_RUNS_READ_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
@@ -813,11 +814,8 @@ def workflow_routes(
         try:
             auth.require(request)
             payload = await json_body(request)
-            directory_path = service.teams_admin.normalize_directory_reference(
-                str(payload.get("directory_path") or "").strip() or "root"
-            )
             auth.require_permission(
-                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+                request, WORKFLOW_PACKS_MANAGE_PERMISSION, directory_path="root"
             )
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
@@ -850,11 +848,8 @@ def workflow_routes(
         try:
             auth.require(request)
             payload = await json_body(request)
-            directory_path = service.teams_admin.normalize_directory_reference(
-                str(payload.get("directory_path") or "").strip() or "root"
-            )
             auth.require_permission(
-                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+                request, WORKFLOW_PACKS_MANAGE_PERMISSION, directory_path="root"
             )
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
@@ -884,11 +879,8 @@ def workflow_routes(
         try:
             auth.require(request)
             payload = await json_body(request)
-            directory_path = service.teams_admin.normalize_directory_reference(
-                str(payload.get("directory_path") or "").strip() or "root"
-            )
             auth.require_permission(
-                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+                request, WORKFLOW_PACKS_MANAGE_PERMISSION, directory_path="root"
             )
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)

@@ -3976,6 +3976,7 @@ export default function App() {
     canReadWorkflows,
     canReadWorkflowRuns,
     canWriteWorkflows,
+    canManageWorkflowPacks,
     canControlWorkflowRuns,
   } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
@@ -4114,6 +4115,7 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
+  const workflowPackManageLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canManageWorkflowPacks;
   const workflowRunReadLocked = !canReadWorkflowRuns;
   const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
   const canUndoWorkflowChanges = !workflowEditLocked && undoHistory.length > 0;
@@ -7488,7 +7490,7 @@ export default function App() {
 
   async function submitWorkflowPackModal(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!document || workflowEditLocked || !workflowPackModalMode) return;
+    if (!document || workflowPackManageLocked || !workflowPackModalMode) return;
     const packId = workflowPackForm.packId.trim();
     const packVersion = workflowPackForm.packVersion.trim() || "v1";
     const description = workflowPackForm.description.trim();
@@ -7536,7 +7538,7 @@ export default function App() {
   }
 
   async function removeSelectedWorkflowPack() {
-    if (!document || workflowEditLocked || !selectedWorkflowPack) return;
+    if (!document || workflowPackManageLocked || !selectedWorkflowPack) return;
     if (workflowPackOptions.length <= 1) return;
     if (!confirmDiscardUnsavedWorkflowPackAction()) return;
     const confirmed = window.confirm(`Remove ${selectedWorkflowPack.display_name || selectedWorkflowPack.reference} from active workflow packs?`);
@@ -7622,19 +7624,15 @@ export default function App() {
         },
         selectedDirectoryPath,
       );
-      patchDocument(
-        saved.config,
-        saved.layout,
-        saved.graphs,
-        undefined,
-        saved.validation_diagnostics,
-        saved.output_schemas,
-        saved.revision,
-        { recordUndo: false },
-      );
       setSavedDocument(normalizedSavedDocument);
       setUndoHistory([]);
       setNodeEditOrigins({});
+      applyWorkflowDocumentState(
+        normalizedSavedDocument,
+        selectedNodeIds,
+        saved.validation_diagnostics,
+        { markClean: true, nodeEditOrigins: {} },
+      );
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
@@ -9990,7 +9988,7 @@ export default function App() {
               <button type="button" className="subtle-button" onClick={closeWorkflowPackModal} disabled={workflowPackSubmitting}>
                 Cancel
               </button>
-              <button type="submit" className="primary" disabled={workflowPackSubmitting || workflowEditLocked}>
+              <button type="submit" className="primary" disabled={workflowPackSubmitting || workflowPackManageLocked}>
                 {workflowPackSubmitting ? "Saving..." : submitLabel}
               </button>
             </div>
@@ -10503,7 +10501,7 @@ export default function App() {
 
   function renderWorkflowPackIdentity() {
     if (!document) return null;
-    const packActionsDisabled = workflowEditLocked || isTutorialMode || workflowPackSubmitting;
+    const packActionsDisabled = workflowPackManageLocked || isTutorialMode || workflowPackSubmitting;
     const canRemoveSelectedPack = Boolean(selectedWorkflowPack && workflowPackOptions.length > 1);
     if (workflowPackOptions.length === 0) {
       return (

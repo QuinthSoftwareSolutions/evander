@@ -37,6 +37,7 @@ export type AdminUiState = {
   canReadWorkflows: boolean;
   canReadWorkflowRuns: boolean;
   canWriteWorkflows: boolean;
+  canManageWorkflowPacks: boolean;
   canControlWorkflowRuns: boolean;
   canManageUsers: boolean;
   selectedDirectoryPath: string;
@@ -70,6 +71,7 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   canReadWorkflows: false,
   canReadWorkflowRuns: false,
   canWriteWorkflows: false,
+  canManageWorkflowPacks: false,
   canControlWorkflowRuns: false,
   canManageUsers: false,
   selectedDirectoryPath: "root",
