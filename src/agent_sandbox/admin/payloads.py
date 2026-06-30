@@ -240,6 +240,7 @@ class WorkflowPackHistoryFilePayload(BaseModel):
     exists: bool
     revision: str | None = None
     content: dict[str, object] | None = None
+    error: str | None = None
 
 
 class WorkflowPackHistoryDiffPayload(BaseModel):

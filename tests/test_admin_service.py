@@ -8181,6 +8181,65 @@ def test_workflow_editor_remove_workflow_pack_unlists_without_deleting_files(tmp
         )
 
 
+def test_workflow_editor_remove_workflow_pack_tolerates_malformed_snapshot_files(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    bad_pack_path = packs_dir / "bad-pack.v1.json"
+    bad_layout_path = packs_dir / "bad-pack.v1.layout.json"
+    bad_pack_path.write_text("{not-json", encoding="utf-8")
+    bad_layout_path.write_text("{also-not-json", encoding="utf-8")
+    (packs_dir / "good-pack.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "good-pack",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "good-pack.v1.layout.json").write_text(
+        json.dumps({"nodes": {}}),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    wrapper_payload = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "workflow_packs": ["bad-pack.v1.json", "good-pack.v1.json"],
+    }
+    config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    revision = service.stable_json_revision(wrapper_payload)
+
+    result = service.remove_workflow_pack(
+        workflow_pack="bad-pack.v1.json",
+        expected_revision=revision,
+    )
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["workflow_packs"] == [
+        "good-pack.v1.json"
+    ]
+    assert bad_pack_path.exists()
+    assert bad_layout_path.exists()
+    assert result.selected_workflow_pack is not None
+    assert result.selected_workflow_pack.reference == "good-pack.v1.json"
+    history = service.list_workflow_pack_history(workflow_pack="bad-pack.v1.json")
+    assert [entry.operation for entry in history.entries] == ["remove"]
+    detail = service.get_workflow_pack_history_detail(history.entries[0].change_id)
+    before_pack = next(file for file in detail.before_files if file.label == "pack")
+    before_layout = next(file for file in detail.before_files if file.label == "layout")
+    assert before_pack.exists is True
+    assert before_pack.content is None
+    assert before_pack.error
+    assert before_layout.exists is True
+    assert before_layout.content is None
+    assert before_layout.error
+
+
 def test_workflow_pack_history_records_pack_management_changes(tmp_path: Path) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)

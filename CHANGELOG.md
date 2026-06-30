@@ -4,6 +4,9 @@
   runtime-local JSONL audit records, immutable before/after snapshots, actor
   attribution, history endpoints, and a Workflow editor history panel.
 
+- Kept workflow pack removal usable as a recovery path for malformed pack or
+  layout files by recording snapshot capture errors without blocking unlisting.
+
 - Fixed workflow pack management authorization so pack create, metadata edit,
   and removal require root-scoped `workflow_packs.manage` instead of
   directory-scoped `workflows.write`, and refreshed saved pack descriptors in

@@ -658,11 +658,24 @@ class WorkflowConfigAdminService:
         config_path: Path,
         pack_path: Path,
         layout_path: Path,
+        tolerate_invalid: bool = False,
     ) -> list[WorkflowPackHistoryFileState]:
         return [
-            self._workflow_pack_history.capture_file_state("worker_config", config_path),
-            self._workflow_pack_history.capture_file_state("pack", pack_path),
-            self._workflow_pack_history.capture_file_state("layout", layout_path),
+            self._workflow_pack_history.capture_file_state(
+                "worker_config",
+                config_path,
+                tolerate_invalid=tolerate_invalid,
+            ),
+            self._workflow_pack_history.capture_file_state(
+                "pack",
+                pack_path,
+                tolerate_invalid=tolerate_invalid,
+            ),
+            self._workflow_pack_history.capture_file_state(
+                "layout",
+                layout_path,
+                tolerate_invalid=tolerate_invalid,
+            ),
         ]
 
     def _workflow_pack_revision_from_history_files(
@@ -887,6 +900,7 @@ class WorkflowConfigAdminService:
                 config_path=config_path,
                 pack_path=pack_path,
                 layout_path=layout_path,
+                tolerate_invalid=True,
             )
             selected_index = configured_references.index(selected_reference)
             next_references = list(configured_references)
@@ -901,6 +915,7 @@ class WorkflowConfigAdminService:
                 config_path=config_path,
                 pack_path=pack_path,
                 layout_path=layout_path,
+                tolerate_invalid=True,
             )
             self._record_workflow_pack_history(
                 operation="remove",

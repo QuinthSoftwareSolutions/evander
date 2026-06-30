@@ -141,6 +141,7 @@ export type WorkflowPackHistoryFile = {
   exists: boolean;
   revision?: string | null;
   content?: Record<string, unknown> | null;
+  error?: string | null;
 };
 
 export type WorkflowPackHistoryDiff = {

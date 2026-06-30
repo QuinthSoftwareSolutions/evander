@@ -49,6 +49,7 @@ class WorkflowPackHistoryFileState:
     exists: bool
     content: dict[str, object] | None
     revision: str | None
+    error: str | None = None
 
     def to_payload(self, *, include_content: bool = True) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -56,6 +57,7 @@ class WorkflowPackHistoryFileState:
             "path": str(self.path),
             "exists": self.exists,
             "revision": self.revision,
+            "error": self.error,
         }
         if include_content:
             payload["content"] = self.content
@@ -74,7 +76,9 @@ class WorkflowPackHistoryService:
         self.snapshots_dir = self.root_dir / "snapshots"
         self._stable_json_revision = stable_json_revision
 
-    def capture_file_state(self, label: str, path: Path) -> WorkflowPackHistoryFileState:
+    def capture_file_state(
+        self, label: str, path: Path, *, tolerate_invalid: bool = False
+    ) -> WorkflowPackHistoryFileState:
         if not path.exists():
             return WorkflowPackHistoryFileState(
                 label=label,
@@ -83,9 +87,21 @@ class WorkflowPackHistoryService:
                 content=None,
                 revision=None,
             )
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError(f"{label} file {path} must contain a JSON object")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError(f"{label} file {path} must contain a JSON object")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            if not tolerate_invalid:
+                raise
+            return WorkflowPackHistoryFileState(
+                label=label,
+                path=path,
+                exists=True,
+                content=None,
+                revision=None,
+                error=str(exc),
+            )
         return WorkflowPackHistoryFileState(
             label=label,
             path=path,
