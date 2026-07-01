@@ -169,6 +169,12 @@ agent_runner_codex_validate_web_search_mode() {
   esac
 }
 
+agent_runner_codex_supports_feature() {
+  local feature="$1"
+  codex features list 2>/dev/null \
+    | awk -v feature="${feature}" '$1 == feature && $2 != "removed" { found=1 } END { exit found ? 0 : 1 }'
+}
+
 agent_runner_codex_config_args() {
   agent_runner_codex_validate_web_search_mode || return 1
   if [[ -n "${AGENT_WEB_SEARCH_MODE:-}" ]]; then
@@ -180,9 +186,11 @@ agent_runner_codex_config_args() {
     printf '%s\0%s\0' \
       "-c" \
       "mcp_servers.evander.url=\"${EVANDER_MCP_GATEWAY_URL}\""
-    printf '%s\0%s\0' \
-      "--enable" \
-      "non_prefixed_mcp_tool_names"
+    if agent_runner_codex_supports_feature "non_prefixed_mcp_tool_names"; then
+      printf '%s\0%s\0' \
+        "--enable" \
+        "non_prefixed_mcp_tool_names"
+    fi
   fi
 }
 
