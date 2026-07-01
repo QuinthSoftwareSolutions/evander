@@ -2769,8 +2769,9 @@ class GitHubIssueAdapter:
         skip: int,
     ) -> tuple[list[dict[str, Any]], int | None, bool]:
         qualifiers = [text_search, f"repo:{repo}", "is:issue"]
-        if state:
-            qualifiers.append(f"state:{str(state).strip()}")
+        state_qualifier = str(state or "").strip().lower()
+        if state_qualifier and state_qualifier != "all":
+            qualifiers.append(f"state:{state_qualifier}")
         for label in labels_all:
             label_text = str(label).strip()
             if label_text:

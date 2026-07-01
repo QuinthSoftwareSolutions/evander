@@ -147,6 +147,42 @@ def test_github_issue_adapter_scans_until_labels_any_matches(monkeypatch) -> Non
     assert result["items"][0]["remote_issue_id"] == "42"
 
 
+def test_github_issue_adapter_omits_state_all_from_search_query(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr("evander.issues.service.httpx.Client", _Client)
+    _Client.requests = []
+    _Client.responses = [
+        _Response(
+            {
+                "total_count": 1,
+                "items": [
+                    {
+                        "number": 42,
+                        "title": "Crash on launch",
+                        "state": "closed",
+                        "labels": [{"name": "bug"}],
+                        "html_url": "https://github.com/owner/repo/issues/42",
+                    }
+                ],
+            }
+        )
+    ]
+
+    adapter = GitHubIssueAdapter(_Resolver(), api_base_url="https://api.github.test")
+    result = adapter.query_remote_issues(
+        directory_path="root/github",
+        repo="owner/repo",
+        state="all",
+        text_search="crash",
+    )
+
+    query = _Client.requests[0]["params"]["q"]
+    assert "state:all" not in query
+    assert "repo:owner/repo" in query
+    assert result["count"] == 1
+    assert result["items"][0]["state"] == "closed"
+
+
 def test_github_issue_adapter_reads_issue_comments(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setattr("evander.issues.service.httpx.Client", _Client)

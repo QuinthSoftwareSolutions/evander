@@ -19,6 +19,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 TABLE="inet evander"
+LEGACY_TABLE="inet agent_sandbox"
 INPUT_CHAIN="input"
 FORWARD_CHAIN="forward"
 BRIDGE_IF="virbr250"
@@ -30,9 +31,17 @@ if ! command -v nft >/dev/null 2>&1; then
   exit 1
 fi
 
-if nft list table "${TABLE%% *}" "${TABLE##* }" >/dev/null 2>&1; then
-  nft delete table "${TABLE%% *}" "${TABLE##* }"
-fi
+delete_table_if_exists() {
+  local table="$1"
+  local family="${table%% *}"
+  local name="${table##* }"
+  if nft list table "${family}" "${name}" >/dev/null 2>&1; then
+    nft delete table "${family}" "${name}"
+  fi
+}
+
+delete_table_if_exists "${LEGACY_TABLE}"
+delete_table_if_exists "${TABLE}"
 
 nft add table ${TABLE}
 nft "add chain ${TABLE} ${INPUT_CHAIN} { type filter hook input priority 0; policy accept; }"
