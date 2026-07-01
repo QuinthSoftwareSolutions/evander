@@ -216,11 +216,11 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
         "+refs/heads/*:refs/heads/*",
         "+refs/tags/*:refs/tags/*",
     )
-    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
-    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
-    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
-    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
-    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     initial_main_sha = _git(source_repo, "rev-parse", "main").stdout.strip()
@@ -262,6 +262,15 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     )
 
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
+    assert _git_dir(bare_repo, "config", "--get", "evander.mirrorSource").stdout.strip() == str(
+        source_repo
+    )
+    assert _git_dir(bare_repo, "config", "--get", "evander.mirrorRemoteName").stdout.strip() == (
+        "origin"
+    )
+    assert _git_dir(bare_repo, "config", "--get", "evander.mirrorSyncRemote").stdout.strip() == "1"
+    assert _git_dir(bare_repo, "config", "--get", "evander.mirrorForceLocal").stdout.strip() == "0"
+    assert _git_dir(bare_repo, "config", "--get", "evander.baseBranch").stdout.strip() == "main"
     assert _git(source_repo, "branch", "--show-current").stdout.strip() == "work"
     assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"

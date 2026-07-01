@@ -62,6 +62,15 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_flag_with_legacy(name: str, legacy_name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        raw = os.environ.get(legacy_name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _env_csv(name: str) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
     values = [item.strip() for item in raw.split(",")]
@@ -130,7 +139,10 @@ def _env_branding_asset_reference(name: str) -> str | None:
 
 
 def _env_workflow_event_machine_tokens() -> tuple["WorkflowEventMachineToken", ...]:
-    values = _env_csv("EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS")
+    values = _env_csv_with_legacy(
+        "EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS",
+        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
+    )
     records: list[WorkflowEventMachineToken] = []
     seen_tokens: set[str] = set()
 
@@ -368,17 +380,28 @@ class AdminWebConfig:
             auth_mode=auth_mode,
             username=username,
             password=password,
-            session_secret=os.environ.get("EVANDER_ADMIN_WEB_SESSION_SECRET", "").strip()
+            session_secret=_env_text_with_legacy(
+                "EVANDER_ADMIN_WEB_SESSION_SECRET",
+                "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET",
+                "",
+            )
             or secrets.token_urlsafe(32),
             session_ttl_seconds=max(
                 60,
                 int(
-                    os.environ.get("EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS", "43200").strip()
-                    or "43200"
+                    _env_text_with_legacy(
+                        "EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS",
+                        "AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS",
+                        "43200",
+                    )
                 ),
             ),
             cookie_name="evander_admin_session",
-            cookie_secure=_env_flag("EVANDER_ADMIN_WEB_COOKIE_SECURE", default=False),
+            cookie_secure=_env_flag_with_legacy(
+                "EVANDER_ADMIN_WEB_COOKIE_SECURE",
+                "AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE",
+                default=False,
+            ),
             workflow_event_machine_tokens=_env_workflow_event_machine_tokens(),
             azure_sso=azure_sso,
             branding=AdminWebBrandingConfig.from_env(),

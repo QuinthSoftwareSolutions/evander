@@ -352,6 +352,46 @@ build_remote_tracking_refspecs() {
   printf '%s\n' "${refspecs[@]}"
 }
 
+repo_config_value_with_legacy() {
+  local repo_real="$1"
+  local current_key="$2"
+  local legacy_key="$3"
+  local value
+  value="$(git --git-dir="${repo_real}" config --get "${current_key}" || true)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+
+  value="$(git --git-dir="${repo_real}" config --get "${legacy_key}" || true)"
+  if [[ -n "${value}" ]]; then
+    git --git-dir="${repo_real}" config "${current_key}" "${value}"
+  fi
+  printf '%s\n' "${value}"
+}
+
+repo_config_values_with_legacy() {
+  local repo_real="$1"
+  local current_key="$2"
+  local legacy_key="$3"
+  local -a values=()
+  mapfile -t values < <(git --git-dir="${repo_real}" config --get-all "${current_key}" || true)
+  if (( ${#values[@]} > 0 )); then
+    printf '%s\n' "${values[@]}"
+    return 0
+  fi
+
+  mapfile -t values < <(git --git-dir="${repo_real}" config --get-all "${legacy_key}" || true)
+  if (( ${#values[@]} > 0 )); then
+    git --git-dir="${repo_real}" config --unset-all "${current_key}" >/dev/null 2>&1 || true
+    local value
+    for value in "${values[@]}"; do
+      git --git-dir="${repo_real}" config --add "${current_key}" "${value}"
+    done
+    printf '%s\n' "${values[@]}"
+  fi
+}
+
 auto_refresh_mirror() {
   local repo_real="$1"
   local original_command="$2"
@@ -373,23 +413,44 @@ auto_refresh_mirror() {
       ;;
   esac
 
-  mirror_source="$(git --git-dir="${repo_real}" config --get evander.mirrorSource || true)"
+  mirror_source="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.mirrorSource agent-sandbox.mirrorSource
+  )"
   if [[ -z "${mirror_source}" ]]; then
     return 0
   fi
 
-  mirror_auto_refresh="$(git --git-dir="${repo_real}" config --get evander.mirrorAutoRefresh || true)"
+  mirror_auto_refresh="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.mirrorAutoRefresh agent-sandbox.mirrorAutoRefresh
+  )"
   case "${mirror_auto_refresh}" in
     0|false|no|off)
       return 0
       ;;
   esac
 
-  mirror_remote_name="$(git --git-dir="${repo_real}" config --get evander.mirrorRemoteName || true)"
-  mirror_sync_remote="$(git --git-dir="${repo_real}" config --get evander.mirrorSyncRemote || true)"
-  mirror_force_local="$(git --git-dir="${repo_real}" config --get evander.mirrorForceLocal || true)"
-  stored_base_branch="$(git --git-dir="${repo_real}" config --get evander.baseBranch || true)"
-  mapfile -t mirror_refspecs < <(git --git-dir="${repo_real}" config --get-all evander.mirrorRefspec || true)
+  mirror_remote_name="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.mirrorRemoteName agent-sandbox.mirrorRemoteName
+  )"
+  mirror_sync_remote="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.mirrorSyncRemote agent-sandbox.mirrorSyncRemote
+  )"
+  mirror_force_local="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.mirrorForceLocal agent-sandbox.mirrorForceLocal
+  )"
+  stored_base_branch="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.baseBranch agent-sandbox.baseBranch
+  )"
+  mapfile -t mirror_refspecs < <(
+    repo_config_values_with_legacy \
+      "${repo_real}" evander.mirrorRefspec agent-sandbox.mirrorRefspec
+  )
   preferred_base_branch="$(preferred_branch_from_refspecs "${mirror_refspecs[@]}")"
   if [[ -z "${preferred_base_branch}" ]]; then
     preferred_base_branch="${stored_base_branch}"

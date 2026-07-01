@@ -50,6 +50,27 @@ def test_setup_checklist_requires_provider_secret_without_storing_value(tmp_path
     assert "OPENAI_API_KEY" in (tmp_path / "local-secrets.env").read_text(encoding="utf-8")
 
 
+def test_setup_secret_status_uses_sudo_aware_read_for_default_secret_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = "/etc/evander/local-secrets.env"
+    state.ai_providers = ["openai"]
+    reads: list[tuple[Path, bool]] = []
+
+    def fake_read_env(path: Path, *, root_owned: bool) -> dict[str, str]:
+        reads.append((path, root_owned))
+        return {"OPENAI_API_KEY": "sk-existing"}
+
+    monkeypatch.setattr("evander.setup.engine._read_env_for_update", fake_read_env)
+
+    status = manager.secret_status(state)
+
+    assert reads == [(Path("/etc/evander/local-secrets.env"), True)]
+    assert status["required"]["openai"]["set"] is True
+
+
 def test_setup_admin_web_can_use_no_auth_without_password(tmp_path: Path) -> None:
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -280,6 +301,9 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "evander-worker-daemon --host 127.0.0.1 --port 11888" in unit
     assert "--runtime-dir /var/lib/agent-worker/runtime" in unit
     assert "--worker-root /var/lib/agent-worker" in unit
+    assert "--container-user " in unit
+    assert f"--allowed-git-source-prefix ssh://evander-git-host{ROOT / 'git-remotes'}/" in unit
+    assert "--git-ssh-source-dir /home/operator/.ssh" in unit
     assert "Requires=docker.service" in unit
 
 

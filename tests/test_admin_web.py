@@ -8224,6 +8224,26 @@ def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
     assert "github-secret" not in json.dumps(github_published.json())
 
 
+def test_workflow_event_api_accepts_legacy_machine_tokens(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS", raising=False)
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
+        "legacy-publisher:legacy-secret",
+    )
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    published = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": "Bearer legacy-secret"},
+        json={"event_type": "legacy-published", "payload": {}},
+    )
+
+    assert published.status_code == 202
+    assert published.json()["source"]["source_name"] == "legacy-publisher"
+
+
 @pytest.mark.parametrize(
     "configured_tokens, expected_error",
     [
@@ -8626,6 +8646,24 @@ def test_admin_web_config_preserves_legacy_local_password_env(monkeypatch) -> No
     assert config.username == "legacy-operator"
     assert config.password == "legacy-secret"
     assert config.auth_required is True
+
+
+def test_admin_web_config_preserves_legacy_session_settings(monkeypatch) -> None:
+    for name in (
+        "EVANDER_ADMIN_WEB_SESSION_SECRET",
+        "EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS",
+        "EVANDER_ADMIN_WEB_COOKIE_SECURE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "legacy-session-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS", "7200")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE", "true")
+
+    config = AdminWebConfig.from_env()
+
+    assert config.session_secret == "legacy-session-secret"
+    assert config.session_ttl_seconds == 7200
+    assert config.cookie_secure is True
 
 
 def test_admin_web_config_preserves_legacy_azure_sso_env(monkeypatch) -> None:

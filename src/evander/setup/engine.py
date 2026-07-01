@@ -200,7 +200,12 @@ def _read_env_for_update(path: Path, *, root_owned: bool) -> dict[str, str]:
     )
     if result.returncode == 0:
         return _parse_env_content(result.stdout)
-    if "No such file" in result.stderr or "cannot open" in result.stderr:
+    if (
+        "No such file" in result.stderr
+        or "cannot open" in result.stderr
+        or "a terminal is required" in result.stderr
+        or "a password is required" in result.stderr
+    ):
         return {}
     result.check_returncode()
     return {}
@@ -299,7 +304,7 @@ class SetupManager:
 
     def secret_status(self, state: SetupState) -> dict[str, object]:
         path = self.secret_file_path(state)
-        values = _parse_env_file(path)
+        values = _read_env_for_update(path, root_owned=self._secret_file_requires_root(state))
         selected = set(state.ai_providers)
         required = {
             provider: PROVIDER_ENV_VARS[provider]
@@ -959,6 +964,11 @@ class SetupManager:
         self, state: SetupState, *, run_user: str | None = None
     ) -> str:
         run_user = run_user or _setup_run_user()
+        container_user = _container_user_for_run_user(run_user)
+        git_root = _local_worker_git_root(self.project_dir)
+        git_ssh_alias = os.environ.get("EVANDER_GIT_SSH_ALIAS", "").strip() or "evander-git-host"
+        git_ssh_source_dir = _home_for_user(run_user) / ".ssh"
+        allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
         return "\n".join(
             [
                 "[Unit]",
@@ -979,7 +989,10 @@ class SetupManager:
                     f"--port {LOCAL_CONTAINER_WORKER_PORT} "
                     f"--runtime-dir {LOCAL_CONTAINER_WORKER_RUNTIME_DIR} "
                     f"--worker-root {LOCAL_CONTAINER_WORKER_ROOT} "
-                    "--sandbox-profile default"
+                    "--sandbox-profile default "
+                    f"--container-user {container_user} "
+                    f"--allowed-git-source-prefix {allowed_git_source_prefix} "
+                    f"--git-ssh-source-dir {git_ssh_source_dir}"
                 ),
                 "Restart=on-failure",
                 "RestartSec=5",
@@ -1110,6 +1123,48 @@ def _primary_group_for_user(user: str) -> str:
     )
     group = result.stdout.strip() if result.returncode == 0 else ""
     return group or user
+
+
+def _id_value_for_user(flag: str, user: str) -> str:
+    result = subprocess.run(
+        ["id", flag, user],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _container_user_for_run_user(user: str) -> str:
+    uid = _id_value_for_user("-u", user)
+    gid = _id_value_for_user("-g", user)
+    if uid and gid:
+        return f"{uid}:{gid}"
+    return user
+
+
+def _home_for_user(user: str) -> Path:
+    result = subprocess.run(
+        ["getent", "passwd", user],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        fields = result.stdout.strip().split(":")
+        if len(fields) >= 6 and fields[5]:
+            return Path(fields[5])
+    if user == (getpass.getuser() or ""):
+        return Path.home()
+    return Path("/home") / user
+
+
+def _local_worker_git_root(project_dir: Path) -> Path:
+    configured = os.environ.get("EVANDER_GIT_ROOT", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else (project_dir / path).resolve(strict=False)
+    return project_dir / "git-remotes"
 
 
 def setup_doctor_payload(
