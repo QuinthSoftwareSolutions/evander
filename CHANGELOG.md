@@ -25,6 +25,9 @@
   Web session and workflow-event token env vars, legacy Git mirror metadata,
   sudo-owned setup secret files, and same-host container worker launch flags.
 
+- Fixed the Admin Web frontend-not-built fallback page so it preserves the
+  injected branding bootstrap payload.
+
 - Fixed Evander rename upgrade handling for legacy nftables firewall tables and
   libvirt networks, and omitted `state:all` from GitHub issue search queries.
 

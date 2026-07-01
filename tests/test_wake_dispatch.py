@@ -22,6 +22,22 @@ from evander.models import (
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
+class _FrozenDateTime(datetime):
+    frozen: datetime = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        if tz is None:
+            return cls.frozen
+        return cls.frozen.astimezone(tz)
+
+
+@pytest.fixture(autouse=True)
+def _freeze_wake_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FrozenDateTime.frozen = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr("evander.messaging.wake_store.datetime", _FrozenDateTime)
+
+
 class _ContainerBackendStub:
     def __init__(
         self,

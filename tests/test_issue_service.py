@@ -1642,10 +1642,10 @@ def test_delete_remote_issue_forwards_to_adapter(monkeypatch: pytest.MonkeyPatch
     assert result == {"provider": "azure_devops", "deleted": True}
 
 
-def test_delete_remote_issue_rejects_unsupported_provider() -> None:
+def test_delete_remote_issue_rejects_unsupported_github_delete_operation() -> None:
     service = IssueService(config_resolver=object())
 
-    with pytest.raises(ValueError, match="Unsupported issue provider: github"):
+    with pytest.raises(ValueError, match="GitHub issue deletion is not supported"):
         service.delete_remote_issue(
             provider="github",
             remote_issue_id="101",

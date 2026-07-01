@@ -42,7 +42,10 @@ def _make_service(
     return WorkflowConfigAdminService(
         WorkflowConfigAdminDependencies(
             project_dir=tmp_path,
-            config=SimpleNamespace(model_dump=lambda **_kwargs: {}),
+            config=SimpleNamespace(
+                runtime_dir=tmp_path / "runtime",
+                model_dump=lambda **_kwargs: {},
+            ),
             skill_library=EmptySkillLibrary(),
             directory_admin=SimpleNamespace(),
             admin_config_mutation_lock=admin_config_mutation_lock or _null_lock,

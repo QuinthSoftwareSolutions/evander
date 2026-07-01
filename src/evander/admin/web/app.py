@@ -89,13 +89,21 @@ def _dist_dir() -> Path:
     return admin_frontend_dist_dir(Path(__file__).resolve().parents[4])
 
 
-def _fallback_html(dist_dir: Path, *, page_title: str) -> str:
+def _fallback_html(
+    dist_dir: Path, *, page_title: str, branding_payload: dict[str, object]
+) -> str:
+    bootstrap_script = (
+        "<script>"
+        f"window.__ADMIN_WEB_BRANDING__={_script_json(branding_payload)};"
+        "</script>"
+    )
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{escape(page_title)}</title>
+    {bootstrap_script}
     <style>
       body {{
         font-family: ui-sans-serif, system-ui, sans-serif;
@@ -145,7 +153,11 @@ def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
     index_path = dist_dir / "index.html"
     page_title = str(branding_payload.get("page_title") or "")
     if not admin_frontend_assets_ready(dist_dir):
-        return _fallback_html(dist_dir, page_title=page_title)
+        return _fallback_html(
+            dist_dir,
+            page_title=page_title,
+            branding_payload=branding_payload,
+        )
     html = index_path.read_text(encoding="utf-8")
     title = f"<title>{escape(page_title)}</title>"
     bootstrap_script = (

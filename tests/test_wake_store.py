@@ -29,6 +29,12 @@ class _FrozenDateTime(datetime):
         return cls.frozen.astimezone(tz)
 
 
+@pytest.fixture(autouse=True)
+def _freeze_wake_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FrozenDateTime.frozen = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr("evander.messaging.wake_store.datetime", _FrozenDateTime)
+
+
 def test_wake_request_store_resolves_json_path_to_sibling_db_and_creates_schema(
     tmp_path: Path,
 ) -> None:
