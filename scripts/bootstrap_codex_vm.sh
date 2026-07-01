@@ -279,15 +279,20 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
+if [ -f /etc/agent-sandbox/session.env ]; then
+  # shellcheck disable=SC1091
+  . /etc/agent-sandbox/session.env
+fi
 if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
   . /etc/evander/session.env
 fi
-CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
-CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
-if [ -n "${EVANDER_SESSION_ID:-}" ]; then
-  CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${EVANDER_SESSION_ID}"
-  CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"
+CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}}"
+CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
+CODEX_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"
+if [ -n "${CODEX_SESSION_ID:-}" ]; then
+  CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${CODEX_SESSION_ID}"
+  CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${CODEX_SESSION_ID}"
 fi
 for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do
 cat > "${CODEX_CONFIG_PATH}" <<CONFIG
@@ -345,6 +350,7 @@ def repair_missing_session_env_fi(profile_lines):
         out.append(line)
         if stripped in {
             "if [ -f /etc/evander/session.env ]; then",
+            "if [ -f /etc/agent-sandbox/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_session_env = True
@@ -366,6 +372,11 @@ target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY
   if ! grep -q 'relay-placeholder' "${target}" 2>/dev/null; then
     cat >> "${target}" <<PROFILE
+if [ -f /etc/agent-sandbox/session.env ]; then
+  set -a
+  . /etc/agent-sandbox/session.env
+  set +a
+fi
 if [ -f /etc/evander/session.env ]; then
   set -a
   . /etc/evander/session.env

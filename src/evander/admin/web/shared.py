@@ -64,8 +64,27 @@ def _env_text(name: str, default: str) -> str:
     return raw.strip() or default
 
 
+def _env_text_with_legacy(name: str, legacy_name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        raw = os.environ.get(legacy_name)
+    if raw is None:
+        return default
+    return raw.strip() or default
+
+
 def _env_optional_text(name: str) -> str | None:
     raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip()
+    return normalized or None
+
+
+def _env_optional_text_with_legacy(name: str, legacy_name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        raw = os.environ.get(legacy_name)
     if raw is None:
         return None
     normalized = raw.strip()
@@ -277,9 +296,22 @@ class AdminWebConfig:
 
     @classmethod
     def from_env(cls) -> "AdminWebConfig":
-        username = os.environ.get("EVANDER_ADMIN_WEB_USERNAME", "admin").strip() or "admin"
-        password = os.environ.get("EVANDER_ADMIN_WEB_PASSWORD", "").strip() or None
-        raw_mode = os.environ.get("EVANDER_ADMIN_WEB_AUTH_MODE", "").strip().lower()
+        username = _env_text_with_legacy(
+            "EVANDER_ADMIN_WEB_USERNAME",
+            "AGENT_SANDBOX_ADMIN_WEB_USERNAME",
+            "admin",
+        )
+        password = _env_optional_text_with_legacy(
+            "EVANDER_ADMIN_WEB_PASSWORD",
+            "AGENT_SANDBOX_ADMIN_WEB_PASSWORD",
+        )
+        raw_mode = (
+            _env_optional_text_with_legacy(
+                "EVANDER_ADMIN_WEB_AUTH_MODE",
+                "AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE",
+            )
+            or ""
+        ).lower()
         if raw_mode:
             if raw_mode not in {"none", "local_password", "azure_sso"}:
                 raise ValueError(

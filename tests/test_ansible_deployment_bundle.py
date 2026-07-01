@@ -737,7 +737,9 @@ def test_worker_apt_proxy_runs_before_host_prereqs_and_can_be_disabled() -> None
     assert "ansible/roles/worker_apt_proxy" in worker_defaults
 
     assert "Remove managed worker apt proxy when disabled" in tasks
+    assert "/etc/apt/apt.conf.d/01agent-sandbox-proxy" in tasks
     assert "state: absent" in tasks
+    assert "loop:" in tasks
     assert "when: not (evander_worker_use_apt_proxy | bool)" in tasks
     assert "Render worker apt proxy config" in tasks
     assert 'Acquire::http::Proxy "{{ evander_worker_apt_proxy_url }}";' in template

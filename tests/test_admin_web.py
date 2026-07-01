@@ -8609,6 +8609,22 @@ def test_admin_web_config_maps_password_only_deployments_to_local_password(monke
     assert config.auth_required is True
 
 
+def test_admin_web_config_preserves_legacy_local_password_env(monkeypatch) -> None:
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_USERNAME", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "legacy-operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "legacy-secret")
+
+    config = AdminWebConfig.from_env()
+
+    assert config.auth_mode == "local_password"
+    assert config.username == "legacy-operator"
+    assert config.password == "legacy-secret"
+    assert config.auth_required is True
+
+
 def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:
     monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", raising=False)

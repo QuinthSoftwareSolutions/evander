@@ -1,14 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
+from evander.addons import (
+    AddonLoaderConfig,
+    AddonRegistration,
+    DiscoveredAddon,
+    LoadedAddonCatalog,
+)
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.services.addon_admin_service import (
+    AddonAdminDependencies,
+    AddonAdminService,
+)
 from evander.admin.web.app import create_app
+from evander.host_config import HostConfig, save_host_config
 
 
 def _write_config(tmp_path: Path, *, module_name: str) -> Path:
@@ -143,6 +157,115 @@ def test_admin_web_addon_management_disables_addon_after_restart(
         (tmp_path / "config" / "trigger-orchestrator" / "config.json").read_text()
     )
     assert trigger_config["addon_loader"]["enabled_addon_ids"] == []
+
+
+class _NonReentrantWorkflowConfigAdmin:
+    def __init__(self, config_path: Path) -> None:
+        self.config_path = config_path
+        self.config = {"addon_loader": {"enabled_addon_ids": ["team-addon"]}}
+        self.lock_depth = 0
+        self.unlocked_writes: list[dict[str, object]] = []
+
+    @contextmanager
+    def admin_config_mutation_lock(self):
+        if self.lock_depth:
+            raise AssertionError("admin config mutation lock was re-entered")
+        self.lock_depth += 1
+        try:
+            yield
+        finally:
+            self.lock_depth -= 1
+
+    def read_worker_global_config(self, worker_id: str) -> SimpleNamespace:
+        assert worker_id == "trigger-orchestrator"
+        return SimpleNamespace(
+            worker_id=worker_id,
+            path=str(self.config_path),
+            exists=True,
+            config=dict(self.config),
+            revision=self.stable_json_revision(self.config),
+        )
+
+    def write_worker_global_config(
+        self,
+        worker_id: str,
+        payload: dict[str, object],
+        *,
+        expected_revision: str | None = None,
+    ) -> None:
+        del worker_id, payload, expected_revision
+        raise AssertionError("add-on save should not relock worker config writes")
+
+    def write_worker_global_config_unlocked(
+        self, worker_id: str, payload: dict[str, object]
+    ) -> SimpleNamespace:
+        assert worker_id == "trigger-orchestrator"
+        assert self.lock_depth == 1
+        self.config = dict(payload)
+        self.unlocked_writes.append(dict(payload))
+        return SimpleNamespace(
+            worker_id=worker_id,
+            path=str(self.config_path),
+            config=dict(payload),
+            revision=self.stable_json_revision(payload),
+        )
+
+    def stable_json_revision(self, payload: object) -> str:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+def test_addon_management_uses_unlocked_worker_config_write_inside_outer_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registration = AddonRegistration(addon_id="team-addon", display_name="Team Add-on")
+    monkeypatch.setattr(
+        "evander.admin.services.addon_admin_service.discover_addons",
+        lambda _loader: [
+            DiscoveredAddon(
+                source="admin_addon",
+                source_type="module",
+                registration=registration,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.addon_admin_service.load_addons",
+        lambda _loader: LoadedAddonCatalog(
+            registrations=(registration,),
+            loaded_addons=("team-addon",),
+        ),
+    )
+    runtime_dir = tmp_path / "runtime"
+    save_host_config(
+        HostConfig(
+            runtime_dir=runtime_dir,
+            addon_loader=AddonLoaderConfig(
+                modules=["admin_addon"],
+                enabled_addon_ids=["team-addon"],
+            ),
+        )
+    )
+    workflow_config_admin = _NonReentrantWorkflowConfigAdmin(
+        tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    )
+    service = AddonAdminService(
+        AddonAdminDependencies(
+            config=SimpleNamespace(
+                runtime_dir=runtime_dir,
+                addon_loader=AddonLoaderConfig(modules=["admin_addon"]),
+            ),
+            project_dir=tmp_path,
+            workflow_config_admin=workflow_config_admin,
+        )
+    )
+
+    state = service.read_addon_state()
+    saved = service.update_enabled_addons([], expected_revision=state["revision"])
+
+    assert workflow_config_admin.unlocked_writes
+    assert workflow_config_admin.config["addon_loader"]["enabled_addon_ids"] == []
+    assert saved["explicit_enabled_addon_ids"] == []
 
 
 def test_admin_web_addon_api_routes_follow_admin_auth(

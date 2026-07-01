@@ -54,13 +54,6 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'model_reasoning_effort = "high"' in script
     assert 'personality = "pragmatic"' in script
     assert 'web_search = "disabled"' in script
-    assert (
-        'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"'
-        in script
-    )
-    assert (
-        'CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"' in script
-    )
     assert 'model_provider = "evander_openai_relay"' in script
     assert "[model_providers.evander_openai_relay]" in script
     assert 'base_url = "${CODEX_LLM_BASE_URL}"' in script
@@ -81,14 +74,24 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "deployment-gpt-5-4" not in script
     assert "enabled = true" in script
     assert "if [ -f ~/.agent/config.env ]; then" in script
+    assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script
     assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script
-    assert 'if [ -n "${EVANDER_SESSION_ID:-}" ]; then' in script
     assert (
-        'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${EVANDER_SESSION_ID}"' in script
+        'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}}"'
+        in script
     )
     assert (
-        'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"' in script
+        'CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"'
+        in script
+    )
+    assert 'CODEX_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
+    assert 'if [ -n "${CODEX_SESSION_ID:-}" ]; then' in script
+    assert (
+        'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${CODEX_SESSION_ID}"' in script
+    )
+    assert (
+        'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${CODEX_SESSION_ID}"' in script
     )
     assert "if line.strip() not in {" in script
     assert "repair_missing_session_env_fi" in script

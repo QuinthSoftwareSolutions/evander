@@ -194,10 +194,9 @@ class AddonAdminService:
             )
             next_worker_config = dict(worker_payload.config)
             next_worker_config["addon_loader"] = next_loader.model_dump(mode="json")
-            self.workflow_config_admin.write_worker_global_config(
+            self.workflow_config_admin.write_worker_global_config_unlocked(
                 "trigger-orchestrator",
                 next_worker_config,
-                expected_revision=worker_payload.revision,
             )
             save_host_config(host_config.model_copy(update={"addon_loader": next_loader}))
 

@@ -9,6 +9,10 @@
   enablement, loaded/pending status, workflow-reference warnings, and aligned
   host/trigger add-on loader config writes.
 
+- Fixed Evander rename upgrade handling for add-on enablement saves, legacy
+  Admin Web auth env files, legacy VM session env files, and worker apt proxy
+  cleanup.
+
 - Renamed the operational project identity to Evander: the Python package is
   now `evander`, console scripts and systemd units use the `evander-*` prefix,
   environment variables use `EVANDER_*`, and guest state/config paths now use

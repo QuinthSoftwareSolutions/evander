@@ -198,6 +198,11 @@ class WorkflowConfigAdminService:
             worker_id, payload, expected_revision=expected_revision
         )
 
+    def write_worker_global_config_unlocked(
+        self, worker_id: str, payload: dict[str, object]
+    ) -> WorkerGlobalConfigWritePayload:
+        return self._write_worker_global_config_unlocked(worker_id, payload)
+
     def read_workflow_editor_document(
         self, workflow_pack: str | None = None
     ) -> WorkflowEditorDocumentPayload:
