@@ -7777,38 +7777,41 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in response.json()["permissions"]
     assert response.json()["permissions"] == response.json()["effective_permissions"]
-    assert response.json()["branding"]["page_title"] == "evander Control Plane Admin"
-    assert response.json()["branding"]["header_title"] == "evander Control Plane"
+    assert response.json()["branding"]["page_title"] == "Evander Admin"
+    assert response.json()["branding"]["header_title"] == "EVANDER"
 
 
 def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/admin/branding")
+    logo = client.get("/api/admin/branding/assets/evander-logo-light.png")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload == {
-        "page_title": "evander Control Plane Admin",
-        "header_title": "evander Control Plane",
-        "header_title_visible": True,
-        "header_logo_size": "compact",
+        "page_title": "Evander Admin",
+        "header_title": "EVANDER",
+        "header_title_visible": False,
+        "header_logo_size": "wordmark",
         "header_logo": {
-            "light_url": None,
-            "dark_url": None,
-            "alt": "evander Control Plane logo",
+            "light_url": "/api/admin/branding/assets/evander-logo-light.png",
+            "dark_url": "/api/admin/branding/assets/evander-logo-dark.png",
+            "alt": "Evander Logo",
         },
         "product_logo": {
-            "light_url": None,
-            "dark_url": None,
-            "alt": "evander Control Plane logo",
+            "light_url": "/api/admin/branding/assets/evander-logo-light.png",
+            "dark_url": "/api/admin/branding/assets/evander-logo-dark.png",
+            "alt": "Evander Logo",
         },
         "company_logo": {
-            "light_url": None,
-            "dark_url": None,
-            "alt": "Company logo",
+            "light_url": "/api/admin/branding/assets/qss-light.png",
+            "dark_url": "/api/admin/branding/assets/qss-dark.png",
+            "alt": "Quinth Software Solutions",
         },
     }
+    assert logo.status_code == 200
+    assert logo.content.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_admin_web_branding_reads_env_and_serves_assets_without_login(
@@ -7859,7 +7862,7 @@ def test_admin_web_branding_reads_env_and_serves_assets_without_login(
     assert payload["company_logo"] == {
         "light_url": "https://assets.example.test/company-dark.png",
         "dark_url": "https://assets.example.test/company-dark.png",
-        "alt": "Company logo",
+        "alt": "Quinth Software Solutions",
     }
     assert "<title>Factory Alpha Admin</title>" in index.text
     assert "window.__ADMIN_WEB_BRANDING__=" in index.text
@@ -8623,6 +8626,46 @@ def test_admin_web_config_preserves_legacy_local_password_env(monkeypatch) -> No
     assert config.username == "legacy-operator"
     assert config.password == "legacy-secret"
     assert config.auth_required is True
+
+
+def test_admin_web_config_preserves_legacy_azure_sso_env(monkeypatch) -> None:
+    for name in (
+        "EVANDER_ADMIN_WEB_AUTH_MODE",
+        "EVANDER_ADMIN_WEB_AZURE_TENANT_ID",
+        "EVANDER_ADMIN_WEB_AZURE_CLIENT_ID",
+        "EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET",
+        "EVANDER_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
+        "EVANDER_ADMIN_WEB_PUBLIC_BASE_URL",
+        "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT",
+        "EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "legacy-tenant")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "legacy-client")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "legacy-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", "https://admin.example.test")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/workflow")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS",
+        "Operator@Example.Test,viewer@example.test",
+    )
+
+    config = AdminWebConfig.from_env()
+
+    assert config.auth_mode == "azure_sso"
+    assert config.azure_sso is not None
+    assert config.azure_sso.tenant_id == "legacy-tenant"
+    assert config.azure_sso.client_id == "legacy-client"
+    assert config.azure_sso.client_secret == "legacy-secret"
+    assert config.azure_sso.redirect_uri == (
+        "https://admin.example.test/api/auth/azure-sso/callback"
+    )
+    assert config.azure_sso.post_login_redirect == "/workflow"
+    assert config.azure_sso.bootstrap_users == frozenset(
+        {"operator@example.test", "viewer@example.test"}
+    )
 
 
 def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:

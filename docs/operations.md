@@ -19,11 +19,11 @@ sequence with Ansible, including the dedicated container-worker VM playbook, see
 
 If Admin Web is part of the deployed surface, treat `evander-admin-web` as a managed host
 service and configure `config/admin-web.env` before exposing it beyond localhost.
-Use the Admin Web branding variables in that env file when a deployment needs a different browser
-title, shell header title, or logo set; relative logo paths can be served from
-`EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied `/api/admin/branding/assets/...`
-route. For full wordmark logos, set `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE=wordmark` and
-`EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE=false` to avoid duplicating the title in the header.
+By default, Admin Web uses the bundled Evander and Quinth Software Solutions branding in
+`frontend/workflow-editor/branding`. Use the Admin Web branding variables in that env file when a
+deployment needs a different browser title, shell header title, or logo set; relative logo paths
+can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
+`/api/admin/branding/assets/...` route.
 
 ## Bootstrap Flow
 

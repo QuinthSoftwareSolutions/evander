@@ -364,6 +364,7 @@ filtered = [
     if line.strip() not in {
         'export PATH="$HOME/bin:$PATH"',
         'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"',
+        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
     }
 ]
 filtered.append('export PATH="$HOME/bin:$PATH"')

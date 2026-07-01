@@ -475,8 +475,14 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
 
     assert "resolve_primary_agent_paths() {" in script_text
     assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
-    assert 'PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
-    assert 'STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
+    assert 'LEGACY_LOG_DIR="${HOME}/.agent-sandbox"' in script_text
+    assert (
+        'RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"'
+        in script_text
+    )
+    assert 'STATE_LOG_DIR="${LEGACY_LOG_DIR}"' in script_text
+    assert 'PID_FILE="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
+    assert 'STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
     assert (
         'AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"'
         in script_text

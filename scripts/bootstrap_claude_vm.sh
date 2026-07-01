@@ -225,16 +225,21 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
+if [ -f /etc/agent-sandbox/session.env ]; then
+  # shellcheck disable=SC1091
+  . /etc/agent-sandbox/session.env
+fi
 if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
   . /etc/evander/session.env
 fi
 
-CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}"
-CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
-if [ -n "${EVANDER_SESSION_ID:-}" ]; then
-  CLAUDE_ANTHROPIC_BASE_URL="${CLAUDE_ANTHROPIC_BASE_URL%/}/session/${EVANDER_SESSION_ID}"
-  CLAUDE_GATEWAY_URL="${CLAUDE_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"
+CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-${AGENT_SANDBOX_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}}"
+CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}}"
+CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"
+if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+  CLAUDE_ANTHROPIC_BASE_URL="${CLAUDE_ANTHROPIC_BASE_URL%/}/session/${CLAUDE_SESSION_ID}"
+  CLAUDE_GATEWAY_URL="${CLAUDE_GATEWAY_URL}?session_id=${CLAUDE_SESSION_ID}"
 fi
 
 cat > ~/.claude/settings.json <<CONFIG
@@ -289,6 +294,7 @@ def repair_missing_profile_fi(profile_lines):
         out.append(line)
         if stripped in {
             "if [ -f /etc/evander/session.env ]; then",
+            "if [ -f /etc/agent-sandbox/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_managed_block = True

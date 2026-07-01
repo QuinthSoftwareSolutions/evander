@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import companyLogoDark from "../altlogo-dark.png";
-import companyLogoLight from "../altlogo-light.png";
-import logoDark from "../logo-dark.png";
-import logoLight from "../logo-light.png";
+import companyLogoDark from "../branding/qss-dark.png";
+import companyLogoLight from "../branding/qss-light.png";
+import logoDark from "../branding/evander-logo-dark.png";
+import logoLight from "../branding/evander-logo-light.png";
 import WorkflowEditorApp from "./App";
 import {
   EMPTY_ADMIN_BRANDING,

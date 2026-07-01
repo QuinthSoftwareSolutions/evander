@@ -2,6 +2,10 @@
 
 ## 2026-06-30 - Refactoring, renaming and UI improvements
 
+- Changed the default Admin Web title and login/shell branding to the bundled
+  Evander and Quinth Software Solutions assets under
+  `frontend/workflow-editor/branding`.
+
 - Replaced hand-crafted Admin Web action icons with Lucide icons and made edit
   and delete actions use canonical shared glyphs across the workflow editor.
 
@@ -12,6 +16,10 @@
 - Fixed Evander rename upgrade handling for add-on enablement saves, legacy
   Admin Web auth env files, legacy VM session env files, and worker apt proxy
   cleanup.
+
+- Fixed Evander rename upgrade handling for legacy Azure SSO env files, Claude
+  and Copilot guest session fallbacks, legacy agent resume state, and stale
+  Codex profile `CODEX_HOME` exports.
 
 - Fixed Evander rename upgrade handling for legacy nftables firewall tables and
   libvirt networks, and omitted `state:all` from GitHub issue search queries.

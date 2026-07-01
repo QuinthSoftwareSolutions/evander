@@ -43,6 +43,9 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "prepare_guest_home" in script
     assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"' in script
     assert (
+        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"' in script
+    )
+    assert (
         'for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do'
         in script
     )
@@ -121,21 +124,26 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert "cat > ~/bin/gh <<SHIM" in script
     assert 'COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"' in script
     assert (
-        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${EVANDER_SESSION_ID:-}" <<\'PY\'' in script
+        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${session_id}" <<\'PY\'' in script
     )
+    assert 'if [ -f /etc/agent-sandbox/session.env ]; then' in script
+    assert 'if [ -f /etc/evander/session.env ]; then' in script
     assert '"\\${COPILOT_HOST_AUTH_URL}"' not in script
+    assert 'session_id="\\${AGENT_SANDBOX_SESSION_ID:-}"' in script
+    assert 'session_id="${COPILOT_SESSION_ID}"' in script
     assert '"X-Evander-Session-Id": session_id' in script
     assert "gh auth token" in script
     assert '"mcpServers": {' in script
     assert '"evander": {' in script
     assert '"type": "http"' in script
     assert (
-        'COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"'
+        'COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"'
         in script
     )
-    assert 'if [ -n "${EVANDER_SESSION_ID:-}" ]; then' in script
+    assert 'COPILOT_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
+    assert 'if [ -n "${COPILOT_SESSION_ID:-}" ]; then' in script
     assert (
-        'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${EVANDER_SESSION_ID}"'
+        'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${COPILOT_SESSION_ID}"'
         in script
     )
     assert 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"' in script
@@ -197,6 +205,17 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert 'chown -R "${VM_USER}:${agent_group}" "${agent_home}"' in script
     assert "prepare_guest_home" in script
     assert 'guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}"' in script
+    assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
+    assert "if [ -f /etc/evander/session.env ]; then" in script
+    assert (
+        'CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-${AGENT_SANDBOX_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}}"'
+        in script
+    )
+    assert (
+        'CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}}"'
+        in script
+    )
+    assert 'CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
     assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" in script
     assert "DISABLE_TELEMETRY" in script
     assert '"attribution": {' in script

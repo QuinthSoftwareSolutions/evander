@@ -40,8 +40,19 @@ WORKFLOW_EVENT_API_TOKEN_KIND = "workflow_event_api"
 WORKFLOW_EVENT_API_ALLOWED_PREFIX = EXTERNAL_WORKFLOW_EVENT_PREFIX
 WORKFLOW_EVENT_API_TOKEN_TTL_SECONDS = 3600
 ADMIN_WEB_BRANDING_ASSET_BASE_PATH = "/api/admin/branding/assets"
-DEFAULT_ADMIN_WEB_PAGE_TITLE = "evander Control Plane Admin"
-DEFAULT_ADMIN_WEB_HEADER_TITLE = "evander Control Plane"
+DEFAULT_ADMIN_WEB_PAGE_TITLE = "Evander Admin"
+DEFAULT_ADMIN_WEB_HEADER_TITLE = "EVANDER"
+DEFAULT_ADMIN_WEB_HEADER_TITLE_VISIBLE = False
+DEFAULT_ADMIN_WEB_HEADER_LOGO_SIZE: AdminWebHeaderLogoSize = "wordmark"
+DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR = (
+    Path(__file__).resolve().parents[4] / "frontend" / "workflow-editor" / "branding"
+)
+DEFAULT_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL = "evander-logo-light.png"
+DEFAULT_ADMIN_WEB_PRODUCT_LOGO_DARK_URL = "evander-logo-dark.png"
+DEFAULT_ADMIN_WEB_PRODUCT_LOGO_ALT = "Evander Logo"
+DEFAULT_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL = "qss-light.png"
+DEFAULT_ADMIN_WEB_COMPANY_LOGO_DARK_URL = "qss-dark.png"
+DEFAULT_ADMIN_WEB_COMPANY_LOGO_ALT = "Quinth Software Solutions"
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -53,6 +64,14 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def _env_csv(name: str) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
+    values = [item.strip() for item in raw.split(",")]
+    return tuple(item for item in values if item)
+
+
+def _env_csv_with_legacy(name: str, legacy_name: str) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        raw = os.environ.get(legacy_name, "")
     values = [item.strip() for item in raw.split(",")]
     return tuple(item for item in values if item)
 
@@ -192,12 +211,15 @@ class AdminWebBrandingConfig:
             "EVANDER_ADMIN_WEB_HEADER_TITLE", DEFAULT_ADMIN_WEB_HEADER_TITLE
         )
         header_title_visible = _env_flag(
-            "EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE", default=True
+            "EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE",
+            default=DEFAULT_ADMIN_WEB_HEADER_TITLE_VISIBLE,
         )
-        header_logo_size = _env_header_logo_size()
+        header_logo_size = _env_header_logo_size(default=DEFAULT_ADMIN_WEB_HEADER_LOGO_SIZE)
         product_logo = _logo_config_from_env(
             "EVANDER_ADMIN_WEB_PRODUCT_LOGO",
-            default_alt=f"{header_title} logo",
+            default_alt=DEFAULT_ADMIN_WEB_PRODUCT_LOGO_ALT,
+            default_light_url=DEFAULT_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL,
+            default_dark_url=DEFAULT_ADMIN_WEB_PRODUCT_LOGO_DARK_URL,
         )
         header_logo = _logo_config_from_env(
             "EVANDER_ADMIN_WEB_HEADER_LOGO",
@@ -206,7 +228,9 @@ class AdminWebBrandingConfig:
         )
         company_logo = _logo_config_from_env(
             "EVANDER_ADMIN_WEB_COMPANY_LOGO",
-            default_alt="Company logo",
+            default_alt=DEFAULT_ADMIN_WEB_COMPANY_LOGO_ALT,
+            default_light_url=DEFAULT_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL,
+            default_dark_url=DEFAULT_ADMIN_WEB_COMPANY_LOGO_DARK_URL,
         )
         return cls(
             page_title=page_title,
@@ -219,10 +243,10 @@ class AdminWebBrandingConfig:
         )
 
 
-def _env_header_logo_size() -> AdminWebHeaderLogoSize:
+def _env_header_logo_size(*, default: AdminWebHeaderLogoSize) -> AdminWebHeaderLogoSize:
     raw = os.environ.get("EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE", "").strip().lower()
     if not raw:
-        return "compact"
+        return default
     if raw == "compact":
         return "compact"
     if raw == "wordmark":
@@ -234,6 +258,8 @@ def _logo_config_from_env(
     prefix: str,
     *,
     default_alt: str,
+    default_light_url: str | None = None,
+    default_dark_url: str | None = None,
     fallback: AdminWebLogoConfig | None = None,
 ) -> AdminWebLogoConfig:
     light_url = _env_branding_asset_reference(f"{prefix}_LIGHT_URL")
@@ -242,6 +268,13 @@ def _logo_config_from_env(
     if fallback is not None:
         light_url = light_url if light_url is not None else fallback.light_url
         dark_url = dark_url if dark_url is not None else fallback.dark_url
+    if light_url is not None and dark_url is None:
+        dark_url = light_url
+    if dark_url is not None and light_url is None:
+        light_url = dark_url
+    if light_url is None and dark_url is None:
+        light_url = _branding_asset_reference(default_light_url)
+        dark_url = _branding_asset_reference(default_dark_url)
     if light_url is not None and dark_url is None:
         dark_url = light_url
     if dark_url is not None and light_url is None:
@@ -326,6 +359,11 @@ class AdminWebConfig:
             )
         azure_sso = cls._azure_sso_from_env(auth_mode)
         branding_asset_dir = _env_optional_text("EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR")
+        resolved_branding_asset_dir = (
+            Path(branding_asset_dir).expanduser()
+            if branding_asset_dir is not None
+            else DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR
+        )
         return cls(
             auth_mode=auth_mode,
             username=username,
@@ -344,34 +382,61 @@ class AdminWebConfig:
             workflow_event_machine_tokens=_env_workflow_event_machine_tokens(),
             azure_sso=azure_sso,
             branding=AdminWebBrandingConfig.from_env(),
-            branding_asset_dir=Path(branding_asset_dir).expanduser()
-            if branding_asset_dir is not None
-            else None,
+            branding_asset_dir=resolved_branding_asset_dir,
         )
 
     @classmethod
     def _azure_sso_from_env(cls, auth_mode: AdminAuthMode) -> AzureSsoConfig | None:
         if auth_mode != "azure_sso":
             return None
-        tenant_id = os.environ.get("EVANDER_ADMIN_WEB_AZURE_TENANT_ID", "").strip()
-        client_id = os.environ.get("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET", "").strip()
-        authority_base_url = (
-            os.environ.get(
-                "EVANDER_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
-                "https://login.microsoftonline.com",
+        tenant_id = (
+            _env_optional_text_with_legacy(
+                "EVANDER_ADMIN_WEB_AZURE_TENANT_ID",
+                "AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID",
             )
-            .strip()
-            .rstrip("/")
+            or ""
         )
+        client_id = (
+            _env_optional_text_with_legacy(
+                "EVANDER_ADMIN_WEB_AZURE_CLIENT_ID",
+                "AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID",
+            )
+            or ""
+        )
+        client_secret = (
+            _env_optional_text_with_legacy(
+                "EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET",
+                "AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET",
+            )
+            or ""
+        )
+        authority_base_url = _env_text_with_legacy(
+            "EVANDER_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
+            "AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
+            "https://login.microsoftonline.com",
+        ).rstrip("/")
         public_base_url = (
-            os.environ.get("EVANDER_ADMIN_WEB_PUBLIC_BASE_URL", "").strip().rstrip("/")
+            (
+                _env_optional_text_with_legacy(
+                    "EVANDER_ADMIN_WEB_PUBLIC_BASE_URL",
+                    "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL",
+                )
+                or ""
+            ).rstrip("/")
         )
-        redirect_uri = os.environ.get("EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI", "").strip()
+        redirect_uri = (
+            _env_optional_text_with_legacy(
+                "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
+                "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+            )
+            or ""
+        )
         if not redirect_uri and public_base_url:
             redirect_uri = f"{public_base_url}{AZURE_SSO_CALLBACK_PATH}"
-        post_login_redirect = (
-            os.environ.get("EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/").strip() or "/"
+        post_login_redirect = _env_text_with_legacy(
+            "EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT",
+            "AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT",
+            "/",
         )
         if not post_login_redirect.startswith("/") or post_login_redirect.startswith("//"):
             raise ValueError(
@@ -381,7 +446,10 @@ class AdminWebConfig:
             item
             for item in (
                 _normalize_user_identifier(value)
-                for value in _env_csv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS")
+                for value in _env_csv_with_legacy(
+                    "EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS",
+                    "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS",
+                )
             )
             if item
         )

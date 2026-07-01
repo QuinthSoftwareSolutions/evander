@@ -17,24 +17,24 @@ export type AdminBrandingConfig = {
 };
 
 export const DEFAULT_ADMIN_BRANDING: AdminBrandingConfig = {
-  page_title: "evander Control Plane Admin",
-  header_title: "evander Control Plane",
-  header_title_visible: true,
-  header_logo_size: "compact",
+  page_title: "Evander Admin",
+  header_title: "EVANDER",
+  header_title_visible: false,
+  header_logo_size: "wordmark",
   header_logo: {
-    light_url: null,
-    dark_url: null,
-    alt: "evander Control Plane logo",
+    light_url: "/api/admin/branding/assets/evander-logo-light.png",
+    dark_url: "/api/admin/branding/assets/evander-logo-dark.png",
+    alt: "Evander Logo",
   },
   product_logo: {
-    light_url: null,
-    dark_url: null,
-    alt: "evander Control Plane logo",
+    light_url: "/api/admin/branding/assets/evander-logo-light.png",
+    dark_url: "/api/admin/branding/assets/evander-logo-dark.png",
+    alt: "Evander Logo",
   },
   company_logo: {
-    light_url: null,
-    dark_url: null,
-    alt: "Company logo",
+    light_url: "/api/admin/branding/assets/qss-light.png",
+    dark_url: "/api/admin/branding/assets/qss-dark.png",
+    alt: "Quinth Software Solutions",
   },
 };
 
@@ -105,11 +105,12 @@ function headerLogoSizeOrDefault(value: unknown, fallback: AdminHeaderLogoSize):
 
 function normalizeLogoConfig(value: unknown, fallback: AdminLogoConfig): AdminLogoConfig {
   const record = asRecord(value);
-  const lightUrl = optionalText(record.light_url) ?? fallback.light_url;
-  const darkUrl = optionalText(record.dark_url) ?? fallback.dark_url;
+  const lightUrl = optionalText(record.light_url);
+  const darkUrl = optionalText(record.dark_url);
+  const hasConfiguredUrl = lightUrl !== null || darkUrl !== null;
   return {
-    light_url: lightUrl,
-    dark_url: darkUrl,
+    light_url: hasConfiguredUrl ? lightUrl : fallback.light_url,
+    dark_url: hasConfiguredUrl ? darkUrl : fallback.dark_url,
     alt: textOrDefault(record.alt, fallback.alt),
   };
 }

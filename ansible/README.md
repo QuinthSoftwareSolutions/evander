@@ -144,9 +144,10 @@ Admin Web public access:
   the local Admin Web Python service, while serving hashed frontend assets from
   `frontend/workflow-editor/dist` directly. The proxied document entrypoints let Admin Web inject
   the configured title and branding payload before the React app starts.
-- Admin Web branding still comes from `evander_admin_web_env` at runtime. For custom local
-  logo files, set `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` and use relative logo paths so Caddy
-  reaches them through the proxied `/api/admin/branding/assets/...` route.
+- Admin Web defaults to the bundled Evander and Quinth Software Solutions branding under
+  `frontend/workflow-editor/branding`. Runtime overrides still come from `evander_admin_web_env`.
+  For custom local logo files, set `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` and use relative logo
+  paths so Caddy reaches them through the proxied `/api/admin/branding/assets/...` route.
 - To copy operator-owned logo files from the Ansible controller, set
   `evander_admin_web_branding_assets` to records with `source_path`, destination `path`, and
   optional `mode`. The files are copied into
@@ -402,8 +403,9 @@ If you expose Admin Web beyond localhost, set `config/admin-web.env` from Vault-
 enable authentication, and prefer TLS plus ingress policy in front of the service. For Ansible-owned
 Caddy exposure, set `evander_admin_web_caddy_enabled: true`; Caddy will proxy the HTML
 entrypoints and API/health routes to the local Admin Web service while serving static hashed assets
-directly. Put environment-specific Admin Web title, header, and logo settings in
-`evander_admin_web_env`; relative logo paths are served from
+directly. The default title and logos come from the product checkout under
+`frontend/workflow-editor/branding`. Put environment-specific Admin Web title, header, and logo
+settings in `evander_admin_web_env`; relative logo paths are served from
 `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through `/api/admin/branding/assets/...`. Use
 `evander_admin_web_branding_assets` when Ansible should also copy those logo files from the
 operator-owned deployment config into that branding asset directory.
