@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +19,20 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert "evander.trustedRepoPath" in mirror_issue
     assert "evander.baseBranch" in mirror_issue
     assert "runtime/agent-events.log" in handle_push
+    assert "bare_config_value_with_legacy()" in handle_push
+    assert (
+        "bare_config_value_with_legacy evander.trustedRepoPath agent-sandbox.trustedRepoPath"
+        in handle_push
+    )
+    assert (
+        "bare_config_value_with_legacy evander.baseBranch agent-sandbox.baseBranch"
+        in handle_push
+    )
+    assert (
+        "bare_config_value_with_legacy evander.canonicalOriginUrl agent-sandbox.canonicalOriginUrl"
+        in handle_push
+    )
+    assert 'config "${current_key}" "${value}"' in handle_push
     assert "extract_session_id()" in handle_push
     assert 'PR_ARGS+=(--session-id "${session_id}")' in handle_push
     assert "AGENT_PR_NOTES" in handle_push
@@ -93,6 +109,88 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
         in guest_agents_template
     )
     assert "`sync-base` fetches and merges the configured base branch" in guest_agents_template
+
+
+def test_handle_agent_push_migrates_legacy_bare_repo_metadata(tmp_path: Path) -> None:
+    bare_repo = tmp_path / "remote.git"
+    trusted_repo = tmp_path / "trusted"
+    subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True)
+    subprocess.run(["git", "init", str(trusted_repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(bare_repo),
+            "config",
+            "agent-sandbox.trustedRepoPath",
+            str(trusted_repo),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "--git-dir", str(bare_repo), "config", "agent-sandbox.baseBranch", "main"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(bare_repo),
+            "config",
+            "agent-sandbox.canonicalOriginUrl",
+            "https://github.com/example/repo.git",
+        ],
+        check=True,
+    )
+    env = {
+        **os.environ,
+        "EVANDER_EVENT_LOG": str(tmp_path / "events.log"),
+        "EVANDER_RUNTIME_DIR": str(tmp_path / "runtime"),
+    }
+
+    subprocess.run(
+        [str(ROOT / "scripts" / "handle_agent_push.sh"), str(bare_repo)],
+        input="",
+        text=True,
+        env=env,
+        check=True,
+    )
+
+    assert (
+        subprocess.check_output(
+            [
+                "git",
+                "--git-dir",
+                str(bare_repo),
+                "config",
+                "--get",
+                "evander.trustedRepoPath",
+            ],
+            text=True,
+        ).strip()
+        == str(trusted_repo)
+    )
+    assert (
+        subprocess.check_output(
+            ["git", "--git-dir", str(bare_repo), "config", "--get", "evander.baseBranch"],
+            text=True,
+        ).strip()
+        == "main"
+    )
+    assert (
+        subprocess.check_output(
+            [
+                "git",
+                "--git-dir",
+                str(bare_repo),
+                "config",
+                "--get",
+                "evander.canonicalOriginUrl",
+            ],
+            text=True,
+        ).strip()
+        == "https://github.com/example/repo.git"
+    )
 
 
 def test_guest_agent_pr_note_helper_supports_additive_updates() -> None:

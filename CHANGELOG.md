@@ -16,6 +16,9 @@
 - Fixed Evander rename upgrade handling for legacy nftables firewall tables and
   libvirt networks, and omitted `state:all` from GitHub issue search queries.
 
+- Fixed agent Git push hooks to fall back to and migrate legacy
+  `agent-sandbox.*` bare-repo promotion metadata.
+
 - Renamed the operational project identity to Evander: the Python package is
   now `evander`, console scripts and systemd units use the `evander-*` prefix,
   environment variables use `EVANDER_*`, and guest state/config paths now use

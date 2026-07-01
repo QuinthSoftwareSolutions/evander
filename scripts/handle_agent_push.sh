@@ -89,6 +89,23 @@ notify_event() {
   fi
 }
 
+bare_config_value_with_legacy() {
+  local current_key="$1"
+  local legacy_key="$2"
+  local value
+  value="$(git --git-dir="${BARE_REPO_PATH}" config --get "${current_key}" || true)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+
+  value="$(git --git-dir="${BARE_REPO_PATH}" config --get "${legacy_key}" || true)"
+  if [[ -n "${value}" ]]; then
+    git --git-dir="${BARE_REPO_PATH}" config "${current_key}" "${value}"
+  fi
+  printf '%s\n' "${value}"
+}
+
 compose_pr_body_file() {
   local fixed_body_file="$1"
   local note_body_file="$2"
@@ -614,9 +631,9 @@ while IFS= read -r git_env_var; do
   unset "${git_env_var}"
 done < <(git --git-dir="${BARE_REPO_PATH}" rev-parse --local-env-vars)
 
-TRUSTED_REPO_PATH="$(git --git-dir="${BARE_REPO_PATH}" config --get evander.trustedRepoPath || true)"
-BASE_BRANCH="$(git --git-dir="${BARE_REPO_PATH}" config --get evander.baseBranch || true)"
-CANONICAL_ORIGIN_URL="$(git --git-dir="${BARE_REPO_PATH}" config --get evander.canonicalOriginUrl || true)"
+TRUSTED_REPO_PATH="$(bare_config_value_with_legacy evander.trustedRepoPath agent-sandbox.trustedRepoPath)"
+BASE_BRANCH="$(bare_config_value_with_legacy evander.baseBranch agent-sandbox.baseBranch)"
+CANONICAL_ORIGIN_URL="$(bare_config_value_with_legacy evander.canonicalOriginUrl agent-sandbox.canonicalOriginUrl)"
 LOCAL_PR_NOTES_REF="$(derive_local_notes_ref "${BARE_REPO_PATH}")"
 
 if [[ -z "${TRUSTED_REPO_PATH}" || ! -d "${TRUSTED_REPO_PATH}/.git" ]]; then
