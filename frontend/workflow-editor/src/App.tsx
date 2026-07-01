@@ -67,7 +67,7 @@ import {
 } from "./types";
 import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
-import { CopyIcon, EditIcon, HistoryIcon, PlusIcon } from "./features/admin/PageActionIcons";
+import { CopyIcon, EditIcon, GenerateWorkflowIcon, HistoryIcon, PlusIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 import { hashQueryParam } from "./adminRouting";
 import { graphVisibleInDirectory } from "./workflowGraphDirectory";
@@ -9964,7 +9964,8 @@ export default function App() {
     );
   }
 
-  function renderWorkflowGeneratorPanel() {
+  function renderWorkflowGeneratorDialog() {
+    if (!workflowGeneratorOpen) return null;
     const generatedNodeCount = workflowNodeIds(config).length;
     const generatorDescription = workflowGeneratorDescription.trim();
     const canGenerateDraft =
@@ -9992,53 +9993,67 @@ export default function App() {
                 ? "Draft out of date"
                 : "Generation failed";
     return (
-      <div className="sidebar-section workflow-generator-section">
-        <div className="workflow-generator-header">
-          <div>
-            <div className="section-label">Generate</div>
-            <p className="runtime-summary">Draft workflow canvas</p>
+      <div
+        className="modal-backdrop workflow-generator-modal-backdrop"
+        role="presentation"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            cancelWorkflowGenerator();
+          }
+        }}
+      >
+        <div className="modal-card workflow-generator-modal" role="dialog" aria-modal="true" aria-label="Generate workflow prompt">
+          <div className="modal-header workflow-generator-header">
+            <div>
+              <div className="section-label">Generate</div>
+              <h2>Generate workflow</h2>
+              <p>Draft workflow canvas</p>
+            </div>
+            <span className={`workflow-generator-status state-${workflowGeneratorState}`}>
+              {generatorStatus}
+            </span>
           </div>
-          <span className={`workflow-generator-status state-${workflowGeneratorState}`}>
-            {generatorStatus}
-          </span>
-        </div>
-        <label className="inspector-label workflow-generator-prompt">
-          <span>Description</span>
-          <textarea
-            value={workflowGeneratorDescription}
-            rows={7}
-            placeholder="Describe the workflow to draft."
-            onChange={(event) => handleWorkflowGeneratorDescriptionChange(event.target.value)}
-            disabled={workflowEditLocked}
-          />
-        </label>
-        {workflowGeneratorError ? <div className="runtime-run-error">{workflowGeneratorError}</div> : null}
-        {workflowGeneratorWarnings.length > 0 ? (
-          <div className="workflow-generator-warnings">
-            {workflowGeneratorWarnings.slice(0, 4).map((warning, index) => (
-              <div key={`${warning}-${index}`}>{warning}</div>
-            ))}
+          <div className="modal-body workflow-generator-form">
+            <label className="inspector-label workflow-generator-prompt">
+              <span>Description</span>
+              <textarea
+                value={workflowGeneratorDescription}
+                rows={7}
+                placeholder="Describe the workflow to draft."
+                onChange={(event) => handleWorkflowGeneratorDescriptionChange(event.target.value)}
+                disabled={workflowEditLocked}
+                autoFocus
+              />
+            </label>
+            {workflowGeneratorError ? <div className="runtime-run-error">{workflowGeneratorError}</div> : null}
+            {workflowGeneratorWarnings.length > 0 ? (
+              <div className="workflow-generator-warnings">
+                {workflowGeneratorWarnings.slice(0, 4).map((warning, index) => (
+                  <div key={`${warning}-${index}`}>{warning}</div>
+                ))}
+              </div>
+            ) : null}
+            <div className="workflow-generator-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={generateWorkflowGeneratorDraft}
+                disabled={!canGenerateDraft}
+              >
+                Generate draft
+              </button>
+              <button
+                type="button"
+                onClick={acceptWorkflowGeneratorDraft}
+                disabled={!canAcceptGeneratedDraft || workflowEditLocked}
+              >
+                Accept draft
+              </button>
+              <button type="button" className="subtle-button" onClick={cancelWorkflowGenerator}>
+                Cancel
+              </button>
+            </div>
           </div>
-        ) : null}
-        <div className="workflow-generator-actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={generateWorkflowGeneratorDraft}
-            disabled={!canGenerateDraft}
-          >
-            Generate draft
-          </button>
-          <button
-            type="button"
-            onClick={acceptWorkflowGeneratorDraft}
-            disabled={!canAcceptGeneratedDraft || workflowEditLocked}
-          >
-            Accept draft
-          </button>
-          <button type="button" className="subtle-button" onClick={cancelWorkflowGenerator}>
-            Cancel
-          </button>
         </div>
       </div>
     );
@@ -10771,6 +10786,26 @@ export default function App() {
     }
   }
 
+  function renderWorkflowGeneratorCanvasControl() {
+    if (!document || isInspectMode) return null;
+    return (
+      <div className="workflow-generator-canvas-control">
+        <button
+          type="button"
+          className={`workflow-generator-canvas-button${workflowGeneratorOpen ? " active" : ""}`}
+          onClick={openWorkflowGenerator}
+          disabled={workflowEditLocked}
+          aria-label="Generate workflow"
+          aria-haspopup="dialog"
+          aria-expanded={workflowGeneratorOpen}
+          title="Generate workflow"
+        >
+          <GenerateWorkflowIcon />
+        </button>
+      </div>
+    );
+  }
+
   function renderWorkflowPackCanvasControl() {
     if (!document) return null;
     return (
@@ -11375,76 +11410,7 @@ export default function App() {
         onKeyDown={handleAppShellKeyDown}
       >
         <aside className="sidebar">
-          {workflowGeneratorOpen ? (
-            <>
-              {renderWorkflowGeneratorPanel()}
-              {selectedNode ? (
-                <div className="sidebar-section inspector">
-                  <div className="section-label">Inspector</div>
-                  <div className="inspector-summary">
-                    <div>{selectedNode.type}</div>
-                    <div>{selectedNode.id}</div>
-                  </div>
-                  {selectedNodeDiagnostics.length > 0 ? (
-                    <div className="problems-panel">
-                      <div className="problems-heading">
-                        <span>Problems</span>
-                        <span>{selectedNodeDiagnostics.length}</span>
-                      </div>
-                      <div className="problems-list">
-                        {selectedNodeDiagnostics.map((diagnostic, index) => (
-                          <div className="problem-item" key={`${diagnostic.code}-${diagnostic.field_path ?? ""}-${diagnostic.reference ?? ""}-${index}`}>
-                            <div className="problem-message">{diagnostic.message}</div>
-                            <div className="problem-meta">
-                              {diagnostic.field_path ? <span>{diagnostic.field_path}</span> : null}
-                              {diagnostic.reference ? <span>{diagnostic.reference}</span> : null}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                  <button onClick={selectDownstreamBranch}>Select downstream branch</button>
-                  {renderSelectedTriggerToggle()}
-                  <div className="inspector-metadata-field">
-                    <span>Node ID</span>
-                    <code>{selectedNode.id}</code>
-                  </div>
-                  <label className="inspector-label">
-                    <span>Display name</span>
-                    <input
-                      value={inspectorDisplayName}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setInspectorDisplayName(nextValue);
-                        stageInspectorDraft({ displayName: nextValue });
-                      }}
-                    />
-                  </label>
-                  {renderEffectTargetField()}
-                  {inspectorConfigurationFields.map((field) => renderField(field))}
-                  {inspectorOutputFields.map((field) => renderField(field))}
-                  <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
-                    Delete node
-                  </button>
-                </div>
-              ) : null}
-              {selectedEdge ? (
-                <div className="sidebar-section inspector">
-                  <div className="section-label">Edge</div>
-                  <div className="inspector-summary">
-                    <div>{selectedEdge.source_id}</div>
-                    <div>Route: {selectedEdgeRouteLabel}</div>
-                    <div>{selectedEdge.target_id}</div>
-                    {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
-                  </div>
-                  <button className="danger" onClick={deleteSelectedEdge} disabled={workflowEditLocked}>
-                    Delete edge
-                  </button>
-                </div>
-              ) : null}
-            </>
-          ) : isInspectMode ? (
+          {isInspectMode ? (
             <>
               {renderWorkflowTutorialLauncher()}
               {renderInspectedRunPanel()}
@@ -11456,12 +11422,6 @@ export default function App() {
             <>
               {renderWorkflowTutorialLauncher()}
               {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state.</div> : null}
-
-              <div className="workflow-generator-launcher">
-                <button type="button" className="subtle-button" onClick={openWorkflowGenerator} disabled={workflowEditLocked}>
-                  Generate workflow
-                </button>
-              </div>
 
               {canReadWorkflowRuns ? (
               <details className="sidebar-section current-runs-section">
@@ -11938,6 +11898,7 @@ export default function App() {
 
         {renderWorkflowTutorialChooser()}
         {renderWorkflowPackModal()}
+        {renderWorkflowGeneratorDialog()}
 
           <div
             className="workflow-sidebar-resize-handle"
@@ -11967,6 +11928,7 @@ export default function App() {
             onTouchEndCapture={handleCanvasTouchEndCapture}
             onTouchCancelCapture={handleCanvasTouchCancelCapture}
           >
+            {renderWorkflowGeneratorCanvasControl()}
             {renderWorkflowPackCanvasControl()}
             {renderWorkflowPackHistoryCanvasPanel()}
             <ReactFlow

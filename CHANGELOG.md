@@ -81,6 +81,13 @@
   overlaid on the workflow canvas, with add/edit/remove pack actions kept to
   icon buttons and the edit dialog.
 
+- Moved the Admin Web workflow generator launcher into a top-right workflow
+  canvas overlay with a wand-sparkles icon, and opened the generator prompt in
+  a modal dialog.
+
+- Fixed worker MSSQL deployment so the SQL Server admin connectivity check waits
+  for TCP login readiness after service start or restart.
+
 - Added cursor paging to the Admin Web workflow pack history popover.
 
 - Fixed the Admin Web workflow canvas layout so workflow focus mode fits inside
