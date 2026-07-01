@@ -355,6 +355,10 @@ def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
     assert "https://packages.microsoft.com/ubuntu" not in defaults
     assert "http://packages.microsoft.com/ubuntu" in defaults
     assert "SQLCMDPASSWORD" in role
+    assert "register: evander_worker_mssql_admin_connectivity" in role
+    assert "retries: 60" in role
+    assert "delay: 2" in role
+    assert "until: evander_worker_mssql_admin_connectivity.rc == 0" in role
     assert "evander_worker_mssql_allowed_source_cidr" in role
     assert "DROP" in role
 

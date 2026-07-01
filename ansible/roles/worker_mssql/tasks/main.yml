@@ -266,6 +266,10 @@
       - "SELECT 1"
   environment:
     SQLCMDPASSWORD: "{{ evander_worker_mssql_admin_password }}"
+  register: evander_worker_mssql_admin_connectivity
   no_log: true
   changed_when: false
+  retries: 60
+  delay: 2
+  until: evander_worker_mssql_admin_connectivity.rc == 0
   when: evander_worker_mssql_enabled | bool
