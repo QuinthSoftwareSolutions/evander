@@ -29,6 +29,7 @@ import {
   Trash2,
   Upload,
   Users,
+  WandSparkles,
   Workflow,
   Wrench,
   ChevronLeft,
@@ -60,6 +61,10 @@ export function PlusIcon() {
 
 export function HistoryIcon() {
   return <History {...DEFAULT_ICON_PROPS} />;
+}
+
+export function GenerateWorkflowIcon() {
+  return <WandSparkles {...DEFAULT_ICON_PROPS} />;
 }
 
 export function DownloadIcon() {
